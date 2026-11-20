@@ -93,4 +93,3 @@ python3 scripts/ci_check.py
 ```
 
 It expects the Rust, Node, Python, and Tauri system prerequisites above.
-

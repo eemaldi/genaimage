@@ -4,4 +4,3 @@ Object.defineProperty(window, "confirm", {
   writable: true,
   value: () => true
 });
-

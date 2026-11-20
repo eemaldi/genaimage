@@ -21,4 +21,3 @@ tokio.workspace = true
 
 [lints]
 workspace = true
-

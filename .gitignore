@@ -9,4 +9,4 @@ runs/
 *.sqlite3-wal
 __pycache__/
 *.py[cod]
-
+*.tsbuildinfo

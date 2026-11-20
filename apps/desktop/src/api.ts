@@ -49,4 +49,3 @@ export const api = {
       request: { character_id: characterId, gate, approver, note, approved }
     })
 };
-

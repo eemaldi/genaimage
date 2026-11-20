@@ -104,4 +104,3 @@ Every completed run records:
 - output paths, byte sizes, and SHA-256 hashes.
 
 Neither an output nor the run manifest may overwrite an existing file.
-

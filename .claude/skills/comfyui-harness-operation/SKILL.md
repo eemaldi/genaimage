@@ -82,4 +82,3 @@ For each completed run, preserve:
 
 Never overwrite an approved generation or its manifest. Create a new semantic
 version and link it to the previous version and review.
-

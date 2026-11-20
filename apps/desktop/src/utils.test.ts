@@ -34,4 +34,3 @@ describe("desktop form and status helpers", () => {
     expect(formatBytes(2048)).toBe("2.0 KiB");
   });
 });
-

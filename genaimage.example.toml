@@ -10,4 +10,3 @@ state_database = ".genaimage/state.sqlite3"
 workflows = "workflows/comfyui"
 runs = "runs"
 characters = "characters"
-

@@ -74,4 +74,3 @@ The current profile must resolve to `localhost`, `127.0.0.1`, or `::1`. Tauri
 starts no public web server and grants only the default command capability. The
 browser frontend accesses GenAImage through typed Tauri commands and receives
 run updates over local Tauri events.
-
