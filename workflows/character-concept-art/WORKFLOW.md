@@ -36,6 +36,33 @@ The user's artistic decision is final. A generation capability is not assumed
 to exist: if unavailable, stop at the approved brief and report that image
 production is not configured.
 
+## Harness integration
+
+The GenAImage harness implements the Generation and record-keeping steps by
+driving a separately running local ComfyUI instance. Create and operate a
+character package with:
+
+```text
+genaimage character init <character-id>
+genaimage character approve <character-id> --gate gate1 --approver <name> --note <decision>
+genaimage character status <character-id>
+```
+
+The harness stores machine-readable decisions in
+`characters/<character-id>/workflow-state.json` and mirrors the gate state into
+the marked block in `production-record.md`. It validates the ordered transition
+before accepting a decision. Rejection invalidates later approved gates, while
+the immutable decision history remains available in the JSON file.
+
+ComfyUI generation requires an API-format workflow manifest. The harness
+declares the gates required by the workflow. In particular, a generation-mode
+workflow cannot be submitted before Gate 3, and a multi-view workflow cannot be
+submitted before Gate 5. A successful ComfyUI response records output but never
+approves a design or advances a gate.
+
+ComfyUI must already be running at the configured local profile URL. The harness
+does not install models, custom nodes, or ComfyUI itself.
+
 ## Character workspace
 
 Keep all working material under `characters/<character-id>/`:
@@ -121,6 +148,23 @@ fine-detail polish. Save the exact approved inputs and generation settings
 alongside the output when available. If an image-generation capability is not
 configured, stop and report the blocker rather than claiming an image was
 created.
+
+Use the `character-concept` example manifest as a starting point only after the
+approved brief has been checked:
+
+```text
+genaimage run character-concept \
+  --character <character-id> \
+  --preset concept \
+  --version v0.1 \
+  --set checkpoint='"local-checkpoint.safetensors"' \
+  --set positive_prompt='"exact approved prompt"' \
+  --wait
+```
+
+The harness writes the resolved API workflow, exact parameter values, input
+hashes, ComfyUI IDs, output checksums, and response history under a new run
+directory. Do not edit or overwrite that run manifest.
 
 The user inspects the image and identifies discrepancies. This is not a
 gate-passing phase by itself. Record the user's review in the production record

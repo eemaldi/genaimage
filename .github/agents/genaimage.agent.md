@@ -21,6 +21,7 @@ reproducing their procedures. Read the repository-root `AGENTS.md` first.
 | Track media assets, versions, provenance, approvals, or continuity | `asset-continuity-management` |
 | Review generated media for quality, risks, and readiness | `generated-media-qa` |
 | Define delivery requirements, package media, or perform final QC | `media-qc-delivery` |
+| Run, monitor, cancel, reconcile, or inspect a local ComfyUI harness job | `comfyui-harness-operation` |
 
 Use only the skill or combination of skills relevant to the request. For
 multi-stage work, follow their sequence and stop at each required user decision
@@ -32,3 +33,5 @@ For character concept art, follow the workflow's approval gates exactly. In
 particular, do not generate or edit an image before explicit Gate 3 approval,
 and do not create additional views before explicit Gate 5 approval. The user
 retains final approval; never infer it from silence or an agent's assessment.
+The implemented CLI and desktop enforce required gates, but a technical run
+does not pass a gate by itself. Verify and record the user's explicit decision.

@@ -1,6 +1,8 @@
 # Character Production Record
 
-Copy this file to `characters/<character-id>/production-record.md`.
+Run `genaimage character init <character-id>` to create the character package.
+The command writes structured gate state to `workflow-state.json` and updates
+the generated block below. Human notes elsewhere in this file remain editable.
 
 ## Identity and status
 
@@ -12,6 +14,13 @@ Copy this file to `characters/<character-id>/production-record.md`.
 - **Current version:** `0.0`
 - **Last updated:**
 - **Pilot:** Yes / No
+
+<!-- BEGIN GENAIMAGE GATE STATE -->
+## Harness-managed gate state
+
+This section is updated by `genaimage character approve` and `genaimage
+character reject`. Do not edit it by hand.
+<!-- END GENAIMAGE GATE STATE -->
 
 ## Design classification
 
@@ -37,7 +46,7 @@ Copy this file to `characters/<character-id>/production-record.md`.
 
 - None / list unresolved questions, contradictions, or blockers.
 
-## Gate decisions
+## Gate decision notes
 
 | Gate | Status | Decision / conditions | Approver | Date |
 | --- | --- | --- | --- | --- |

@@ -226,12 +226,15 @@ def verify_manifest(root_arg: str, manifest_arg: str, require_all_files: bool) -
         raise ManifestError("root must be an existing directory")
 
     manifest_input = Path(manifest_arg)
-    manifest = manifest_input if manifest_input.is_absolute() else root / manifest_input
-    manifest = manifest.resolve(strict=True)
-    if not _is_under_root(root, manifest):
+    manifest_candidate = manifest_input if manifest_input.is_absolute() else root / manifest_input
+    lexical_manifest = manifest_candidate.absolute()
+    if not _is_under_root(root, lexical_manifest):
         raise ManifestError("manifest must be inside root")
-    if not manifest.is_file() or manifest.is_symlink():
+    if manifest_candidate.is_symlink() or not manifest_candidate.is_file():
         raise ManifestError("manifest must be a regular file inside root")
+    manifest = manifest_candidate.resolve(strict=True)
+    if not _is_under_root(root, manifest):
+        raise ManifestError("manifest must resolve inside root")
 
     entries = _parse_manifest(root, manifest)
     verified, failures = _verify_entries(root, entries)
