@@ -40,10 +40,12 @@ class VerifyManifestTests(unittest.TestCase):
         (root / "captions").mkdir()
         write_lf(root / "platform" / "spot.txt", "approved spot\n")
         write_lf(root / "captions" / "spot.vtt", "WEBVTT\n")
+        caption_checksum = sha256_text("WEBVTT\n")
+        platform_checksum = sha256_text("approved spot\n")
         write_lf(
             root / "manifest-sha256.txt",
-            f"{sha256_text('WEBVTT\n')}  captions/spot.vtt\n"
-            f"{sha256_text('approved spot\n')}  platform/spot.txt\n",
+            f"{caption_checksum}  captions/spot.vtt\n"
+            f"{platform_checksum}  platform/spot.txt\n",
         )
 
     def test_valid_manifest_returns_verified_json(self) -> None:
@@ -163,9 +165,10 @@ class VerifyManifestTests(unittest.TestCase):
                 (root / "escape.txt").symlink_to(outside)
             except OSError as exc:
                 self.skipTest(f"cannot create symlink in this environment: {exc}")
+            outside_checksum = sha256_text("outside\n")
             write_lf(
                 root / "manifest-sha256.txt",
-                f"{sha256_text('outside\n')}  escape.txt\n",
+                f"{outside_checksum}  escape.txt\n",
             )
 
             code, payload = self.run_cli(root)

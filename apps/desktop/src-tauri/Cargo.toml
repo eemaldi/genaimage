@@ -1,0 +1,24 @@
+[package]
+name = "genaimage-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "genaimage_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+genaimage-core = { path = "../../../crates/genaimage-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
