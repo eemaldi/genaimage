@@ -21,11 +21,11 @@ For every reference, separate:
 Convert "make it like this" into "make a new work with the same production function." Examples:
 
 - Do extract "cold open in 0.8 seconds, problem stated before brand reveal, high-contrast captions."
-- Do not copy the exact edit, catchphrase, character, layout, choreography, melody, camera sequence, voice, celebrity likeness, or trade dress.
+- Do not copy the exact edit, catchphrase, distinctive subject, layout, choreography, melody, camera sequence, voice, celebrity likeness, or trade dress.
 - Do extract "warm, credible founder-read with relaxed pacing."
 - Do not clone a real speaker's voice or imply their endorsement without documented consent.
 
-## Start with a clearance and risk gate
+## Start with a clearance and risk review
 
 Before detailed creative analysis, build a reference ledger. If inputs are incomplete, continue with visible/audio analysis but mark missing permissions as blockers for production use.
 
@@ -76,7 +76,7 @@ If provenance is absent, stripped, conflicting, unverifiable, or inconsistent wi
 | Reference dimension | Extract | Do not copy unless explicitly cleared |
 |---|---|---|
 | Concept | Audience, promise, emotional arc, information hierarchy | Exact joke, twist, slogan, storyline, fictional world, branded campaign idea |
-| Visual style | Lighting logic, palette family, texture density, level of realism, lens language | Distinctive composition, character design, logo lockup, signature illustration style, trade dress |
+| Visual style | Lighting logic, palette family, texture density, level of realism, lens language | Distinctive composition, distinctive subject design, logo lockup, signature illustration style, trade dress |
 | Shot design | Shot sizes, camera purpose, sequencing rhythm, transition function | Frame-for-frame storyboard, same camera path around same subject, recognizable staging |
 | Editing | Pacing, beat structure, escalation, caption density, call-to-action timing | Exact cut timing, music-sync pattern, montage order, viral template with protected audio/graphics |
 | Performance | Energy, intention, emotional beats, gesture categories | Likeness, face, voiceprint, accent caricature, exact gestures/choreography of a performer |
@@ -187,7 +187,7 @@ Reference-derived direction:
 [Abstracted visual/audio/edit/performance principles. Do not name the reference as something to imitate unless the provider workflow requires reference attachment labels.]
 
 Originality constraints:
-Create a distinct new work. Do not reproduce the reference's exact composition, character design, layout, slogan, melody, voice, choreography, edit sequence, logo/trade dress, or any recognizable protected element. Preserve only the approved product/brand details listed below.
+Create a distinct new work. Do not reproduce the reference's exact composition, distinctive subject design, layout, slogan, melody, voice, choreography, edit sequence, logo/trade dress, or any recognizable protected element. Preserve only the approved product/brand details listed below.
 
 Approved exact elements:
 [Client-owned product renders, logo, SKU geometry, claims, disclaimers, color values, if any.]
@@ -219,7 +219,7 @@ Rate similarity before handoff and again after generation.
 - 0: no meaningful similarity beyond broad genre conventions.
 - 1: shares generic production traits (e.g., warm studio lighting, fast captions).
 - 2: shares several abstracted traits but composition, text, subjects, sequence, and audio are distinct.
-- 3: recognizably close in layout, sequence, character, copy, sound, or campaign idea; revise before release.
+- 3: recognizably close in layout, sequence, subject, copy, sound, or campaign idea; revise before release.
 - 4: likely copy/lookalike/soundalike/false association; stop and escalate.
 
 Common escalation triggers:

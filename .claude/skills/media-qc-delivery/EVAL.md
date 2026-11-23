@@ -239,7 +239,7 @@ A high-scoring answer should not need to recite source URLs, but it should behav
 - It does not make unsupported universal claims about YouTube, TikTok, Meta, Google Ads, Netflix/streamers, broadcast, or CTV.
 - It knows standards are not interchangeable: IMF, AS-11, HLS, WebVTT, EBU R 128, ITU-R BS.1770, WCAG/Section 508, BagIt, SHA-256, C2PA, and IPTC solve different problems.
 
-## Excellent-response characteristics
+## Excellent-response qualities
 
 Excellent responses:
 

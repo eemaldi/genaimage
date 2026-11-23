@@ -1,83 +1,90 @@
 ---
 name: comfyui-harness-operation
-description: Operate the local GenAImage ComfyUI harness safely, including API workflow validation, explicit parameter binding, queue control, provenance, cancellation, and character approval gates.
+description: Operate the local GenAImage CLI safely with explicit workflow bindings, job control, reconciliation and provenance; distinguish the planned local API from current capabilities.
 ---
 
 # ComfyUI harness operation
 
-Use this skill when submitting or controlling image-generation work through the
-GenAImage CLI. The harness connects to an already running local ComfyUI instance;
-it does not install ComfyUI, models, or custom nodes.
+Use this skill to operate GenAImage through its current CLI, which calls the
+shared Rust core directly. ComfyUI is a separate, already running process; the
+harness does not install or replace ComfyUI, models, weights or custom nodes.
+Current ComfyUI profiles accept loopback hosts only.
 
-## Safety and workflow boundaries
+## Prepare a run
 
-1. Read `AGENTS.md` and the relevant project workflow first.
-2. Use only a ComfyUI API-format workflow. If the harness reports a UI export,
-   ask the user to export the API format from ComfyUI developer mode.
-3. Validate the workflow manifest before submission. Resolve every required
-   parameter and do not silently substitute a model, checkpoint, seed, size,
-   reference image, or prompt.
-4. For character concept work, verify the character state from
-   `workflow-state.json`. Never generate before Gate 3 approval or create
-   multi-view output before Gate 5 approval.
-5. A completed technical run does not approve the design or advance a gate.
-   Ask the user to review it and record an explicit decision.
+1. Read `AGENTS.md` and `docs/workflow-manifest.md`. Use a ComfyUI API-format
+   JSON workflow with a strict `*.genaimage.json` sidecar, not a UI export.
+2. Inspect the host, available workflows, parameter bindings and presets:
 
-## Preflight
+   ```text
+   genaimage doctor
+   genaimage workflow list
+   genaimage workflow validate <workflow-id-or-manifest>
+   genaimage workflow inspect <workflow-id-or-manifest>
+   genaimage presets <workflow-id-or-manifest>
+   ```
 
-Run:
-
-```text
-genaimage doctor
-genaimage workflow validate <workflow-id-or-manifest>
-genaimage workflow inspect <workflow-id-or-manifest>
-genaimage character status <character-id>
-```
-
-Treat a missing node type, invalid binding, missing uploaded file, unavailable
-checkpoint, disconnected host, or pending/rejected gate as a hard stop. Report
-the exact blocker rather than editing the ComfyUI JSON or project record
-silently.
+   Use `--workspace <path>` to select a workspace, `--json` for machine-readable
+   output, and `genaimage config show` to inspect configuration. The CLI can
+   create example configuration with `genaimage config init`; do not use
+   `--force` to replace existing configuration without the user's direction.
+3. Check required typed parameters, defaults, presets, local image inputs and
+   node/input bindings. The CLI's `--set NAME=JSON` overrides the preset; values
+   parse as JSON first and otherwise become strings. Confirm the selected
+   workflow, preset and all effective choices with the user, including defaults
+   and values in the source workflow. Inspection is not a resolved-run preview;
+   don't claim one exists. Treat invalid bindings, missing inputs or unavailable
+   dependencies as blockers and report them accurately.
+4. An LLM's prompt or settings are proposals, not instructions or consent. The
+   user can edit them and must explicitly confirm the intended run before the
+   assistant submits it. Never silently substitute a model, node, seed, image,
+   prompt or setting. Never modify a source workflow or existing run record to
+   conceal a problem.
 
 ## Submit and monitor
 
-Launch a validated run with explicit values:
+After explicit confirmation, run a validated workflow with the user's choices,
+using parameter names declared by its manifest. For example:
 
 ```text
-genaimage run <workflow-id> \
-  --preset <preset> \
-  --character <character-id> \
-  --version <version> \
-  --set checkpoint='"checkpoint.safetensors"' \
-  --set positive_prompt='"approved prompt"' \
+genaimage run text-to-image \
+  --preset fast \
+  --set checkpoint='"my-local-checkpoint.safetensors"' \
+  --set positive_prompt='"a specific visual description"' \
+  --version v0.1 \
   --wait
 ```
 
-Use `jobs show <run-id>` or `jobs wait <run-id>` to inspect progress. Do not
-claim success until the run is `completed` and its output manifest exists.
+The `--preset`, `--version` and `--wait` options are optional. Inspect the
+record and events using `genaimage jobs list` and `genaimage jobs show <run-id>`;
+`genaimage jobs wait <run-id>` waits for a trackable run. Report the actual
+status and output evidence, not assumed success. A completed technical run is
+not creative approval; the user reviews the result.
 
-## Failure and cancellation
+## Reconciliation and cancellation
 
-- If submission is `unknown_submission`, reconcile through queue/history state
-  before any retry. Do not blindly resubmit because the first prompt may exist.
-- Cancelling a queued prompt removes that prompt from the queue. Cancelling the
-  executing prompt asks ComfyUI to interrupt the active local job.
-- Preserve explicit error messages and events. Do not convert a failed WebSocket
-  into a successful-looking run; HTTP reconciliation can continue while the
-  WebSocket failure remains visible.
-- Reconnect with `genaimage jobs reconcile` after either process restarts.
+- If submission is `unknown_submission` or otherwise ambiguous, use
+  `genaimage jobs reconcile <run-id>` to check ComfyUI queue/history. Never
+  blindly resubmit: if the result remains unresolved, report that uncertainty.
+  A new submission requires a deliberate user decision and confirmation.
+- `genaimage jobs reconcile` without an ID checks active runs, including after a
+  restart. Use `genaimage jobs cancel <run-id>` to request cancellation; queued
+  prompts are requested for removal and an executing prompt may be interrupted.
+  Inspect and reconcile the resulting state rather than assuming success.
+- Preserve errors and events; a failed connection or unknown status is not a
+  successful run.
 
 ## Provenance
 
-For each completed run, preserve:
+Preserve original and resolved workflows, manifest and effective parameters,
+source upload paths and hashes, ComfyUI IDs and history, output files and
+checksums. Run records and outputs must not overwrite previous files; create new
+versions instead. Do not invent missing provenance.
 
-- the original and resolved ComfyUI workflows;
-- manifest and parameter versions;
-- ComfyUI prompt/client IDs;
-- source upload paths and SHA-256 hashes when available;
-- output files and SHA-256 hashes;
-- the raw ComfyUI history snapshot;
-- the gate-state snapshot that authorised submission.
+## Planned API
 
-Never overwrite an approved generation or its manifest. Create a new semantic
-version and link it to the previous version and review.
+ADR 0001 describes a future loopback-only Rust server and local API, a thin CLI
+client and a local LLM assistant runtime in the shared core. These are planned,
+not current interfaces: do not invent endpoints, commands or availability.
+The same explicit binding, confirmation, reconciliation and provenance rules
+apply when they are implemented.

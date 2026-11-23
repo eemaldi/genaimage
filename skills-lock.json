@@ -1,28 +1,12 @@
 {
   "version": 2,
   "skills": {
-    "asset-continuity-management": {
-      "source": "calesthio/generative-media-skills",
-      "commit": "8c85352d5d75d4dcbe58480bd138e37b9742bab1",
-      "sourceType": "github",
-      "skillPath": "skills/production/governance-delivery/asset-continuity-management/SKILL.md",
-      "computedHash": "6409afe072c4819e27a9bcf96b66d30e3426e15bea4c8a25be4c921aec8dc7c2",
-      "installMode": "copy"
-    },
-    "character-design-continuity": {
-      "source": "calesthio/generative-media-skills",
-      "commit": "8c85352d5d75d4dcbe58480bd138e37b9742bab1",
-      "sourceType": "github",
-      "skillPath": "skills/production/creative-direction/character-design-continuity/SKILL.md",
-      "computedHash": "d19f47fc7c8709d48c1c2f140dda665d6699fa951863af3cd9f0da4784e9839f",
-      "installMode": "copy"
-    },
     "generated-media-qa": {
       "source": "calesthio/generative-media-skills",
       "commit": "8c85352d5d75d4dcbe58480bd138e37b9742bab1",
       "sourceType": "github",
       "skillPath": "skills/production/governance-delivery/generated-media-qa/SKILL.md",
-      "computedHash": "c8b022a98abf7603db4fc179410d1a825a31be2edca03208cbbffcd99cdc80ed",
+      "computedHash": "ffc505f09a91eac6a29232b5e2c78bb4799cc949eda09e29bea7f6f67d9a165e",
       "installMode": "copy"
     },
     "media-qc-delivery": {
@@ -30,7 +14,7 @@
       "commit": "8c85352d5d75d4dcbe58480bd138e37b9742bab1",
       "sourceType": "github",
       "skillPath": "skills/production/governance-delivery/media-qc-delivery/SKILL.md",
-      "computedHash": "fed2a07b677b2a28200fa9033e06754b6cff12046657499495a798d646b40638",
+      "computedHash": "12945ea62a2b1ce260f7b5115561f0e97765577b6cb4f07c8ff815965f2b33a2",
       "installMode": "copy"
     },
     "reference-media-analysis": {
@@ -38,7 +22,7 @@
       "commit": "8c85352d5d75d4dcbe58480bd138e37b9742bab1",
       "sourceType": "github",
       "skillPath": "skills/production/governance-delivery/reference-media-analysis/SKILL.md",
-      "computedHash": "8cb7f25bdf2d38c4358a17d7a54362ca66f8bef8947275feedf8169c9d0c79ed",
+      "computedHash": "5e747a2deb359bd3d531a35c032c2c2f525301f34e9eee9c3a735ab814329082",
       "installMode": "copy"
     },
     "visual-style-direction": {
@@ -46,7 +30,7 @@
       "commit": "8c85352d5d75d4dcbe58480bd138e37b9742bab1",
       "sourceType": "github",
       "skillPath": "skills/production/creative-direction/visual-style-direction/SKILL.md",
-      "computedHash": "51e84fce61cb5f63199540bf04915eb26db3244757bbc373014b14070f7ed2ad",
+      "computedHash": "59d870862477d31ff414b23e578ea07a3bcb1e5887c42b627511684a277616ac",
       "installMode": "copy"
     }
   }
