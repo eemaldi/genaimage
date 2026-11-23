@@ -1,3 +1,5 @@
+mod media;
+
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -10,7 +12,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -620,20 +622,7 @@ impl RunRepository {
             "#,
             )?;
             let rows = statement
-                .query_map([run_id], |row| {
-                    Ok(OutputRecord {
-                        run_id: row.get(0)?,
-                        node_id: row.get(1)?,
-                        kind: row.get(2)?,
-                        source_filename: row.get(3)?,
-                        source_subfolder: row.get(4)?,
-                        source_type: row.get(5)?,
-                        local_path: row.get(6)?,
-                        sha256: row.get(7)?,
-                        byte_size: row.get::<_, i64>(8)? as u64,
-                        created_at: parse_sqlite_time(row, 9)?,
-                    })
-                })?
+                .query_map([run_id], map_output)?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })
@@ -841,6 +830,14 @@ const MIGRATION_6: &str = "
     ALTER TABLE runs ADD COLUMN uses_submission_lock INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE runs ADD COLUMN submission_acknowledged INTEGER NOT NULL DEFAULT 0;
 ";
+const MIGRATION_7: &str = "
+    CREATE TABLE run_media (
+        run_id TEXT PRIMARY KEY NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        manifest_sha256 TEXT NOT NULL,
+        tags_json TEXT NOT NULL
+    );
+    CREATE INDEX outputs_created_id_idx ON outputs(created_at, id);
+";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -848,14 +845,16 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_4,
     MIGRATION_5,
     MIGRATION_6,
+    MIGRATION_7,
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 5] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 6] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
     ("genaimage_database_identity", 3, "SELECT singleton, workspace, backend, endpoint FROM genaimage_database_identity LIMIT 0"),
+    ("run_media", 7, "SELECT run_id, manifest_sha256, tags_json FROM run_media LIMIT 0"),
     ("run_submission_keys", 4, "SELECT key, fingerprint, run_id FROM run_submission_keys LIMIT 0"),
 ];
 
@@ -1197,6 +1196,21 @@ impl AsyncRunRepository {
 
 fn blocking_task_error(error: tokio::task::JoinError) -> HarnessError {
     HarnessError::Database(format!("state database task failed: {error}"))
+}
+
+fn map_output(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutputRecord> {
+    Ok(OutputRecord {
+        run_id: row.get(0)?,
+        node_id: row.get(1)?,
+        kind: row.get(2)?,
+        source_filename: row.get(3)?,
+        source_subfolder: row.get(4)?,
+        source_type: row.get(5)?,
+        local_path: row.get(6)?,
+        sha256: row.get(7)?,
+        byte_size: row.get::<_, i64>(8)? as u64,
+        created_at: parse_sqlite_time(row, 9)?,
+    })
 }
 
 fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {

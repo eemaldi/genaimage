@@ -250,6 +250,46 @@ run status), `workflow` (exact manifest ID), and inclusive RFC 3339
 `created_from`/`created_to` (URL-encode any `+` offsets). `limit` defaults to 50
 and accepts 1–200. Errors use `application/problem+json` with a `recovery` hint.
 
+### Outputs and media API
+
+| Method and path (under `/api/v1`) | Behaviour |
+| --- | --- |
+| `GET /outputs` | List completed outputs and their provenance metadata without exposing server-local file paths. |
+| `GET /outputs/{id}` | Stream the original file with a strong SHA-256 ETag, `Accept-Ranges: bytes` and `Cache-Control: public, max-age=31536000, immutable`. |
+| `GET /outputs/{id}/thumbnail?size=128` | Return a cached WebP thumbnail with a strong ETag. |
+| `GET /runs/{id}/manifest` | Stream the exact stored `run-manifest.json`, including its output and workflow checksums. Never reconstruct it on read. |
+
+List responses contain `outputs` and `next_cursor` (null at the end). Pass the
+opaque cursor back unchanged with the same filters. Outputs are sorted newest
+first, with the database output ID breaking timestamp ties. `limit` defaults
+to 50 and accepts 1–200. Filter by `run` (run ID), `workflow` (workflow ID),
+`created_from` and `created_to` (inclusive RFC 3339 output creation times), or
+`tag`. Tags are exact and case-sensitive; they are copied from the workflow
+manifest archived for the run, not from the current workflow catalogue. Runs
+completed before media indexing remain available but have no indexed tags.
+
+All three file endpoints support `If-None-Match` (304). The original endpoint
+supports one closed, open-ended or suffix byte range (206); unsupported or
+unsatisfiable ranges return 416 with `Content-Range: bytes */<length>`. An
+`If-Range` value other than the current strong ETag falls back to the full file.
+Unrecognised or active file types are served as downloads (`application/octet-stream`).
+
+Core opens stored run files beneath the configured runs directory. Originals are
+hashed into private on-disk snapshots before serving so a checksum mismatch or
+concurrent in-place edit cannot expose unverified bytes. Recorded manifests are
+also checked against their indexed SHA-256; older manifests have no separately
+recorded manifest digest, so the server validates their run ID and derives the
+ETag from their stored bytes. Missing or changed files for recorded media return
+409 rather than being silently replaced. Unknown IDs and runs without a completed
+manifest return 404.
+
+Thumbnail `size` is required and must be 128, 256, 512 or 1024 (longest edge in
+pixels, without upscaling). PNG, JPEG and WebP inputs are decoded off the async
+executor, with limits on source size, dimensions and decoded memory. Thumbnails
+are cached by source SHA-256 and size under the workspace data directory in
+`thumbnails/webp-v1/`; concurrent misses share an encoder and publish through an
+atomic rename. Retention and cache eviction are not implemented.
+
 ### API integration tests
 
 `crates/genaimage-server/tests/common` provides `ApiHarness::start()` with an

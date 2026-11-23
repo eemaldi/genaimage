@@ -94,6 +94,12 @@ pub(crate) async fn materialise_history(
     fs::create_dir_all(output_dir.join("outputs"))?;
     let manifest_path = output_dir.join("run-manifest.json");
     if manifest_path.exists() {
+        let bytes = fs::read(&manifest_path)?;
+        let manifest = serde_json::from_slice::<RunManifest>(&bytes)?;
+        if manifest.run_id != run.id {
+            return Err(HarnessError::MediaIntegrity);
+        }
+        index_manifest(repository, run, &bytes, &manifest.workflow.manifest_sha256).await?;
         return Ok(manifest_path);
     }
     let mut output_records = Vec::new();
@@ -152,11 +158,34 @@ pub(crate) async fn materialise_history(
         completed_at,
         comfyui_history: history.raw.clone(),
     };
-    create_new_or_equal(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest)?.as_slice(),
-    )?;
+    let bytes = serde_json::to_vec_pretty(&manifest)?;
+    create_new_or_equal(&manifest_path, &bytes)?;
+    index_manifest(repository, run, &bytes, &manifest.workflow.manifest_sha256).await?;
     Ok(manifest_path)
+}
+
+async fn index_manifest(
+    repository: &AsyncRunRepository,
+    run: &RunRecord,
+    bytes: &[u8],
+    workflow_checksum: &str,
+) -> Result<()> {
+    let workflow = fs::read(Path::new(&run.output_dir).join("workflow-manifest.json"))?;
+    if sha256_hex(&workflow) != workflow_checksum {
+        return Err(HarnessError::MediaIntegrity);
+    }
+    #[derive(Deserialize)]
+    struct ArchivedTags {
+        tags: Option<Vec<String>>,
+    }
+    let workflow: ArchivedTags = serde_json::from_slice(&workflow)?;
+    repository
+        .record_run_media(
+            run.id.clone(),
+            sha256_hex(bytes),
+            workflow.tags.unwrap_or_default(),
+        )
+        .await
 }
 
 pub fn checksum_file(path: &Path) -> Result<InputFileRecord> {

@@ -33,6 +33,7 @@ use tokio::{
 #[derive(Clone)]
 pub struct FakeComfyState {
     pub prompt_id: Arc<Mutex<Option<String>>>,
+    pub output_bytes: Arc<Mutex<Option<Vec<u8>>>>,
     pub complete: Arc<AtomicBool>,
     pub cancelled: Arc<AtomicBool>,
     pub running: Arc<AtomicBool>,
@@ -70,6 +71,7 @@ impl Default for FakeComfyState {
     fn default() -> Self {
         Self {
             prompt_id: Default::default(),
+            output_bytes: Default::default(),
             complete: Default::default(),
             cancelled: Default::default(),
             running: Default::default(),
@@ -375,11 +377,19 @@ async fn fake_history(
     })))
 }
 
-async fn fake_view(Query(query): Query<BTreeMap<String, String>>) -> Result<Vec<u8>, StatusCode> {
+async fn fake_view(
+    State(state): State<FakeComfyState>,
+    Query(query): Query<BTreeMap<String, String>>,
+) -> Result<Vec<u8>, StatusCode> {
     if !query.contains_key("filename") {
         return Err(StatusCode::BAD_REQUEST);
     }
-    Ok(b"not-a-real-png-but-deterministic".to_vec())
+    Ok(state
+        .output_bytes
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| b"not-a-real-png-but-deterministic".to_vec()))
 }
 
 /// Owns the listener and aborts its task on drop.

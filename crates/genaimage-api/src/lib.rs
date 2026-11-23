@@ -155,5 +155,8 @@ pub enum WorkflowNodeCheckStatus {
     Unavailable,
 }
 
+mod outputs;
+pub use outputs::*;
+
 mod runs;
 pub use runs::*;

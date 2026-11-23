@@ -1,0 +1,44 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// Filters completed outputs. Date bounds are inclusive; pass the same filters on each page.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct OutputListQuery {
+    pub run: Option<String>,
+    pub workflow: Option<String>,
+    pub created_from: Option<DateTime<Utc>>,
+    pub created_to: Option<DateTime<Utc>>,
+    /// An exact, case-sensitive tag from the archived workflow manifest.
+    pub tag: Option<String>,
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+}
+
+/// An output and its provenance, without server-local file paths.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OutputResponse {
+    /// Opaque identifier to pass to the media endpoints.
+    pub id: String,
+    pub run_id: String,
+    pub workflow_id: String,
+    pub node_id: String,
+    pub kind: String,
+    pub source_filename: String,
+    pub content_type: String,
+    pub sha256: String,
+    pub byte_size: u64,
+    pub created_at: DateTime<Utc>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OutputListResponse {
+    pub outputs: Vec<OutputResponse>,
+    pub next_cursor: Option<String>,
+}
+
+/// Longest thumbnail edge in pixels: 128, 256, 512 or 1024.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ThumbnailQuery {
+    pub size: u32,
+}

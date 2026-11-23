@@ -115,6 +115,8 @@ pub struct ResolvedConfig {
     pub workflows: PathBuf,
     pub runs: PathBuf,
     pub uploads: PathBuf,
+    #[serde(skip)]
+    pub(crate) data_dir: PathBuf,
     pub claim_legacy_state: bool,
     #[serde(skip)]
     settings: settings::Metadata,
@@ -334,6 +336,7 @@ impl HarnessConfig {
                 config.paths.uploads,
                 data.join("uploads"),
             )?,
+            data_dir: workspace_data,
             workspace,
             server: config.server,
             comfyui: config.comfyui,
