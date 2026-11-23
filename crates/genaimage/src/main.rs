@@ -122,7 +122,7 @@ async fn main() {
     }
 }
 
-fn open_harness(workspace: &std::path::Path) -> Result<Harness, HarnessError> {
+async fn open_harness(workspace: &std::path::Path) -> Result<Harness, HarnessError> {
     let config = HarnessConfig::load(workspace)?;
     let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
     let backend = registry
@@ -133,14 +133,14 @@ fn open_harness(workspace: &std::path::Path) -> Result<Harness, HarnessError> {
                 config.active_profile
             ))
         })?;
-    Harness::new(config, backend)
+    Harness::new_async(config, backend).await
 }
 
 async fn execute(cli: &Cli) -> Result<(), HarnessError> {
     match &cli.command {
-        Command::Config { command } => return config_command(cli, command),
+        Command::Config { command } => return config_command(cli, command).await,
         Command::Doctor => {
-            let harness = open_harness(&cli.workspace)?;
+            let harness = open_harness(&cli.workspace).await?;
             let health = harness.health().await?;
             output(
                 cli,
@@ -150,9 +150,9 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
                 }),
             )?;
         }
-        Command::Workflow { command } => workflow_command(cli, command)?,
+        Command::Workflow { command } => workflow_command(cli, command).await?,
         Command::Presets { workflow } => {
-            let harness = open_harness(&cli.workspace)?;
+            let harness = open_harness(&cli.workspace).await?;
             let loaded = harness.load_workflow(workflow)?;
             output(cli, &loaded.manifest.presets)?;
         }
@@ -162,7 +162,7 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
     Ok(())
 }
 
-fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError> {
+async fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError> {
     let path = cli.workspace.join("genaimage.toml");
     match command {
         ConfigCommand::Init { force } => {
@@ -176,15 +176,15 @@ fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError
             output(cli, &serde_json::json!({ "path": path, "created": true }))?;
         }
         ConfigCommand::Show => {
-            let harness = open_harness(&cli.workspace)?;
+            let harness = open_harness(&cli.workspace).await?;
             output(cli, harness.config())?;
         }
     }
     Ok(())
 }
 
-fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(&cli.workspace)?;
+async fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
+    let harness = open_harness(&cli.workspace).await?;
     match command {
         WorkflowCommand::List => {
             let discovery = harness.discover_workflows()?;
@@ -225,7 +225,7 @@ fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessE
 }
 
 async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(&cli.workspace)?;
+    let harness = open_harness(&cli.workspace).await?;
     let parameters = parse_parameters(&command.parameters)?;
     let run = harness
         .submit(RunRequest {
@@ -262,15 +262,17 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
 }
 
 async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(&cli.workspace)?;
+    let harness = open_harness(&cli.workspace).await?;
     match command {
-        JobsCommand::List { limit } => output(cli, &harness.list_runs(*limit)?)?,
+        JobsCommand::List { limit } => {
+            output(cli, &harness.repository().as_async().list(*limit).await?)?
+        }
         JobsCommand::Show { run_id, events } => output(
             cli,
             &serde_json::json!({
-                "run": harness.get_run(run_id)?,
-                "events": harness.run_events(run_id, *events)?,
-                "outputs": harness.repository().outputs(run_id)?
+                "run": harness.repository().as_async().get(run_id).await?,
+                "events": harness.repository().as_async().events(run_id, *events).await?,
+                "outputs": harness.repository().as_async().outputs(run_id).await?
             }),
         )?,
         JobsCommand::Reconcile { run_id } => {

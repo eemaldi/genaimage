@@ -74,6 +74,21 @@ impl Harness {
         })
     }
 
+    /// Opens the state database on the blocking pool, using the supplied backend.
+    pub async fn new_async(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
+        let path = config.state_database.clone();
+        let repository = tokio::task::spawn_blocking(move || RunRepository::open(&path))
+            .await
+            .map_err(|error| {
+                HarnessError::Database(format!("state database task failed: {error}"))
+            })??;
+        Ok(Self {
+            config,
+            repository,
+            backend,
+        })
+    }
+
     fn backend_error(&self, message: String) -> HarnessError {
         HarnessError::Backend {
             backend: self.backend.name().to_owned(),
@@ -223,6 +238,7 @@ impl Harness {
     }
 
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
+        let repository = self.repository.as_async();
         let loaded = self.load_workflow(&request.workflow)?;
         let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;
         self.validate_workflow_nodes(&bound.workflow).await?;
@@ -267,16 +283,18 @@ impl Harness {
             parameters: parameters.clone(),
             output_dir: output_dir.display().to_string(),
         };
-        let mut run = self.repository.insert(&new_run)?;
-        self.repository.record_event(
-            &run.id,
-            "run_created",
-            Some("Run files and preflight validation completed"),
-            &json!({
-                "manifest_path": loaded.manifest_path,
-                "preset": request.preset
-            }),
-        )?;
+        let mut run = repository.insert(&new_run).await?;
+        repository
+            .record_event(
+                &run.id,
+                "run_created",
+                Some("Run files and preflight validation completed"),
+                &json!({
+                    "manifest_path": loaded.manifest_path,
+                    "preset": request.preset
+                }),
+            )
+            .await?;
 
         match self
             .backend
@@ -298,49 +316,49 @@ impl Harness {
                         self.backend.name(),
                         response.node_errors
                     );
-                    run = self.repository.update_status(
-                        &run.id,
-                        RunStatus::Failed,
-                        Some(&error),
-                        None,
-                    )?;
-                    self.repository.record_event(
-                        &run.id,
-                        "validation_failed",
-                        Some(&error),
-                        &response.node_errors,
-                    )?;
+                    run = repository
+                        .update_status(&run.id, RunStatus::Failed, Some(&error), None)
+                        .await?;
+                    repository
+                        .record_event(
+                            &run.id,
+                            "validation_failed",
+                            Some(&error),
+                            &response.node_errors,
+                        )
+                        .await?;
                     return Ok(run);
                 }
                 if response.prompt_id != prompt_id {
-                    run = self
-                        .repository
-                        .update_prompt_id(&run.id, &response.prompt_id)?;
+                    run = repository
+                        .update_prompt_id(&run.id, &response.prompt_id)
+                        .await?;
                 }
-                run = self
-                    .repository
-                    .update_status(&run.id, RunStatus::Queued, None, None)?;
-                self.repository.record_event(
-                    &run.id,
-                    "prompt_queued",
-                    Some(&format!("{} accepted the prompt", self.backend.name())),
-                    &serde_json::to_value(response)?,
-                )?;
+                run = repository
+                    .update_status(&run.id, RunStatus::Queued, None, None)
+                    .await?;
+                repository
+                    .record_event(
+                        &run.id,
+                        "prompt_queued",
+                        Some(&format!("{} accepted the prompt", self.backend.name())),
+                        &serde_json::to_value(response)?,
+                    )
+                    .await?;
             }
             Err(error) => {
                 let message = error.to_string();
-                run = self.repository.update_status(
-                    &run.id,
-                    RunStatus::UnknownSubmission,
-                    Some(&message),
-                    None,
-                )?;
-                self.repository.record_event(
-                    &run.id,
-                    "submission_unknown",
-                    Some("Submission was not automatically retried"),
-                    &json!({ "error": message }),
-                )?;
+                run = repository
+                    .update_status(&run.id, RunStatus::UnknownSubmission, Some(&message), None)
+                    .await?;
+                repository
+                    .record_event(
+                        &run.id,
+                        "submission_unknown",
+                        Some("Submission was not automatically retried"),
+                        &json!({ "error": message }),
+                    )
+                    .await?;
             }
         }
         Ok(run)
@@ -359,44 +377,49 @@ impl Harness {
     }
 
     pub async fn reconcile(&self, run_id: &str) -> Result<ReconcileResult> {
-        let mut run = self.repository.get(run_id)?;
+        let repository = self.repository.as_async();
+        let mut run = repository.get(run_id).await?;
         if run.status.is_terminal() {
             return Ok(ReconcileResult {
-                outputs: self.repository.outputs(run_id)?,
+                outputs: repository.outputs(run_id).await?,
                 run,
             });
         }
         let queue = self.backend.queue().await?;
         if queue.is_running(&run.prompt_id) {
             if !matches!(run.status, RunStatus::Running | RunStatus::Cancelling) {
-                run = self
-                    .repository
-                    .update_status(run_id, RunStatus::Running, None, None)?;
-                self.repository.record_event(
-                    run_id,
-                    "prompt_running",
-                    Some(&format!(
-                        "{} reports the prompt as executing",
-                        self.backend.name()
-                    )),
-                    &serde_json::to_value(&queue)?,
-                )?;
+                run = repository
+                    .update_status(run_id, RunStatus::Running, None, None)
+                    .await?;
+                repository
+                    .record_event(
+                        run_id,
+                        "prompt_running",
+                        Some(&format!(
+                            "{} reports the prompt as executing",
+                            self.backend.name()
+                        )),
+                        &serde_json::to_value(&queue)?,
+                    )
+                    .await?;
             }
         } else if queue.contains(&run.prompt_id)
             && !matches!(run.status, RunStatus::Queued | RunStatus::Cancelling)
         {
-            run = self
-                .repository
-                .update_status(run_id, RunStatus::Queued, None, None)?;
-            self.repository.record_event(
-                run_id,
-                "prompt_queued",
-                Some(&format!(
-                    "{} reports the prompt in the pending queue",
-                    self.backend.name()
-                )),
-                &json!({ "prompt_id": run.prompt_id }),
-            )?;
+            run = repository
+                .update_status(run_id, RunStatus::Queued, None, None)
+                .await?;
+            repository
+                .record_event(
+                    run_id,
+                    "prompt_queued",
+                    Some(&format!(
+                        "{} reports the prompt in the pending queue",
+                        self.backend.name()
+                    )),
+                    &json!({ "prompt_id": run.prompt_id }),
+                )
+                .await?;
         }
 
         let history = self.backend.history(&run.prompt_id).await?;
@@ -413,46 +436,44 @@ impl Harness {
                     "{} confirmed cancellation of the prompt",
                     self.backend.name()
                 );
-                run = self.repository.update_status(
-                    run_id,
-                    RunStatus::Cancelled,
-                    Some(&message),
-                    None,
-                )?;
-                self.repository.record_event(
-                    run_id,
-                    "run_cancelled",
-                    Some(&message),
-                    &history.raw,
-                )?;
+                run = repository
+                    .update_status(run_id, RunStatus::Cancelled, Some(&message), None)
+                    .await?;
+                repository
+                    .record_event(run_id, "run_cancelled", Some(&message), &history.raw)
+                    .await?;
             }
             HistoryOutcome::Completed => {
                 let source_inputs = read_source_inputs(&PathBuf::from(&run.output_dir))?;
                 let workflow_manifest_path = read_manifest_path(&PathBuf::from(&run.output_dir))?;
                 let manifest_path = artifacts::materialise_history(
                     self.backend.as_ref(),
-                    &self.repository,
+                    &repository,
                     &run,
                     &workflow_manifest_path,
                     source_inputs,
                     &history,
                 )
                 .await?;
-                run = self.repository.update_status(
-                    run_id,
-                    RunStatus::Completed,
-                    None,
-                    Some(&manifest_path.display().to_string()),
-                )?;
-                self.repository.record_event(
-                    run_id,
-                    "run_completed",
-                    Some("Outputs and provenance manifest were captured"),
-                    &json!({
-                        "output_count": history.outputs.len(),
-                        "manifest_path": manifest_path
-                    }),
-                )?;
+                run = repository
+                    .update_status(
+                        run_id,
+                        RunStatus::Completed,
+                        None,
+                        Some(&manifest_path.display().to_string()),
+                    )
+                    .await?;
+                repository
+                    .record_event(
+                        run_id,
+                        "run_completed",
+                        Some("Outputs and provenance manifest were captured"),
+                        &json!({
+                            "output_count": history.outputs.len(),
+                            "manifest_path": manifest_path
+                        }),
+                    )
+                    .await?;
             }
             HistoryOutcome::Failed => {
                 let error = format!(
@@ -460,22 +481,24 @@ impl Harness {
                     self.backend.name(),
                     run.prompt_id
                 );
-                run =
-                    self.repository
-                        .update_status(run_id, RunStatus::Failed, Some(&error), None)?;
-                self.repository
-                    .record_event(run_id, "run_failed", Some(&error), &history.raw)?;
+                run = repository
+                    .update_status(run_id, RunStatus::Failed, Some(&error), None)
+                    .await?;
+                repository
+                    .record_event(run_id, "run_failed", Some(&error), &history.raw)
+                    .await?;
             }
         }
         Ok(ReconcileResult {
-            outputs: self.repository.outputs(run_id)?,
+            outputs: repository.outputs(run_id).await?,
             run,
         })
     }
 
     pub async fn reconcile_all(&self) -> Result<Vec<ReconcileResult>> {
+        let repository = self.repository.as_async();
         let mut results = Vec::new();
-        for run in self.repository.active()? {
+        for run in repository.active().await? {
             results.push(self.reconcile(&run.id).await?);
         }
         Ok(results)
@@ -486,7 +509,8 @@ impl Harness {
         run_id: &str,
         progress: Option<mpsc::UnboundedSender<RunProgress>>,
     ) -> Result<RunRecord> {
-        let initial = self.repository.get(run_id)?;
+        let repository = self.repository.as_async();
+        let initial = repository.get(run_id).await?;
         let mut monitor = self.backend.monitor_events(&initial.client_id).await?;
         let mut poll = interval(Duration::from_secs(1));
         poll.tick().await;
@@ -498,13 +522,13 @@ impl Harness {
                         let relevant = event.prompt_id.as_deref().is_none()
                             || event.prompt_id.as_deref() == Some(initial.prompt_id.as_str());
                         if relevant {
-                            self.repository.record_event(
+                            repository.record_event(
                                 run_id,
                                 &event.event_type,
                                 event.message.as_deref(),
                                 &serde_json::to_value(&event)?,
-                            )?;
-                            let run = self.repository.get(run_id)?;
+                            ).await?;
+                            let run = repository.get(run_id).await?;
                             if let Some(sender) = &progress {
                                 let _ = sender.send(RunProgress { run, event: Some(event) });
                             }
@@ -530,7 +554,8 @@ impl Harness {
     }
 
     pub async fn cancel(&self, run_id: &str) -> Result<RunRecord> {
-        let run = self.repository.get(run_id)?;
+        let repository = self.repository.as_async();
+        let run = repository.get(run_id).await?;
         if run.status.is_terminal() {
             return Err(self.backend_error(format!(
                 "run '{run_id}' is already {} and cannot be cancelled",
@@ -539,54 +564,54 @@ impl Harness {
         }
         let queue = self.backend.queue().await?;
         if queue.is_running(&run.prompt_id) {
-            self.repository
-                .update_status(run_id, RunStatus::Cancelling, None, None)?;
+            repository
+                .update_status(run_id, RunStatus::Cancelling, None, None)
+                .await?;
             let response = match self.backend.interrupt().await {
                 Ok(response) => response,
                 Err(error) => {
-                    self.repository.update_status(
-                        run_id,
-                        run.status,
-                        Some(&error.to_string()),
-                        None,
-                    )?;
+                    repository
+                        .update_status(run_id, run.status, Some(&error.to_string()), None)
+                        .await?;
                     return Err(error);
                 }
             };
-            self.repository.record_event(
-                run_id,
-                "interrupt_requested",
-                Some(&format!(
-                    "{} was asked to interrupt the executing prompt",
-                    self.backend.name()
-                )),
-                &response,
-            )?;
+            repository
+                .record_event(
+                    run_id,
+                    "interrupt_requested",
+                    Some(&format!(
+                        "{} was asked to interrupt the executing prompt",
+                        self.backend.name()
+                    )),
+                    &response,
+                )
+                .await?;
         } else if queue.contains(&run.prompt_id) {
-            self.repository
-                .update_status(run_id, RunStatus::Cancelling, None, None)?;
+            repository
+                .update_status(run_id, RunStatus::Cancelling, None, None)
+                .await?;
             let response = match self.backend.delete_queued(&run.prompt_id).await {
                 Ok(response) => response,
                 Err(error) => {
-                    self.repository.update_status(
-                        run_id,
-                        run.status,
-                        Some(&error.to_string()),
-                        None,
-                    )?;
+                    repository
+                        .update_status(run_id, run.status, Some(&error.to_string()), None)
+                        .await?;
                     return Err(error);
                 }
             };
-            self.repository.record_event(
-                run_id,
-                "delete_requested",
-                Some(&format!(
-                    "{} was asked to remove the queued prompt",
-                    self.backend.name()
-                )),
-                &response,
-            )?;
-            return self.repository.get(run_id);
+            repository
+                .record_event(
+                    run_id,
+                    "delete_requested",
+                    Some(&format!(
+                        "{} was asked to remove the queued prompt",
+                        self.backend.name()
+                    )),
+                    &response,
+                )
+                .await?;
+            return repository.get(run_id).await;
         } else {
             return Err(self.backend_error(format!(
                 "prompt '{}' is not in the local {} queue; reconcile the run first",
@@ -594,7 +619,7 @@ impl Harness {
                 self.backend.name()
             )));
         }
-        self.repository.get(run_id)
+        repository.get(run_id).await
     }
 
     fn output_directory(
