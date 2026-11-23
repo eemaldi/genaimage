@@ -260,7 +260,35 @@ impl Harness {
         }
     }
 
-    async fn validate_workflow_nodes(&self, workflow: &Value) -> Result<()> {
+    /// Resolves an identifier only, without interpreting it as a filesystem path.
+    pub fn load_workflow_by_id(&self, id: &str) -> Result<Option<LoadedWorkflow>> {
+        let mut matches = Vec::new();
+        let mut invalid_matches = Vec::new();
+        visit_workflows(&self.config.workflows, |path, result| match result {
+            Ok(loaded) if loaded.manifest.id == id => matches.push(loaded),
+            Err(error) if sidecar_declares_id(path, id) => {
+                invalid_matches.push((path.to_path_buf(), error));
+            }
+            _ => {}
+        })?;
+        if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
+            return Err(HarnessError::Workflow(format!(
+                "cannot resolve workflow id '{id}': invalid manifest '{}' declares it ({error})",
+                path.display()
+            )));
+        }
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => Err(HarnessError::Workflow(format!(
+                "workflow id '{id}' is ambiguous; resolve duplicate manifests"
+            ))),
+        }
+    }
+
+    /// Returns required node classes absent from the backend, or an error if
+    /// the check could not be completed.
+    pub async fn missing_workflow_nodes(&self, workflow: &Value) -> Result<Vec<String>> {
         let nodes = workflow.as_object().ok_or_else(|| {
             HarnessError::Workflow("API workflow root must be an object".to_owned())
         })?;
@@ -291,11 +319,14 @@ impl Harness {
                 self.backend.name()
             ))
         })?;
-        let unavailable: Vec<&str> = class_types
-            .iter()
-            .filter(|class_type| !available.contains_key(class_type.as_str()))
-            .map(String::as_str)
-            .collect();
+        Ok(class_types
+            .into_iter()
+            .filter(|class_type| !available.contains_key(class_type))
+            .collect())
+    }
+
+    async fn validate_workflow_nodes(&self, workflow: &Value) -> Result<()> {
+        let unavailable = self.missing_workflow_nodes(workflow).await?;
         if !unavailable.is_empty() {
             return Err(HarnessError::Workflow(format!(
                 "{} does not provide required node types: {}",

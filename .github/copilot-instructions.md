@@ -5,9 +5,10 @@ Read the repository-root [AGENTS.md](../AGENTS.md) and
 They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
-loopback server currently serves health; the domain API and embedded Svelte
-portal are planned. Keep generation orchestration, run state, provenance and
-the planned assistant runtime in the core, and ComfyUI transport in its adapter.
+loopback server currently serves health and workflows; the remaining domain API
+and embedded Svelte portal are planned. Keep generation orchestration, run state,
+provenance and the planned assistant runtime in the core, and ComfyUI transport
+in its adapter.
 
 Use API-format ComfyUI JSON and strict manifests. Never silently substitute a
 model, node, seed, image, prompt or setting. LLM output is a proposal the user

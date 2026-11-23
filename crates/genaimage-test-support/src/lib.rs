@@ -45,6 +45,9 @@ pub struct FakeComfyState {
     pub health_unavailable: Arc<AtomicBool>,
     pub health_hangs: Arc<AtomicBool>,
     pub missing_classes: Arc<Mutex<Vec<String>>>,
+    pub object_info_unavailable: Arc<AtomicBool>,
+    pub object_info_hangs: Arc<AtomicBool>,
+    pub object_info_override: Arc<Mutex<Option<Value>>>,
     pub queue_override: Arc<Mutex<Option<Value>>>,
     pub history_overrides: Arc<Mutex<BTreeMap<String, Value>>>,
     pub progress: broadcast::Sender<Value>,
@@ -68,6 +71,9 @@ impl Default for FakeComfyState {
             health_unavailable: Default::default(),
             health_hangs: Default::default(),
             missing_classes: Default::default(),
+            object_info_unavailable: Default::default(),
+            object_info_hangs: Default::default(),
+            object_info_override: Default::default(),
             queue_override: Default::default(),
             history_overrides: Default::default(),
             progress: broadcast::channel(32).0,
@@ -127,7 +133,22 @@ async fn fake_system(State(state): State<FakeComfyState>) -> Response {
     Json(json!({ "system": { "os": "test" }, "devices": [] })).into_response()
 }
 
-async fn fake_object_info(State(state): State<FakeComfyState>) -> Json<Value> {
+async fn fake_object_info(State(state): State<FakeComfyState>) -> Response {
+    if state.object_info_hangs.load(Ordering::SeqCst) {
+        let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if state.object_info_unavailable.load(Ordering::SeqCst) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if let Some(value) = state
+        .object_info_override
+        .lock()
+        .expect("object info lock")
+        .clone()
+    {
+        return Json(value).into_response();
+    }
     let mut info = json!({
         "CheckpointLoaderSimple": {},
         "CLIPTextEncode": {},
@@ -159,7 +180,7 @@ async fn fake_object_info(State(state): State<FakeComfyState>) -> Json<Value> {
     for class in state.missing_classes.lock().expect("class lock").iter() {
         info.as_object_mut().expect("object info").remove(class);
     }
-    Json(info)
+    Json(info).into_response()
 }
 
 async fn fake_upload(State(state): State<FakeComfyState>, _body: Bytes) -> Json<Value> {

@@ -62,7 +62,9 @@ structural format. Unknown fields are rejected, including the retired
 `schema_version` are required; `id` and `version` must not be blank. `title`
 defaults to an empty string. Optional `description`, `tags` (a list of
 strings), `category` and `thumbnail` (a string reference) are descriptive
-metadata; they do not affect generation or cause files to be loaded.
+metadata; they do not affect generation. The workflows API serves a declared
+thumbnail only when it is a supported image within the manifest directory; see
+[the API description](architecture.md#local-http-server) for restrictions.
 
 ### Upgrading from version 1
 
