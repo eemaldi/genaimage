@@ -207,7 +207,7 @@ impl ImageBackend for ComfyUiClient {
     }
 
     async fn delete_queued(&self, prompt_id: &str) -> Result<Value> {
-        self.post_json("queue", &json!({ "delete": [prompt_id] }))
+        self.post_cancellation("queue", &json!({ "delete": [prompt_id] }))
             .await
     }
 
@@ -231,7 +231,7 @@ impl ImageBackend for ComfyUiClient {
                 "A prompt ID is required for targeted interruption.".into(),
             ));
         }
-        self.post_json("interrupt", &json!({"prompt_id": prompt_id}))
+        self.post_cancellation("interrupt", &json!({"prompt_id": prompt_id}))
             .await
     }
 
@@ -467,11 +467,13 @@ impl ComfyUiClient {
         )))
     }
 
-    async fn post_json(&self, path: &str, body: &Value) -> Result<Value> {
-        let url = self.endpoint(path)?;
+    async fn post_cancellation(&self, path: &str, body: &Value) -> Result<Value> {
+        let unsent = |error: HarnessError| HarnessError::CancellationNotSent(error.to_string());
+        let url = self.endpoint(path).map_err(unsent)?;
         let response = self
             .connection()
-            .await?
+            .await
+            .map_err(unsent)?
             .http
             .post(url)
             .timeout(self.request_timeout())
@@ -479,8 +481,21 @@ impl ComfyUiClient {
             .send()
             .await
             .map_err(|error| {
-                HarnessError::ComfyUi(format!("ComfyUI POST {path} failed: {error}"))
+                let message = format!("ComfyUI POST {path} failed: {error}");
+                if error.is_builder() || error.is_connect() {
+                    HarnessError::CancellationNotSent(message)
+                } else {
+                    HarnessError::ComfyUi(message)
+                }
             })?;
+        let status = response.status();
+        // Request timeouts and server errors do not establish that the
+        // mutation was rejected before it could take effect.
+        if status.is_client_error() && status != reqwest::StatusCode::REQUEST_TIMEOUT {
+            return Err(HarnessError::CancellationRejected(format!(
+                "ComfyUI POST {path} returned {status}"
+            )));
+        }
         let body = response_body(response, &format!("POST {path}")).await?;
         if body.trim().is_empty() {
             return Ok(Value::Null);

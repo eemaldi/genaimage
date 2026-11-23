@@ -263,6 +263,14 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::UNPROCESSABLE_ENTITY,
             "Check the configured workflow ID, preset and parameter bindings.",
         ),
+        HarnessError::CancellationUnknown(_) => (
+            StatusCode::BAD_GATEWAY,
+            "Reconcile the run before taking further action; do not blindly retry cancellation.",
+        ),
+        HarnessError::CancellationNotSent(_) | HarnessError::CancellationRejected(_) => (
+            StatusCode::BAD_GATEWAY,
+            "Check ComfyUI and reconcile the run before requesting cancellation again.",
+        ),
         HarnessError::Backend { .. } | HarnessError::ComfyUi(_) => (
             StatusCode::BAD_GATEWAY,
             "Check ComfyUI health and reconcile any affected run; do not blindly resubmit.",

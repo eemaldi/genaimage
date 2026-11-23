@@ -35,6 +35,12 @@ pub enum HarnessError {
     IdempotencyConflict,
     #[error("the server is shutting down")]
     ShuttingDown,
+    #[error("the cancellation request was not sent: {0}")]
+    CancellationNotSent(String),
+    #[error("the backend rejected the cancellation request: {0}")]
+    CancellationRejected(String),
+    #[error("the cancellation outcome is unknown: {0}")]
+    CancellationUnknown(String),
     #[error("{0}")]
     UnsupportedOperation(String),
     #[error("{0}")]

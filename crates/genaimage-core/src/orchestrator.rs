@@ -1151,21 +1151,35 @@ impl Harness {
         .await;
         let response = match response {
             Ok(response) => response,
-            Err(error @ HarnessError::ShuttingDown) if !attempted => {
-                self.finish_unsent_cancellation(run_id, previous, &error)
-                    .await?;
-                return Err(error);
-            }
-            Err(error @ HarnessError::ShuttingDown) => {
-                repository.record_event(run_id, "cancellation_unknown",
-                    Some("The shutdown deadline expired while waiting for cancellation acknowledgement; reconcile the run."),
-                    &json!({"prompt_id": run.prompt_id})).await?;
-                return Err(error);
-            }
             Err(error) => {
-                repository
-                    .rollback_cancellation(run_id, previous, error.to_string())
-                    .await?;
+                match &error {
+                    HarnessError::ShuttingDown if !attempted => {
+                        self.finish_unsent_cancellation(run_id, previous, &error)
+                            .await?;
+                    }
+                    HarnessError::CancellationNotSent(_) => {
+                        self.finish_unsent_cancellation(run_id, previous, &error)
+                            .await?;
+                    }
+                    HarnessError::CancellationRejected(_) => {
+                        repository
+                            .rollback_cancellation(run_id, previous, error.to_string())
+                            .await?;
+                    }
+                    _ => {
+                        let cause = if matches!(error, HarnessError::ShuttingDown) {
+                            "The shutdown deadline expired while waiting for cancellation acknowledgement.".into()
+                        } else {
+                            error.to_string()
+                        };
+                        repository.record_event(run_id, "cancellation_unknown",
+                            Some("Cancellation was not confirmed; reconcile the run before taking further action."),
+                            &json!({"prompt_id": run.prompt_id, "error": cause})).await?;
+                        if !matches!(error, HarnessError::ShuttingDown) {
+                            return Err(HarnessError::CancellationUnknown(cause));
+                        }
+                    }
+                }
                 return Err(error);
             }
         };

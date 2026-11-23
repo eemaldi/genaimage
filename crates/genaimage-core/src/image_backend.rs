@@ -50,6 +50,8 @@ pub trait ImageBackend: Send + Sync {
     /// Return evidence for the requested prompt only. A missing entry is unresolved.
     async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot>;
     /// Request deletion. Acknowledgement alone does not confirm cancellation.
+    /// Return `CancellationNotSent` or `CancellationRejected` only for a definite
+    /// outcome; other errors are treated as an unconfirmed request.
     async fn delete_queued(&self, prompt_id: &str) -> Result<Value>;
 
     /// Check targeted interruption support without sending a mutation.
@@ -58,7 +60,7 @@ pub trait ImageBackend: Send + Sync {
     }
 
     /// Request interruption of only the named prompt after `prepare_interrupt` succeeds.
-    /// Never fall back to an unscoped interrupt.
+    /// Never fall back to an unscoped interrupt. Uses the same error contract as deletion.
     async fn interrupt(&self, prompt_id: &str) -> Result<Value>;
     async fn upload_image(&self, path: &Path) -> Result<UploadResponse>;
     async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>>;

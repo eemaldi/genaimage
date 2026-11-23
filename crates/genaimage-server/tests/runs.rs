@@ -441,3 +441,48 @@ async fn shutdown_rolls_back_unsent_cancellation_and_records_uncertain_send() {
         );
     }
 }
+
+#[tokio::test]
+async fn rejected_deletion_rolls_back_but_lost_acknowledgement_stays_cancelling() {
+    let api = ApiHarness::start_with_backend_timeout(1).await;
+    install_workflow(&api);
+    let submitted = run(
+        submit(&api, "lost-delete-ack", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let path = format!("{RUNS}/{}", submitted.id);
+    let cancel = || api.request(Method::POST, &format!("{path}/cancel")).send();
+    api.fake.reject_delete.store(true, Ordering::SeqCst);
+    ApiHarness::assert_problem(cancel().await.unwrap(), StatusCode::BAD_GATEWAY).await;
+    let restored: RunResponse = api.get_json(&path).await;
+    assert_eq!(restored.status, RunStatus::Queued);
+    assert!(!api.fake.cancelled.load(Ordering::SeqCst));
+
+    api.fake.reject_delete.store(false, Ordering::SeqCst);
+    api.fake.hang_delete_response.store(true, Ordering::SeqCst);
+    let problem =
+        ApiHarness::assert_problem(cancel().await.unwrap(), StatusCode::BAD_GATEWAY).await;
+    assert!(problem.detail.contains("outcome is unknown"));
+    assert!(problem.recovery.contains("Reconcile"));
+    assert!(api.fake.cancelled.load(Ordering::SeqCst));
+    let uncertain: RunResponse = api.get_json(&path).await;
+    assert_eq!(uncertain.status, RunStatus::Cancelling);
+    let history: RunEventsResponse = api.get_json(&format!("{path}/events")).await;
+    let unknown = history
+        .events
+        .iter()
+        .find(|event| event.event_type == "cancellation_unknown")
+        .unwrap();
+    assert_eq!(unknown.payload["prompt_id"], submitted.prompt_id);
+    let reconciled: RunResponse = api
+        .post_json(&format!("{path}/reconcile"), &Value::Null)
+        .await;
+    assert_eq!(
+        reconciled.status,
+        RunStatus::Cancelling,
+        "absence from queue and history does not confirm cancellation"
+    );
+    assert_eq!(api.fake.delete_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
+}

@@ -204,7 +204,9 @@ impl ImageBackend for FakeImageBackend {
         assert!(matches!(state.queue_position, Some(QueuePosition::Running)));
         state.interrupt_requested = true;
         if state.fail_interrupt {
-            return Err(HarnessError::ComfyUi("test interrupt failure".to_owned()));
+            return Err(HarnessError::CancellationRejected(
+                "test interrupt rejection".to_owned(),
+            ));
         }
         Ok(Value::Null)
     }

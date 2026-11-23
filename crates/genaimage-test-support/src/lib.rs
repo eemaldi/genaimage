@@ -52,6 +52,9 @@ pub struct FakeComfyState {
     pub health_hangs: Arc<AtomicBool>,
     pub health_calls: Arc<AtomicUsize>,
     pub hang_interrupt_response: Arc<AtomicBool>,
+    pub hang_delete_response: Arc<AtomicBool>,
+    pub reject_delete: Arc<AtomicBool>,
+    pub delete_calls: Arc<AtomicUsize>,
     pub missing_classes: Arc<Mutex<Vec<String>>>,
     pub object_info_unavailable: Arc<AtomicBool>,
     pub object_info_hangs: Arc<AtomicBool>,
@@ -86,6 +89,9 @@ impl Default for FakeComfyState {
             health_hangs: Default::default(),
             health_calls: Default::default(),
             hang_interrupt_response: Default::default(),
+            hang_delete_response: Default::default(),
+            reject_delete: Default::default(),
+            delete_calls: Default::default(),
             missing_classes: Default::default(),
             object_info_unavailable: Default::default(),
             object_info_hangs: Default::default(),
@@ -294,6 +300,10 @@ async fn fake_queue_delete(
     State(state): State<FakeComfyState>,
     Json(body): Json<Value>,
 ) -> StatusCode {
+    state.delete_calls.fetch_add(1, Ordering::SeqCst);
+    if state.reject_delete.load(Ordering::SeqCst) {
+        return StatusCode::BAD_REQUEST;
+    }
     let prompt_id = state.prompt_id.lock().expect("prompt lock").clone();
     if prompt_id.as_deref().is_some_and(|prompt_id| {
         body["delete"]
@@ -301,6 +311,9 @@ async fn fake_queue_delete(
             .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(prompt_id)))
     }) {
         state.cancelled.store(true, Ordering::SeqCst);
+    }
+    if state.hang_delete_response.load(Ordering::SeqCst) {
+        let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
     }
     StatusCode::OK
 }

@@ -315,9 +315,11 @@ reads may retry, but an ambiguous prompt submission remains
 retrying. If neither source identifies the prompt, leave the submission unknown.
 Cancellation is confirmed only by evidence for the target prompt, such as
 history recording an interruption. A queue/history gap or deletion request
-acknowledgement alone leaves the run in `cancelling`; a later success or error
-still resolves it. ComfyUI may provide no history for deletion of a queued
-prompt. For running prompts, GenAImage sends a targeted interrupt only to
+acknowledgement alone leaves the run in `cancelling`. If a cancellation POST
+may have reached ComfyUI but its acknowledgement was lost, the run stays in
+`cancelling` and records `cancellation_unknown`. Only a definitely unsent or
+explicitly rejected request restores the previous state. Reconcile before
+trying again: ComfyUI may provide no history for deletion of a queued prompt. For running prompts, GenAImage sends a targeted interrupt only to
 recognised ComfyUI releases from 0.3.57 onward. For versions without confirmed
 support, upgrade or manage cancellation in ComfyUI itself; GenAImage never
 falls back to a global interrupt.
