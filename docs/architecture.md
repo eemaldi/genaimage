@@ -100,6 +100,11 @@ scriptable fake ComfyUI in `genaimage-test-support` (a dev-only dependency).
 Tests can script backend state, issue typed JSON requests with same-origin
 headers, submit explicitly through core until the run route exists, and
 subscribe before an action then await matching core events with a deadline.
+`request_with_origin` can override or omit Origin for hardening tests. The
+fake's state switches script health, queue state, completion and ambiguous
+submissions; queue and history overrides support more elaborate scenarios.
+Its default queue and history track the most recently submitted prompt. Await
+`wait_for_progress_listener` before sending scripted WebSocket events.
 Dropping the fixture stops both listener tasks.
 
 ## Providers, extensions and deployment
