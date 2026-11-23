@@ -18,7 +18,6 @@ body:
       label: Summary
       description: Summarise the change this epic coordinates.
       placeholder: Describe the work this epic brings together.
-      render: markdown
     validations:
       required: true
   - type: textarea
@@ -27,7 +26,6 @@ body:
       label: Outcome
       description: Describe the state of the repository when this epic is complete.
       placeholder: State the observable outcome.
-      render: markdown
     validations:
       required: true
   - type: textarea
@@ -37,6 +35,5 @@ body:
       description: Explain how sub-issues and their dependencies will be tracked.
       placeholder: |
         Tracked as native sub-issues of this epic. Dependencies between them are recorded as "blocked by" relationships and in each issue body.
-      render: markdown
     validations:
       required: true
