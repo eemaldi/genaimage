@@ -123,6 +123,15 @@ integer range. Always run `genaimage workflow validate <manifest-path>` as well:
 the loader enforces these cross-field rules and checks workflow node/input
 bindings. The bundled-manifest test runs both checks.
 
+For `integer` and `seed`, the supported binding range is
+`-9223372036854775808` to `18446744073709551615` inclusive. The schema bounds
+these kinds' defaults and options; preset values are checked by the loader
+because their parameter kinds cannot be resolved by the schema. Schema
+consumers need a JSON parser and validator with sufficient integer precision
+at these limits. Parameter `minimum` and `maximum` are floating-point range
+bounds, not integer values themselves: fractional or wider limits are valid and
+do not expand the supported range of integer bindings.
+
 `image_upload` parameters contain a local path. The file is uploaded to the
 configured ComfyUI input area before submission; the run stores the path,
 checksum, byte size, and returned ComfyUI filename.

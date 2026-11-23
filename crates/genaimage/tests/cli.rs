@@ -106,6 +106,42 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
 }
 
 #[test]
+fn integer_boundaries_are_enforced_by_the_cli() {
+    let temp = TempDir::new().expect("temp");
+    let workflow_dir = temp.path().join("workflows/comfyui/example");
+    write(
+        &workflow_dir.join("api.json"),
+        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
+    );
+    for kind in ["integer", "seed"] {
+        for (value, valid) in [
+            ("-9223372036854775808", true),
+            ("18446744073709551615", true),
+            ("-9223372036854775809", false),
+            ("18446744073709551616", false),
+        ] {
+            let manifest = format!(
+                r#"{{"schema_version":2,"id":"example","version":"1.0.0","workflow":"api.json","parameters":{{"seed":{{"node":"3","input":"seed","kind":"{kind}","default":{value}}}}}}}"#
+            );
+            write(&workflow_dir.join("example.genaimage.json"), &manifest);
+            let output = cli()
+                .arg("--workspace")
+                .arg(temp.path())
+                .arg("--json")
+                .args(["workflow", "validate", "example"])
+                .output()
+                .expect("run CLI");
+            assert_eq!(
+                output.status.success(),
+                valid,
+                "{kind}/{value}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
 fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
     let temp = TempDir::new().expect("temp");
     let workflows = temp.path().join("workflows/comfyui");

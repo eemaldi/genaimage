@@ -280,6 +280,170 @@ fn schema_and_loader_enforce_kind_specific_hints_and_defaults() {
     }
 }
 
+// jsonschema 0.18 rounds out-of-range JSON integers to f64 when comparing
+// bounds. Override only these two standard keywords for the integer boundary
+// cases, preserving the original numeric lexemes via serde_json's dev feature.
+fn precise_integer_schema(schema: &Value) -> jsonschema::JSONSchema {
+    use jsonschema::{
+        paths::{JSONPointer, JsonPointerNode},
+        ErrorIterator, Keyword, ValidationError,
+    };
+    struct ExactBound {
+        limit: Value,
+        minimum: bool,
+        path: JSONPointer,
+    }
+    impl Keyword for ExactBound {
+        fn is_valid(&self, instance: &Value) -> bool {
+            let Value::Number(number) = instance else {
+                return true;
+            };
+            let value: i128 = number.to_string().parse().expect("boundary test integer");
+            let limit: i128 = self
+                .limit
+                .to_string()
+                .parse()
+                .expect("integer schema bound");
+            if self.minimum {
+                value >= limit
+            } else {
+                value <= limit
+            }
+        }
+        fn validate<'a>(&self, instance: &'a Value, path: &JsonPointerNode) -> ErrorIterator<'a> {
+            if self.is_valid(instance) {
+                Box::new(std::iter::empty())
+            } else {
+                let error = ValidationError::custom(
+                    self.path.clone(),
+                    path.into(),
+                    instance,
+                    "integer outside schema bounds",
+                );
+                Box::new(std::iter::once(error))
+            }
+        }
+    }
+    jsonschema::JSONSchema::options()
+        .with_keyword("minimum", |_, value, path| {
+            Ok(Box::new(ExactBound {
+                limit: value.clone(),
+                minimum: true,
+                path,
+            }))
+        })
+        .with_keyword("maximum", |_, value, path| {
+            Ok(Box::new(ExactBound {
+                limit: value.clone(),
+                minimum: false,
+                path,
+            }))
+        })
+        .compile(schema)
+        .expect("compile schema")
+}
+
+#[test]
+fn integer_and_seed_boundaries_match_the_schema() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../docs/schemas/workflow-manifest.v2.json"
+    ))
+    .unwrap();
+    let validator = precise_integer_schema(&schema);
+    let temp = TempDir::new().unwrap();
+    for kind in ["integer", "seed"] {
+        for (number, valid) in [
+            ("-9223372036854775808", true),
+            ("18446744073709551615", true),
+            ("-9223372036854775809", false),
+            ("18446744073709551616", false),
+        ] {
+            for field in ["default", "options"] {
+                let mut manifest = valid_manifest("workflow.api.json");
+                manifest["parameters"]["seed"]["kind"] = json!(kind);
+                manifest["parameters"]["seed"][field] = if field == "options" {
+                    json!(["MARKER"])
+                } else {
+                    json!("MARKER")
+                };
+                manifest["presets"]["fast"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("seed");
+                let raw = serde_json::to_string(&manifest)
+                    .unwrap()
+                    .replace("\"MARKER\"", number);
+                let parsed: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(
+                    validator.is_valid(&parsed),
+                    valid,
+                    "schema {kind}/{field}/{number}"
+                );
+                let path = temp.path().join("workflows/test.genaimage.json");
+                write_file(
+                    &path.with_file_name("workflow.api.json"),
+                    &valid_workflow().to_string(),
+                );
+                write_file(&path, &raw);
+                assert_eq!(
+                    LoadedWorkflow::load(&path).is_ok(),
+                    valid,
+                    "loader {kind}/{field}/{number}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn integer_preset_boundaries_are_checked_by_the_loader() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../docs/schemas/workflow-manifest.v2.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let temp = TempDir::new().unwrap();
+    for kind in ["integer", "seed"] {
+        for (number, valid) in [
+            ("-9223372036854775808", true),
+            ("18446744073709551615", true),
+            ("-9223372036854775809", false),
+            ("18446744073709551616", false),
+        ] {
+            let mut manifest = valid_manifest("workflow.api.json");
+            manifest["parameters"]["seed"]["kind"] = json!(kind);
+            manifest["presets"]["fast"]["seed"] = json!("MARKER");
+            let raw = serde_json::to_string(&manifest)
+                .unwrap()
+                .replace("\"MARKER\"", number);
+            let parsed: Value = serde_json::from_str(&raw).unwrap();
+            // Draft 7 cannot resolve a preset key to its parameter's kind.
+            assert!(validator.is_valid(&parsed));
+            let path = temp.path().join("workflows/test.genaimage.json");
+            write_file(
+                &path.with_file_name("workflow.api.json"),
+                &valid_workflow().to_string(),
+            );
+            write_file(&path, &raw);
+            assert_eq!(
+                LoadedWorkflow::load(&path).is_ok(),
+                valid,
+                "{kind}/{number}"
+            );
+        }
+        let mut manifest = valid_manifest("workflow.api.json");
+        manifest["parameters"]["seed"]["kind"] = json!(kind);
+        manifest["parameters"]["seed"]["minimum"] = json!(-1e20);
+        manifest["parameters"]["seed"]["maximum"] = json!(1e20);
+        assert!(validator.is_valid(&manifest));
+        let path = create_workflow(&temp, manifest, valid_workflow());
+        assert!(
+            LoadedWorkflow::load(&path).is_ok(),
+            "range hints are f64 bounds"
+        );
+    }
+}
+
 #[test]
 fn cross_field_rules_require_workflow_validation() {
     let schema: Value = serde_json::from_str(include_str!(
