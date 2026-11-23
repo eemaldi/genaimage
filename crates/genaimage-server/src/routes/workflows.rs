@@ -49,7 +49,7 @@ fn not_found(id: &str) -> Problem {
 }
 
 async fn load(state: &AppState, id: String) -> Result<LoadedWorkflow, Problem> {
-    let harness = state.harness.clone();
+    let harness = state.harness();
     let search_id = id.clone();
     tokio::task::spawn_blocking(move || harness.load_workflow_by_id(&search_id))
         .await
@@ -59,7 +59,7 @@ async fn load(state: &AppState, id: String) -> Result<LoadedWorkflow, Problem> {
 }
 
 async fn list(State(state): State<AppState>) -> Result<Json<WorkflowListResponse>, Problem> {
-    let harness = state.harness.clone();
+    let harness = state.harness();
     let discovery = tokio::task::spawn_blocking(move || harness.discover_workflows())
         .await
         .map_err(internal_error)?
@@ -141,7 +141,7 @@ async fn validate(
         .collect();
     let node_check = match tokio::time::timeout(
         NODE_CHECK_DEADLINE,
-        state.harness.missing_workflow_nodes(&workflow.workflow),
+        state.harness().missing_workflow_nodes(&workflow.workflow),
     )
     .await
     {
@@ -178,7 +178,7 @@ async fn thumbnail(
     AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, Problem> {
     let workflow = load(&state, id.clone()).await?;
-    let root = state.harness.config().workflows.clone();
+    let root = state.harness().config().workflows.clone();
     let image = tokio::task::spawn_blocking(move || read_thumbnail(&workflow, &root))
         .await
         .map_err(internal_error)?;

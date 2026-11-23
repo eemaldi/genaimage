@@ -8,6 +8,14 @@ pub type Result<T> = std::result::Result<T, HarnessError>;
 pub enum HarnessError {
     #[error("configuration error: {0}")]
     Configuration(String),
+    #[error("configuration error: {key}='{value}': {reason}")]
+    InvalidSetting {
+        key: String,
+        value: String,
+        reason: String,
+    },
+    #[error("{0}")]
+    SettingsConflict(&'static str),
     #[error("workflow validation failed: {0}")]
     Workflow(String),
     #[error("ComfyUI request failed: {0}")]

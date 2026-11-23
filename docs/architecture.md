@@ -52,9 +52,10 @@ orchestration or assistant logic.
 `genaimage serve` listens on the configured `[server]` host and port (default
 `127.0.0.1:3000`). It validates each resolved address before binding. `build_app`
 assembles `/api/v1` from per-domain routers sharing an `AppState` with an
-`Arc<Harness>`. Tests can call the router in-process or serve it on an ephemeral
-loopback listener without installing process signal handlers. Pass its actual
-port to `build_app`; in-process callers must provide the intended port.
+`Arc<Harness>` snapshot of the active configuration. Tests can call the router
+in-process or serve it on an ephemeral loopback listener without installing
+process signal handlers. Pass its actual port to `build_app`; in-process
+callers must provide the intended port.
 
 - `GET /api/v1/health` returns HTTP 200 while the server is running, with `self`
   set to `ok`, `image_backend` set to `ok` or `unavailable`, and `llm` set to
@@ -91,6 +92,12 @@ consider the memory cost; Axum extractor limits are disabled because this
 middleware enforces the limit for all handlers. Each body must arrive within
 30 seconds or receives 408; body reads are cancelled with 503 when graceful
 shutdown starts, so a stalled upload cannot prevent draining.
+
+The [settings API](setup.md#settings-api) uses core validation and atomic TOML
+persistence. The server serialises writes and publishes the saved configuration
+and the active harness together; handlers snapshot the active harness before
+using it. The event bus survives a swap. The core prevents endpoint changes
+from invalidating the database ownership of existing runs or racing submissions.
 
 ### Live event stream
 
@@ -268,7 +275,7 @@ ID; `subscribe_from_cursor` rejects cursors from an earlier bus, even when the
 numeric ID happens to fit.
 The orchestrator publishes lifecycle changes after recording them, and retains
 its existing database events. Health changes are published when queried; the
-settings event is available to future settings writers.
+server publishes a settings change after a successful save.
 
 The default bus retains 1,024 events in memory. `subscribe_since` replays
 strictly after a cursor and hands over atomically to the live broadcast. A

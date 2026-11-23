@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     artifacts::{self, InputFileRecord},
-    config::ResolvedConfig,
+    config::{ComfyUiProfile, ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse},
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
@@ -92,6 +92,8 @@ pub struct Harness {
     events: EventBus,
     last_health: Arc<Mutex<Option<Value>>>,
     database_identity: PathBuf,
+    backend_generation: u64,
+    active_backend_generation: Arc<tokio::sync::RwLock<u64>>,
 }
 
 impl Harness {
@@ -119,6 +121,8 @@ impl Harness {
             events,
             last_health: Arc::new(Mutex::new(None)),
             database_identity,
+            backend_generation: 0,
+            active_backend_generation: Arc::default(),
         })
     }
 
@@ -148,6 +152,58 @@ impl Harness {
 
     pub fn config(&self) -> &ResolvedConfig {
         &self.config
+    }
+
+    /// Persists an update and prepares the live snapshot. Call on the blocking
+    /// pool and serialise publishers. Listener and storage paths never move live.
+    pub fn apply_settings(
+        &self,
+        update: SettingsUpdate,
+        backend_factory: impl FnOnce(&ComfyUiProfile) -> Result<Arc<dyn ImageBackend>>,
+    ) -> Result<(ResolvedConfig, Self)> {
+        let desired = update.config();
+        let mut live = self.clone();
+        live.config.llm = desired.llm.clone();
+        if live.config.comfyui == desired.comfyui {
+            return Ok((update.persist()?, live));
+        }
+        let backend = backend_factory(&desired.comfyui)?;
+        let changes_identity =
+            (backend.name(), backend.base_url()) != (self.backend.name(), self.backend.base_url());
+        let mut generation = if changes_identity {
+            let new_database = desired.state_database != self.config.state_database
+                && fs::canonicalize(&desired.state_database).ok().as_ref()
+                    != Some(&self.database_identity);
+            if new_database {
+                // The new endpoint and its database take effect together at restart.
+                return Ok((update.persist()?, live));
+            }
+            let guard = self.active_backend_generation.try_write().map_err(|_| {
+                HarnessError::SettingsConflict(
+                    "A run is being submitted. Retry after submission has finished.",
+                )
+            })?;
+            if self.repository.has_runs()? {
+                return Err(HarnessError::SettingsConflict(
+                    "The state database contains runs for the active ComfyUI endpoint. Set paths.state_database to a separate database in the same update, then restart.",
+                ));
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        live.config.comfyui = desired.comfyui.clone();
+        live.repository = self
+            .repository
+            .for_backend(backend.name(), backend.base_url());
+        live.backend = backend;
+        live.last_health = Arc::default();
+        let saved = update.persist()?;
+        if let Some(generation) = &mut generation {
+            **generation += 1;
+            live.backend_generation = **generation;
+        }
+        Ok((saved, live))
     }
 
     pub fn events(&self) -> &EventBus {
@@ -338,6 +394,13 @@ impl Harness {
     }
 
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
+        // A submission holds its endpoint until at least its run is recorded.
+        let generation = self.active_backend_generation.read().await;
+        if *generation != self.backend_generation {
+            return Err(HarnessError::SettingsConflict(
+                "The ComfyUI endpoint changed before submission. Retry with the current settings.",
+            ));
+        }
         let repository = self.repository.as_async();
         let loaded = self.load_workflow(&request.workflow)?;
         let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;

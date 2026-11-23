@@ -24,7 +24,7 @@ health reports the image backend as `unavailable` until it responds. Server
 logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
 Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
-Only health is implemented. The portal and other API endpoints are planned.
+Health and settings are available. The portal and other API endpoints are planned.
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.
 Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be
@@ -86,6 +86,46 @@ workspace and backend endpoint, including when a custom path is used. Changing
 either then requires its original settings or a separate database.
 Uploads is reserved for future use; the current adapter uploads explicit input
 files directly. XDG directories must be absolute.
+
+### Settings API
+
+`GET /api/v1/settings` returns a `settings` map keyed by dotted TOML names.
+Each entry includes its effective `value`, `source` (`default`, `file` or
+`env`), the source `file` or environment `variable` where applicable, and
+`read_only`. Environment overrides and the legacy-state claim flag cannot
+be edited through the API. Only explicitly listed, non-secret settings are
+returned. `config_file` shows the write target.
+
+Send a sparse JSON object to `PUT /api/v1/settings`, for example
+`{"comfyui.base_url":"http://127.0.0.1:8189","server.port":3001}`. Omitted
+keys are unchanged. Invalid, unknown or changed read-only keys return 422
+with a problem JSON `errors` array containing `key` and `reason` for each
+issue. Saves edit the file selected at server startup (following the
+precedence above), or create the XDG configuration file if none was selected.
+The server preserves untouched TOML and existing comments where possible,
+syncs a temporary file in the same directory, then renames it over the target.
+It does not fall back to another file if the target is unwritable. If the file
+has changed on disk, the save is refused; restart to load the external edits.
+
+GET and PUT list staged changes in `restart_required`. Each affected entry
+has the saved `value` and the current `active_value`. All `[server]` and
+`[paths]` settings take effect on restart. ComfyUI transport settings normally
+apply live; new requests use the updated adapter. A different endpoint can
+only take over the active database when it has no runs and no submission is
+in progress. Otherwise the server returns 409. To switch away from a database
+with runs, save the new endpoint together with a separate `paths.state_database`:
+that pair takes effect on restart. Finish or reconcile outstanding runs before
+restarting; existing runs remain associated with their original endpoint and
+database. LLM settings are saved but have no runtime effect yet.
+
+`POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
+saved settings). It tests ComfyUI without saving or changing the running
+adapter. The probe has a two-second deadline and reports `ok` or `unavailable`
+(with `timeout` or `probe_failed`). It never follows redirects or uses proxies.
+The API only accepts loopback URLs for new endpoints and for the ComfyUI probe;
+configure explicitly allow-listed private/Compose hosts via the file or
+environment instead. LLM probes return `not_configured` until a provider is
+implemented.
 
 ### Environment overrides
 

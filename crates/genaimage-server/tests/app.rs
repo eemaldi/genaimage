@@ -9,9 +9,13 @@ use std::{
 };
 
 use common::ApiHarness;
-use genaimage_api::{HealthResponse, HealthStatus, ImageBackendHealthReason};
+use genaimage_api::{
+    HealthResponse, HealthStatus, ImageBackendHealthReason, SettingSource, SettingsResponse,
+    SettingsTestResponse,
+};
 use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{Event, ImageBackend, RunRequest, RunStatus};
+use genaimage_test_support::{FakeComfyServer, FakeComfyState};
 use reqwest::{header, Method, StatusCode};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -403,4 +407,203 @@ async fn timed_out_submission_is_reconciled_without_retry() {
         RunStatus::Queued
     );
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+}
+
+const SETTINGS: &str = "/api/v1/settings";
+const TEST_SETTINGS: &str = "/api/v1/settings/test";
+
+#[tokio::test]
+async fn settings_report_sources_and_key_level_errors_without_writing() {
+    let api = ApiHarness::start_with_config(5, &[("GENAIMAGE_LLM_MODEL", "env-model")]).await;
+    let path = api.workspace().join("genaimage.toml");
+    let original = std::fs::read(&path).unwrap();
+    let settings: SettingsResponse = api.get_json(SETTINGS).await;
+    assert_eq!(settings.config_file, path.to_str().unwrap());
+    assert!(matches!(
+        settings.settings["server.host"].source,
+        SettingSource::Default
+    ));
+    assert!(
+        matches!(&settings.settings["server.port"].source, SettingSource::File { file } if file == &settings.config_file)
+    );
+    let model = &settings.settings["llm.model"];
+    assert_eq!(model.value, "env-model");
+    assert!(model.read_only);
+    assert!(
+        matches!(&model.source, SettingSource::Env { variable } if variable == "GENAIMAGE_LLM_MODEL")
+    );
+    let response = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({
+            "comfyui.base_url": "http://user:must-not-echo@localhost",
+            "paths.runs": "",
+            "server.port": 0,
+            "server.max_upload_bytes": "huge",
+            "llm.model": "not-the-env-model",
+            "unknown.flag": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::UNPROCESSABLE_ENTITY).await;
+    let keys: std::collections::BTreeSet<_> = problem
+        .errors
+        .iter()
+        .map(|error| error.key.as_str())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "comfyui.base_url",
+            "llm.model",
+            "paths.runs",
+            "server.max_upload_bytes",
+            "server.port",
+            "unknown.flag"
+        ]
+        .into()
+    );
+    assert!(!serde_json::to_string(&problem)
+        .unwrap()
+        .contains("must-not-echo"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_probe_then_save_and_hot_reload_an_empty_database() {
+    let api = ApiHarness::start().await;
+    let alternate = FakeComfyServer::start(FakeComfyState::default()).await;
+    api.fake.health_unavailable.store(true, Ordering::SeqCst);
+    let port = api.core.config().server.port;
+    let new_port = if port == 3001 { 3002 } else { 3001 };
+    let path = api.workspace().join("genaimage.toml");
+    let original = std::fs::read(&path).unwrap();
+    let patch = json!({"comfyui.base_url": format!("http://{}", alternate.address()), "server.port": new_port});
+    let probe: SettingsTestResponse = api.post_json(TEST_SETTINGS, &patch).await;
+    assert_eq!(probe.comfyui, HealthStatus::Ok);
+    assert_eq!(probe.llm, HealthStatus::NotConfigured);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    let health: HealthResponse = api.get_json("/api/v1/health").await;
+    assert_eq!(health.image_backend, HealthStatus::Unavailable);
+
+    let mut events = api.subscribe();
+    let saved = api
+        .request(Method::PUT, SETTINGS)
+        .json(&patch)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved: SettingsResponse = saved.json().await.unwrap();
+    assert_eq!(saved.restart_required, ["server.port"]);
+    assert_eq!(
+        saved.settings["server.port"].active_value,
+        Some(json!(port))
+    );
+    assert_eq!(saved.settings["server.port"].value, new_port);
+    assert!(saved.settings["comfyui.base_url"].active_value.is_none());
+    let edited = std::fs::read_to_string(&path).unwrap();
+    assert!(edited.starts_with("# API fixture configuration\n"));
+    assert!(edited.contains(&format!("port = {new_port} # listener\n")));
+    assert!(edited.contains("state_database = \"state.sqlite3\""));
+    ApiHarness::await_event(&mut events, Duration::from_secs(2), |e| {
+        matches!(&e.event, Event::SettingsChanged { settings } if settings["restart_required"] == json!(["server.port"]))
+    }).await;
+    let health: HealthResponse = api.get_json("/api/v1/health").await;
+    assert_eq!(health.image_backend, HealthStatus::Ok);
+
+    install_workflow(&api);
+    assert!(matches!(
+        api.core.submit(run_request()).await,
+        Err(genaimage_core::HarnessError::SettingsConflict(_))
+    ));
+    assert_eq!(
+        api.submit_run(run_request()).await.unwrap().status,
+        RunStatus::Queued
+    );
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn endpoint_and_separate_database_wait_for_restart_when_runs_exist() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let run = api.submit_run(run_request()).await.unwrap();
+    let alternate_state = FakeComfyState::default();
+    let alternate = FakeComfyServer::start(alternate_state.clone()).await;
+    let url = format!("http://{}", alternate.address());
+    let path = api.workspace().join("genaimage.toml");
+    let original = std::fs::read(&path).unwrap();
+    let rejected = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"comfyui.base_url": url}))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(rejected, StatusCode::CONFLICT).await;
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    let response = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({
+            "comfyui.base_url": url, "paths.state_database": "other.sqlite3"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved: SettingsResponse = response.json().await.unwrap();
+    assert_eq!(
+        saved.restart_required,
+        ["comfyui.base_url", "paths.state_database"]
+    );
+    assert!(!api.workspace().join("other.sqlite3").exists());
+    api.fake.complete.store(true, Ordering::SeqCst);
+    assert_eq!(
+        api.core.reconcile(&run.id).await.unwrap().run.status,
+        RunStatus::Completed
+    );
+    assert_eq!(alternate_state.prompt_calls.load(Ordering::SeqCst), 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_probe_refuses_non_loopback_and_times_out() {
+    let api = ApiHarness::start().await;
+    for (url, host) in [
+        ("http://8.8.8.8", "8.8.8.8"),
+        ("http://192.168.10.2", "192.168.10.2"),
+    ] {
+        let response = api
+            .request(Method::POST, TEST_SETTINGS)
+            .json(&json!({
+                "comfyui.base_url": url, "comfyui.allowed_hosts": [host]
+            }))
+            .send()
+            .await
+            .unwrap();
+        let problem = ApiHarness::assert_problem(response, StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert_eq!(problem.errors[0].key, "comfyui.base_url");
+    }
+    let response = api
+        .request_with_origin(Method::POST, TEST_SETTINGS, Some("https://example.test"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(response, StatusCode::FORBIDDEN).await;
+    api.fake.health_hangs.store(true, Ordering::SeqCst);
+    let probe: SettingsTestResponse = tokio::time::timeout(
+        Duration::from_secs(5),
+        api.post_json(TEST_SETTINGS, &json!({})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(probe.comfyui, HealthStatus::Unavailable);
+    assert_eq!(
+        probe.comfyui_reason,
+        Some(ImageBackendHealthReason::Timeout)
+    );
+    api.shutdown().await;
 }

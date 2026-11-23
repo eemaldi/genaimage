@@ -1,5 +1,8 @@
 //! Shared wire types for the local API.
 
+mod settings;
+pub use settings::*;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -36,6 +39,8 @@ pub struct ProblemDetails {
     pub status: u16,
     pub detail: String,
     pub recovery: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<SettingError>,
 }
 
 /// A workflow catalogue and non-fatal discovery errors.

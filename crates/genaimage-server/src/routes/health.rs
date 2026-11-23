@@ -13,7 +13,7 @@ pub(super) fn routes() -> Router<AppState> {
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let image_backend_reason = match timeout(PROBE_DEADLINE, state.harness.health()).await {
+    let image_backend_reason = match timeout(PROBE_DEADLINE, state.harness().health()).await {
         Ok(Ok(_)) => None,
         Ok(Err(_)) => Some(ImageBackendHealthReason::ProbeFailed),
         Err(_) => Some(ImageBackendHealthReason::Timeout),

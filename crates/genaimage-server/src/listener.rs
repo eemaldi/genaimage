@@ -16,7 +16,8 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Serves on loopback until the process receives a shutdown signal, then
 /// drains in-flight requests up to the connection drain deadline.
 pub async fn serve(state: AppState) -> io::Result<()> {
-    let config = &state.harness.config().server;
+    let harness = state.harness();
+    let config = &harness.config().server;
     let listener = bind_loopback(&config.host, config.port).await?;
     let signal = shutdown_signal()?;
     let address = listener.local_addr()?;
