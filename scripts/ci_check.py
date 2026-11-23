@@ -125,18 +125,25 @@ def run_command(label, command, cwd=ROOT):
     cargo_bin = str(Path.home() / ".cargo" / "bin")
     if cargo_bin not in environment.get("PATH", "").split(os.pathsep):
         environment["PATH"] = cargo_bin + os.pathsep + environment.get("PATH", "")
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env=environment,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=environment,
+            check=False,
+        )
+    except OSError as exc:
+        print(f"Failed to start {label}: {exc}", file=sys.stderr, flush=True)
+        return False
     return completed.returncode == 0
 
 
-def check_runtime_tooling():
+def check_runtime_tooling(portal_present=False):
     errors = []
-    for command in ("cargo", "rustfmt"):
+    commands = ["cargo", "rustfmt"]
+    if portal_present:
+        commands.extend(["node", "npm"])
+    for command in commands:
         locations = [
             shutil.which(command),
             str(Path.home() / ".cargo" / "bin" / command)
@@ -144,28 +151,34 @@ def check_runtime_tooling():
             else None,
         ]
         if not any(location and Path(location).is_file() for location in locations):
-            errors.append(f"required command is not installed: {command}")
+            suffix = " (required when apps/portal/package.json exists)" if command in {"node", "npm"} else ""
+            errors.append(f"required command is not installed: {command}{suffix}")
     return errors
 
 
+def run_check(label, check):
+    print(f"==> {label}", flush=True)
+    errors = check()
+    if errors:
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return False
+    return True
+
+
 def main():
-    errors = []
-    errors.extend(check_relative_links())
-    errors.extend(check_skill_mirrors())
-    errors.extend(check_skill_lock())
-
-    if errors:
-        print("CI checks failed:")
-        for error in errors:
-            print(f"- {error}")
-        return 1
-
-    errors.extend(check_runtime_tooling())
-    if errors:
-        print("CI prerequisites failed:")
-        for error in errors:
-            print(f"- {error}")
-        return 1
+    portal = ROOT / "apps" / "portal"
+    portal_present = (portal / "package.json").is_file()
+    checks = [
+        ("Relative links", check_relative_links),
+        ("Skill mirrors", check_skill_mirrors),
+        ("Skill lock", check_skill_lock),
+        ("Prerequisites", lambda: check_runtime_tooling(portal_present)),
+    ]
+    for label, check in checks:
+        if not run_check(label, check):
+            print(f"CI check failed: {label}", file=sys.stderr)
+            return 1
 
     commands = [
         ("Rust formatting", ["cargo", "fmt", "--all", "--", "--check"], ROOT),
@@ -177,6 +190,11 @@ def main():
         (
             "Rust tests",
             ["cargo", "test", "--workspace", "--all-targets", "--locked"],
+            ROOT,
+        ),
+        (
+            "CI runner tests",
+            [sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests"],
             ROOT,
         ),
         (
@@ -204,16 +222,22 @@ def main():
             ROOT,
         ),
     ]
-    failed = [
-        label
-        for label, command, cwd in commands
-        if not run_command(label, command, cwd)
-    ]
-    if failed:
-        print("CI commands failed:")
-        for label in failed:
-            print(f"- {label}")
-        return 1
+    if portal_present:
+        commands.extend(
+            [
+                ("Portal dependencies", ["npm", "ci"], portal),
+                ("Portal linting", ["npm", "run", "lint"], portal),
+                ("Portal tests", ["npm", "test"], portal),
+                ("Portal build", ["npm", "run", "build"], portal),
+            ]
+        )
+    else:
+        print("==> Portal checks skipped (apps/portal/package.json not found)", flush=True)
+
+    for label, command, cwd in commands:
+        if not run_command(label, command, cwd):
+            print(f"CI command failed: {label}", file=sys.stderr)
+            return 1
 
     print("CI checks passed.")
     return 0
