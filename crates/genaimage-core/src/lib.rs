@@ -11,7 +11,10 @@ pub mod workflow;
 pub use async_trait::async_trait;
 pub use config::{HarnessConfig, ResolvedConfig};
 pub use error::{HarnessError, Result};
-pub use event::{Event, EventBus, EventEnvelope, EventSubscription, ReceiveError, ResyncReason};
+pub use event::{
+    Event, EventBus, EventCursor, EventEnvelope, EventSubscription, ProgressSubscription,
+    ReceiveError, ResyncReason,
+};
 pub use extensions::{AssistantTool, EventSink, ExtensionRegistry, LlmProvider, SinkNotification};
 pub use image_backend::ImageBackend;
 pub use orchestrator::{Harness, RunRequest};

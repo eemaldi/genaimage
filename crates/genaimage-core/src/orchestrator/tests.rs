@@ -1,7 +1,10 @@
 use std::sync::Mutex;
 
 use tempfile::TempDir;
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{
+    sync::{mpsc, Semaphore},
+    time::timeout,
+};
 
 use super::*;
 use crate::{
@@ -24,12 +27,38 @@ struct FakeImageBackend {
 #[derive(Default)]
 struct FakeState {
     lose_submit_response: bool,
+    reject_submission: bool,
     submission: Option<(Value, String, String)>,
     queue_position: Option<QueuePosition>,
     history_outcome: HistoryOutcome,
     delete_requested: bool,
     interrupt_requested: bool,
     downloads: usize,
+    queue_gate: Option<Arc<Gate>>,
+    history_gate: Option<Arc<Gate>>,
+}
+
+struct Gate {
+    entered: mpsc::UnboundedSender<()>,
+    release: Semaphore,
+}
+
+impl Gate {
+    async fn wait(&self) {
+        self.entered.send(()).unwrap();
+        self.release.acquire().await.unwrap().forget();
+    }
+}
+
+fn new_gate() -> (Arc<Gate>, mpsc::UnboundedReceiver<()>) {
+    let (entered, receiver) = mpsc::unbounded_channel();
+    (
+        Arc::new(Gate {
+            entered,
+            release: Semaphore::new(0),
+        }),
+        receiver,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -84,11 +113,19 @@ impl ImageBackend for FakeImageBackend {
         Ok(PromptResponse {
             prompt_id: prompt_id.to_owned(),
             number: None,
-            node_errors: Value::Null,
+            node_errors: if state.reject_submission {
+                json!({"node": "invalid"})
+            } else {
+                Value::Null
+            },
         })
     }
 
     async fn queue(&self) -> Result<QueueSnapshot> {
+        let gate = self.state.lock().unwrap().queue_gate.clone();
+        if let Some(gate) = gate {
+            gate.wait().await;
+        }
         let state = self.state.lock().unwrap();
         let mut snapshot = QueueSnapshot {
             running: vec![],
@@ -106,6 +143,10 @@ impl ImageBackend for FakeImageBackend {
     }
 
     async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot> {
+        let gate = self.state.lock().unwrap().history_gate.clone();
+        if let Some(gate) = gate {
+            gate.wait().await;
+        }
         let state = self.state.lock().unwrap();
         assert_eq!(prompt_id, state.submission.as_ref().unwrap().2);
         let success = state.history_outcome == HistoryOutcome::Completed;
@@ -624,4 +665,265 @@ async fn workspaces_can_use_the_same_explicit_run_version() {
     let second = harnesses[1].submit(request).await.unwrap();
     assert_ne!(first.output_dir, second.output_dir);
     assert!(Path::new(&first.output_dir).is_dir() && Path::new(&second.output_dir).is_dir());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_reconciles_publish_each_transition_once() {
+    let (_workspace, harness, state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    let mut events = harness.events().subscribe();
+    let (gate, mut entered) = new_gate();
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = Some(QueuePosition::Running);
+        state.queue_gate = Some(gate.clone());
+    }
+    let first = {
+        let harness = harness.clone();
+        let id = run.id.clone();
+        tokio::spawn(async move { harness.reconcile(&id).await.unwrap() })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = {
+        let harness = harness.clone();
+        let id = run.id.clone();
+        tokio::spawn(async move { harness.reconcile(&id).await.unwrap() })
+    };
+    assert!(
+        timeout(Duration::from_millis(100), entered.recv())
+            .await
+            .is_err(),
+        "second reconcile entered the backend concurrently"
+    );
+    gate.release.add_permits(2);
+    first.await.unwrap();
+    second.await.unwrap();
+    assert!(matches!(
+        events.recv().await.unwrap().event,
+        Event::RunStarted { .. }
+    ));
+    assert!(timeout(Duration::from_millis(50), events.recv())
+        .await
+        .is_err());
+
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_gate = None;
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Completed;
+    }
+    let (gate, mut entered) = new_gate();
+    state.lock().unwrap().history_gate = Some(gate.clone());
+    let first = {
+        let harness = harness.clone();
+        let id = run.id.clone();
+        tokio::spawn(async move { harness.reconcile(&id).await.unwrap() })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = {
+        let harness = harness.clone();
+        let id = run.id.clone();
+        tokio::spawn(async move { harness.reconcile(&id).await.unwrap() })
+    };
+    assert!(
+        timeout(Duration::from_millis(100), entered.recv())
+            .await
+            .is_err(),
+        "second reconcile entered history concurrently"
+    );
+    gate.release.add_permits(2);
+    assert_eq!(first.await.unwrap().run.status, RunStatus::Completed);
+    assert_eq!(second.await.unwrap().run.status, RunStatus::Completed);
+    assert!(matches!(
+        events.recv().await.unwrap().event,
+        Event::RunOutput { .. }
+    ));
+    assert!(matches!(
+        events.recv().await.unwrap().event,
+        Event::RunCompleted { .. }
+    ));
+    assert!(timeout(Duration::from_millis(50), events.recv())
+        .await
+        .is_err());
+    assert_eq!(state.lock().unwrap().downloads, 1);
+}
+
+#[tokio::test]
+async fn failed_terminal_record_forces_live_and_replay_resync() {
+    for (outcome, status, event_type) in [
+        (
+            HistoryOutcome::Completed,
+            RunStatus::Completed,
+            "run_completed",
+        ),
+        (HistoryOutcome::Failed, RunStatus::Failed, "run_failed"),
+        (
+            HistoryOutcome::Cancelled,
+            RunStatus::Cancelled,
+            "run_cancelled",
+        ),
+    ] {
+        let (_workspace, harness, state, request) = setup(false);
+        let run = harness.submit(request).await.unwrap();
+        let mut events = harness.events().subscribe();
+        let db = rusqlite::Connection::open(&harness.config().state_database).unwrap();
+        db.execute_batch(&format!("CREATE TRIGGER reject_terminal BEFORE INSERT ON run_events WHEN NEW.event_type = '{event_type}' BEGIN SELECT RAISE(FAIL, 'test failure'); END;")).unwrap();
+        {
+            let mut state = state.lock().unwrap();
+            state.queue_position = None;
+            state.history_outcome = outcome;
+        }
+        assert!(harness.reconcile(&run.id).await.is_err());
+        assert_eq!(harness.get_run(&run.id).unwrap().status, status);
+        let invalidated = loop {
+            match timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap()
+            {
+                Ok(_) => {}
+                Err(crate::ReceiveError::ResyncRequired(crate::ResyncReason::Invalidated {
+                    id,
+                })) => break id,
+                other => panic!("expected invalidation, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            harness.events().subscribe_since(1).err(),
+            Some(crate::ResyncReason::Invalidated { id: invalidated })
+        );
+        assert_eq!(events.recv().await.err(), Some(crate::ReceiveError::Closed));
+        assert_eq!(harness.reconcile(&run.id).await.unwrap().run.status, status);
+    }
+}
+
+#[tokio::test]
+async fn rejected_submission_record_failure_invalidates_the_stream() {
+    let (_workspace, harness, state, request) = setup(false);
+    state.lock().unwrap().reject_submission = true;
+    let mut events = harness.events().subscribe();
+    let db = rusqlite::Connection::open(&harness.config().state_database).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_validation BEFORE INSERT ON run_events WHEN NEW.event_type = 'validation_failed' BEGIN SELECT RAISE(FAIL, 'test failure'); END;").unwrap();
+    assert!(harness.submit(request).await.is_err());
+    let runs = harness.list_runs(1).unwrap();
+    assert_eq!(runs[0].status, RunStatus::Failed);
+    assert!(matches!(
+        events.recv().await,
+        Err(crate::ReceiveError::ResyncRequired(
+            crate::ResyncReason::Invalidated { .. }
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_reconcile_caller_does_not_cancel_terminal_publication() {
+    let (_workspace, harness, state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    let mut events = harness.events().subscribe();
+    let (gate, mut entered) = new_gate();
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Failed;
+        state.history_gate = Some(gate.clone());
+    }
+    let caller = {
+        let harness = harness.clone();
+        let id = run.id.clone();
+        tokio::spawn(async move { harness.reconcile(&id).await })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    gate.release.add_permits(1);
+    assert!(
+        matches!(timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap().event, Event::RunFailed { run } if run.status == RunStatus::Failed)
+    );
+    assert_eq!(harness.get_run(&run.id).unwrap().status, RunStatus::Failed);
+}
+
+#[tokio::test]
+async fn wait_reports_terminal_progress_for_externally_finalised_run() {
+    let (_workspace, harness, _state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    let mut events = harness.events().subscribe();
+    // Simulate another process committing the terminal state on its own bus.
+    harness
+        .repository()
+        .update_status(&run.id, RunStatus::Completed, None, None)
+        .unwrap();
+    let completed = harness.wait_for_run(&run.id).await.unwrap();
+    assert_eq!(completed.status, RunStatus::Completed);
+    loop {
+        match timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .event
+        {
+            Event::RunProgress {
+                run,
+                backend_event: None,
+            } => {
+                assert_eq!(run.status, RunStatus::Completed);
+                break;
+            }
+            Event::RunCompleted { .. } => panic!("the other process did not publish on this bus"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn cli_progress_subscription_keeps_every_update_even_when_broadcast_lags() {
+    let (_workspace, harness, _state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    let bus = EventBus::new(2);
+    let mut progress = bus.subscribe_run_progress(&run.id);
+    let mut live = bus.subscribe();
+    let mut unrelated = run.clone();
+    unrelated.id = "another-run".to_owned();
+    bus.publish(Event::RunProgress {
+        run: unrelated,
+        backend_event: None,
+    });
+    for _ in 0..100 {
+        bus.publish(Event::RunProgress {
+            run: run.clone(),
+            backend_event: None,
+        });
+    }
+    assert!(matches!(
+        live.recv().await,
+        Err(crate::ReceiveError::ResyncRequired(
+            crate::ResyncReason::Lagged { .. }
+        ))
+    ));
+    for expected in 2..=101 {
+        let event = progress.recv().await.unwrap();
+        assert_eq!(event.id, expected);
+        assert!(matches!(event.event, Event::RunProgress { run: seen, .. } if seen.id == run.id));
+    }
+    bus.invalidate();
+    bus.publish(Event::RunProgress {
+        run: run.clone(),
+        backend_event: None,
+    });
+    assert!(matches!(
+        progress.recv().await,
+        Err(crate::ReceiveError::ResyncRequired(
+            crate::ResyncReason::Invalidated { .. }
+        ))
+    ));
+    assert!(
+        matches!(progress.recv().await.unwrap().event, Event::RunProgress { run: seen, .. } if seen.id == run.id)
+    );
 }

@@ -109,9 +109,12 @@ approval.
 
 The in-process `EventBus` publishes typed run lifecycle, progress, output,
 backend health and settings-change events. Each JSON event is an envelope with
-`id`, `timestamp` (UTC RFC 3339) and a snake-case `type` discriminator plus
-variant-specific fields. The bus assigns increasing IDs and timestamps; IDs
+`bus_id`, `id`, `timestamp` (UTC RFC 3339) and a snake-case `type`
+discriminator plus variant-specific fields. The bus assigns increasing IDs and timestamps; IDs
 are ordered by publication, but wall-clock timestamps need not be monotonic.
+Each bus has a random lifetime identifier. An `EventCursor` combines it with an
+ID; `subscribe_from_cursor` rejects cursors from an earlier bus, even when the
+numeric ID happens to fit.
 The orchestrator publishes lifecycle changes after recording them, and retains
 its existing database events. Health changes are published when queried; the
 settings event is available to future settings writers.
@@ -121,16 +124,30 @@ strictly after a cursor and hands over atomically to the live broadcast. A
 cursor before the retained window or ahead of the bus is rejected with a
 resync-required reason. A lagging subscriber receives a resync-required error
 and must reload authoritative state and subscribe again; it must not treat a
-partial stream as complete. IDs and replay are local to one bus lifetime and
-are not durable across restarts: reconnecting to a new bus requires a full
-resync, even if a numeric cursor happens to fit. Broadcast buffering can be
-rounded up by Tokio; neither it nor the replay buffer grows with slow readers.
+partial stream as complete. If a state update may have committed but recording
+or publishing its event fails, the bus invalidates existing subscribers and
+rejects replay across that boundary. Invalidation reserves an ID and clears the
+replay window; no event is silently presented as a complete stream. IDs and
+replay are local to one bus lifetime and are not durable across restarts: reconnecting to a new bus requires a full
+resync. The numeric-only `subscribe_since` is for the originating bus lifetime;
+transport consumers should retain and check the full cursor. Broadcast
+buffering can be rounded up by Tokio; neither it nor the replay buffer grows with slow readers.
+
+Reconciliation and cancellation of a given run are serialised across clones
+of the same harness. Reconciliation and the post-submission transition finish
+in independent tasks even if their caller is cancelled, so a committed terminal
+state is followed by its event or an explicit invalidation. Other processes
+have separate buses; a CLI waiter also publishes a progress snapshot when it
+observes a terminal state written by another process.
 
 Applications start one independent forwarding task per registered `EventSink`
 using `ExtensionRegistry::forward_event_sinks` and should observe the returned
 handles for failures. Each sink receives an explicit resync notification and
-its task stops on lag. Slow sinks and subscribers do not block publishers. The
-CLI consumes progress from the bus, retaining its existing JSON output. SSE
+its task stops on lag or invalidation. Slow sinks and subscribers do not block
+publishers. The CLI uses a run-filtered, non-replaying progress subscription with an unbounded
+queue, matching its previous progress channel and preserving output even when
+printing is slow. It holds no lifecycle state to resynchronise; the final poll
+reports the current run. Other bus subscribers and sinks remain bounded. SSE
 transport remains planned for [#30](https://github.com/eemaldi/genaimage/issues/30).
 
 ## State and provenance

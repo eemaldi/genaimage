@@ -467,8 +467,9 @@ fn unselected_new_paths_only_config_does_not_block_xdg() {
 fn run_wait_preserves_json_and_human_progress() {
     use serde_json::json;
     use std::{
-        io::{Read, Write},
+        io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
+        process::Stdio,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -594,15 +595,61 @@ fn run_wait_preserves_json_and_human_progress() {
             assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 2);
         } else {
             let progress = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                progress.contains(&format!(
-                    "{}: completed",
-                    records[0]["id"].as_str().unwrap()
-                )),
-                "{progress}"
-            );
+            let terminal = format!("{}: completed\n", records[0]["id"].as_str().unwrap());
+            assert_eq!(progress.matches(&terminal).count(), 1, "{progress}");
+            assert!(progress.ends_with(&terminal), "{progress}");
         }
     }
+    // Reconcile from a separate CLI process before the waiter's first poll.
+    let mut waiter = cli()
+        .arg("--workspace")
+        .arg(temp.path())
+        .args(["run", "test", "--wait"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(waiter.stdout.take().unwrap());
+    let mut queued_json = String::new();
+    loop {
+        let mut line = String::new();
+        assert_ne!(stdout.read_line(&mut line).unwrap(), 0);
+        queued_json.push_str(&line);
+        if line == "}\n" {
+            break;
+        }
+    }
+    let queued: Value = serde_json::from_str(&queued_json).unwrap();
+    assert_eq!(queued["status"], "queued");
+    let run_id = queued["id"].as_str().unwrap();
+    let other = cli()
+        .arg("--workspace")
+        .arg(temp.path())
+        .arg("--json")
+        .args(["jobs", "reconcile", run_id])
+        .output()
+        .unwrap();
+    assert!(
+        other.status.success(),
+        "{}",
+        String::from_utf8_lossy(&other.stderr)
+    );
+    let reconciliation: Value = serde_json::from_slice(&other.stdout).unwrap();
+    assert_eq!(reconciliation["run"]["status"], "completed");
+    let result = waiter.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut final_json = String::new();
+    stdout.read_to_string(&mut final_json).unwrap();
+    let completed: Value = serde_json::from_str(&final_json).unwrap();
+    assert_eq!(completed["status"], "completed");
+    let progress = String::from_utf8_lossy(&result.stderr);
+    let terminal = format!("{run_id}: completed\n");
+    assert_eq!(progress.matches(&terminal).count(), 1, "{progress}");
+    assert!(progress.ends_with(&terminal), "{progress}");
     stopping.store(true, Ordering::SeqCst);
     server.join().unwrap();
 }

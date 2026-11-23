@@ -249,9 +249,13 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
     output(cli, &run)?;
     if command.wait && run.status.is_trackable() {
         let completed = if cli.json {
-            harness.wait_for_run(&run.id).await?
+            let run_id = run.id.clone();
+            let waiting_harness = harness.clone();
+            tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await })
+                .await
+                .map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??
         } else {
-            let mut receiver = harness.events().subscribe();
+            let mut receiver = harness.events().subscribe_run_progress(&run.id);
             let run_id = run.id.clone();
             let waiting_harness = harness.clone();
             let mut waiter =
@@ -265,16 +269,12 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
                                 Event::RunProgress { run: progress_run, backend_event } if progress_run.id == run.id => {
                                     print_progress(&progress_run, backend_event.as_ref());
                                 }
-                                Event::RunCompleted { run: finished } | Event::RunFailed { run: finished } | Event::RunCancelled { run: finished } if finished.id == run.id => {
-                                    print_progress(&finished, None);
-                                }
                                 _ => {}
                             }
                         }
-                        Err(ReceiveError::ResyncRequired(reason)) => {
-                            eprintln!("progress updates lost; resync required: {reason:?}");
-                            break waiter.await.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??;
-                        }
+                        // This stream carries every progress update and maintains no
+                        // lifecycle state; the final poll supplies the current run.
+                        Err(ReceiveError::ResyncRequired(_)) => {},
                         Err(ReceiveError::Closed) => {
                             break waiter.await.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??;
                         }
