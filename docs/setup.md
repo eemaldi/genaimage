@@ -8,6 +8,24 @@ prompt, upload, queue, history and output endpoints, plus WebSocket events.
 Export workflows from ComfyUI in **API format**. The harness does not install
 models or custom nodes.
 
+## Start the local HTTP server
+
+```sh
+genaimage serve
+# In a separate terminal:
+curl http://127.0.0.1:3000/api/v1/health
+```
+
+The default listener is `127.0.0.1:3000`. To change it, set `[server]` `host`
+and `port` in the configuration file or use the environment overrides below.
+Use a loopback host such as `127.0.0.1`, `::1` or `localhost`; wildcard and
+non-loopback addresses are refused. No running ComfyUI is needed for startup:
+health reports the image backend as `unavailable` until it responds. Server
+logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
+Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
+
+Only health is implemented. The portal and other API endpoints are planned.
+
 ## 2. Configuration
 
 No configuration file is required. To customise it, copy the example to
@@ -34,9 +52,10 @@ files; explicit and current-directory selections do not inspect an unselected
 workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
-see `genaimage.example.toml`. The server and LLM are planned components, so
-their validated settings do not start either service. Set `llm.model` explicitly
-when an LLM integration becomes available: no model is selected automatically.
+see `genaimage.example.toml`. The `serve` command uses `[server]`. LLM
+integration is planned, so its settings do not start or contact an LLM service.
+Set `llm.model` explicitly when that integration becomes available: no model
+is selected automatically.
 The server bind host is restricted to loopback regardless of outbound settings.
 
 State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`,

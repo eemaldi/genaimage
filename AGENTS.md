@@ -13,17 +13,15 @@ ComfyUI image generation, assisted by local LLMs. Read
   orchestration in operator surfaces.
 - `crates/genaimage-comfyui` implements the core transport port using ComfyUI
   HTTP and WebSocket connections.
-- `crates/genaimage` is the scripted interface. Today it calls the adapter and
-  the core directly; the target is a thin client of the same local API as the
-  portal. `crates/genaimage-api` and `crates/genaimage-server` are placeholders.
-- The planned Rust server serves its API and embedded Svelte portal from one
-  loopback-bound binary. ComfyUI and the OpenAI-compatible local LLM service
-  remain separate processes. Docker Compose support is planned for local
-  dependencies, not public exposure.
-- Outbound service endpoints default to loopback. The target also allows
-  explicitly allow-listed private/Compose hosts, never public endpoints; this
-  is planned and current ComfyUI profiles remain loopback-only. The GenAImage
-  server itself must bind to loopback only.
+- `crates/genaimage` is the scripted interface. Operator commands still call the
+  adapter and core directly; `genaimage serve` starts the local Axum server in
+  `crates/genaimage-server`, with shared wire types in `crates/genaimage-api`.
+- The server binds to loopback only and currently serves health. Domain API
+  routes and the embedded Svelte portal are planned. ComfyUI and the planned
+  OpenAI-compatible local LLM service remain separate processes. Docker Compose
+  support is planned for local dependencies, not public exposure.
+- Outbound service endpoints default to loopback. Explicitly allow-listed
+  private or Compose hosts are permitted, never public endpoints.
 - Use ComfyUI API-format JSON and strict `*.genaimage.json` workflow manifests.
   ComfyUI, models, weights and custom nodes are external; do not silently
   install, replace or substitute them.

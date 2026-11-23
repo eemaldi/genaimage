@@ -8,10 +8,10 @@ are informational. Threshold enforcement is deliberately deferred to [issue
 | Measure | Budget | What it measures | Measurement method and current status |
 | --- | ---: | --- | --- |
 | Cold start | < 150 ms | Time for the `genaimage` process to start and handle a cheap command. | `scripts/perf_check.py` directly runs `genaimage --version` repeatedly and reports the median wall-clock time. This is a process-start proxy; it does not clear the operating-system file cache and is not server startup. |
-| Idle RSS | < 40 MB | Resident memory of an otherwise idle GenAImage process. | On Linux, GNU `/usr/bin/time -f %M` measures the executable child's peak RSS; if unavailable, the script polls `/proc/<pid>/status` for that process's `VmHWM`. The Python parent is not included. This is still only a short-lived CLI approximation, not a true idle-server measurement; the server does not exist yet. |
+| Idle RSS | < 40 MB | Resident memory of an otherwise idle GenAImage process. | On Linux, GNU `/usr/bin/time -f %M` measures the executable child's peak RSS; if unavailable, the script polls `/proc/<pid>/status` for that process's `VmHWM`. The Python parent is not included. This is still only a short-lived CLI approximation, not a true idle-server measurement. |
 | Release binary size | < 25 MB | Size of the release `genaimage` executable. | File size in decimal megabytes (bytes divided by 1,000,000), measured from the release executable produced by Cargo. |
 | Portal initial JavaScript | < 150 KB gzip | Compressed JavaScript required for the portal's initial load. | Not measurable yet: the portal does not exist yet. |
-| p95 non-ComfyUI API latency | < 20 ms | 95th-percentile latency for GenAImage API requests that do not call ComfyUI. | Not measurable yet: the server/API does not exist yet. |
+| p95 non-ComfyUI API latency | < 20 ms | 95th-percentile latency for GenAImage API requests that do not call ComfyUI. | Not measurable yet: the only endpoint probes ComfyUI. |
 
 The script uses the median of 5 launches in quick mode and 15 otherwise. On Linux it obtains each executable's peak RSS from GNU `time` or polls that
 child's `/proc` status; neither method uses the Python parent's RSS. If neither
@@ -19,6 +19,12 @@ measurement method is available, RSS is reported as `NOT MEASURED`. Results are
 compared with the listed budgets, but over-budget results do not fail the script
 or the CI workflow. Missing portal and API measurements are also reported as
 `NOT MEASURED`, not treated as passing results.
+
+For server cold start, time a fresh release process from launch to the first
+successful `/api/v1/health` response with ComfyUI stopped. This is separate from
+the CLI proxy and need not clear the operating-system file cache. To measure
+idle server RSS on Linux, read `VmRSS` in `/proc/<pid>/status` after that
+response with no requests in flight.
 
 Run the focused Criterion benchmarks with:
 

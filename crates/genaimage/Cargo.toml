@@ -16,6 +16,7 @@ workspace = true
 clap.workspace = true
 genaimage-comfyui = { path = "../genaimage-comfyui" }
 genaimage-core = { path = "../genaimage-core" }
+genaimage-server = { path = "../genaimage-server" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

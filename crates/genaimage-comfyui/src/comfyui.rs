@@ -145,7 +145,8 @@ impl ImageBackend for ComfyUiClient {
     }
 
     async fn health(&self) -> Result<BackendHealth> {
-        let value = self.get_json("system_stats").await?;
+        // A health probe reports present availability without waiting for read retries.
+        let value = self.get_json_with_attempts("system_stats", 1).await?;
         Ok(BackendHealth { system: value })
     }
 
@@ -348,9 +349,14 @@ impl ImageBackend for ComfyUiClient {
 
 impl ComfyUiClient {
     async fn get_json(&self, path: &str) -> Result<Value> {
+        self.get_json_with_attempts(path, MAX_SAFE_READ_ATTEMPTS)
+            .await
+    }
+
+    async fn get_json_with_attempts(&self, path: &str, attempts: usize) -> Result<Value> {
         let url = self.endpoint(path)?;
         let mut last_error = String::new();
-        for attempt in 1..=MAX_SAFE_READ_ATTEMPTS {
+        for attempt in 1..=attempts {
             let response = self.connection().await?.http.get(url.clone()).send().await;
             match response {
                 Ok(response) if response.status().is_success() => {
@@ -371,12 +377,12 @@ impl ComfyUiClient {
                 }
                 Err(error) => last_error = error.to_string(),
             }
-            if attempt < MAX_SAFE_READ_ATTEMPTS {
+            if attempt < attempts {
                 sleep(Duration::from_millis(250 * attempt as u64)).await;
             }
         }
         Err(HarnessError::ComfyUi(format!(
-            "ComfyUI GET {url} failed after safe retries: {last_error}"
+            "ComfyUI GET {url} failed: {last_error}"
         )))
     }
 
