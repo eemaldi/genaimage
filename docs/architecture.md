@@ -269,17 +269,22 @@ manifest archived for the run, not from the current workflow catalogue. Runs
 completed before media indexing remain available but have no indexed tags.
 
 All three file endpoints support `If-None-Match` (304). The original endpoint
-supports one closed, open-ended or suffix byte range (206); unsupported or
-unsatisfiable ranges return 416 with `Content-Range: bytes */<length>`. An
+supports one closed, open-ended or suffix byte range (206); unsatisfiable or
+multiple byte ranges return 416 with `Content-Range: bytes */<length>`. Unknown
+range units are ignored, and oversized byte-range ends and suffixes are clipped
+to the representation. An
 `If-Range` value other than the current strong ETag falls back to the full file.
 Unrecognised or active file types are served as downloads (`application/octet-stream`).
 
 Core opens stored run files beneath the configured runs directory. Originals are
 hashed into private on-disk snapshots before serving so a checksum mismatch or
 concurrent in-place edit cannot expose unverified bytes. Recorded manifests are
-also checked against their indexed SHA-256; older manifests have no separately
-recorded manifest digest, so the server validates their run ID and derives the
-ETag from their stored bytes. Missing or changed files for recorded media return
+also checked against their indexed SHA-256. For older manifests without a
+separately recorded digest, the server validates the manifest structure and
+its identifiers against the run record. It returns
+`X-GenAImage-Manifest-Integrity: unverified` on successful responses and 304s.
+The ETag for a legacy manifest identifies its stored bytes, but does not
+establish their provenance. Missing or changed files for recorded media return
 409 rather than being silently replaced. Unknown IDs and runs without a completed
 manifest return 404.
 
@@ -287,8 +292,9 @@ Thumbnail `size` is required and must be 128, 256, 512 or 1024 (longest edge in
 pixels, without upscaling). PNG, JPEG and WebP inputs are decoded off the async
 executor, with limits on source size, dimensions and decoded memory. Thumbnails
 are cached by source SHA-256 and size under the workspace data directory in
-`thumbnails/webp-v1/`; concurrent misses share an encoder and publish through an
-atomic rename. Retention and cache eviction are not implemented.
+`thumbnails/webp-v1/`; each cached thumbnail is checked against its SHA-256
+sidecar before serving. Concurrent misses or repairs share an encoder; cache
+files are published through atomic renames. Retention and cache eviction are not implemented.
 
 ### API integration tests
 

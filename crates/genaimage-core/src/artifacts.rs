@@ -15,7 +15,7 @@ use crate::{
     HarnessError, Result,
 };
 
-const RUN_MANIFEST_VERSION: u32 = 1;
+pub(crate) const RUN_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InputFileRecord {

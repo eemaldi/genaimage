@@ -790,6 +790,7 @@ dependencies = [
  "mime_guess",
  "percent-encoding",
  "reqwest",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

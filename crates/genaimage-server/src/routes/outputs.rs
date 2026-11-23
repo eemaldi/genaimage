@@ -121,12 +121,27 @@ pub(super) async fn manifest(
     id: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Problem> {
-    let file = state
+    let manifest = state
         .harness()
         .open_run_manifest(&parse_id(id)?)
         .await
         .map_err(problem)?;
-    respond(file, "application/json", REVALIDATE, false, None, &headers).await
+    let mut response = respond(
+        manifest.media,
+        "application/json",
+        REVALIDATE,
+        false,
+        None,
+        &headers,
+    )
+    .await?;
+    if !manifest.integrity_verified {
+        response.headers_mut().insert(
+            "x-genaimage-manifest-integrity",
+            axum::http::HeaderValue::from_static("unverified"),
+        );
+    }
+    Ok(response)
 }
 
 async fn respond(
@@ -144,14 +159,7 @@ async fn respond(
     if ranges {
         response = response.header(header::ACCEPT_RANGES, "bytes");
     }
-    let matched = headers
-        .get_all(header::IF_NONE_MATCH)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .any(|value| value == "*" || value.strip_prefix("W/").unwrap_or(value) == etag);
-    if matched {
+    if if_none_match(headers, etag.as_bytes()) {
         return Ok(response
             .status(StatusCode::NOT_MODIFIED)
             .body(Body::empty())
@@ -162,13 +170,14 @@ async fn respond(
     if let Some(headers) = range_headers {
         let mut requested = headers.get_all(header::RANGE).iter();
         if let Some(value) = requested.next() {
-            match value
+            let range = value
                 .to_str()
                 .ok()
                 .filter(|_| requested.next().is_none())
-                .and_then(|value| byte_range(value, len))
-            {
-                Some((start, end)) => {
+                .map_or(ByteRange::Unsatisfiable, |value| byte_range(value, len));
+            match range {
+                ByteRange::Ignore => {}
+                ByteRange::Satisfiable(start, end) => {
                     file.seek(std::io::SeekFrom::Start(start))
                         .await
                         .map_err(|error| problem(error.into()))?;
@@ -177,7 +186,7 @@ async fn respond(
                         .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"));
                     len = end - start + 1;
                 }
-                None => {
+                ByteRange::Unsatisfiable => {
                     return Ok((
                         [
                             (header::CONTENT_RANGE, format!("bytes */{len}")),
@@ -204,19 +213,90 @@ async fn respond(
         .expect("valid media headers"))
 }
 
-fn byte_range(value: &str, len: u64) -> Option<(u64, u64)> {
+fn trim_ows(value: &[u8]) -> &[u8] {
+    let is_ows = |byte: &u8| matches!(byte, b' ' | b'\t');
+    let Some(start) = value.iter().position(|byte| !is_ows(byte)) else {
+        return &[];
+    };
+    let end = value.iter().rposition(|byte| !is_ows(byte)).unwrap();
+    &value[start..=end]
+}
+
+fn if_none_match(headers: &HeaderMap, etag: &[u8]) -> bool {
+    let fields = headers.get_all(header::IF_NONE_MATCH);
+    let mut iter = fields.iter();
+    if let Some(first) = iter.next() {
+        if trim_ows(first.as_bytes()) == b"*" && iter.next().is_none() {
+            return true;
+        }
+    }
+    let mut matched = false;
+    for value in fields.iter() {
+        let mut rest = trim_ows(value.as_bytes());
+        while !rest.is_empty() {
+            if let Some(after) = rest.strip_prefix(b",") {
+                rest = trim_ows(after);
+                continue;
+            }
+            let tag = rest.strip_prefix(b"W/").unwrap_or(rest);
+            let Some(opaque) = tag.strip_prefix(b"\"") else {
+                return false;
+            };
+            let Some(end) = opaque.iter().position(|&b| b == b'"') else {
+                return false;
+            };
+            if !opaque[..end]
+                .iter()
+                .all(|&b| matches!(b, b'!' | b'#'..=b'~' | 0x80..=0xff))
+            {
+                return false;
+            }
+            matched |= &tag[..end + 2] == etag;
+            let after = trim_ows(&opaque[end + 1..]);
+            if after.is_empty() {
+                break;
+            }
+            let Some(after) = after.strip_prefix(b",") else {
+                return false;
+            };
+            rest = trim_ows(after);
+        }
+    }
+    matched
+}
+
+enum ByteRange {
+    Ignore,
+    Unsatisfiable,
+    Satisfiable(u64, u64),
+}
+
+fn byte_range(value: &str, len: u64) -> ByteRange {
+    let Some((unit, spec)) = value.trim().split_once('=') else {
+        return ByteRange::Unsatisfiable;
+    };
+    if !unit.eq_ignore_ascii_case("bytes") {
+        return ByteRange::Ignore;
+    }
+    match parse_byte_spec(spec, len) {
+        Some((start, end)) => ByteRange::Satisfiable(start, end),
+        None => ByteRange::Unsatisfiable,
+    }
+}
+
+fn parse_byte_spec(spec: &str, len: u64) -> Option<(u64, u64)> {
     fn number(value: &str) -> Option<u64> {
-        value
-            .bytes()
-            .all(|b| b.is_ascii_digit())
-            .then(|| value.parse().ok())
-            .flatten()
+        if value.is_empty() {
+            return None;
+        }
+        value.bytes().try_fold(0_u64, |acc, digit| {
+            digit.is_ascii_digit().then(|| {
+                acc.saturating_mul(10)
+                    .saturating_add(u64::from(digit - b'0'))
+            })
+        })
     }
     let last = len.checked_sub(1)?;
-    let (unit, spec) = value.trim().split_once('=')?;
-    if !unit.eq_ignore_ascii_case("bytes") {
-        return None;
-    }
     let (start, end) = spec.split_once('-')?;
     if start.is_empty() {
         let suffix = number(end)?;

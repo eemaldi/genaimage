@@ -11,8 +11,10 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
-    persistence::OutputRecord, safe_file::open_regular_beneath, Harness, HarnessError, Result,
-    RunStatus,
+    artifacts::{RunManifest, RUN_MANIFEST_VERSION},
+    persistence::OutputRecord,
+    safe_file::open_regular_beneath,
+    Harness, HarnessError, Result, RunStatus,
 };
 
 const CACHE_VERSION: &str = "webp-v1";
@@ -54,6 +56,11 @@ pub struct MediaFile {
     pub len: u64,
 }
 
+pub struct StoredRunManifest {
+    pub media: MediaFile,
+    pub integrity_verified: bool,
+}
+
 #[derive(Clone, Copy)]
 pub struct ThumbnailSize(u32);
 
@@ -80,7 +87,7 @@ impl Harness {
         .await
     }
 
-    pub async fn open_run_manifest(&self, id: &str) -> Result<MediaFile> {
+    pub async fn open_run_manifest(&self, id: &str) -> Result<StoredRunManifest> {
         let repository = self.repository().as_async();
         let run = repository.get(id).await?;
         if run.status != RunStatus::Completed {
@@ -93,25 +100,39 @@ impl Harness {
         blocking(move || {
             let file = open_stored(&root, &path)?;
             let mut manifest = snapshot(file, &data, None)?;
+            let integrity_verified = expected.is_some();
             if let Some(expected) = expected {
                 if expected != manifest.sha256 {
                     return Err(HarnessError::MediaIntegrity);
                 }
             } else {
-                // Pre-index manifests still carry their original output/workflow checksums.
-                #[derive(serde::Deserialize)]
-                struct LegacyManifest {
-                    run_id: String,
-                }
-                let stored: LegacyManifest =
+                let stored: RunManifest =
                     serde_json::from_reader(BufReader::new(&mut manifest.file))
                         .map_err(|_| HarnessError::MediaIntegrity)?;
-                if stored.run_id != run.id {
+                if stored.schema_version != RUN_MANIFEST_VERSION
+                    || stored.run_id != run.id
+                    || stored.prompt_id != run.prompt_id
+                    || stored.workflow.id != run.workflow_id
+                    || stored.workflow.version != run.workflow_version
+                    || stored.workflow.sha256 != run.workflow_sha256
+                    || !is_sha256(&stored.workflow.manifest_sha256)
+                    || !stored
+                        .outputs
+                        .iter()
+                        .all(|output| output.run_id == run.id && is_sha256(&output.sha256))
+                    || !stored
+                        .source_inputs
+                        .iter()
+                        .all(|input| is_sha256(&input.sha256))
+                {
                     return Err(HarnessError::MediaIntegrity);
                 }
                 manifest.file.rewind()?;
             }
-            Ok(manifest)
+            Ok(StoredRunManifest {
+                media: manifest,
+                integrity_verified,
+            })
         })
         .await
     }
@@ -187,6 +208,10 @@ fn snapshot(mut source: File, data: &Path, limit: Option<u64>) -> Result<MediaFi
     })
 }
 
+fn is_sha256(digest: &str) -> bool {
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 struct ThumbnailCache {
     root: PathBuf,
     name: String,
@@ -222,13 +247,36 @@ impl ThumbnailCache {
         .await
     }
 
+    fn verified_hit(&self, checksum_name: &Path) -> Result<Option<MediaFile>> {
+        let open = |name| open_regular_beneath(&self.root, &self.root, name);
+        let Some(checksum) = open(checksum_name) else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        checksum.take(65).read_to_end(&mut bytes)?;
+        let Ok(expected) = std::str::from_utf8(&bytes) else {
+            return Ok(None);
+        };
+        if !is_sha256(expected) {
+            return Ok(None);
+        }
+        let Some(file) = open(Path::new(&self.name)) else {
+            return Ok(None);
+        };
+        match snapshot(file, &self.root, Some(MAX_THUMBNAIL_BYTES)) {
+            Ok(media) if media.sha256 == expected => Ok(Some(media)),
+            Ok(_) | Err(HarnessError::MediaIntegrity) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     fn get_or_generate_blocking(
         &self,
         generate: impl FnOnce(&mut File) -> Result<()>,
     ) -> Result<MediaFile> {
-        let name = Path::new(&self.name);
-        if let Some(file) = open_regular_beneath(&self.root, &self.root, name) {
-            return snapshot(file, &self.root, Some(MAX_THUMBNAIL_BYTES));
+        let checksum_name = PathBuf::from(format!("{}.sha256", self.name));
+        if let Some(media) = self.verified_hit(&checksum_name)? {
+            return Ok(media);
         }
         fs::create_dir_all(&self.root)?;
         // Also coordinate with other processes sharing the workspace data directory.
@@ -238,18 +286,24 @@ impl ThumbnailCache {
             .truncate(false)
             .open(self.root.join(format!("lock-{}", self.stripe)))?;
         fs2::FileExt::lock_exclusive(&lock)?;
-        if let Some(file) = open_regular_beneath(&self.root, &self.root, name) {
-            return snapshot(file, &self.root, Some(MAX_THUMBNAIL_BYTES));
+        if let Some(media) = self.verified_hit(&checksum_name)? {
+            return Ok(media);
         }
-        let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
-        generate(temporary.as_file_mut())?;
-        let file = temporary
-            .persist(self.root.join(name))
+        let mut thumbnail = tempfile::NamedTempFile::new_in(&self.root)?;
+        generate(thumbnail.as_file_mut())?;
+        let mut encoded = thumbnail.reopen()?;
+        encoded.rewind()?;
+        let media = snapshot(encoded, &self.root, Some(MAX_THUMBNAIL_BYTES))?;
+        let mut checksum = tempfile::NamedTempFile::new_in(&self.root)?;
+        checksum.write_all(media.sha256.as_bytes())?;
+        // Any partial publication is a cache miss: readers only accept a matching pair.
+        thumbnail
+            .persist(self.root.join(&self.name))
             .map_err(|error| error.error)?;
-        // Persist returns the encoder's descriptor, positioned at end of file.
-        let mut file = file;
-        file.rewind()?;
-        snapshot(file, &self.root, Some(MAX_THUMBNAIL_BYTES))
+        checksum
+            .persist(self.root.join(checksum_name))
+            .map_err(|error| error.error)?;
+        Ok(media)
     }
 }
 

@@ -116,10 +116,35 @@ async fn serves_verified_originals_thumbnails_and_stored_manifests() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
     assert!(response.bytes().await.unwrap().is_empty());
+    for (condition, status) in [
+        (r#""a,*,b""#, StatusCode::OK),
+        (r#"W/"a,*,b""#, StatusCode::OK),
+        (r#""other", *"#, StatusCode::OK),
+        ("*", StatusCode::NOT_MODIFIED),
+    ] {
+        let response = api
+            .request(Method::GET, &path)
+            .header(header::IF_NONE_MATCH, condition)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{condition}");
+    }
+    let response = api
+        .request(Method::GET, &path)
+        .header(header::RANGE, "frames=0-5")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(header::CONTENT_RANGE));
+    assert_eq!(response.bytes().await.unwrap(), png);
     for (range, start, end) in [
         ("bytes=1-3", 1, 3),
         ("bytes=2-", 2, png.len() - 1),
         ("bytes=-4", png.len() - 4, png.len() - 1),
+        ("bytes=1-184467440737095516160", 1, png.len() - 1),
+        ("bytes=-184467440737095516160", 0, png.len() - 1),
     ] {
         let response = api
             .request(Method::GET, &path)
@@ -143,7 +168,13 @@ async fn serves_verified_originals_thumbnails_and_stored_manifests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    for range in ["bytes=999999-", "bytes=0-1,3-4", "bytes=-0"] {
+    for range in [
+        "bytes=999999-",
+        "bytes=0-1,3-4",
+        "bytes=-0",
+        "bytes=184467440737095516160-",
+        "bytes=1-+4",
+    ] {
         let response = api
             .request(Method::GET, &path)
             .header(header::RANGE, range)
@@ -172,6 +203,28 @@ async fn serves_verified_originals_thumbnails_and_stored_manifests() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    let workspace_data = std::fs::read_dir(api.workspace().join("genaimage/workspaces"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let cache_dir = workspace_data.join("thumbnails/webp-v1");
+    let cached = cache_dir.join(format!("{}-128.webp", output.sha256));
+    let truncated = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&cached)
+        .unwrap();
+    truncated.set_len(12).unwrap();
+    drop(truncated);
+    let response = api.request(Method::GET, &thumb_path).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let regenerated = response.bytes().await.unwrap();
+    let decoded =
+        image::load_from_memory_with_format(&regenerated, image::ImageFormat::WebP).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (128, 64));
+    assert_eq!(std::fs::read(&cached).unwrap(), regenerated);
     for query in ["", "?size=127", "?size=-1", "?size=128&size=512"] {
         let response = api
             .request(Method::GET, &format!("{path}/thumbnail{query}"))
@@ -232,5 +285,51 @@ async fn serves_verified_originals_thumbnails_and_stored_manifests() {
         let response = api.request(Method::GET, &path).send().await.unwrap();
         ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
     }
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_manifest_must_match_schema_and_is_explicitly_unverified() {
+    const INTEGRITY: &str = "x-genaimage-manifest-integrity";
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let run = completed(&api, "gallery").await;
+    let manifest = PathBuf::from(run.manifest_path.unwrap());
+    let url = format!("/api/v1/runs/{}/manifest", run.id);
+    let response = api.request(Method::GET, &url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(INTEGRITY));
+    let etag = response.headers()[header::ETAG].clone();
+    let stored = response.bytes().await.unwrap();
+
+    {
+        let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+        assert_eq!(
+            db.execute("DELETE FROM run_media WHERE run_id = ?1", [&run.id])
+                .unwrap(),
+            1
+        );
+    }
+    let response = api.request(Method::GET, &url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[INTEGRITY], "unverified");
+    assert_eq!(response.bytes().await.unwrap(), stored);
+    let response = api
+        .request(Method::GET, &url)
+        .header(header::IF_NONE_MATCH, etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.headers()[INTEGRITY], "unverified");
+
+    std::fs::write(&manifest, json!({"run_id": run.id}).to_string()).unwrap();
+    let response = api
+        .request(Method::GET, &url)
+        .header(header::IF_NONE_MATCH, "*")
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(response, StatusCode::CONFLICT).await;
     api.shutdown().await;
 }
