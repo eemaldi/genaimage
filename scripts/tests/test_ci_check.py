@@ -51,6 +51,14 @@ class RunnerTests(unittest.TestCase):
         mirrors.assert_not_called()
         tooling.assert_not_called()
 
+    def test_command_start_failure_is_reported(self):
+        output = io.StringIO()
+        with mock.patch.object(ci_check.subprocess, 'run', side_effect=FileNotFoundError('missing')), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(output):
+            self.assertFalse(ci_check.run_command('Portal tests', ['npm', 'test']))
+        self.assertIn('Failed to start Portal tests', output.getvalue())
+        self.assertIn('missing', output.getvalue())
+
     def test_missing_node_and_npm_report_portal_prerequisites(self):
         with mock.patch.object(ci_check.shutil, 'which', side_effect=lambda command: '/bin/tool' if command in ('cargo', 'rustfmt') else None), \
              mock.patch.object(Path, 'is_file', return_value=True):

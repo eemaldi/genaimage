@@ -151,7 +151,11 @@ def check_runtime_tooling(portal_present=False):
             else None,
         ]
         if not any(location and Path(location).is_file() for location in locations):
-            suffix = " (required when apps/portal/package.json exists)" if command in {"node", "npm"} else ""
+            suffix = (
+                " (required when apps/portal/package.json exists)"
+                if command in {"node", "npm"}
+                else ""
+            )
             errors.append(f"required command is not installed: {command}{suffix}")
     return errors
 
