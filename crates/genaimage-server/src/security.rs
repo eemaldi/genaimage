@@ -163,23 +163,37 @@ pub(crate) async fn protect(
     }
 
     let limit = body_limit(request.uri().path(), &config);
+    if request.method() == Method::POST && request.uri().path() == "/api/v1/uploads" {
+        if request
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|size| size > limit as u64)
+        {
+            return Problem::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "The request body exceeds the upload size limit.",
+                "Use a smaller image or adjust [server] max_upload_bytes and restart the server.",
+            )
+            .into_response();
+        }
+        let request = request.map(|body| Body::new(http_body_util::Limited::new(body, limit)));
+        return tokio::select! {
+            biased;
+            () = config.app_state.wait_for_shutdown() => body_shutdown(),
+            result = tokio::time::timeout(BODY_READ_TIMEOUT, next.run(request)) => {
+                result.unwrap_or_else(|_| body_timeout())
+            }
+        };
+    }
     let (parts, body) = request.into_parts();
     let body = tokio::select! {
         biased;
-        () = config.app_state.wait_for_shutdown() => {
-            return Problem::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The server is shutting down before the request body was received.",
-                "Retry the request after the server restarts.",
-            ).into_response();
-        }
+        () = config.app_state.wait_for_shutdown() => return body_shutdown(),
         result = tokio::time::timeout(BODY_READ_TIMEOUT, to_bytes(body, limit)) => match result {
             Ok(result) => result,
-            Err(_) => return Problem::new(
-                StatusCode::REQUEST_TIMEOUT,
-                "The request body was not received within 30 seconds.",
-                "Send the complete request body promptly and try again.",
-            ).into_response(),
+            Err(_) => return body_timeout(),
         },
     };
     match body {
@@ -207,6 +221,24 @@ pub(crate) async fn protect(
             Problem::new(status, detail, recovery).into_response()
         }
     }
+}
+
+fn body_shutdown() -> Response {
+    Problem::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "The server is shutting down before the request body was received.",
+        "Retry the request after the server restarts.",
+    )
+    .into_response()
+}
+
+fn body_timeout() -> Response {
+    Problem::new(
+        StatusCode::REQUEST_TIMEOUT,
+        "The request body was not received within 30 seconds.",
+        "Send the complete request body promptly and try again.",
+    )
+    .into_response()
 }
 
 pub(crate) async fn response_headers(request: Request<Body>, next: Next) -> Response {

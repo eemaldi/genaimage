@@ -45,6 +45,8 @@ pub enum HarnessError {
     UnsupportedOperation(String),
     #[error("{0}")]
     InvalidRunRequest(String),
+    #[error(transparent)]
+    UploadStorage(#[from] crate::uploads::UploadError),
     #[error("{0}")]
     RunConflict(String),
     #[error("Output was not found.")]

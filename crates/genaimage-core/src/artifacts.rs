@@ -20,7 +20,12 @@ pub(crate) const RUN_MANIFEST_VERSION: u32 = 1;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InputFileRecord {
     pub parameter: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_filename: Option<String>,
     pub sha256: String,
     pub byte_size: u64,
     pub uploaded_name: String,
@@ -193,6 +198,8 @@ pub fn checksum_file(path: &Path) -> Result<InputFileRecord> {
     Ok(InputFileRecord {
         parameter: String::new(),
         source_path: path.display().to_string(),
+        upload_id: None,
+        original_filename: None,
         sha256: sha256_hex(&bytes),
         byte_size: bytes.len() as u64,
         uploaded_name: String::new(),

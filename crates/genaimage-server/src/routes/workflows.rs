@@ -16,7 +16,7 @@ use genaimage_api::{
     WorkflowNodeCheckStatus, WorkflowParameterError, WorkflowSummary, WorkflowValidationRequest,
     WorkflowValidationResponse,
 };
-use genaimage_core::LoadedWorkflow;
+use genaimage_core::{Harness, HarnessError, LoadedWorkflow};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 use crate::{AppState, Problem};
@@ -48,8 +48,7 @@ fn not_found(id: &str) -> Problem {
     )
 }
 
-async fn load(state: &AppState, id: String) -> Result<LoadedWorkflow, Problem> {
-    let harness = state.harness();
+async fn load(harness: std::sync::Arc<Harness>, id: String) -> Result<LoadedWorkflow, Problem> {
     let search_id = id.clone();
     tokio::task::spawn_blocking(move || harness.load_workflow_by_id(&search_id))
         .await
@@ -105,7 +104,7 @@ async fn details(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<WorkflowDetails>, Problem> {
-    let workflow = load(&state, id).await?;
+    let workflow = load(state.harness(), id).await?;
     let value = serde_json::to_value(workflow.manifest).map_err(internal_error)?;
     Ok(Json(serde_json::from_value(value).map_err(internal_error)?))
 }
@@ -115,7 +114,8 @@ async fn validate(
     AxumPath(id): AxumPath<String>,
     request: Result<Json<WorkflowValidationRequest>, JsonRejection>,
 ) -> Result<Json<WorkflowValidationResponse>, Problem> {
-    let workflow = load(&state, id).await?;
+    let harness = state.harness();
+    let workflow = load(harness.clone(), id).await?;
     let Json(request) = request.map_err(|error| {
         Problem::new(
             error.status(),
@@ -123,9 +123,18 @@ async fn validate(
             "Send a JSON object with parameters and an optional preset.",
         )
     })?;
-    let errors = workflow
-        .validate_bindings(request.preset.as_deref(), &request.parameters)
+    let errors = harness
+        .validate_api_bindings(&workflow, request.preset.as_deref(), &request.parameters)
+        .await
         .map_err(|error| {
+            if matches!(error, HarnessError::UploadStorage(_)) {
+                tracing::error!(%error, "Upload validation failed");
+                return Problem::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "The server could not validate the reference upload.",
+                    "Check the server logs and the configured uploads directory.",
+                );
+            }
             Problem::new(
                 StatusCode::BAD_REQUEST,
                 error.to_string(),
@@ -141,7 +150,7 @@ async fn validate(
         .collect();
     let node_check = match tokio::time::timeout(
         NODE_CHECK_DEADLINE,
-        state.harness().missing_workflow_nodes(&workflow.workflow),
+        harness.missing_workflow_nodes(&workflow.workflow),
     )
     .await
     {
@@ -177,7 +186,7 @@ async fn thumbnail(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, Problem> {
-    let workflow = load(&state, id.clone()).await?;
+    let workflow = load(state.harness(), id.clone()).await?;
     let root = state.harness().config().workflows.clone();
     let image = tokio::task::spawn_blocking(move || read_thumbnail(&workflow, &root))
         .await

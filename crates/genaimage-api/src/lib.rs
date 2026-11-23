@@ -160,3 +160,17 @@ pub use outputs::*;
 
 mod runs;
 pub use runs::*;
+
+/// Metadata for a stored reference image. Use `upload_id` as the string value
+/// of an `image_upload` workflow parameter in the runs and validation APIs.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UploadResponse {
+    /// Content-addressed identifier in the form `sha256:<lowercase hex digest>`.
+    pub upload_id: String,
+    pub sha256: String,
+    pub byte_size: u64,
+    /// Media type detected from the file signature, not supplied by the client.
+    pub media_type: String,
+    /// Sanitised basename from the first accepted upload of these bytes.
+    pub original_filename: String,
+}

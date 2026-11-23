@@ -21,7 +21,11 @@ use crate::{
         database_matches_settings, NewRun, OutputRecord, RunEvent, RunRecord, RunRepository,
         RunStatus, SubmissionReservation,
     },
-    workflow::{GenerationMode, LoadedWorkflow, WorkflowManifest},
+    uploads::{UploadMetadata, UploadStore},
+    workflow::{
+        BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError, ParameterKind,
+        WorkflowManifest,
+    },
     Event, EventBus, HarnessError, Result,
 };
 
@@ -501,6 +505,116 @@ impl Harness {
         Ok((run, false))
     }
 
+    pub fn uploads(&self) -> UploadStore {
+        UploadStore::new(&self.config.uploads, self.config.server.max_upload_bytes)
+    }
+
+    /// Validate server bindings without uploading anything to the backend.
+    pub async fn validate_api_bindings(
+        &self,
+        workflow: &LoadedWorkflow,
+        preset: Option<&str>,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<Vec<ParameterError>> {
+        Ok(self
+            .check_api_bindings(workflow, preset, parameters)
+            .await?
+            .0)
+    }
+
+    async fn check_api_bindings(
+        &self,
+        workflow: &LoadedWorkflow,
+        preset: Option<&str>,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<(Vec<ParameterError>, BTreeMap<String, UploadMetadata>)> {
+        let mut errors = workflow.validate_bindings(preset, parameters)?;
+        let preset = workflow.preset_values(preset)?;
+        let store = self.uploads();
+        let mut uploads = BTreeMap::new();
+        for (name, definition) in &workflow.manifest.parameters {
+            if definition.kind != ParameterKind::ImageUpload
+                || errors.iter().any(|error| error.parameter == *name)
+            {
+                continue;
+            }
+            let Some(id) = parameters
+                .get(name)
+                .or_else(|| preset.get(name))
+                .or(definition.default.as_ref())
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if let Some(metadata) = store.metadata(id).await? {
+                uploads.insert(name.clone(), metadata);
+            } else {
+                errors.push(ParameterError {
+                    parameter: name.clone(),
+                    reason: "Unknown upload ID. Use an ID returned by the uploads API, not a local path.".into(),
+                });
+            }
+        }
+        Ok((errors, uploads))
+    }
+
+    async fn upload_bound_images(
+        &self,
+        loaded: &LoadedWorkflow,
+        bound: &mut BoundWorkflow,
+        stored: Option<BTreeMap<String, UploadMetadata>>,
+        deadline: &CancellationToken,
+    ) -> Result<Vec<InputFileRecord>> {
+        let mut source_inputs = Vec::new();
+        let mut uploaded_names = BTreeMap::new();
+        if let Some(stored) = stored {
+            let store = self.uploads();
+            for (parameter, metadata) in stored {
+                let upload_source = async {
+                    let bytes = store.verified_bytes(&metadata).await?;
+                    // A distinct input name for this attempt avoids reusing an existing backend file.
+                    let filename = format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension());
+                    self.backend
+                        .upload_image_bytes(bytes, &filename, &metadata.media_type)
+                        .await
+                };
+                let upload = before_deadline(deadline, upload_source).await.map_err(|error| {
+                    HarnessError::Workflow(format!("Reference upload for parameter '{parameter}' failed before prompt submission: {error}"))
+                })?;
+                if upload.kind != "input"
+                    || !upload.subfolder.is_empty()
+                    || !single_path_component(&upload.name)
+                    || upload.name.contains([':', '[', ']'])
+                    || upload.name.chars().any(char::is_control)
+                {
+                    return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{parameter}'; no prompt was submitted.")));
+                }
+                source_inputs.push(InputFileRecord {
+                    parameter: parameter.clone(),
+                    source_path: String::new(),
+                    upload_id: Some(metadata.upload_id),
+                    sha256: metadata.sha256,
+                    original_filename: Some(metadata.original_filename),
+                    byte_size: metadata.byte_size,
+                    uploaded_name: upload.name.clone(),
+                });
+                uploaded_names.insert(parameter, upload.name);
+            }
+        } else {
+            for (parameter, relative_path) in &bound.image_uploads {
+                let path = resolve_input_path(&self.config.workspace, relative_path);
+                let upload = self.backend.upload_image(&path).await?;
+                let mut source = artifacts::checksum_file(&path)?;
+                source.parameter = parameter.clone();
+                source.uploaded_name = upload.name.clone();
+                source_inputs.push(source);
+                uploaded_names.insert(parameter.clone(), upload.name);
+            }
+        }
+        loaded.apply_uploaded_images(bound, &uploaded_names)?;
+        Ok(source_inputs)
+    }
+
     async fn submit_inner(
         &self,
         request: RunRequest,
@@ -529,29 +643,25 @@ impl Harness {
         } else {
             self.load_workflow(&request.workflow)?
         };
+        let stored = if keyed.is_some() {
+            let (errors, uploads) = self
+                .check_api_bindings(&loaded, request.preset.as_deref(), &request.parameters)
+                .await?;
+            if !errors.is_empty() {
+                return Err(HarnessError::Workflow(
+                    errors
+                        .into_iter()
+                        .map(|error| format!("{}: {}", error.parameter, error.reason))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ));
+            }
+            Some(uploads)
+        } else {
+            None
+        };
         let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;
-        if keyed.is_some() && !bound.image_uploads.is_empty() {
-            return Err(HarnessError::InvalidRunRequest(
-                "Server-side image file paths are not supported by the runs API.".into(),
-            ));
-        }
-        tokio::select! {
-            biased;
-            _ = deadline.cancelled() => return Err(HarnessError::ShuttingDown),
-            result = self.validate_workflow_nodes(&bound.workflow) => result?,
-        }
-        let mut source_inputs = Vec::new();
-        let mut uploaded_names = BTreeMap::new();
-        for (parameter, relative_path) in &bound.image_uploads {
-            let path = resolve_input_path(&self.config.workspace, relative_path);
-            let upload = self.backend.upload_image(&path).await?;
-            let mut source = artifacts::checksum_file(&path)?;
-            source.parameter = parameter.clone();
-            source.uploaded_name = upload.name.clone();
-            source_inputs.push(source);
-            uploaded_names.insert(parameter.clone(), upload.name);
-        }
-        loaded.apply_uploaded_images(&mut bound, &uploaded_names)?;
+        before_deadline(deadline, self.validate_workflow_nodes(&bound.workflow)).await?;
         let parameters = serde_json::to_value(&bound.parameters)?;
 
         let run_id = format!("run-{}", Uuid::new_v4());
@@ -580,6 +690,9 @@ impl Harness {
         };
         let is_keyed = keyed.is_some();
         let prepare_files = async {
+            let source_inputs = self
+                .upload_bound_images(&loaded, &mut bound, stored, deadline)
+                .await?;
             if is_keyed {
                 fs::create_dir_all(self.config.runs.join(&loaded.manifest.id))?;
                 fs::create_dir(&output_dir)?;

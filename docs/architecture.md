@@ -93,11 +93,10 @@ allow-list. Responses include a same-origin CSP, nosniff, no-referrer and frame
 protection, including on errors.
 
 Bodies are bounded before dispatch, including streamed bodies without a length
-header: 1 MiB by default, or `[server] max_upload_bytes` for the planned
-`/api/v1/uploads` route. Bodies are buffered up to that limit. Future routes
-that need a different limit must add their path to `security::body_limit` and
-consider the memory cost; Axum extractor limits are disabled because this
-middleware enforces the limit for all handlers. Each body must arrive within
+header: 1 MiB by default, or `[server] max_upload_bytes` for
+`POST /api/v1/uploads`, including multipart framing. Uploads are streamed to
+disk; other bodies are buffered within their limit. Axum extractor limits
+are disabled because the hardening middleware bounds the request body. Each body must arrive within
 30 seconds or receives 408; body reads are cancelled with 503 when graceful
 shutdown starts, so a stalled upload cannot prevent draining.
 
@@ -194,7 +193,24 @@ The workflows API is read-only apart from validation, which does not submit a ru
   basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
   a declaration, not a guarantee that the image can be read.
 
-Outputs, uploads and OpenAPI endpoints are planned, as is the browser portal.
+OpenAPI endpoints are planned, as is the browser portal.
+
+### Uploads API
+
+`POST /api/v1/uploads` accepts multipart form data with one file field named
+`file`, for example `curl -F 'file=@reference.png' "$ORIGIN/api/v1/uploads"`.
+Files are identified as PNG, JPEG or WebP by their signatures, not by their
+filenames or supplied media types. This does not decode or validate pixels.
+The server streams to a temporary directory, calculates SHA-256, then publishes
+both bytes and metadata atomically in the configured uploads directory.
+
+The response is 201 with `upload_id` (`sha256:<lowercase hex digest>`),
+`sha256`, `byte_size`, `media_type` and `original_filename` (a sanitised
+basename). Identical bytes share one upload ID and keep the first accepted
+filename. `Location` points to `GET /api/v1/uploads/{id}` for the same metadata;
+it does not serve the image bytes. Malformed multipart requests return 400,
+oversized requests 413 and unrecognised signatures 415, with problem details
+and a recovery hint.
 
 ### Runs API
 
@@ -212,7 +228,10 @@ A submission body is `application/json`, for example
 `{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
 configured manifest ID, not a local path. `preset`, `parameters` (default `{}`)
 and `version` (an optional new output directory name) are optional. Server-side
-image file paths are not accepted; the uploads API is planned. The response
+image file paths are not accepted. Use the `upload_id` string returned by the
+uploads API as the value of an `image_upload` parameter, for example
+`"parameters":{"reference":"sha256:<digest>"}`. Workflow validation reports
+unknown upload IDs against their parameter names. The response
 includes the run and prompt IDs, workflow ID/version/hash, effective parameters,
 status, timestamps and any recorded error. An acknowledged partial submission
 is accepted, and its `node_warnings` appear in the run and its persisted
@@ -222,12 +241,20 @@ Every submission requires one `Idempotency-Key` of 1–128 visible ASCII
 characters, excluding commas. Use a fresh key for each distinct run. The server
 hashes the decoded request (JSON object member order, whitespace and equivalent
 omitted defaults do not change the key's meaning). The core reserves the key
-and creates the run atomically in SQLite before sending the prompt. Keys remain
+and creates the run atomically in SQLite before uploading references or sending
+the prompt. Keys remain
 bound to their runs across restarts. A replay returns HTTP 200 and the original
 run's **current** state; a different request for a reserved key returns 409.
 Validation rejected before reservation does not consume the key. If artefact
 preparation fails after reservation, the run is recorded as `failed` and is not
-sent. A process crash can leave a `submitting` record. Replaying its key or
+sent. Before sending a reference to ComfyUI, the core verifies the SHA-256 of
+the exact bytes it will send. It records the upload ID, source hash, sanitised
+original filename, byte size and returned ComfyUI filename in provenance. A
+failed reference upload fails the run before `/prompt`. ComfyUI uploads are
+not retried: an unconfirmed upload may have left an unused backend input file,
+but it cannot have queued generation. Replaying a key never uploads again.
+A process crash during preparation or submission can leave a `submitting`
+record; recovery conservatively treats that record as unconfirmed. Replaying its key or
 reconciling it recovers it as `unknown_submission` when the run uses the
 submission-lock protocol and no process holds its lock. This does not release
 the key or resend the prompt. Older runs without a protocol marker require

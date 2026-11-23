@@ -9,6 +9,7 @@ pub mod orchestrator;
 pub mod persistence;
 #[doc(hidden)]
 pub mod safe_file;
+pub mod uploads;
 pub mod workflow;
 
 pub use async_trait::async_trait;

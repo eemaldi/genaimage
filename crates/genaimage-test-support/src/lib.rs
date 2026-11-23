@@ -8,7 +8,7 @@ use axum::{
     body::Bytes,
     extract::{
         ws::{Message, WebSocketUpgrade},
-        Path as AxumPath, Query, State,
+        Multipart, Path as AxumPath, Query, State,
     },
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
@@ -42,6 +42,8 @@ pub struct FakeComfyState {
     pub redirect_submit_response: Arc<AtomicBool>,
     pub prompt_calls: Arc<AtomicUsize>,
     pub upload_calls: Arc<AtomicUsize>,
+    pub uploaded_image: Arc<Mutex<Option<Bytes>>>,
+    pub reject_upload: Arc<AtomicBool>,
     pub interrupt_calls: Arc<AtomicUsize>,
     pub comfyui_version: Arc<Mutex<Option<String>>>,
     pub interrupt_queue_head: Arc<Mutex<Option<String>>>,
@@ -80,6 +82,8 @@ impl Default for FakeComfyState {
             redirect_submit_response: Default::default(),
             prompt_calls: Default::default(),
             upload_calls: Default::default(),
+            uploaded_image: Default::default(),
+            reject_upload: Default::default(),
             interrupt_calls: Default::default(),
             comfyui_version: Arc::new(Mutex::new(Some("0.3.57".into()))),
             interrupt_queue_head: Default::default(),
@@ -208,13 +212,27 @@ async fn fake_object_info(State(state): State<FakeComfyState>) -> Response {
     Json(info).into_response()
 }
 
-async fn fake_upload(State(state): State<FakeComfyState>, _body: Bytes) -> Json<Value> {
+async fn fake_upload(State(state): State<FakeComfyState>, mut multipart: Multipart) -> Response {
     state.upload_calls.fetch_add(1, Ordering::SeqCst);
+    if state.reject_upload.load(Ordering::SeqCst) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let mut image = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() == Some("image") {
+            image = field.bytes().await.ok();
+        }
+    }
+    if image.is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    *state.uploaded_image.lock().unwrap() = image;
     Json(json!({
         "name": "uploaded-reference.png",
         "subfolder": "",
         "type": "input"
     }))
+    .into_response()
 }
 
 async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {

@@ -63,6 +63,18 @@ pub trait ImageBackend: Send + Sync {
     /// Never fall back to an unscoped interrupt. Uses the same error contract as deletion.
     async fn interrupt(&self, prompt_id: &str) -> Result<Value>;
     async fn upload_image(&self, path: &Path) -> Result<UploadResponse>;
+
+    /// Send an already verified snapshot without reopening a mutable source file.
+    async fn upload_image_bytes(
+        &self,
+        _bytes: Vec<u8>,
+        _filename: &str,
+        _media_type: &str,
+    ) -> Result<UploadResponse> {
+        Err(crate::HarnessError::UnsupportedOperation(
+            "This image backend does not support stored reference uploads.".into(),
+        ))
+    }
     async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>>;
 
     /// Observe progress for this client. Events are advisory; reconcile with
