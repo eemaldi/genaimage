@@ -5,9 +5,9 @@ Read the repository-root [AGENTS.md](../AGENTS.md) and
 They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. Its
-planned loopback server and embedded Svelte portal replace the existing Tauri
-desktop; the character approval-gate pilot is also being retired. Preserve
-current checks and records until removal. Keep generation orchestration,
+planned loopback server and embedded Svelte portal are not yet implemented.
+The character approval-gate pilot is being retired. Preserve its current checks
+and records until removal. Keep generation orchestration,
 transport, run state, provenance and the planned assistant runtime in the core.
 
 Use API-format ComfyUI JSON and strict manifests. Never silently substitute a

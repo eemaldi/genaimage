@@ -72,7 +72,7 @@ checksum, byte size, and returned ComfyUI filename.
 
 ## Presets
 
-A preset is a named set of parameter values. CLI/Tauri values override preset
+A preset is a named set of parameter values. CLI values override preset
 values, and the effective values are recorded in the run manifest. A preset does
 not approve content or bypass gate checks.
 

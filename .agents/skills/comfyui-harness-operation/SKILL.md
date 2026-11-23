@@ -6,8 +6,8 @@ description: Operate the local GenAImage ComfyUI harness safely, including API w
 # ComfyUI harness operation
 
 Use this skill when submitting or controlling image-generation work through the
-GenAImage CLI or Tauri desktop. The harness connects to an already running local
-ComfyUI instance; it does not install ComfyUI, models, or custom nodes.
+GenAImage CLI. The harness connects to an already running local ComfyUI instance;
+it does not install ComfyUI, models, or custom nodes.
 
 ## Safety and workflow boundaries
 
@@ -53,9 +53,8 @@ genaimage run <workflow-id> \
   --wait
 ```
 
-Use `jobs show <run-id>`, `jobs wait <run-id>`, or the Tauri Jobs screen to
-inspect progress. Do not claim success until the run is `completed` and its
-output manifest exists.
+Use `jobs show <run-id>` or `jobs wait <run-id>` to inspect progress. Do not
+claim success until the run is `completed` and its output manifest exists.
 
 ## Failure and cancellation
 

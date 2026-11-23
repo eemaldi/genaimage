@@ -136,7 +136,7 @@ def run_command(label, command, cwd=ROOT):
 
 def check_runtime_tooling():
     errors = []
-    for command in ("cargo", "rustfmt", "npm", "node"):
+    for command in ("cargo", "rustfmt"):
         locations = [
             shutil.which(command),
             str(Path.home() / ".cargo" / "bin" / command)
@@ -179,15 +179,6 @@ def main():
             ["cargo", "test", "--workspace", "--all-targets", "--locked"],
             ROOT,
         ),
-        ("Frontend install", ["npm", "ci"], ROOT / "apps" / "desktop"),
-        (
-            "Frontend dependency audit",
-            ["npm", "audit", "--audit-level=moderate"],
-            ROOT / "apps" / "desktop",
-        ),
-        ("Frontend type check", ["npm", "run", "typecheck"], ROOT / "apps" / "desktop"),
-        ("Frontend tests", ["npm", "test"], ROOT / "apps" / "desktop"),
-        ("Frontend build", ["npm", "run", "build"], ROOT / "apps" / "desktop"),
         (
             "QA helper tests",
             [

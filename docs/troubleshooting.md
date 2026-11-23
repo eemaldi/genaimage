@@ -3,8 +3,8 @@
 ## `doctor` cannot connect
 
 Confirm that ComfyUI is running independently and that `genaimage.toml` points
-to its loopback HTTP URL. If ComfyUI's port changed, update the desktop Settings
-screen or the `[profiles.local]` section.
+to its loopback HTTP URL. If ComfyUI's port changed, update the
+`[profiles.local]` section.
 
 Only `localhost`, `127.0.0.1`, and `::1` are accepted in this release.
 
@@ -29,7 +29,7 @@ genaimage workflow inspect <workflow>
 ```
 
 Provide every parameter marked required through a preset or `--set NAME=JSON`.
-The UI and CLI display the targeted node/input, type, default, and allowed range.
+The CLI displays the targeted node/input, type, default, and allowed range.
 
 ## A run is `unknown_submission`
 
@@ -46,16 +46,9 @@ only with an explicit decision.
 
 ## A run is stuck after restart
 
-Use `jobs reconcile` or the desktop **Reconcile all** action. Both compare
-persisted prompt/client IDs with ComfyUI queue and history. A WebSocket failure
-is recoverable while HTTP reconciliation remains available, and the event is
-kept in the run history.
-
-## Tauri cannot compile on Linux
-
-Tauri 2 requires WebKit 4.1. Ubuntu 20.04 provides WebKit 4.0 and cannot satisfy
-that build. Use a supported Tauri 2 system or the repository's current Linux CI
-environment. See [setup](setup.md) for packages.
+Use `jobs reconcile` to compare persisted prompt/client IDs with ComfyUI queue
+and history. A WebSocket failure is recoverable while HTTP reconciliation
+remains available, and the event is kept in the run history.
 
 ## Gate 3 or Gate 5 is blocked
 

@@ -34,11 +34,10 @@ Browser (local portal) ──────┘                     (planned)
 - A Rust server component, embedded Svelte portal and local API are planned;
   their exact crate and asset paths are not yet established. One server binary
   will serve both API and portal, bound to loopback only.
-- The current `apps/desktop` Tauri/React application and character approval
-  gates still exist and are enforced where applicable. Both are being retired
-  under [epic #2](https://github.com/eemaldi/genaimage/issues/2); neither is the
-  future operator surface or approval model. Until removal, do not bypass
-  existing checks.
+- Character approval gates still exist and are enforced where applicable. They
+  are being retired under [epic #2](https://github.com/eemaldi/genaimage/issues/2)
+  and are not the future approval model. Until removal, do not bypass existing
+  checks.
 
 ## Providers, extensions and deployment
 
