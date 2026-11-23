@@ -7,6 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
@@ -17,7 +18,7 @@ use crate::{
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse},
     persistence::{
         database_matches_settings, NewRun, OutputRecord, RunEvent, RunRecord, RunRepository,
-        RunStatus,
+        RunStatus, SubmissionReservation,
     },
     workflow::{GenerationMode, LoadedWorkflow, WorkflowManifest},
     Event, EventBus, HarnessError, Result,
@@ -38,6 +39,12 @@ pub struct RunRequest {
 pub struct ReconcileResult {
     pub run: RunRecord,
     pub outputs: Vec<OutputRecord>,
+}
+
+/// Result of a durable submission and whether its key was already reserved.
+pub struct KeyedSubmission {
+    pub run: RunRecord,
+    pub replayed: bool,
 }
 
 struct TransitionGuard {
@@ -386,9 +393,69 @@ impl Harness {
     }
 
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
+        Ok(self.submit_inner(request, None).await?.run)
+    }
+
+    /// Submits a configured workflow by ID with a key scoped to the state database.
+    /// Dropping the caller does not cancel the attempt.
+    pub async fn submit_keyed(&self, key: String, request: RunRequest) -> Result<KeyedSubmission> {
+        let harness = self.clone();
+        tokio::spawn(async move {
+            let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&request)?));
+            let _key_guard = harness
+                .events
+                .run_lock(&harness.database_identity, &key, RunLockKind::SubmitKey)
+                .lock_owned()
+                .await;
+            if let Some(run) = harness
+                .repository
+                .as_async()
+                .find_submission(key.clone(), fingerprint.clone())
+                .await?
+            {
+                return Ok(KeyedSubmission {
+                    run,
+                    replayed: true,
+                });
+            }
+            harness
+                .submit_inner(request, Some((key, fingerprint)))
+                .await
+        })
+        .await
+        .map_err(transition_task_error)?
+    }
+
+    async fn submit_inner(
+        &self,
+        request: RunRequest,
+        keyed: Option<(String, String)>,
+    ) -> Result<KeyedSubmission> {
         let repository = self.repository.as_async();
-        let loaded = self.load_workflow(&request.workflow)?;
+        let loaded = if keyed.is_some() {
+            if !single_path_component(&request.workflow) {
+                return Err(HarnessError::InvalidRunRequest(
+                    "Select a configured workflow by ID, not by path.".into(),
+                ));
+            }
+            if request.version.as_deref().is_some_and(|version| {
+                !single_path_component(version)
+                    || !version
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            }) {
+                return Err(HarnessError::InvalidRunRequest("Use a version containing only letters, digits, hyphens, underscores or dots, other than '.' and '..'.".into()));
+            }
+            self.load_workflow_by_id(&request.workflow)?.ok_or_else(|| HarnessError::Workflow(format!("workflow '{}' was not found", request.workflow)))?
+        } else {
+            self.load_workflow(&request.workflow)?
+        };
         let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;
+        if keyed.is_some() && !bound.image_uploads.is_empty() {
+            return Err(HarnessError::InvalidRunRequest(
+                "Server-side image file paths are not supported by the runs API.".into(),
+            ));
+        }
         self.validate_workflow_nodes(&bound.workflow).await?;
         let mut source_inputs = Vec::new();
         let mut uploaded_names = BTreeMap::new();
@@ -408,17 +475,6 @@ impl Harness {
         let prompt_id = Uuid::new_v4().to_string();
         let client_id = format!("genaimage-{}", Uuid::new_v4());
         let output_dir = self.output_directory(&loaded, request.version.as_deref(), &run_id)?;
-        fs::create_dir_all(&output_dir)?;
-        artifacts::initialise_run_files(
-            &output_dir,
-            &bound,
-            &loaded.manifest_path,
-            request.preset.as_deref(),
-            &parameters,
-            &source_inputs,
-        )
-        .await?;
-
         let run_guard = self
             .events
             .run_lock(&self.database_identity, &run_id, RunLockKind::Reconcile)
@@ -436,7 +492,63 @@ impl Harness {
             parameters: parameters.clone(),
             output_dir: output_dir.display().to_string(),
         };
-        let run = repository.insert(&new_run).await?;
+        let is_keyed = keyed.is_some();
+        let prepare_files = async {
+            if is_keyed {
+                fs::create_dir_all(self.config.runs.join(&loaded.manifest.id))?;
+                fs::create_dir(&output_dir)?;
+            } else {
+                fs::create_dir_all(&output_dir)?;
+            }
+            artifacts::initialise_run_files(
+                &output_dir,
+                &bound,
+                &loaded.manifest_path,
+                request.preset.as_deref(),
+                &parameters,
+                &source_inputs,
+            )
+            .await
+        };
+        let run = if let Some((key, fingerprint)) = keyed {
+            let run = match repository
+                .reserve_submission(key, fingerprint, new_run)
+                .await?
+            {
+                SubmissionReservation::Existing(run) => {
+                    return Ok(KeyedSubmission {
+                        run,
+                        replayed: true,
+                    })
+                }
+                SubmissionReservation::New(run) => run,
+            };
+            // The mapping is already durable: never release it, even after a local failure.
+            if let Err(error) = prepare_files.await {
+                let message = error.to_string();
+                let Some((run, transition)) = self
+                    .transition_to_terminal(&run.id, RunStatus::Failed, Some(&message), None)
+                    .await?
+                else {
+                    return Ok(KeyedSubmission {
+                        run: repository.get(&run.id).await?,
+                        replayed: false,
+                    });
+                };
+                repository
+                    .record_event(&run.id, "preparation_failed", Some(&message), &Value::Null)
+                    .await?;
+                transition.publish(Event::RunFailed { run: run.clone() });
+                return Ok(KeyedSubmission {
+                    run,
+                    replayed: false,
+                });
+            }
+            run
+        } else {
+            prepare_files.await?;
+            repository.insert(&new_run).await?
+        };
         repository
             .record_event(
                 &run.id,
@@ -454,12 +566,16 @@ impl Harness {
             .submit(&bound.workflow, &client_id, &prompt_id)
             .await;
         let harness = self.clone();
-        tokio::spawn(async move {
+        let run = tokio::spawn(async move {
             let _guard = run_guard;
             harness.finish_submission(run, &prompt_id, response).await
         })
         .await
-        .map_err(transition_task_error)?
+        .map_err(transition_task_error)??;
+        Ok(KeyedSubmission {
+            run,
+            replayed: false,
+        })
     }
 
     async fn finish_submission(
@@ -822,7 +938,7 @@ impl Harness {
         let repository = self.repository.as_async();
         let run = repository.get(run_id).await?;
         if run.status.is_terminal() {
-            return Err(self.backend_error(format!(
+            return Err(HarnessError::RunConflict(format!(
                 "run '{run_id}' is already {} and cannot be cancelled",
                 run.status.as_str()
             )));
@@ -830,7 +946,7 @@ impl Harness {
         let queue = self.backend.queue().await?;
         let running = queue.is_running(&run.prompt_id);
         if !running && !queue.contains(&run.prompt_id) {
-            return Err(self.backend_error(format!(
+            return Err(HarnessError::RunConflict(format!(
                 "prompt '{}' is not in the local {} queue; reconcile the run first",
                 run.prompt_id,
                 self.backend.name()
@@ -839,7 +955,7 @@ impl Harness {
         let previous = loop {
             let current = repository.get(run_id).await?;
             if current.status.is_terminal() {
-                return Err(self.backend_error(format!(
+                return Err(HarnessError::RunConflict(format!(
                     "run '{run_id}' is already {} and cannot be cancelled",
                     current.status.as_str()
                 )));
@@ -923,6 +1039,10 @@ impl Harness {
             .join(&workflow.manifest.id)
             .join(safe_version))
     }
+}
+
+fn single_path_component(value: &str) -> bool {
+    !value.is_empty() && !matches!(value, "." | "..") && !value.contains(['/', '\\', '\0'])
 }
 
 fn resolve_input_path(workspace: &Path, path: &Path) -> PathBuf {

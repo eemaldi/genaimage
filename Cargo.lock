@@ -660,6 +660,7 @@ dependencies = [
 name = "genaimage-api"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
 ]
@@ -710,6 +711,7 @@ name = "genaimage-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "futures-util",
  "genaimage-api",
  "genaimage-comfyui",

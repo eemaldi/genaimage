@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +127,56 @@ pub struct NewRun {
     pub output_dir: String,
 }
 
+/// Filters use UTC instants; both bounds are inclusive.
+#[derive(Default)]
+pub struct RunListQuery {
+    pub status: Option<RunStatus>,
+    pub workflow: Option<String>,
+    pub created_from: Option<DateTime<Utc>>,
+    pub created_to: Option<DateTime<Utc>>,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+}
+
+pub struct RunPage {
+    pub runs: Vec<RunRecord>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RunCursor(String, String);
+
+impl RunCursor {
+    fn decode(value: &str) -> Result<Self> {
+        let invalid = || HarnessError::InvalidRunRequest("Invalid run cursor.".into());
+        let raw = value
+            .strip_prefix("v1.")
+            .filter(|raw| raw.len() <= 1024)
+            .ok_or_else(invalid)?;
+        let cursor: Self = serde_json::from_slice(&hex::decode(raw).map_err(|_| invalid())?)
+            .map_err(|_| invalid())?;
+        DateTime::parse_from_rfc3339(&cursor.0).map_err(|_| invalid())?;
+        if cursor.1.is_empty() {
+            return Err(invalid());
+        }
+        Ok(cursor)
+    }
+
+    fn encode(&self) -> Result<String> {
+        Ok(format!("v1.{}", hex::encode(serde_json::to_vec(self)?)))
+    }
+}
+
+fn page_limit(limit: Option<usize>) -> Result<usize> {
+    let limit = limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err(HarnessError::InvalidRunRequest(
+            "Limit must be between 1 and 200.".into(),
+        ));
+    }
+    Ok(limit)
+}
+
 #[derive(Clone)]
 pub struct RunRepository {
     connection: Arc<Mutex<Connection>>,
@@ -191,16 +241,13 @@ impl RunRepository {
     // The ownership check and each write share a transaction, including the first run.
     fn guarded<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(identity) = &self.identity {
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             bind_identity_in_transaction(&transaction, identity)?;
-            let result = operation(&transaction)?;
-            transaction.commit()?;
-            Ok(result)
-        } else {
-            operation(&connection)
         }
+        let result = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
     }
 
     // A read snapshot keeps the ownership check and results consistent without blocking writers.
@@ -219,31 +266,34 @@ impl RunRepository {
     }
 
     pub fn insert(&self, run: &NewRun) -> Result<RunRecord> {
+        self.guarded(|connection| insert_run(connection, run))
+    }
+
+    pub(crate) fn find_submission(
+        &self,
+        key: &str,
+        fingerprint: &str,
+    ) -> Result<Option<RunRecord>> {
+        self.guarded_read(|connection| find_submission(connection, key, fingerprint))
+    }
+
+    // Only the transaction that creates the mapping may send the prompt.
+    pub(crate) fn reserve_submission(
+        &self,
+        key: &str,
+        fingerprint: &str,
+        run: &NewRun,
+    ) -> Result<SubmissionReservation> {
         self.guarded(|connection| {
-            let now = Utc::now().to_rfc3339();
+            if let Some(run) = find_submission(connection, key, fingerprint)? {
+                return Ok(SubmissionReservation::Existing(run));
+            }
+            let run = insert_run(connection, run)?;
             connection.execute(
-                r#"
-            INSERT INTO runs (
-                id, prompt_id, client_id, workflow_id, workflow_version,
-                workflow_sha256, generation_mode, status, parameters_json,
-                output_dir, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
-            "#,
-                params![
-                    run.id,
-                    run.prompt_id,
-                    run.client_id,
-                    run.workflow_id,
-                    run.workflow_version,
-                    run.workflow_sha256,
-                    generation_mode_name(run.generation_mode),
-                    run.status.as_str(),
-                    serde_json::to_string(&run.parameters)?,
-                    run.output_dir,
-                    now,
-                ],
+                "INSERT INTO run_submission_keys (key, fingerprint, run_id) VALUES (?1, ?2, ?3)",
+                params![key, fingerprint, run.id],
             )?;
-            load_run(connection, &run.id)
+            Ok(SubmissionReservation::New(run))
         })
     }
 
@@ -259,6 +309,58 @@ impl RunRepository {
                 .query_map([limit as i64], map_run)?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
+        })
+    }
+
+    pub fn list_page(&self, query: RunListQuery) -> Result<RunPage> {
+        let limit = page_limit(query.limit)?;
+        if matches!((query.created_from, query.created_to), (Some(from), Some(to)) if from > to) {
+            return Err(HarnessError::InvalidRunRequest(
+                "created_from must not be later than created_to.".into(),
+            ));
+        }
+        let cursor = query.cursor.as_deref().map(RunCursor::decode).transpose()?;
+        self.guarded_read(|connection| {
+            // Store and compare RFC 3339 UTC text (the format used by run writers).
+            // A raw timestamp in the cursor preserves the exact database sort key.
+            let mut sql = String::from("SELECT * FROM runs WHERE 1=1");
+            if cursor.is_some() {
+                sql.push_str(" AND (created_at, id) < (?4, ?5)");
+            } else {
+                sql.push_str(" AND ?4 IS NULL AND ?5 IS NULL");
+            }
+            sql.push_str(
+                " AND (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR workflow_id = ?2)
+                AND (?3 IS NULL OR created_at >= ?3) AND (?6 IS NULL OR created_at <= ?6)
+                ORDER BY created_at DESC, id DESC LIMIT ?7",
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement
+                .query_map(
+                    params![
+                        query.status.map(RunStatus::as_str),
+                        query.workflow,
+                        query.created_from.map(|time| time.to_rfc3339()),
+                        cursor.as_ref().map(|cursor| &cursor.0),
+                        cursor.as_ref().map(|cursor| &cursor.1),
+                        query.created_to.map(|time| time.to_rfc3339()),
+                        (limit + 1) as i64,
+                    ],
+                    |row| Ok((map_run(row)?, row.get::<_, String>("created_at")?)),
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let next_cursor = if rows.len() > limit {
+                rows.pop();
+                rows.last()
+                    .map(|(run, created_at)| RunCursor(created_at.clone(), run.id.clone()).encode())
+                    .transpose()?
+            } else {
+                None
+            };
+            Ok(RunPage {
+                runs: rows.into_iter().map(|(run, _)| run).collect(),
+                next_cursor,
+            })
         })
     }
 
@@ -565,6 +667,57 @@ fn bind_identity_in_transaction(
     Ok(())
 }
 
+pub(crate) enum SubmissionReservation {
+    New(RunRecord),
+    Existing(RunRecord),
+}
+
+fn find_submission(
+    connection: &Connection,
+    key: &str,
+    fingerprint: &str,
+) -> Result<Option<RunRecord>> {
+    let found: Option<(String, String)> = connection
+        .query_row(
+            "SELECT fingerprint, run_id FROM run_submission_keys WHERE key = ?1",
+            [key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match found {
+        Some((stored, run_id)) if stored == fingerprint => load_run(connection, &run_id).map(Some),
+        Some(_) => Err(HarnessError::IdempotencyConflict),
+        None => Ok(None),
+    }
+}
+
+fn insert_run(connection: &Connection, run: &NewRun) -> Result<RunRecord> {
+    let now = Utc::now().to_rfc3339();
+    connection.execute(
+        r#"
+            INSERT INTO runs (
+                id, prompt_id, client_id, workflow_id, workflow_version,
+                workflow_sha256, generation_mode, status, parameters_json,
+                output_dir, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            "#,
+        params![
+            run.id,
+            run.prompt_id,
+            run.client_id,
+            run.workflow_id,
+            run.workflow_version,
+            run.workflow_sha256,
+            generation_mode_name(run.generation_mode),
+            run.status.as_str(),
+            serde_json::to_string(&run.parameters)?,
+            run.output_dir,
+            now,
+        ],
+    )?;
+    load_run(connection, &run.id)
+}
+
 fn load_run(connection: &Connection, run_id: &str) -> Result<RunRecord> {
     connection
         .query_row("SELECT * FROM runs WHERE id = ?1", [run_id], map_run)
@@ -628,14 +781,23 @@ const MIGRATION_3: &str = r#"
         endpoint TEXT NOT NULL
     );
 "#;
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1, MIGRATION_3];
+const MIGRATION_4: &str = r#"
+    CREATE TABLE run_submission_keys (
+        key TEXT NOT NULL PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        run_id TEXT NOT NULL UNIQUE REFERENCES runs(id)
+    );
+    CREATE INDEX runs_created_id_idx ON runs(created_at, id);
+"#;
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1, MIGRATION_3, MIGRATION_4];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 4] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 5] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
     ("genaimage_database_identity", 3, "SELECT singleton, workspace, backend, endpoint FROM genaimage_database_identity LIMIT 0"),
+    ("run_submission_keys", 4, "SELECT key, fingerprint, run_id FROM run_submission_keys LIMIT 0"),
 ];
 
 /// Inspect an existing candidate without opening it for writing or migrating it.
@@ -798,6 +960,25 @@ impl AsyncRunRepository {
         self.call(move |repo| repo.insert(&run)).await
     }
 
+    pub(crate) async fn find_submission(
+        &self,
+        key: String,
+        fingerprint: String,
+    ) -> Result<Option<RunRecord>> {
+        self.call(move |repo| repo.find_submission(&key, &fingerprint))
+            .await
+    }
+
+    pub(crate) async fn reserve_submission(
+        &self,
+        key: String,
+        fingerprint: String,
+        run: NewRun,
+    ) -> Result<SubmissionReservation> {
+        self.call(move |repo| repo.reserve_submission(&key, &fingerprint, &run))
+            .await
+    }
+
     pub async fn get(&self, run_id: &str) -> Result<RunRecord> {
         let run_id = run_id.to_owned();
         self.call(move |repo| repo.get(&run_id)).await
@@ -805,6 +986,23 @@ impl AsyncRunRepository {
 
     pub async fn list(&self, limit: usize) -> Result<Vec<RunRecord>> {
         self.call(move |repo| repo.list(limit)).await
+    }
+
+    pub async fn list_page(&self, query: RunListQuery) -> Result<RunPage> {
+        self.call(move |repo| repo.list_page(query)).await
+    }
+
+    pub async fn recent_events(
+        &self,
+        run_id: String,
+        limit: Option<usize>,
+    ) -> Result<Vec<RunEvent>> {
+        let limit = page_limit(limit)?;
+        self.call(move |repo| {
+            repo.get(&run_id)?;
+            repo.events(&run_id, limit)
+        })
+        .await
     }
 
     pub async fn active(&self) -> Result<Vec<RunRecord>> {
@@ -968,5 +1166,68 @@ fn parse_generation_mode(value: &str) -> std::result::Result<GenerationMode, Har
         _ => Err(HarnessError::Database(format!(
             "unknown persisted generation mode '{value}'"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::*;
+
+    #[test]
+    fn competing_connections_reserve_one_run_and_reopening_preserves_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite3");
+        let first = RunRepository::open(&path).unwrap();
+        let second = RunRepository::open(&path).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let reserve = |repository: RunRepository, id: &str| {
+            barrier.wait();
+            repository
+                .reserve_submission(
+                    "key",
+                    "fingerprint",
+                    &NewRun {
+                        id: id.into(),
+                        prompt_id: format!("prompt-{id}"),
+                        client_id: "client".into(),
+                        workflow_id: "workflow".into(),
+                        workflow_version: "1".into(),
+                        workflow_sha256: "hash".into(),
+                        generation_mode: GenerationMode::Generic,
+                        status: RunStatus::Submitting,
+                        parameters: serde_json::json!({}),
+                        output_dir: format!("runs/{id}"),
+                    },
+                )
+                .unwrap()
+        };
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| reserve(first, "a"));
+            let b = reserve(second, "b");
+            (a.join().unwrap(), b)
+        });
+        let (new, existing) = match (a, b) {
+            (SubmissionReservation::New(new), SubmissionReservation::Existing(existing))
+            | (SubmissionReservation::Existing(existing), SubmissionReservation::New(new)) => {
+                (new, existing)
+            }
+            _ => panic!("expected one new reservation and one replay"),
+        };
+        assert_eq!(new.id, existing.id);
+        let reopened = RunRepository::open(&path).unwrap();
+        reopened
+            .update_status(&new.id, RunStatus::UnknownSubmission, None, None)
+            .unwrap();
+        let replay = reopened
+            .find_submission("key", "fingerprint")
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.id, new.id);
+        assert_eq!(replay.status, RunStatus::UnknownSubmission);
+        assert!(matches!(
+            reopened.find_submission("key", "different"),
+            Err(HarnessError::IdempotencyConflict)
+        ));
+        assert_eq!(reopened.list(10).unwrap().len(), 1);
     }
 }

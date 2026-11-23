@@ -127,6 +127,7 @@ enum BusMessage {
 pub(crate) enum RunLockKind {
     Reconcile,
     Cancel,
+    SubmitKey,
 }
 
 type RunLockKey = (PathBuf, String, RunLockKind);

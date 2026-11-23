@@ -186,7 +186,7 @@ impl ApiHarness {
         problem
     }
 
-    /// Submit explicitly through core until the HTTP run route exists.
+    /// Submit through the core for tests that exercise the fixture independently of the HTTP routes.
     pub async fn submit_run(&self, request: RunRequest) -> genaimage_core::Result<RunRecord> {
         self.state.harness().submit(request).await
     }
@@ -229,4 +229,19 @@ impl Drop for ApiHarness {
             }
         }
     }
+}
+
+pub fn install_workflow(api: &ApiHarness) {
+    let dir = &api.core.config().workflows;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("workflow.api.json"),
+        include_str!("../../../genaimage-core/tests/fixtures/contract-workflow.api.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("contract.genaimage.json"),
+        include_str!("../../../genaimage-core/tests/fixtures/contract-workflow.genaimage.json"),
+    )
+    .unwrap();
 }

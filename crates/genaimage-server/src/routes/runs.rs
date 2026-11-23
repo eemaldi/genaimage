@@ -1,0 +1,284 @@
+use axum::{
+    extract::{
+        rejection::{JsonRejection, PathRejection, QueryRejection},
+        Path, Query, State,
+    },
+    http::{header, HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use genaimage_api as api;
+use genaimage_core::{HarnessError, RunRecord, RunRequest, RunStatus};
+
+use crate::{AppState, Problem};
+
+pub(super) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/runs", get(list).post(submit))
+        .route("/runs/reconcile", post(reconcile_all))
+        .route("/runs/{id}", get(get_run))
+        .route("/runs/{id}/events", get(events))
+        .route("/runs/{id}/cancel", post(cancel))
+        .route("/runs/{id}/reconcile", post(reconcile))
+}
+
+async fn submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<api::SubmitRunRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, Problem> {
+    let mut keys = headers.get_all("idempotency-key").iter();
+    let key = keys
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .filter(|key| {
+            !key.is_empty()
+                && key.len() <= 128
+                && key.bytes().all(|b| b.is_ascii_graphic() && b != b',')
+        });
+    let Some(key) = key.filter(|_| keys.next().is_none()) else {
+        return Err(Problem::new(StatusCode::BAD_REQUEST,
+            "A single valid Idempotency-Key header is required.",
+            "Send a unique key of 1–128 visible ASCII characters (excluding commas), and keep it for retries."));
+    };
+    let Json(body) = body.map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Send application/json with a workflow ID and any explicit parameter bindings.",
+        )
+    })?;
+    let key = key.to_owned();
+    let result = tokio::spawn(async move {
+        let result = state.harness.submit_keyed(key, RunRequest {
+            workflow: body.workflow,
+            preset: body.preset,
+            parameters: body.parameters,
+            version: body.version,
+        }).await?;
+        if !result.replayed && result.run.status == RunStatus::Queued {
+            let id = result.run.id.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = state.wait_for_shutdown() => {},
+                    result = state.harness.wait_for_run(&id) => {
+                        if let Err(error) = result {
+                            tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
+                        }
+                    }
+                }
+            });
+        }
+        Ok::<_, HarnessError>(result)
+    }).await.map_err(|error| problem(HarnessError::Database(format!("run submission task failed: {error}"))))?
+        .map_err(problem)?;
+    let status = if result.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    let location = format!("/api/v1/runs/{}", result.run.id);
+    Ok((
+        status,
+        [(header::LOCATION, location)],
+        Json(run_response(result.run)),
+    ))
+}
+
+async fn list(
+    State(state): State<AppState>,
+    query: Result<Query<api::RunListQuery>, QueryRejection>,
+) -> Result<Json<api::RunListResponse>, Problem> {
+    let query = parse_query(query)?;
+    let page = state
+        .harness
+        .repository()
+        .as_async()
+        .list_page(genaimage_core::persistence::RunListQuery {
+            status: query.status.map(core_status),
+            workflow: query.workflow,
+            created_from: query.created_from,
+            created_to: query.created_to,
+            limit: query.limit,
+            cursor: query.cursor,
+        })
+        .await
+        .map_err(problem)?;
+    Ok(Json(api::RunListResponse {
+        runs: page.runs.into_iter().map(run_response).collect(),
+        next_cursor: page.next_cursor,
+    }))
+}
+
+async fn get_run(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Json<api::RunResponse>, Problem> {
+    state
+        .harness
+        .repository()
+        .as_async()
+        .get(&parse_id(id)?)
+        .await
+        .map(|run| Json(run_response(run)))
+        .map_err(problem)
+}
+
+async fn events(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+    query: Result<Query<api::RunEventsQuery>, QueryRejection>,
+) -> Result<Json<api::RunEventsResponse>, Problem> {
+    let events = state
+        .harness
+        .repository()
+        .as_async()
+        .recent_events(parse_id(id)?, parse_query(query)?.limit)
+        .await
+        .map_err(problem)?;
+    Ok(Json(api::RunEventsResponse {
+        events: events
+            .into_iter()
+            .map(|event| api::RunEventResponse {
+                id: event.id,
+                run_id: event.run_id,
+                event_type: event.event_type,
+                message: event.message,
+                payload: event.payload,
+                created_at: event.created_at,
+            })
+            .collect(),
+    }))
+}
+
+async fn cancel(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Json<api::RunResponse>, Problem> {
+    state
+        .harness
+        .cancel(&parse_id(id)?)
+        .await
+        .map(|run| Json(run_response(run)))
+        .map_err(problem)
+}
+
+async fn reconcile(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Json<api::RunResponse>, Problem> {
+    state
+        .harness
+        .reconcile(&parse_id(id)?)
+        .await
+        .map(|result| Json(run_response(result.run)))
+        .map_err(problem)
+}
+
+async fn reconcile_all(
+    State(state): State<AppState>,
+) -> Result<Json<api::ReconcileRunsResponse>, Problem> {
+    let results = state.harness.reconcile_all().await.map_err(problem)?;
+    Ok(Json(api::ReconcileRunsResponse {
+        runs: results
+            .into_iter()
+            .map(|result| run_response(result.run))
+            .collect(),
+    }))
+}
+
+fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem> {
+    query.map(|Query(query)| query).map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Check the query parameters and try again.",
+        )
+    })
+}
+
+fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
+    id.map(|Path(id)| id).map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Use a run ID returned by the runs API.",
+        )
+    })
+}
+
+fn problem(error: HarnessError) -> Problem {
+    let (status, recovery) = match &error {
+        HarnessError::RunNotFound { .. } => (
+            StatusCode::NOT_FOUND,
+            "Use a run ID returned by the runs API.",
+        ),
+        HarnessError::IdempotencyConflict => (
+            StatusCode::CONFLICT,
+            "Use the original request with this key, or a fresh key for a distinct run.",
+        ),
+        HarnessError::RunConflict(_) => (
+            StatusCode::CONFLICT,
+            "Reconcile the run and review its status before requesting cancellation again.",
+        ),
+        HarnessError::InvalidRunRequest(_) => (
+            StatusCode::BAD_REQUEST,
+            "Check the runs API request fields and try again.",
+        ),
+        HarnessError::Workflow(_) | HarnessError::InvalidPath { .. } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Check the configured workflow ID, preset and parameter bindings.",
+        ),
+        HarnessError::Backend { .. } | HarnessError::ComfyUi(_) => (
+            StatusCode::BAD_GATEWAY,
+            "Check ComfyUI health and reconcile any affected run; do not blindly resubmit.",
+        ),
+        _ => {
+            tracing::error!(%error, "Runs API request failed");
+            return Problem::new(StatusCode::INTERNAL_SERVER_ERROR, "The server could not complete the run operation.",
+                "Check the server logs and local state. For submission, keep the same idempotency key rather than trying a new one.");
+        }
+    };
+    Problem::new(status, error.to_string(), recovery)
+}
+
+fn run_response(run: RunRecord) -> api::RunResponse {
+    api::RunResponse {
+        id: run.id,
+        prompt_id: run.prompt_id,
+        workflow_id: run.workflow_id,
+        workflow_version: run.workflow_version,
+        workflow_sha256: run.workflow_sha256,
+        status: api_status(run.status),
+        parameters: run.parameters,
+        error: run.error,
+        created_at: run.created_at,
+        updated_at: run.updated_at,
+        completed_at: run.completed_at,
+    }
+}
+
+macro_rules! status_conversions {
+    ($($status:ident),+ $(,)?) => {
+        fn api_status(status: RunStatus) -> api::RunStatus {
+            match status { $(RunStatus::$status => api::RunStatus::$status),+ }
+        }
+
+        fn core_status(status: api::RunStatus) -> RunStatus {
+            match status { $(api::RunStatus::$status => RunStatus::$status),+ }
+        }
+    };
+}
+
+status_conversions!(
+    Created,
+    Submitting,
+    UnknownSubmission,
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelling,
+    Cancelled
+);

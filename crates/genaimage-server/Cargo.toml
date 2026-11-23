@@ -30,6 +30,7 @@ tracing.workspace = true
 rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
+chrono.workspace = true
 genaimage-test-support = { path = "../genaimage-test-support" }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }

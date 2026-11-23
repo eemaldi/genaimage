@@ -633,7 +633,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
+    db.execute_batch("DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {

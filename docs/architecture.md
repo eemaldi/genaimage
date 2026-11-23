@@ -40,6 +40,12 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows and live events; other domain API routes and the embedded
   Svelte portal are planned.
+
+- `genaimage-api` holds shared API wire types, including health, runs and problem
+  details. The API client is planned.
+- `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
+  health, runs and live events; other domain API routes and the embedded Svelte
+  portal are planned.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
@@ -184,8 +190,55 @@ The workflows API is read-only apart from validation, which does not submit a ru
   basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
   a declaration, not a guarantee that the image can be read.
 
-Runs, outputs, uploads, settings and OpenAPI endpoints are planned, as is the
-browser portal.
+Outputs, uploads and OpenAPI endpoints are planned, as is the browser portal.
+
+### Runs API
+
+| Method and path (under `/api/v1`) | Behaviour |
+| --- | --- |
+| `POST /runs` | Submit one explicit run. Returns 202 and its run snapshot without waiting for generation. `Location` identifies the run. |
+| `GET /runs` | List matching run snapshots, newest first. |
+| `GET /runs/{id}` | Return the current persisted run snapshot. |
+| `GET /runs/{id}/events` | Return the latest persisted events in ascending event ID order. `limit` defaults to 50 and accepts 1–200. |
+| `POST /runs/{id}/cancel` | Request pending deletion or running interruption through core; return the current snapshot. |
+| `POST /runs/{id}/reconcile` | Inspect ComfyUI queue and history for this run; return the refreshed snapshot. |
+| `POST /runs/reconcile` | Reconcile non-terminal runs, including unknown submissions, and return `{ "runs": [...] }`. |
+
+A submission body is `application/json`, for example
+`{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
+configured manifest ID, not a local path. `preset`, `parameters` (default `{}`)
+and `version` (an optional new output directory name) are optional. Server-side
+image file paths are not accepted; the uploads API is planned. The response
+includes the run and prompt IDs, workflow ID/version/hash, effective parameters,
+status, timestamps and any recorded error.
+
+Every submission requires one `Idempotency-Key` of 1–128 visible ASCII
+characters, excluding commas. Use a fresh key for each distinct run. The server
+hashes the decoded request (JSON object member order, whitespace and equivalent
+omitted defaults do not change the key's meaning). The core reserves the key
+and creates the run atomically in SQLite before sending the prompt. Keys remain
+bound to their runs across restarts. A replay returns HTTP 200 and the original
+run's **current** state; a different request for a reserved key returns 409.
+Validation rejected before reservation does not consume the key. If artefact
+preparation fails after reservation, the run is recorded as `failed` and is not
+sent. A crash during submission can leave a `submitting` record; reconcile it
+rather than creating a new run to replace it blindly.
+
+A timeout or other unconfirmed `/prompt` response produces
+`unknown_submission`. Neither a retry with the same key nor reconciliation
+resends the prompt. Use reconciliation to check queue and history. For newly
+accepted queued runs, the server observes progress via the core event bus and
+persists backend progress and lifecycle events. Monitoring stops on shutdown;
+use reconciliation to refresh old runs. A cancellation request can leave the
+run in `cancelling` until ComfyUI provides evidence for the target prompt.
+
+List responses contain `runs` and `next_cursor` (null at the end). Pass `cursor`
+back unchanged with the same filters. Ordering is descending by creation time,
+then descending by run ID; the versioned opaque token encodes both sort keys.
+This is not a snapshot of changing statuses. Filters are `status` (snake-case
+run status), `workflow` (exact manifest ID), and inclusive RFC 3339
+`created_from`/`created_to` (URL-encode any `+` offsets). `limit` defaults to 50
+and accepts 1–200. Errors use `application/problem+json` with a `recovery` hint.
 
 ### API integration tests
 
@@ -193,7 +246,7 @@ browser portal.
 isolated temporary configuration, data paths, loopback API and the shared
 scriptable fake ComfyUI in `genaimage-test-support` (a dev-only dependency).
 Tests can script backend state, issue typed JSON requests with same-origin
-headers, submit explicitly through core until the run route exists, and
+headers, submit through the runs API or directly through core, and
 subscribe before an action then await matching core events with a deadline.
 `request_with_origin` can override or omit Origin for hardening tests. The
 fake's state switches script health, queue state, completion and ambiguous

@@ -16,7 +16,7 @@ rust-version = "1.80"
 license = "MIT"
 
 [workspace.dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 futures-util = "0.3"

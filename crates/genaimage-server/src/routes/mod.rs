@@ -1,5 +1,6 @@
 mod events;
 mod health;
+mod runs;
 mod settings;
 mod workflows;
 
@@ -11,6 +12,7 @@ pub(crate) fn api() -> Router<AppState> {
     Router::new()
         .merge(health::routes())
         .merge(events::routes())
+        .merge(runs::routes())
         .merge(settings::routes())
         .merge(workflows::routes())
         .fallback(|| async {

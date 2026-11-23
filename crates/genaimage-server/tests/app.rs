@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use common::ApiHarness;
+use common::{install_workflow, ApiHarness};
 use genaimage_api::{
     HealthResponse, HealthStatus, ImageBackendHealthReason, SettingSource, SettingsResponse,
     SettingsTestResponse,
@@ -19,21 +19,6 @@ use genaimage_test_support::{FakeComfyServer, FakeComfyState};
 use reqwest::{header, Method, StatusCode};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-fn install_workflow(api: &ApiHarness) {
-    let dir = &api.core.config().workflows;
-    std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(
-        dir.join("workflow.api.json"),
-        include_str!("../../genaimage-core/tests/fixtures/contract-workflow.api.json"),
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("contract.genaimage.json"),
-        include_str!("../../genaimage-core/tests/fixtures/contract-workflow.genaimage.json"),
-    )
-    .unwrap();
-}
 
 fn run_request() -> RunRequest {
     RunRequest {

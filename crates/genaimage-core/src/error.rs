@@ -31,6 +31,12 @@ pub enum HarnessError {
     Database(String),
     #[error("run '{run_id}' was not found")]
     RunNotFound { run_id: String },
+    #[error("this idempotency key already belongs to a different request")]
+    IdempotencyConflict,
+    #[error("{0}")]
+    InvalidRunRequest(String),
+    #[error("{0}")]
+    RunConflict(String),
     #[error("path '{path}' is not valid: {reason}")]
     InvalidPath { path: PathBuf, reason: String },
     #[error(transparent)]
