@@ -1,3 +1,4 @@
+use super::BinaryData;
 use axum::{
     body::Body,
     extract::{
@@ -6,8 +7,7 @@ use axum::{
     },
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
-    Json, Router,
+    Json,
 };
 use genaimage_api as api;
 use genaimage_core::{
@@ -22,14 +22,24 @@ use crate::{AppState, Problem};
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "private, no-cache";
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/outputs", get(list))
-        .route("/outputs/{id}", get(original))
-        .route("/outputs/{id}/thumbnail", get(thumbnail))
-}
-
-async fn list(
+#[utoipa::path(
+    get, path = "/outputs",
+    operation_id = "outputs_list",
+    tag = "outputs",
+    description = "List indexed outputs.",
+    params(api::OutputListQuery),
+    responses(
+        (status = 200, body = api::OutputListResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn list(
     State(state): State<AppState>,
     query: Result<Query<api::OutputListQuery>, QueryRejection>,
 ) -> Result<Json<api::OutputListResponse>, Problem> {
@@ -74,7 +84,26 @@ async fn list(
     }))
 }
 
-async fn original(
+#[utoipa::path(
+    get, path = "/outputs/{id}",
+    operation_id = "outputs_original",
+    tag = "outputs",
+    description = "Fetch an original output with conditional and range requests.",
+    params(("id" = String, Path, description = "Output ID"), ("If-None-Match" = Option<String>, Header), ("Range" = Option<String>, Header, description = "Single bytes range"), ("If-Range" = Option<String>, Header)),
+    responses(
+        (status = 200, description = "Original output bytes", content((BinaryData = "image/png"), (BinaryData = "image/jpeg"), (BinaryData = "image/gif"), (BinaryData = "image/webp"), (BinaryData = "image/avif"), (BinaryData = "image/bmp"), (BinaryData = "image/tiff"), (BinaryData = "video/mp4"), (BinaryData = "video/webm"), (BinaryData = "video/quicktime"), (BinaryData = "audio/mpeg"), (BinaryData = "audio/wav"), (BinaryData = "audio/x-wav"), (BinaryData = "audio/ogg"), (BinaryData = "audio/flac"), (BinaryData = "application/octet-stream")), headers(("ETag" = String), ("Cache-Control" = String), ("Accept-Ranges" = String))), (status = 206, description = "Partial output bytes", content((BinaryData = "image/png"), (BinaryData = "image/jpeg"), (BinaryData = "image/gif"), (BinaryData = "image/webp"), (BinaryData = "image/avif"), (BinaryData = "image/bmp"), (BinaryData = "image/tiff"), (BinaryData = "video/mp4"), (BinaryData = "video/webm"), (BinaryData = "video/quicktime"), (BinaryData = "audio/mpeg"), (BinaryData = "audio/wav"), (BinaryData = "audio/x-wav"), (BinaryData = "audio/ogg"), (BinaryData = "audio/flac"), (BinaryData = "application/octet-stream")), headers(("Content-Range" = String), ("ETag" = String))), (status = 304, description = "Not modified", headers(("ETag" = String))), (status = 416, description = "Range not satisfiable", body = genaimage_api::ProblemDetails, content_type = "application/problem+json", headers(("Content-Range" = String))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn original(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
     method: Method,
@@ -101,7 +130,27 @@ async fn original(
     .await
 }
 
-async fn thumbnail(
+#[utoipa::path(
+    get, path = "/outputs/{id}/thumbnail",
+    operation_id = "outputs_thumbnail",
+    tag = "outputs",
+    description = "Fetch a WebP thumbnail.",
+    params(("id" = String, Path, description = "Output ID"), api::ThumbnailQuery, ("If-None-Match" = Option<String>, Header)),
+    responses(
+        (status = 200, body = BinaryData, content_type = "image/webp", headers(("ETag" = String), ("Cache-Control" = String))), (status = 304, description = "Not modified", headers(("ETag" = String))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn thumbnail(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
     query: Result<Query<api::ThumbnailQuery>, QueryRejection>,
@@ -116,6 +165,25 @@ async fn thumbnail(
     respond(file, "image/webp", REVALIDATE, false, None, &headers).await
 }
 
+#[utoipa::path(
+    get, path = "/runs/{id}/manifest",
+    operation_id = "outputs_manifest",
+    tag = "outputs",
+    description = "Fetch the preserved run manifest.",
+    params(("id" = String, Path, description = "Run ID"), ("If-None-Match" = Option<String>, Header)),
+    responses(
+        (status = 200, description = "Archived run manifest JSON", body = Object, headers(("ETag" = String), ("X-Genaimage-Manifest-Integrity" = String, description = "unverified when integrity could not be verified"))), (status = 304, description = "Not modified", headers(("ETag" = String))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
 pub(super) async fn manifest(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
@@ -333,13 +401,8 @@ fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem>
 }
 
 fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
-    id.map(|Path(id)| id).map_err(|error| {
-        Problem::new(
-            error.status(),
-            error.body_text(),
-            "Use an ID returned by the API.",
-        )
-    })
+    id.map(|Path(id)| id)
+        .map_err(|error| Problem::invalid_path(error, "Use an ID returned by the API."))
 }
 
 fn problem(error: HarnessError) -> Problem {

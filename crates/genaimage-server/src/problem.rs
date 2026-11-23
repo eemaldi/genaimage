@@ -1,4 +1,5 @@
 use axum::{
+    extract::rejection::PathRejection,
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -25,6 +26,10 @@ impl Problem {
                 errors: Vec::new(),
             }),
         }
+    }
+
+    pub(crate) fn invalid_path(error: PathRejection, recovery: &str) -> Self {
+        Self::new(error.status(), error.body_text(), recovery)
     }
 
     pub(crate) fn with_errors(mut self, errors: Vec<SettingError>) -> Self {

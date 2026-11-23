@@ -17,8 +17,8 @@ ComfyUI image generation, assisted by local LLMs. Read
   adapter and core directly; `genaimage serve` starts the local Axum server in
   `crates/genaimage-server`, with shared wire types in `crates/genaimage-api`.
 - The server binds to loopback only and currently serves health, workflows, runs,
-  settings and live events. The remaining domain API routes and embedded Svelte portal are
-  planned.
+  outputs, uploads, settings, live events and an OpenAPI contract. The embedded
+  Svelte portal is planned.
   ComfyUI and the planned OpenAI-compatible local LLM service remain separate
   processes. Docker Compose support is planned for local dependencies, not public
   exposure.
@@ -62,4 +62,6 @@ dependency.
   are required in CI. Keep real-model tests opt-in and explicit.
 - Keep CLI output JSON-stable and errors actionable. Keep Copilot- and
   Claude-specific entry points aligned with this guidance.
+- Regenerate the API contract with `cargo run -p genaimage-server --example openapi`.
+  Portal types are checked when the portal exists.
 - Run the repository CI checks locally with `python3 scripts/ci_check.py`.

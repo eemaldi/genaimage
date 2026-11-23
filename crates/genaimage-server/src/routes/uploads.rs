@@ -1,3 +1,4 @@
+use super::UploadBody;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::{
@@ -5,20 +6,13 @@ use axum::{
     extract::{rejection::PathRejection, Path, Request, State},
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
+    Json,
 };
 use futures_util::StreamExt;
 use genaimage_api::UploadResponse;
 use genaimage_core::uploads::{UploadError, UploadMetadata};
 
 use crate::{AppState, Problem};
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/uploads", post(upload))
-        .route("/uploads/{id}", get(metadata))
-}
 
 const FRAMING_LIMIT: usize = 16 * 1024;
 const PARSER_CHUNK: usize = 4 * 1024;
@@ -38,7 +32,25 @@ impl std::error::Error for FramingTooLarge {}
 
 const SEND_FILE: &str = "Send multipart/form-data with exactly one file field named 'file'.";
 
-async fn upload(
+#[utoipa::path(
+    post, path = "/uploads",
+    operation_id = "uploads_upload",
+    tag = "uploads",
+    description = "Upload a PNG, JPEG or WebP reference image.",
+    request_body(content = UploadBody, content_type = "multipart/form-data"),
+    responses(
+        (status = 201, body = genaimage_api::UploadResponse, headers(("Location" = String, description = "Upload metadata URL"))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn upload(
     State(state): State<AppState>,
     request: Request,
 ) -> Result<impl IntoResponse, Problem> {
@@ -130,16 +142,30 @@ async fn upload(
     ))
 }
 
-async fn metadata(
+#[utoipa::path(
+    get, path = "/uploads/{id}",
+    operation_id = "uploads_metadata",
+    tag = "uploads",
+    description = "Read upload metadata.",
+    params(("id" = String, Path, description = "Upload ID")),
+    responses(
+        (status = 200, body = genaimage_api::UploadResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn metadata(
     State(state): State<AppState>,
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Json<UploadResponse>, Problem> {
-    let Path(id) = path.map_err(|_| {
-        Problem::new(
-            StatusCode::BAD_REQUEST,
-            "Invalid upload ID path.",
-            "Use the Location returned by the uploads API.",
-        )
+    let Path(id) = path.map_err(|error| {
+        Problem::invalid_path(error, "Use the Location returned by the uploads API.")
     })?;
     let stored = state
         .harness()

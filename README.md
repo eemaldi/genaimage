@@ -4,8 +4,8 @@ GenAImage is a thin, fast, local harness for controlled, inspectable ComfyUI
 image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
 and the [architecture](docs/architecture.md). The loopback server offers a health
-endpoint and a [live event stream](docs/architecture.md#live-event-stream). Other
-domain API routes, the portal, LLM assistance and a thin CLI client are planned.
+endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
+The portal, LLM assistance and a thin CLI client are planned.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.
@@ -50,7 +50,7 @@ curl http://127.0.0.1:3000/api/v1/health
 ```
 
 The server starts without ComfyUI. Health reports the image backend as
-`unavailable` until it responds. Other endpoints and the portal are planned.
+`unavailable` until it responds. The portal is planned.
 
 Create project configuration:
 
@@ -96,6 +96,23 @@ Install the CLI binary:
 ```bash
 cargo install --locked --path crates/genaimage
 ```
+
+## HTTP API
+
+The local API publishes its [OpenAPI 3.1 contract](docs/api/openapi.json) at
+`GET /api/v1/openapi.json`. Regenerate the checked-in contract after API changes:
+
+```bash
+cargo run -p genaimage-server --example openapi
+```
+
+The routes and contract are registered together; CI checks the generated
+contract, its structure and its operations against the real router. Once the
+portal exists and has a pinned `openapi-typescript` development dependency,
+run `npm ci` in `apps/portal` and `python3 scripts/generate_portal_types.py`
+to regenerate `apps/portal/src/lib/api/schema.d.ts`. CI checks the generated
+file with `python3 scripts/generate_portal_types.py --check` when the portal
+is present; it does not install an unpinned generator.
 
 ## Persistent records
 

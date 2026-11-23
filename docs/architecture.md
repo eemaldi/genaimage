@@ -35,17 +35,11 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
   adapter factory to the extension registry and passes the selected backend to
   the core harness. `genaimage serve` passes this harness to `genaimage-server`;
   the other commands continue to call the core directly.
-- `genaimage-api` holds shared API wire types for health, workflows and problem
-  details. The API client is planned.
+- `genaimage-api` holds shared API wire types and OpenAPI schemas. The API
+  client is planned.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
-  health, workflows and live events; other domain API routes and the embedded
-  Svelte portal are planned.
-
-- `genaimage-api` holds shared API wire types, including health, runs and problem
-  details. The API client is planned.
-- `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
-  health, runs and live events; other domain API routes and the embedded Svelte
-  portal are planned.
+  health, workflows, runs, outputs, uploads, settings and live events. The
+  embedded Svelte portal is planned.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
@@ -193,7 +187,12 @@ The workflows API is read-only apart from validation, which does not submit a ru
   basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
   a declaration, not a guarantee that the image can be read.
 
-OpenAPI endpoints are planned, as is the browser portal.
+The versioned [OpenAPI 3.1 contract](api/openapi.json) is served at
+`GET /api/v1/openapi.json`. Server routes and the contract are registered
+together with `utoipa-axum`; regenerate it with
+`cargo run -p genaimage-server --example openapi`. CI checks for drift,
+structural errors and coverage through the actual router. The SSE response describes event names and links
+to the `EventEnvelope` and `ResyncEvent` schemas. The browser portal is planned.
 
 ### Uploads API
 

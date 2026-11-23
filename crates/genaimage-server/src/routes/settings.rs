@@ -3,8 +3,7 @@ use std::time::Duration;
 use axum::{
     extract::{rejection::JsonRejection, State},
     http::{header, HeaderName},
-    routing::{get, post},
-    Json, Router,
+    Json,
 };
 use genaimage_api::{
     HealthStatus, ImageBackendHealthReason, SettingsPatch, SettingsResponse, SettingsTestResponse,
@@ -22,17 +21,47 @@ const PROBE_DEADLINE: Duration = Duration::from_secs(2);
 const NO_STORE: [(HeaderName, &str); 1] = [(header::CACHE_CONTROL, "no-store")];
 type SettingsReply = ([(HeaderName, &'static str); 1], Json<SettingsResponse>);
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/settings", get(read).put(save))
-        .route("/settings/test", post(probe))
-}
-
-async fn read(State(state): State<AppState>) -> SettingsReply {
+#[utoipa::path(
+    get, path = "/settings",
+    operation_id = "settings_read",
+    tag = "settings",
+    description = "Read effective settings.",
+    responses(
+        (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn read(State(state): State<AppState>) -> SettingsReply {
     (NO_STORE, Json(state.settings.get()))
 }
 
-async fn save(
+#[utoipa::path(
+    put, path = "/settings",
+    operation_id = "settings_save",
+    tag = "settings",
+    description = "Save sparse settings.",
+    request_body = genaimage_api::SettingsPatch,
+    responses(
+        (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Settings conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn save(
     State(state): State<AppState>,
     patch: Result<Json<SettingsPatch>, JsonRejection>,
 ) -> Result<SettingsReply, Problem> {
@@ -43,7 +72,26 @@ async fn save(
     Ok((NO_STORE, Json(saved)))
 }
 
-async fn probe(
+#[utoipa::path(
+    post, path = "/settings/test",
+    operation_id = "settings_probe",
+    tag = "settings",
+    description = "Test proposed settings without saving them.",
+    request_body = genaimage_api::SettingsPatch,
+    responses(
+        (status = 200, body = genaimage_api::SettingsTestResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn probe(
     State(state): State<AppState>,
     patch: Result<Json<SettingsPatch>, JsonRejection>,
 ) -> Result<Json<SettingsTestResponse>, Problem> {

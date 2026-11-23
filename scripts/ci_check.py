@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
+if __package__:
+    from . import check_openapi
+else:
+    import check_openapi
+
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
@@ -185,6 +190,7 @@ def main():
         ("Relative links", check_relative_links),
         ("Skill mirrors", check_skill_mirrors),
         ("Skill lock", check_skill_lock),
+        ("OpenAPI structure", check_openapi.check),
         ("Portal lockfile", lambda: check_portal_lockfile(portal) if portal_present else []),
         ("Prerequisites", lambda: check_runtime_tooling(portal_present)),
     ]
@@ -239,6 +245,7 @@ def main():
         commands.extend(
             [
                 ("Portal dependencies", ["npm", "ci"], portal),
+                ("Portal API types", [sys.executable, "scripts/generate_portal_types.py", "--check"], ROOT),
                 ("Portal linting", ["npm", "run", "lint"], portal),
                 ("Portal tests", ["npm", "test"], portal),
                 ("Portal build", ["npm", "run", "build"], portal),

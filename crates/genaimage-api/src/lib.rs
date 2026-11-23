@@ -1,11 +1,15 @@
 //! Shared wire types for the local API.
 
+mod events;
+pub use events::*;
+
 mod settings;
 pub use settings::*;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct HealthResponse {
     #[serde(rename = "self")]
     pub server: HealthStatus,
@@ -15,7 +19,7 @@ pub struct HealthResponse {
     pub llm: HealthStatus,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
     Ok,
@@ -23,7 +27,7 @@ pub enum HealthStatus {
     NotConfigured,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageBackendHealthReason {
     ProbeFailed,
@@ -31,7 +35,7 @@ pub enum ImageBackendHealthReason {
 }
 
 /// RFC 9457 problem details with a GenAImage recovery hint.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ProblemDetails {
     #[serde(rename = "type")]
     pub problem_type: String,
@@ -44,14 +48,14 @@ pub struct ProblemDetails {
 }
 
 /// A workflow catalogue and non-fatal discovery errors.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowListResponse {
     pub workflows: Vec<WorkflowSummary>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
 /// Descriptive catalogue information for one workflow.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowSummary {
     pub id: String,
     pub name: String,
@@ -63,14 +67,14 @@ pub struct WorkflowSummary {
 }
 
 /// A manifest that could not be loaded during discovery.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowDiagnostic {
     pub path: String,
     pub error: String,
 }
 
 /// A version 2 workflow manifest, including its parameter UI hints.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowDetails {
     pub schema_version: u32,
     pub id: String,
@@ -88,7 +92,7 @@ pub struct WorkflowDetails {
 }
 
 /// A workflow parameter, its binding constraints and advisory UI hints.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowParameter {
     pub node: String,
     pub input: String,
@@ -108,14 +112,14 @@ pub struct WorkflowParameter {
 }
 
 /// A declared workflow output.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowOutput {
     pub node: String,
     pub kind: String,
 }
 
 /// Parameter overrides and an optional manifest preset to validate.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowValidationRequest {
     #[serde(default)]
@@ -125,7 +129,7 @@ pub struct WorkflowValidationRequest {
 }
 
 /// The result of validating bindings and checking backend node availability.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowValidationResponse {
     pub valid: bool,
     pub parameter_errors: Vec<WorkflowParameterError>,
@@ -133,21 +137,21 @@ pub struct WorkflowValidationResponse {
 }
 
 /// A parameter binding failure.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowParameterError {
     pub parameter: String,
     pub reason: String,
 }
 
 /// Node check state. An unavailable check never implies a valid workflow.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowNodeCheck {
     pub status: WorkflowNodeCheckStatus,
     pub missing_classes: Vec<String>,
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNodeCheckStatus {
     Available,
@@ -163,7 +167,7 @@ pub use runs::*;
 
 /// Metadata for a stored reference image. Use `upload_id` as the string value
 /// of an `image_upload` workflow parameter in the runs and validation APIs.
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct UploadResponse {
     /// Content-addressed identifier in the form `sha256:<lowercase hex digest>`.
     pub upload_id: String,

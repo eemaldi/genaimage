@@ -17,6 +17,7 @@ class RunnerTests(unittest.TestCase):
              mock.patch.object(ci_check, 'check_relative_links', return_value=failed_check or []), \
              mock.patch.object(ci_check, 'check_skill_mirrors', return_value=[]) as mirrors, \
              mock.patch.object(ci_check, 'check_skill_lock', return_value=[]), \
+             mock.patch.object(ci_check.check_openapi, 'check', return_value=[]), \
              mock.patch.object(ci_check, 'check_runtime_tooling', return_value=[]) as tooling, \
              mock.patch.object(ci_check, 'run_command', side_effect=command_results or (lambda *args: True)) as run, \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -27,13 +28,18 @@ class RunnerTests(unittest.TestCase):
         result, calls, tooling, _ = self.run_main(False)
         self.assertEqual(result, 0)
         tooling.assert_called_once_with(False)
-        self.assertFalse(any(call.args[1][0] == 'npm' for call in calls))
+        self.assertFalse(any(call.args[1][0] == 'npm' or 'scripts/generate_portal_types.py' in call.args[1] for call in calls))
 
     def test_portal_commands_run_in_order_in_portal_directory(self):
         result, calls, tooling, _ = self.run_main(True)
         self.assertEqual(result, 0)
         tooling.assert_called_once_with(True)
         portal_calls = [(call.args[1], call.args[2]) for call in calls if call.args[1][0] == 'npm']
+        type_check = [ci_check.sys.executable, 'scripts/generate_portal_types.py', '--check']
+        commands = [c.args[1] for c in calls]
+        self.assertLess(commands.index(['npm', 'ci']), commands.index(type_check))
+        self.assertLess(commands.index(type_check), commands.index(['npm', 'run', 'lint']))
+        self.assertEqual(calls[commands.index(type_check)].args[2], Path('/project'))
         self.assertEqual(portal_calls, [
             (['npm', 'ci'], Path('/project/apps/portal')),
             (['npm', 'run', 'lint'], Path('/project/apps/portal')),

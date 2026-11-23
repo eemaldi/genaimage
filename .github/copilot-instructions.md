@@ -5,8 +5,9 @@ Read the repository-root [AGENTS.md](../AGENTS.md) and
 They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
-loopback server currently serves health, workflows, runs, settings and live events; other
-domain endpoints and the embedded Svelte portal are planned. Keep generation orchestration, run state,
+loopback server currently serves health, workflows, runs, outputs, uploads,
+settings, live events and an OpenAPI contract; the embedded Svelte portal is
+planned. Keep generation orchestration, run state,
 provenance and the planned assistant runtime in the core, and ComfyUI transport
 in its adapter.
 
@@ -22,7 +23,8 @@ default to loopback, with explicitly allow-listed private or Compose hosts as
 the only exceptions. Keep documentation and user-facing text in
 English (UK), and respect the performance budgets in ADR 0001.
 
-Run `python3 scripts/ci_check.py` locally. Project-local skills under
+Regenerate the API contract with `cargo run -p genaimage-server --example openapi`;
+portal types are checked when the portal exists. Run `python3 scripts/ci_check.py` locally. Project-local skills under
 `.agents/skills/` are mirrored identically under `.claude/skills/`; keep both
 copies aligned. Keep this file and [AGENTS.md](../AGENTS.md) aligned when
 project direction or tooling changes.

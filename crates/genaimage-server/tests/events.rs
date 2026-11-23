@@ -65,7 +65,11 @@ impl SseClient {
         let frame = self.frame().await.expect("expected core event");
         assert_eq!(field(&frame, "id: "), envelope.id.to_string());
         assert_eq!(field(&frame, "event: "), kind);
-        assert_eq!(data(&frame), serde_json::to_value(envelope).unwrap());
+        let payload = data(&frame);
+        assert_eq!(payload, serde_json::to_value(envelope).unwrap());
+        let documented: genaimage_api::EventEnvelope =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(documented).unwrap(), payload);
     }
 }
 
@@ -85,6 +89,8 @@ fn assert_resync(frame: &str, reason: &str) -> Value {
     assert_eq!(field(frame, "id: "), "");
     let payload = data(frame);
     assert_eq!(payload["reason"], reason);
+    let documented: genaimage_api::ResyncEvent = serde_json::from_value(payload.clone()).unwrap();
+    assert_eq!(serde_json::to_value(documented).unwrap(), payload);
     payload
 }
 

@@ -402,3 +402,26 @@ async fn dot_segment_ids_remain_accessible_without_catalogue_urls() {
     }
     api.shutdown().await;
 }
+
+#[tokio::test]
+async fn malformed_paths_queries_and_json_return_problem_details() {
+    let api = ApiHarness::start().await;
+    for (method, path, body) in [
+        (Method::GET, "/api/v1/workflows/%FF", None),
+        (Method::POST, "/api/v1/workflows/%FF/validate", Some("{}")),
+        (Method::GET, "/api/v1/workflows/%FF/thumbnail", None),
+        (Method::GET, "/api/v1/runs/%FF", None),
+        (Method::GET, "/api/v1/outputs/%FF", None),
+        (Method::GET, "/api/v1/uploads/%FF", None),
+        (Method::GET, "/api/v1/outputs?limit=invalid", None),
+        (Method::POST, "/api/v1/settings/test", Some("{")),
+    ] {
+        let mut request = api.request(method, path);
+        if let Some(body) = body {
+            request = request
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body);
+        }
+        ApiHarness::assert_problem(request.send().await.unwrap(), StatusCode::BAD_REQUEST).await;
+    }
+}

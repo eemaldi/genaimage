@@ -28,6 +28,7 @@ use tracing::Level;
 
 pub use listener::{serve, serve_on_listener};
 pub use problem::Problem;
+pub use routes::openapi;
 
 const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
@@ -116,8 +117,8 @@ pub fn build_app(state: AppState, port: u16) -> Router {
         app_state: state.clone(),
         max_upload_bytes: harness.config().server.max_upload_bytes,
     };
-    Router::new()
-        .nest("/api/v1", routes::api())
+    let (router, _) = routes::router_and_openapi();
+    router
         .with_state(state)
         .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(security, security::protect))

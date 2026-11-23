@@ -7,8 +7,6 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::get,
-    Router,
 };
 use futures_util::{stream, StreamExt};
 use genaimage_core::{Event as CoreEvent, ReceiveError, ResyncReason};
@@ -19,12 +17,9 @@ use crate::{AppState, Problem};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/events", get(events))
-}
-
-#[derive(Deserialize)]
-struct EventQuery {
+#[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(super) struct EventQuery {
     run_id: Option<String>,
     last_event_id: Option<String>,
 }
@@ -37,7 +32,24 @@ fn invalid_cursor() -> Problem {
     )
 }
 
-async fn events(
+#[utoipa::path(
+    get, path = "/events",
+    operation_id = "events_events",
+    tag = "events",
+    description = "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
+    params(EventQuery, ("Last-Event-ID" = Option<String>, Header, description = "Unsigned decimal replay cursor")),
+    responses(
+        (status = 200, description = "SSE frames; JSON data is EventEnvelope or ResyncEvent", body = String, content_type = "text/event-stream"),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn events(
     State(state): State<AppState>,
     headers: HeaderMap,
     query: Result<Query<EventQuery>, QueryRejection>,
