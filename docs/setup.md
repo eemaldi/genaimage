@@ -24,7 +24,7 @@ health reports the image backend as `unavailable` until it responds. Server
 logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
 Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
-Only health is implemented. The portal and other API endpoints are planned.
+Health and settings are available. The portal and other API endpoints are planned.
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.
 Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be
@@ -71,9 +71,8 @@ workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
 see `genaimage.example.toml`. The `serve` command uses `[server]`. LLM
-integration is planned, so its settings do not start or contact an LLM service.
-Set `llm.model` explicitly when that integration becomes available: no model
-is selected automatically.
+inference is planned. The settings connectivity test can check an explicitly
+configured LLM URL, but it does not start a service or select a model.
 The server bind host is restricted to loopback regardless of outbound settings.
 
 State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`,
@@ -86,6 +85,54 @@ workspace and backend endpoint, including when a custom path is used. Changing
 either then requires its original settings or a separate database.
 Uploads is reserved for future use; the current adapter uploads explicit input
 files directly. XDG directories must be absolute.
+
+### Settings API
+
+`GET /api/v1/settings` returns a `settings` map keyed by dotted TOML names.
+Each entry includes its effective `value`, `source` (`default`, `file` or
+`env`), the source `file` or environment `variable` where applicable, and
+`read_only`. Environment overrides and the legacy-state claim flag cannot
+be edited through the API. Only explicitly listed, non-secret settings are
+returned. `config_file` shows the write target.
+
+Send a sparse JSON object to `PUT /api/v1/settings`, for example
+`{"comfyui.base_url":"http://127.0.0.1:8189","server.port":3001}`. Omitted
+keys are unchanged. Invalid, unknown or changed read-only keys return 422
+with a problem JSON `errors` array containing `key` and `reason` for each
+issue. Saves edit the file selected at server startup (following the
+precedence above), or create the XDG configuration file if none was selected.
+The server preserves untouched TOML and existing comments where possible,
+syncs a temporary file in the same directory, then renames it over the target.
+It does not fall back to another file if the target is unwritable. If the file
+has changed on disk, the save is refused; restart to load the external edits.
+
+GET and PUT list staged changes in `restart_required`. Each affected entry
+has the saved `value` and the current `active_value`. All `[server]` and
+`[paths]` settings, plus `comfyui.base_url` and `comfyui.allowed_hosts`, take
+effect on restart, even if the current database is empty. ComfyUI request and
+WebSocket reconnect timings apply live without changing the active endpoint
+or its pinned DNS addresses.
+
+On restart, the existing database ownership check still applies. Before
+switching endpoints, finish or reconcile outstanding runs and set a separate
+`paths.state_database` in the same update. A database bound to a different
+workspace or endpoint (even if empty) returns 409. Choose a new path or a
+compatible database, or use the CLI and follow the migration instructions.
+Existing files are checked read-only and must be empty or have a supported
+GenAImage schema. The file and its directory must be writable (SQLite needs
+WAL sidecar files); for a new path, the nearest existing directory must be
+writable. Invalid targets return 422. Saving does not create or migrate a database.
+
+`POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
+saved settings). It tests ComfyUI and a configured LLM without saving or
+changing the running adapter. The probes run concurrently with a two-second
+budget each. The LLM probe sends an unauthenticated `GET` to `{base}/models`,
+or `/v1/models` if the URL has no base path. It reports `ok` for an HTTP 2xx
+response, `unavailable` if the probe fails, and `not_configured` if
+`llm.base_url` is unset or empty. Both probes pin validated loopback addresses
+and never follow redirects or use proxies. The API accepts only loopback URLs
+for new endpoints and for probes; configure allow-listed private/Compose hosts
+via the file or environment instead.
 
 ### Environment overrides
 
@@ -123,9 +170,8 @@ model = "your-explicit-model"
 Allow-listing never permits public addresses. The ComfyUI adapter resolves all
 addresses on the first network operation (with a bounded DNS lookup), rejects
 any public result and pins HTTP and WebSocket connections to the validated
-addresses. HTTP redirects and proxies are disabled. Offline commands do not
-resolve service names. The future LLM adapter must use the
-same resolved-address policy; its endpoint is not contacted today.
+addresses. HTTP redirects and proxies are disabled. Offline commands do not resolve service names. The settings LLM probe
+uses the same address validation and pinning, restricted to loopback.
 
 ### Migrating legacy configuration and data
 

@@ -50,19 +50,18 @@ struct PinnedConnection {
 
 impl ComfyUiClient {
     pub fn new(profile: &ComfyUiProfile) -> Result<Self> {
-        let mut base_url = profile.validate_base_url()?;
-        if !base_url.path().ends_with('/') {
-            let path = format!("{}/", base_url.path());
-            base_url.set_path(&path);
-        }
         Ok(Self {
-            base_url,
+            base_url: profile.endpoint_url()?,
             profile: profile.clone(),
             connection: Arc::new(OnceCell::new()),
             dns: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             test_addresses: None,
         })
+    }
+
+    fn request_timeout(&self) -> Duration {
+        Duration::from_secs(self.profile.request_timeout_seconds)
     }
 
     async fn connection(&self) -> Result<&PinnedConnection> {
@@ -127,7 +126,6 @@ impl ComfyUiClient {
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .resolve_to_addrs(host, &addresses)
-            .timeout(Duration::from_secs(self.profile.request_timeout_seconds))
             .build()
             .map_err(|error| HarnessError::ComfyUi(format!("cannot build HTTP client: {error}")))?;
         Ok(PinnedConnection { http, addresses })
@@ -142,6 +140,18 @@ impl ImageBackend for ComfyUiClient {
 
     fn base_url(&self) -> &str {
         self.base_url.as_str()
+    }
+
+    fn with_timing(
+        &self,
+        request_timeout_seconds: u64,
+        websocket_reconnect_seconds: u64,
+    ) -> Option<Arc<dyn ImageBackend>> {
+        // Cloning retains the in-progress DNS lookup, validated addresses and client pool.
+        let mut updated = self.clone();
+        updated.profile.request_timeout_seconds = request_timeout_seconds;
+        updated.profile.websocket_reconnect_seconds = websocket_reconnect_seconds;
+        Some(Arc::new(updated))
     }
 
     async fn health(&self) -> Result<BackendHealth> {
@@ -174,6 +184,7 @@ impl ImageBackend for ComfyUiClient {
             .await?
             .http
             .post(self.endpoint("prompt")?)
+            .timeout(self.request_timeout())
             .json(&json!({
                 "prompt": workflow,
                 "client_id": client_id,
@@ -235,6 +246,7 @@ impl ImageBackend for ComfyUiClient {
             .await?
             .http
             .post(self.endpoint("upload/image")?)
+            .timeout(self.request_timeout())
             .multipart(form)
             .send()
             .await
@@ -357,7 +369,14 @@ impl ComfyUiClient {
         let url = self.endpoint(path)?;
         let mut last_error = String::new();
         for attempt in 1..=attempts {
-            let response = self.connection().await?.http.get(url.clone()).send().await;
+            let response = self
+                .connection()
+                .await?
+                .http
+                .get(url.clone())
+                .timeout(self.request_timeout())
+                .send()
+                .await;
             match response {
                 Ok(response) if response.status().is_success() => {
                     return response.json::<Value>().await.map_err(|error| {
@@ -389,7 +408,14 @@ impl ComfyUiClient {
     async fn get_bytes(&self, url: Url) -> Result<Vec<u8>> {
         let mut last_error = String::new();
         for attempt in 1..=MAX_SAFE_READ_ATTEMPTS {
-            let response = self.connection().await?.http.get(url.clone()).send().await;
+            let response = self
+                .connection()
+                .await?
+                .http
+                .get(url.clone())
+                .timeout(self.request_timeout())
+                .send()
+                .await;
             match response {
                 Ok(response) if response.status().is_success() => {
                     return response
@@ -428,6 +454,7 @@ impl ComfyUiClient {
             .await?
             .http
             .post(url)
+            .timeout(self.request_timeout())
             .json(body)
             .send()
             .await
@@ -638,7 +665,7 @@ mod tests {
         assert_eq!(event.maximum, Some(20));
     }
     #[tokio::test]
-    async fn http_and_websocket_use_the_same_validated_dns_answers() {
+    async fn timing_reload_reuses_validated_dns_answers_for_http_and_websocket() {
         use super::{ComfyUiClient, ComfyUiProfile, ImageBackend};
         use futures_util::SinkExt;
         use std::{
@@ -694,6 +721,7 @@ mod tests {
         *answers.lock().unwrap() = vec![address];
         client.health().await.unwrap();
         *answers.lock().unwrap() = vec![public];
+        let client = client.with_timing(1, 1).unwrap();
         client.health().await.unwrap();
         let mut events = client.monitor_events("client").await.unwrap();
         let event = timeout(Duration::from_secs(2), events.recv())

@@ -81,7 +81,8 @@ fn event_response(
     cursor: Option<u64>,
     heartbeat_interval: Duration,
 ) -> Response {
-    let bus = state.harness.events();
+    let harness = state.harness();
+    let bus = harness.events();
     // The core takes the replay snapshot and subscribes to live delivery under
     // the same lock, so the two cannot overlap or leave a gap.
     let subscription = match cursor {

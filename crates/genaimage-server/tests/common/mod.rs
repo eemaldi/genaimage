@@ -37,6 +37,10 @@ impl ApiHarness {
     }
 
     pub async fn start_with_backend_timeout(seconds: u64) -> Self {
+        Self::start_with_config(seconds, &[]).await
+    }
+
+    pub async fn start_with_config(seconds: u64, env: &[(&str, &str)]) -> Self {
         let workspace = TempDir::new().expect("temporary workspace");
         let fake = FakeComfyState::default();
         let backend = FakeComfyServer::start(fake.clone()).await;
@@ -48,7 +52,7 @@ impl ApiHarness {
         std::fs::write(
             &config_path,
             format!(
-                "[server]\nport = {}\nmax_upload_bytes = {}\n\
+                "# API fixture configuration\n[server]\nport = {} # listener\nmax_upload_bytes = {}\n\
                  [comfyui]\nbase_url = \"http://{}\"\nrequest_timeout_seconds = {}\n\
                  websocket_reconnect_seconds = 1\n\
                  [paths]\nstate_database = \"state.sqlite3\"\nworkflows = \"workflows\"\n\
@@ -65,9 +69,14 @@ impl ApiHarness {
             workspace.path(),
             Some(&config_path),
             workspace.path(),
-            |key| match key {
-                "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(root.clone()),
-                _ => None,
+            |key| {
+                env.iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| (*value).to_owned())
+                    .or_else(|| {
+                        matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME")
+                            .then(|| root.clone())
+                    })
             },
         )
         .unwrap();
@@ -179,7 +188,7 @@ impl ApiHarness {
 
     /// Submit explicitly through core until the HTTP run route exists.
     pub async fn submit_run(&self, request: RunRequest) -> genaimage_core::Result<RunRecord> {
-        self.core.submit(request).await
+        self.state.harness().submit(request).await
     }
 
     pub fn subscribe(&self) -> EventSubscription {

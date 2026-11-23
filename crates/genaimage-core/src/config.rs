@@ -11,6 +11,9 @@ use url::{Host, Url};
 
 use crate::{HarnessError, Result};
 
+mod settings;
+pub use settings::{SettingIssue, SettingSource, SettingsUpdate};
+
 const PROJECT_CONFIG: &str = "genaimage.toml";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -40,7 +43,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComfyUiProfile {
     pub base_url: String,
@@ -52,6 +55,16 @@ pub struct ComfyUiProfile {
 impl ComfyUiProfile {
     pub fn validate_base_url(&self) -> Result<Url> {
         validate_endpoint("comfyui.base_url", &self.base_url, &self.allowed_hosts)
+    }
+
+    /// Canonical ComfyUI base URL used by the adapter and database identity.
+    pub fn endpoint_url(&self) -> Result<Url> {
+        let mut url = self.validate_base_url()?;
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        Ok(url)
     }
 
     pub fn validate_addresses(&self, addresses: &[SocketAddr]) -> Result<()> {
@@ -75,22 +88,12 @@ impl Default for ComfyUiProfile {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
     pub allowed_hosts: Vec<String>,
-}
-
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://127.0.0.1:11434/v1".into(),
-            model: String::new(),
-            allowed_hosts: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -113,6 +116,8 @@ pub struct ResolvedConfig {
     pub runs: PathBuf,
     pub uploads: PathBuf,
     pub claim_legacy_state: bool,
+    #[serde(skip)]
+    settings: settings::Metadata,
 }
 
 impl HarnessConfig {
@@ -170,20 +175,40 @@ impl HarnessConfig {
                 .join(PROJECT_CONFIG);
             path.exists().then_some(path)
         };
-        let mut config: Self = if let Some(path) = chosen {
-            let path = if path.is_absolute() {
-                path
-            } else {
-                cwd.join(path)
-            };
-            let source = fs::read_to_string(&path).map_err(|e| {
+        let has_file = chosen.is_some();
+        let target = match chosen {
+            Some(path) => {
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    cwd.join(path)
+                };
+                path.canonicalize().map_err(|error| {
+                    invalid(
+                        "config",
+                        &path.display().to_string(),
+                        &format!("select a readable configuration file ({error})"),
+                    )
+                })?
+            }
+            None => xdg("XDG_CONFIG_HOME", ".config")?
+                .join("genaimage")
+                .join(PROJECT_CONFIG),
+        };
+        let source = if has_file {
+            Some(fs::read_to_string(&target).map_err(|error| {
                 invalid(
                     "config",
-                    &path.display().to_string(),
-                    &format!("select a readable configuration file ({e})"),
+                    &target.display().to_string(),
+                    &format!("select a readable configuration file ({error})"),
                 )
-            })?;
-            toml::from_str(&source).map_err(|e| HarnessError::Configuration(format!("config '{}' is invalid: {e}; use the documented [server], [comfyui], [llm] and [paths] keys; migrate legacy profiles explicitly (see docs/setup.md)", path.display())))?
+            })?)
+        } else {
+            None
+        };
+        let mut settings = settings::Metadata::new(target, source.as_deref());
+        let mut config: Self = if let Some(source) = source {
+            toml::from_str(&source).map_err(|e| HarnessError::Configuration(format!("config '{}' is invalid: {e}; use the documented [server], [comfyui], [llm] and [paths] keys; migrate legacy profiles explicitly (see docs/setup.md)", settings.target.display())))?
         } else {
             Self::default()
         };
@@ -197,6 +222,7 @@ impl HarnessConfig {
         macro_rules! text {
             ($key:literal, $target:expr) => {
                 if let Some(v) = env($key) {
+                    settings.mark_env(stringify!($target), $key);
                     $target = v;
                 }
             };
@@ -204,6 +230,7 @@ impl HarnessConfig {
         macro_rules! number {
             ($key:literal, $target:expr) => {
                 if let Some(v) = env($key) {
+                    settings.mark_env(stringify!($target), $key);
                     $target = v
                         .parse()
                         .map_err(|_| invalid($key, &v, "use a non-negative integer in range"))?;
@@ -213,6 +240,7 @@ impl HarnessConfig {
         macro_rules! path {
             ($key:literal, $target:expr) => {
                 if let Some(v) = env($key) {
+                    settings.mark_env(stringify!($target), $key);
                     $target = Some(PathBuf::from(v));
                 }
             };
@@ -220,6 +248,7 @@ impl HarnessConfig {
         macro_rules! hosts {
             ($key:literal, $target:expr) => {
                 if let Some(v) = env($key) {
+                    settings.mark_env(stringify!($target), $key);
                     $target = if v.trim().is_empty() {
                         Vec::new()
                     } else {
@@ -254,56 +283,15 @@ impl HarnessConfig {
         path!("GENAIMAGE_WORKFLOWS", config.paths.workflows);
         path!("GENAIMAGE_RUNS", config.paths.runs);
         path!("GENAIMAGE_UPLOADS", config.paths.uploads);
-        if !is_loopback_name(&config.server.host) {
-            return Err(invalid(
-                "server.host",
-                &config.server.host,
-                "bind to a loopback host: localhost, 127.0.0.0/8 or ::1",
-            ));
+        if let Some(error) = validate_fields(&config.server, &config.comfyui, &config.llm)
+            .into_iter()
+            .next()
+        {
+            return Err(error);
         }
-        if config.server.port == 0 {
-            return Err(invalid("server.port", "0", "choose a port from 1 to 65535"));
-        }
-        if config.server.max_upload_bytes == 0 {
-            return Err(invalid(
-                "server.max_upload_bytes",
-                "0",
-                "use a positive byte limit",
-            ));
-        }
-        if config.comfyui.request_timeout_seconds == 0 {
-            return Err(invalid(
-                "comfyui.request_timeout_seconds",
-                "0",
-                "use a positive timeout",
-            ));
-        }
-        if config.comfyui.websocket_reconnect_seconds == 0 {
-            return Err(invalid(
-                "comfyui.websocket_reconnect_seconds",
-                "0",
-                "use a positive delay",
-            ));
-        }
-        config.comfyui.validate_base_url()?;
-        validate_endpoint(
-            "llm.base_url",
-            &config.llm.base_url,
-            &config.llm.allowed_hosts,
-        )?;
         let data = xdg("XDG_DATA_HOME", ".local/share")?.join("genaimage");
-        let resolve = |key: &str, path: Option<PathBuf>, default: PathBuf| -> Result<PathBuf> {
-            let path = path.unwrap_or(default);
-            if path.as_os_str().is_empty() {
-                return Err(invalid(key, "", "provide a non-empty path"));
-            }
-            Ok(if path.is_absolute() {
-                path
-            } else {
-                workspace.join(path)
-            })
-        };
-        let claim_legacy_state = match env("GENAIMAGE_CLAIM_LEGACY_STATE").as_deref() {
+        let claim = env("GENAIMAGE_CLAIM_LEGACY_STATE");
+        let claim_legacy_state = match claim.as_deref() {
             None | Some("0") => false,
             Some("1") => true,
             Some(value) => {
@@ -314,22 +302,38 @@ impl HarnessConfig {
                 ))
             }
         };
+        if claim.is_some() {
+            settings.mark_env("claim_legacy_state", "GENAIMAGE_CLAIM_LEGACY_STATE");
+        }
         let workspace_id = hex::encode(Sha256::digest(workspace.as_os_str().as_encoded_bytes()));
         let workspace_data = data.join("workspaces").join(workspace_id);
         Ok(ResolvedConfig {
             claim_legacy_state,
-            state_database: resolve(
+            settings,
+            state_database: resolve_path(
+                &workspace,
                 "paths.state_database",
                 config.paths.state_database,
                 workspace_data.join("state.sqlite3"),
             )?,
-            workflows: resolve(
+            workflows: resolve_path(
+                &workspace,
                 "paths.workflows",
                 config.paths.workflows,
                 PathBuf::from("workflows/comfyui"),
             )?,
-            runs: resolve("paths.runs", config.paths.runs, workspace_data.join("runs"))?,
-            uploads: resolve("paths.uploads", config.paths.uploads, data.join("uploads"))?,
+            runs: resolve_path(
+                &workspace,
+                "paths.runs",
+                config.paths.runs,
+                workspace_data.join("runs"),
+            )?,
+            uploads: resolve_path(
+                &workspace,
+                "paths.uploads",
+                config.paths.uploads,
+                data.join("uploads"),
+            )?,
             workspace,
             server: config.server,
             comfyui: config.comfyui,
@@ -340,6 +344,67 @@ impl HarnessConfig {
     pub fn example() -> String {
         include_str!("../../../genaimage.example.toml").to_owned()
     }
+}
+
+fn validate_fields(
+    server: &ServerConfig,
+    comfyui: &ComfyUiProfile,
+    llm: &LlmConfig,
+) -> Vec<HarnessError> {
+    let mut errors = Vec::new();
+    if !is_loopback_name(&server.host) {
+        errors.push(invalid(
+            "server.host",
+            &server.host,
+            "bind to a loopback host: localhost, 127.0.0.0/8 or ::1",
+        ));
+    }
+    if server.port == 0 {
+        errors.push(invalid("server.port", "0", "choose a port from 1 to 65535"));
+    }
+    if server.max_upload_bytes == 0 {
+        errors.push(invalid(
+            "server.max_upload_bytes",
+            "0",
+            "use a positive byte limit",
+        ));
+    }
+    if comfyui.request_timeout_seconds == 0 {
+        errors.push(invalid(
+            "comfyui.request_timeout_seconds",
+            "0",
+            "use a positive timeout",
+        ));
+    }
+    if comfyui.websocket_reconnect_seconds == 0 {
+        errors.push(invalid(
+            "comfyui.websocket_reconnect_seconds",
+            "0",
+            "use a positive delay",
+        ));
+    }
+    errors.extend(comfyui.validate_base_url().err());
+    if !llm.base_url.is_empty() {
+        errors.extend(validate_endpoint("llm.base_url", &llm.base_url, &llm.allowed_hosts).err());
+    }
+    errors
+}
+
+fn resolve_path(
+    workspace: &Path,
+    key: &str,
+    path: Option<PathBuf>,
+    default: PathBuf,
+) -> Result<PathBuf> {
+    let path = path.unwrap_or(default);
+    if path.as_os_str().is_empty() {
+        return Err(invalid(key, "", "provide a non-empty path"));
+    }
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    })
 }
 
 #[derive(Default, Deserialize)]
@@ -391,7 +456,11 @@ fn check_legacy_workspace_config(workspace: &Path) -> Result<()> {
 }
 
 fn invalid(key: &str, value: &str, fix: &str) -> HarnessError {
-    HarnessError::Configuration(format!("{key}='{value}': {fix}"))
+    HarnessError::InvalidSetting {
+        key: key.into(),
+        value: value.into(),
+        reason: fix.into(),
+    }
 }
 
 fn is_loopback_name(host: &str) -> bool {
@@ -477,7 +546,7 @@ pub fn validate_endpoint(key: &str, value: &str, allowed_hosts: &[String]) -> Re
             key,
             value,
             &format!(
-                "add '{hostname}' to {}.allowed_hosts for a private or Compose host",
+                "add the hostname to {}.allowed_hosts for a private or Compose host",
                 key.split('.').next().unwrap_or(key)
             ),
         ));

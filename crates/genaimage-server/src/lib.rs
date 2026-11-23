@@ -4,6 +4,7 @@ mod listener;
 mod problem;
 mod routes;
 mod security;
+mod settings;
 
 use std::sync::Arc;
 
@@ -27,16 +28,21 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 #[derive(Clone)]
 pub struct AppState {
-    harness: Arc<Harness>,
+    settings: Arc<settings::SettingsState>,
     shutdown: watch::Sender<bool>,
 }
 
 impl AppState {
     pub fn new(harness: Arc<Harness>) -> Self {
         Self {
-            harness,
+            settings: Arc::new(settings::SettingsState::new(harness)),
             shutdown: watch::Sender::new(false),
         }
+    }
+
+    /// Snapshot the active harness once per request or background operation.
+    pub fn harness(&self) -> Arc<Harness> {
+        self.settings.harness()
     }
 
     /// Starts graceful draining and notifies long-lived handlers. Idempotent.
@@ -59,11 +65,12 @@ impl AppState {
 /// Builds the application without opening a socket or installing signal handlers.
 /// `port` must be the actual listener port (or the intended port for in-process callers).
 pub fn build_app(state: AppState, port: u16) -> Router {
+    let harness = state.harness();
     let security = security::SecurityConfig {
         port,
-        bind_host: state.harness.config().server.host.parse().ok(),
+        bind_host: harness.config().server.host.parse().ok(),
         app_state: state.clone(),
-        max_upload_bytes: state.harness.config().server.max_upload_bytes,
+        max_upload_bytes: harness.config().server.max_upload_bytes,
     };
     Router::new()
         .nest("/api/v1", routes::api())
