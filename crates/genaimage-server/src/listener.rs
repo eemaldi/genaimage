@@ -11,8 +11,9 @@ pub async fn serve(state: AppState) -> io::Result<()> {
     let listener = bind_loopback(&config.host, config.port).await?;
     let signal = shutdown_signal()?;
     let shutdown = state.shutdown.clone();
-    tracing::info!(address = %listener.local_addr()?, "GenAImage server listening");
-    axum::serve(listener, build_app(state))
+    let address = listener.local_addr()?;
+    tracing::info!(%address, "GenAImage server listening");
+    axum::serve(listener, build_app(state, address.port()))
         .with_graceful_shutdown(async move {
             signal.await;
             shutdown.send_replace(true);

@@ -52,7 +52,8 @@ orchestration or assistant logic.
 `127.0.0.1:3000`). It validates each resolved address before binding. `build_app`
 assembles `/api/v1` from per-domain routers sharing an `AppState` with an
 `Arc<Harness>`. Tests can call the router in-process or serve it on an ephemeral
-loopback listener without installing process signal handlers.
+loopback listener without installing process signal handlers. Pass its actual
+port to `build_app`; in-process callers must provide the intended port.
 
 - `GET /api/v1/health` returns HTTP 200 while the server is running, with `self`
   set to `ok`, `image_backend` set to `ok` or `unavailable`, and `llm` set to
@@ -66,8 +67,30 @@ loopback listener without installing process signal handlers.
   in-flight requests without changing stored run statuses. Long-lived handlers
   can await `AppState::wait_for_shutdown` to close their streams as draining starts.
 
+The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
+Host headers for its actual port, plus the configured bind IP when it is a
+loopback address. Other loopback IPs are not implicitly allowed. For HTTP port
+80, the port may be omitted from Host and Origin; equivalent IPv6 spellings
+are accepted. Mutating requests must have a
+same-origin `Origin` when present, and `Sec-Fetch-Site` must be `same-origin`
+when present. Browser-indicating requests missing both are rejected. Local
+non-browser clients without either header are allowed; these checks are not
+authentication, and do not protect against local clients forging headers or
+legacy browsers that supply no recognisable browser headers. There is no CORS
+allow-list. Responses include a same-origin CSP, nosniff, no-referrer and frame
+protection, including on errors.
+
+Bodies are bounded before dispatch, including streamed bodies without a length
+header: 1 MiB by default, or `[server] max_upload_bytes` for the planned
+`/api/v1/uploads` route. Bodies are buffered up to that limit. Future routes
+that need a different limit must add their path to `security::body_limit` and
+consider the memory cost; Axum extractor limits are disabled because this
+middleware enforces the limit for all handlers. Each body must arrive within
+30 seconds or receives 408; body reads are cancelled with 503 when graceful
+shutdown starts, so a stalled upload cannot prevent draining.
+
 Workflows, runs, events (SSE), outputs, uploads, settings and OpenAPI endpoints
-are planned, as are the browser portal and its additional request hardening.
+are planned, as is the browser portal.
 
 ## Providers, extensions and deployment
 

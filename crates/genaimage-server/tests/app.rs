@@ -36,7 +36,7 @@ async fn app(workspace: &TempDir, backend_url: String) -> Router {
         .unwrap();
     let backend = ComfyUiClient::new(&config.comfyui).unwrap();
     let harness = Harness::new_async(config, Arc::new(backend)).await.unwrap();
-    build_app(AppState::new(harness.into()))
+    build_app(AppState::new(harness.into()), 3000)
 }
 
 async fn health_json(response: Response) -> Value {
@@ -60,6 +60,7 @@ async fn health_reports_a_reachable_fake_backend_and_echoes_request_id() {
         .await
         .oneshot(
             Request::get("/api/v1/health")
+                .header(header::HOST, "127.0.0.1:3000")
                 .header("x-request-id", "health-check")
                 .body(Body::empty())
                 .unwrap(),
@@ -89,7 +90,12 @@ async fn health_reports_an_unreachable_backend_and_generates_request_ids() {
     for _ in 0..2 {
         let response = router
             .clone()
-            .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/api/v1/health")
+                    .header(header::HOST, "127.0.0.1:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         ids.push(response.headers()["x-request-id"].clone());
@@ -123,7 +129,12 @@ async fn health_times_out_when_the_backend_accepts_but_does_not_respond() {
     let router = app(&workspace, url).await;
     let response = timeout(
         Duration::from_secs(5),
-        router.oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap()),
+        router.oneshot(
+            Request::get("/api/v1/health")
+                .header(header::HOST, "127.0.0.1:3000")
+                .body(Body::empty())
+                .unwrap(),
+        ),
     )
     .await
     .expect("health should return before the general backend timeout")
@@ -154,7 +165,12 @@ async fn api_routing_errors_are_problem_details() {
     ] {
         let response = router
             .clone()
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(
+                request
+                    .header(header::HOST, "127.0.0.1:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), status);

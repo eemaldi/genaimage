@@ -703,9 +703,11 @@ name = "genaimage-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "genaimage-api",
  "genaimage-comfyui",
  "genaimage-core",
+ "http-body-util",
  "serde_json",
  "tempfile",
  "tokio",

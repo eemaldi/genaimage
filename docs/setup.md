@@ -25,6 +25,24 @@ logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
 Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
 Only health is implemented. The portal and other API endpoints are planned.
+Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
+or the configured loopback bind IP as the Host, with the actual listener port.
+Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be
+omitted from Host and Origin. A rejected Host returns 421.
+Mutating browser requests require a same-origin `Origin` or
+`Sec-Fetch-Site: same-origin`; conflicting or cross-site headers return 403.
+Local CLI and curl requests with neither header are allowed unless they carry
+browser indicators (other `Sec-Fetch-*` headers or a `Mozilla/` user agent).
+This is not authentication: legacy browsers without recognisable headers and
+local programs that forge headers cannot be distinguished from CLI clients.
+Avoid untrusted local applications and old browsers. There is no permissive CORS.
+
+Request bodies are limited to 1 MiB by default. The planned upload route uses
+`server.max_upload_bytes` (default 33,554,432 bytes, or 32 MiB); its limit is
+configurable now but uploads are not yet implemented. Oversized requests return
+413. Bodies must arrive within 30 seconds (408 on timeout); outstanding reads
+are cancelled with 503 when shutdown begins. Bodies are buffered within their
+limit, so consider available memory before increasing it.
 
 ## 2. Configuration
 
@@ -77,6 +95,7 @@ comma-separated; an empty value clears the list.
 | Setting | Environment variable |
 | --- | --- |
 | `server.host`, `server.port` | `GENAIMAGE_SERVER_HOST`, `GENAIMAGE_SERVER_PORT` |
+| `server.max_upload_bytes` | `GENAIMAGE_SERVER_MAX_UPLOAD_BYTES` |
 | `comfyui.base_url` | `GENAIMAGE_COMFYUI_URL` |
 | `comfyui.request_timeout_seconds` | `GENAIMAGE_COMFYUI_REQUEST_TIMEOUT_SECONDS` |
 | `comfyui.websocket_reconnect_seconds` | `GENAIMAGE_COMFYUI_WEBSOCKET_RECONNECT_SECONDS` |
