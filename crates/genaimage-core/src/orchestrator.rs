@@ -15,7 +15,10 @@ use crate::{
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse},
-    persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
+    persistence::{
+        database_matches_settings, NewRun, OutputRecord, RunEvent, RunRecord, RunRepository,
+        RunStatus,
+    },
     workflow::{GenerationMode, LoadedWorkflow, WorkflowManifest},
     Event, EventBus, HarnessError, Result,
 };
@@ -154,6 +157,30 @@ impl Harness {
     /// pool and serialise publishers. Listener, storage and endpoint identity
     /// are fixed until restart, when database ownership is checked again.
     pub fn apply_settings(&self, update: SettingsUpdate) -> Result<(ResolvedConfig, Self)> {
+        if update.validate_database_path()? {
+            let proposed = update.config();
+            let endpoint = proposed.comfyui.endpoint_url()?;
+            let path = &proposed.state_database;
+            let compatible = database_matches_settings(
+                path,
+                proposed.workspace.to_str().expect("validated workspace"),
+                self.backend.name(),
+                endpoint.as_str(),
+            )
+            .map_err(|_| HarnessError::InvalidSetting {
+                key: "paths.state_database".into(),
+                value: path.display().to_string(),
+                reason:
+                    "use an empty SQLite database, a supported GenAImage database or a new file"
+                        .into(),
+            })?;
+            if !compatible {
+                return Err(HarnessError::SettingsDatabaseConflict {
+                    key: if endpoint.as_str() != self.backend.base_url() { "comfyui.base_url" } else { "paths.state_database" },
+                    reason: "The selected state database is owned by a different workspace or endpoint, or contains unclaimed legacy runs.",
+                });
+            }
+        }
         let saved = update.persist()?;
         let mut live = self.clone();
         live.config.llm = saved.llm.clone();

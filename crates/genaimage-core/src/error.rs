@@ -16,6 +16,11 @@ pub enum HarnessError {
     },
     #[error("{0}")]
     SettingsConflict(&'static str),
+    #[error("{reason}")]
+    SettingsDatabaseConflict {
+        key: &'static str,
+        reason: &'static str,
+    },
     #[error("workflow validation failed: {0}")]
     Workflow(String),
     #[error("ComfyUI request failed: {0}")]

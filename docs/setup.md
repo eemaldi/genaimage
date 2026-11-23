@@ -114,10 +114,13 @@ WebSocket reconnect timings apply live without changing the active endpoint
 or its pinned DNS addresses.
 
 On restart, the existing database ownership check still applies. Before
-switching endpoints, finish or reconcile outstanding runs and select a separate
-`paths.state_database` if the old database contains runs. Saving validates
-that the database target is a regular file or a new file under directory
-ancestors. It does not create, open or migrate a database.
+switching endpoints, finish or reconcile outstanding runs and set a separate
+`paths.state_database` in the same update. A database bound to a different
+workspace or endpoint (even if empty) returns 409. Choose a new path or a
+compatible database, or use the CLI and follow the migration instructions.
+Existing files are checked read-only and must be empty or have a supported
+GenAImage schema; incompatible files return 422. Saving does not create or
+migrate a database.
 
 `POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
 saved settings). It tests ComfyUI and a configured LLM without saving or

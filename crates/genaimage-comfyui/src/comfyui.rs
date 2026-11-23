@@ -50,13 +50,8 @@ struct PinnedConnection {
 
 impl ComfyUiClient {
     pub fn new(profile: &ComfyUiProfile) -> Result<Self> {
-        let mut base_url = profile.validate_base_url()?;
-        if !base_url.path().ends_with('/') {
-            let path = format!("{}/", base_url.path());
-            base_url.set_path(&path);
-        }
         Ok(Self {
-            base_url,
+            base_url: profile.endpoint_url()?,
             profile: profile.clone(),
             connection: Arc::new(OnceCell::new()),
             dns: Arc::new(Mutex::new(None)),

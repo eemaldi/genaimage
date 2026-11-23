@@ -117,7 +117,6 @@ impl SettingsState {
         if !update.has_edits() {
             return Ok(self.get());
         }
-        update.validate_storage().map_err(invalid_settings)?;
         let active = self.harness();
         let (desired, new_active) = active.apply_settings(update).map_err(|error| match error {
             HarnessError::SettingsConflict(detail) => Problem::new(
@@ -125,6 +124,12 @@ impl SettingsState {
                 detail,
                 "Resolve the configuration conflict and try again.",
             ),
+            HarnessError::SettingsDatabaseConflict { key, reason } => Problem::new(
+                StatusCode::CONFLICT,
+                "The proposed endpoint and state database are incompatible.",
+                "Also set paths.state_database to a separate, compatible or new database, or use the CLI and follow the migration instructions.",
+            ).with_errors(vec![SettingError { key: key.into(), reason: reason.into() }]),
+            HarnessError::InvalidSetting { key, reason, .. } => invalid_settings(vec![SettingIssue { key, reason }]),
             _ => save_failed(),
         })?;
         let snapshot = Snapshot {

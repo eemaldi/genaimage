@@ -275,10 +275,10 @@ impl SettingsUpdate {
         }
     }
 
-    /// Check the database path without opening, creating or migrating a database.
-    pub fn validate_storage(&self) -> std::result::Result<(), Vec<SettingIssue>> {
+    /// Check the target and its ancestors, returning whether the database exists.
+    pub(crate) fn validate_database_path(&self) -> Result<bool> {
         let target = &self.config.state_database;
-        let error = |reason| vec![SettingIssue::new("paths.state_database", reason)];
+        let error = |reason| invalid("paths.state_database", &target.to_string_lossy(), reason);
         let file_reason = "use a regular file or a path to a new database file";
         if matches!(
             target
@@ -290,13 +290,14 @@ impl SettingsUpdate {
             return Err(error(file_reason));
         }
         let ancestors: Vec<_> = target.ancestors().collect();
+        let mut exists = false;
         for path in ancestors.into_iter().rev() {
             let database = path == target;
             match fs::metadata(path) {
                 Ok(metadata)
                     if (database && metadata.is_file()) || (!database && metadata.is_dir()) =>
                 {
-                    continue
+                    exists |= database;
                 }
                 // A missing component is fine; a dangling link is not.
                 Err(error)
@@ -315,7 +316,7 @@ impl SettingsUpdate {
                 }
             }
         }
-        Ok(())
+        Ok(exists)
     }
 
     /// Atomically replace only the known changed values, refusing a stale source.

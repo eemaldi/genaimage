@@ -482,6 +482,7 @@ async fn settings_stage_endpoint_even_with_empty_database_and_apply_timing_live(
     let patch = json!({
         "comfyui.base_url": format!("http://{}", alternate.address()),
         "server.port": new_port,
+        "paths.state_database": "next.sqlite3",
         "comfyui.request_timeout_seconds": 1,
     });
     let probe: SettingsTestResponse = api.post_json(TEST_SETTINGS, &patch).await;
@@ -490,6 +491,16 @@ async fn settings_stage_endpoint_even_with_empty_database_and_apply_timing_live(
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let health: HealthResponse = api.get_json("/api/v1/health").await;
     assert_eq!(health.image_backend, HealthStatus::Unavailable);
+
+    let rejected = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"comfyui.base_url": format!("http://{}", alternate.address())}))
+        .send()
+        .await
+        .unwrap();
+    let conflict = ApiHarness::assert_problem(rejected, StatusCode::CONFLICT).await;
+    assert_eq!(conflict.errors[0].key, "comfyui.base_url");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 
     let mut events = api.subscribe();
     let saved = api
@@ -500,7 +511,10 @@ async fn settings_stage_endpoint_even_with_empty_database_and_apply_timing_live(
         .unwrap();
     assert_eq!(saved.status(), StatusCode::OK);
     let saved: SettingsResponse = saved.json().await.unwrap();
-    assert_eq!(saved.restart_required, ["comfyui.base_url", "server.port"]);
+    assert_eq!(
+        saved.restart_required,
+        ["comfyui.base_url", "paths.state_database", "server.port"]
+    );
     assert_eq!(
         saved.settings["server.port"].active_value,
         Some(json!(port))
@@ -516,9 +530,9 @@ async fn settings_stage_endpoint_even_with_empty_database_and_apply_timing_live(
     let edited = std::fs::read_to_string(&path).unwrap();
     assert!(edited.starts_with("# API fixture configuration\n"));
     assert!(edited.contains(&format!("port = {new_port} # listener\n")));
-    assert!(edited.contains("state_database = \"state.sqlite3\""));
+    assert!(edited.contains("state_database = \"next.sqlite3\""));
     ApiHarness::await_event(&mut events, Duration::from_secs(2), |e| {
-        matches!(&e.event, Event::SettingsChanged { settings } if settings["restart_required"] == json!(["comfyui.base_url", "server.port"]))
+        matches!(&e.event, Event::SettingsChanged { settings } if settings["restart_required"] == json!(["comfyui.base_url", "paths.state_database", "server.port"]))
     }).await;
     let health: HealthResponse = api.get_json("/api/v1/health").await;
     assert_eq!(health.image_backend, HealthStatus::Unavailable);
@@ -542,34 +556,31 @@ async fn endpoint_and_separate_database_wait_for_restart_when_runs_exist() {
     let alternate_state = FakeComfyState::default();
     let alternate = FakeComfyServer::start(alternate_state.clone()).await;
     let url = format!("http://{}", alternate.address());
-    let staged = api
-        .request(Method::PUT, SETTINGS)
-        .json(&json!({"comfyui.base_url": url}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(staged.status(), StatusCode::OK);
-    assert_eq!(
-        staged
-            .json::<SettingsResponse>()
-            .await
+    let path = api.workspace().join("genaimage.toml");
+    let original = std::fs::read(&path).unwrap();
+    use genaimage_core::persistence::RunRepository;
+    let old_endpoint = api.core.config().comfyui.endpoint_url().unwrap();
+    drop(
+        RunRepository::open(&api.workspace().join("old.sqlite3"))
             .unwrap()
-            .restart_required,
-        ["comfyui.base_url"]
+            .with_identity(api.workspace(), "ComfyUI", old_endpoint.as_str(), false)
+            .unwrap(),
     );
-    // The existing startup ownership check refuses the saved endpoint with the old database.
-    let config =
-        genaimage_core::HarnessConfig::load_with(api.workspace(), None, api.workspace(), |key| {
-            matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME")
-                .then(|| api.workspace().to_str().unwrap().to_owned())
-        })
-        .unwrap();
-    let adapter = std::sync::Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
-    assert!(
-        matches!(genaimage_core::Harness::new_async(config, adapter).await,
-            Err(genaimage_core::HarnessError::Configuration(message)) if message.contains("belongs to workspace")
-        )
-    );
+    for patch in [
+        json!({"comfyui.base_url": url}),
+        json!({"comfyui.base_url": url, "paths.state_database": "old.sqlite3"}),
+    ] {
+        let staged = api
+            .request(Method::PUT, SETTINGS)
+            .json(&patch)
+            .send()
+            .await
+            .unwrap();
+        let problem = ApiHarness::assert_problem(staged, StatusCode::CONFLICT).await;
+        assert_eq!(problem.errors[0].key, "comfyui.base_url");
+        assert!(problem.recovery.contains("paths.state_database"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
     let response = api
         .request(Method::PUT, SETTINGS)
         .json(&json!({
@@ -585,6 +596,22 @@ async fn endpoint_and_separate_database_wait_for_restart_when_runs_exist() {
         ["comfyui.base_url", "paths.state_database"]
     );
     assert!(!api.workspace().join("other.sqlite3").exists());
+    let compatible = api.workspace().join("compatible.sqlite3");
+    drop(
+        RunRepository::open(&compatible)
+            .unwrap()
+            .with_identity(api.workspace(), "ComfyUI", &format!("{url}/"), false)
+            .unwrap(),
+    );
+    let db_original = std::fs::read(&compatible).unwrap();
+    let response = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"paths.state_database": "compatible.sqlite3"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(std::fs::read(&compatible).unwrap(), db_original);
     api.fake.complete.store(true, Ordering::SeqCst);
     assert_eq!(
         api.core.reconcile(&run.id).await.unwrap().run.status,
@@ -642,7 +669,12 @@ async fn settings_reject_invalid_database_targets_without_touching_storage() {
     std::fs::write(root.join("file"), "not a directory").unwrap();
     let path = root.join("genaimage.toml");
     let original = std::fs::read(&path).unwrap();
-    let mut invalid = vec!["directory", "file/missing/state.sqlite3", "missing/"];
+    let mut invalid = vec![
+        "directory",
+        "file/missing/state.sqlite3",
+        "missing/",
+        "genaimage.toml",
+    ];
     #[cfg(unix)]
     let _socket = {
         let socket = std::os::unix::net::UnixListener::bind(root.join("special")).unwrap();
@@ -669,6 +701,18 @@ async fn settings_reject_invalid_database_targets_without_touching_storage() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!root.join("new-directory").exists());
+    std::fs::write(root.join("empty.sqlite3"), []).unwrap();
+    let response = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"paths.state_database": "empty.sqlite3"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::metadata(root.join("empty.sqlite3")).unwrap().len(),
+        0
+    );
     api.shutdown().await;
 }
 

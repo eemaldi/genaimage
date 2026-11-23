@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -630,6 +630,93 @@ const MIGRATION_3: &str = r#"
 "#;
 const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1, MIGRATION_3];
 
+// The first version that must already contain each table before migration.
+const EXPECTED_TABLES: [(&str, i64, &str); 4] = [
+    ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
+    ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
+    ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
+    ("genaimage_database_identity", 3, "SELECT singleton, workspace, backend, endpoint FROM genaimage_database_identity LIMIT 0"),
+];
+
+/// Inspect an existing candidate without opening it for writing or migrating it.
+/// Ownership is stricter than startup: even an empty database explicitly bound
+/// elsewhere may be in use by another process, so the settings API will not rebind it.
+pub(crate) fn database_matches_settings(
+    path: &Path,
+    workspace: &str,
+    backend: &str,
+    endpoint: &str,
+) -> rusqlite::Result<bool> {
+    let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(1))?;
+    connection.pragma_update(None, "trusted_schema", false)?;
+    let transaction = connection.transaction()?;
+    let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let objects: i64 = transaction.query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
+        [],
+        |row| row.get(0),
+    )?;
+    if version == 0 && objects == 0 {
+        return Ok(true);
+    }
+    if !(0..=SCHEMA_VERSION).contains(&version) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let mut has_identity = false;
+    for (table, since, query) in EXPECTED_TABLES {
+        let kind: Option<String> = transaction
+            .query_row(
+                "SELECT type FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match kind.as_deref() {
+            Some("table") => {
+                transaction.prepare(query)?;
+            }
+            // Legacy migrations may add missing auxiliary or identity tables.
+            None if version < since => continue,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        }
+        has_identity |= table == "genaimage_database_identity";
+    }
+    let identity: Option<(String, String, String)> = if has_identity {
+        transaction.query_row(
+            "SELECT workspace, backend, endpoint FROM genaimage_database_identity WHERE singleton = 1",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?
+    } else {
+        None
+    };
+    if let Some((owner, adapter, url)) = identity {
+        Ok((owner.as_str(), adapter.as_str(), url.as_str()) == (workspace, backend, endpoint))
+    } else {
+        // Unowned legacy runs require an explicit claim outside the settings API.
+        transaction.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs)", [], |row| {
+            row.get(0)
+        })
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn inspect_settings_database_rejects_an_unrelated_sqlite_schema() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("other.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE unrelated (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    drop(connection);
+    let before = std::fs::read(&path).unwrap();
+    assert!(
+        database_matches_settings(&path, "workspace", "ComfyUI", "http://localhost:8188/").is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
 fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -659,12 +746,7 @@ fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {
             transaction.pragma_update(None, "user_version", (index + 1) as i64)?;
         }
         // Check the columns needed by every operation before accepting a legacy schema.
-        for query in [
-            "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0",
-            "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0",
-            "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0",
-            "SELECT singleton, workspace, backend, endpoint FROM genaimage_database_identity LIMIT 0",
-        ] {
+        for (_, _, query) in EXPECTED_TABLES {
             transaction.prepare(query)?;
         }
         Ok(())

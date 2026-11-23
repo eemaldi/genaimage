@@ -57,6 +57,16 @@ impl ComfyUiProfile {
         validate_endpoint("comfyui.base_url", &self.base_url, &self.allowed_hosts)
     }
 
+    /// Canonical ComfyUI base URL used by the adapter and database identity.
+    pub fn endpoint_url(&self) -> Result<Url> {
+        let mut url = self.validate_base_url()?;
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        Ok(url)
+    }
+
     pub fn validate_addresses(&self, addresses: &[SocketAddr]) -> Result<()> {
         validate_endpoint_addresses(
             "comfyui.base_url",
