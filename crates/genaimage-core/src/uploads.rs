@@ -117,11 +117,11 @@ impl UploadStore {
         &self,
         metadata: &UploadMetadata,
     ) -> Result<Vec<u8>, UploadError> {
-        let file = fs::File::open(self.root.join(&metadata.sha256).join(IMAGE_FILE)).await?;
-        let file_metadata = file.metadata().await?;
-        if !file_metadata.is_file() || file_metadata.len() != metadata.byte_size {
-            return Err(UploadError::Integrity);
-        }
+        let file = open_image(
+            &self.root.join(&metadata.sha256).join(IMAGE_FILE),
+            metadata.byte_size,
+        )
+        .await?;
         let mut bytes = Vec::new();
         file.take(metadata.byte_size.saturating_add(1))
             .read_to_end(&mut bytes)
@@ -134,6 +134,39 @@ impl UploadStore {
         }
         Ok(bytes)
     }
+}
+
+async fn open_image(path: &Path, size: u64) -> Result<fs::File, UploadError> {
+    // Do not open an unexpected file type, such as a pipe or symlink.
+    if !fs::symlink_metadata(path).await?.is_file() {
+        return Err(UploadError::Integrity);
+    }
+    let file = fs::File::open(path).await?;
+    let metadata = file.metadata().await?;
+    if !metadata.is_file() || metadata.len() != size {
+        return Err(UploadError::Integrity);
+    }
+    Ok(file)
+}
+
+async fn verify_image(path: &Path, metadata: &UploadMetadata) -> Result<(), UploadError> {
+    let file = open_image(path, metadata.byte_size).await?;
+    let mut reader = file.take(metadata.byte_size.saturating_add(1));
+    let mut hash = Sha256::new();
+    let mut size = 0;
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        size += count as u64;
+        hash.update(&buffer[..count]);
+    }
+    if size != metadata.byte_size || hex::encode(hash.finalize()) != metadata.sha256 {
+        return Err(UploadError::Integrity);
+    }
+    Ok(())
 }
 
 pub struct StagedUpload {
@@ -196,13 +229,32 @@ impl StagedUpload {
         drop(metadata_file);
         let destination = store.root.join(&metadata.sha256);
         // Both candidate directories are non-empty, so rename cannot replace a winner.
-        match fs::rename(directory.path(), destination).await {
-            Ok(()) => Ok(metadata),
-            Err(error) => store
-                .metadata(&metadata.upload_id)
-                .await?
-                .ok_or_else(|| error.into()),
+        let rename_error = match fs::rename(directory.path(), &destination).await {
+            Ok(()) => return Ok(metadata),
+            Err(error) => error,
+        };
+        let existing = store
+            .metadata(&metadata.upload_id)
+            .await?
+            .ok_or(rename_error)?;
+        if existing.byte_size != metadata.byte_size || existing.media_type != metadata.media_type {
+            return Err(UploadError::Integrity);
         }
+        let image = destination.join(IMAGE_FILE);
+        match verify_image(&image, &existing).await {
+            Ok(()) => {}
+            Err(error) => {
+                if !matches!(error, UploadError::Integrity)
+                    && !matches!(&error, UploadError::Io(error) if error.kind() == ErrorKind::NotFound)
+                {
+                    return Err(error);
+                }
+                // Every repair has the same digest. Keep first-upload metadata
+                // and replace only the image, without exposing a partial file.
+                fs::rename(directory.path().join(IMAGE_FILE), &image).await?;
+            }
+        }
+        Ok(existing)
     }
 }
 

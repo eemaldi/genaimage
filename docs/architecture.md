@@ -201,14 +201,18 @@ OpenAPI endpoints are planned, as is the browser portal.
 `file`, for example `curl -F 'file=@reference.png' "$ORIGIN/api/v1/uploads"`.
 Files are identified as PNG, JPEG or WebP by their signatures, not by their
 filenames or supplied media types. This does not decode or validate pixels.
+Multipart framing before the first file (including the preamble and headers)
+is limited to 16 KiB, independently of the configured request size.
 The server streams to a temporary directory, calculates SHA-256, then publishes
 both bytes and metadata atomically in the configured uploads directory.
 
 The response is 201 with `upload_id` (`sha256:<lowercase hex digest>`),
 `sha256`, `byte_size`, `media_type` and `original_filename` (a sanitised
 basename). Identical bytes share one upload ID and keep the first accepted
-filename. `Location` points to `GET /api/v1/uploads/{id}` for the same metadata;
-it does not serve the image bytes. Malformed multipart requests return 400,
+filename. A repeat upload verifies the stored copy and repairs missing or
+corrupt bytes atomically without changing the metadata. `Location` points to
+`GET /api/v1/uploads/{id}` for the same metadata; it does not serve the image
+bytes. Malformed multipart requests return 400,
 oversized requests 413 and unrecognised signatures 415, with problem details
 and a recovery hint.
 

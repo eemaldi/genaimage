@@ -134,6 +134,79 @@ async fn enforces_the_limit_on_chunked_bodies_before_end_of_stream() {
     api.shutdown().await;
 }
 
+#[tokio::test]
+async fn rejects_oversized_framing_without_waiting_for_its_terminator() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let api = ApiHarness::start().await;
+    for prefix in [
+        &b""[..],
+        &b"--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"image.png\"\r\nX-Large: "[..],
+        &b"--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"image.png\"\r\n\r\n\x89PNG\r\n\x1a\nimage\r\n--boundary\r\nX-Large: "[..],
+    ] {
+        let address = api.origin.strip_prefix("http://").unwrap();
+        let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut request = format!("POST {UPLOADS} HTTP/1.1\r\nHost: {address}\r\nTransfer-Encoding: chunked\r\nContent-Type: multipart/form-data; boundary=boundary\r\nConnection: close\r\n\r\n").into_bytes();
+        // This is well under the whole-body limit. No framing or HTTP terminator is sent.
+        write!(request, "{:x}\r\n", prefix.len() + 24 * 1024).unwrap();
+        request.extend_from_slice(prefix);
+        request.resize(request.len() + 24 * 1024, b'x');
+        request.extend_from_slice(b"\r\n");
+        connection.write_all(&request).await.unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(3), connection.read_to_string(&mut response))
+            .await.unwrap().unwrap();
+        assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+        assert!(response.contains("application/problem+json"));
+        assert!(response.contains("multipart framing exceeds 16 KiB"));
+        assert!(response.contains("\"recovery\""));
+    }
+    if let Ok(entries) = std::fs::read_dir(&api.core.config().uploads) {
+        assert_eq!(entries.count(), 0);
+    }
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn framing_limit_does_not_limit_file_bytes() {
+    let api = ApiHarness::start().await;
+    let mut image = PNG.to_vec();
+    // Payload length exceeds the framing limit; the API only checks the signature.
+    image.resize(64 * 1024, 0);
+    let result = upload(&api, "large.png", &image, "image/png").await;
+    assert_eq!(result.status(), StatusCode::CREATED);
+    let metadata: UploadResponse = result.json().await.unwrap();
+    assert_eq!(metadata.byte_size, image.len() as u64);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn duplicate_upload_repairs_missing_and_corrupt_images_without_changing_metadata() {
+    let api = ApiHarness::start().await;
+    let original = store_png(&api).await;
+    let image = api
+        .core
+        .config()
+        .uploads
+        .join(&original.sha256)
+        .join("image");
+    std::fs::remove_file(&image).unwrap();
+    for damaged in [None, Some(vec![1]), Some(vec![1; PNG.len()])] {
+        if let Some(bytes) = damaged {
+            std::fs::write(&image, bytes).unwrap();
+        }
+        let result = upload(&api, "second.png", PNG, "image/png").await;
+        assert_eq!(result.status(), StatusCode::CREATED);
+        assert_eq!(result.json::<UploadResponse>().await.unwrap(), original);
+        assert_eq!(std::fs::read(&image).unwrap(), PNG);
+    }
+    std::fs::remove_file(&image).unwrap();
+    std::fs::create_dir(&image).unwrap();
+    let result = upload(&api, "unrepairable.png", PNG, "image/png").await;
+    ApiHarness::assert_problem(result, StatusCode::INTERNAL_SERVER_ERROR).await;
+    api.shutdown().await;
+}
+
 fn install_image_workflow(api: &ApiHarness) {
     install_workflow(api);
     let dir = &api.core.config().workflows;

@@ -1,4 +1,7 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use axum::{
+    body::Bytes,
     extract::{rejection::PathRejection, Path, Request, State},
     http::{header, StatusCode},
     response::IntoResponse,
@@ -17,6 +20,22 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/uploads/{id}", get(metadata))
 }
 
+const FRAMING_LIMIT: usize = 16 * 1024;
+const PARSER_CHUNK: usize = 4 * 1024;
+const MAX_BOUNDARY: usize = 70;
+const FILE_DATA: usize = usize::MAX;
+
+#[derive(Debug)]
+struct FramingTooLarge;
+
+impl std::fmt::Display for FramingTooLarge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("The multipart framing exceeds 16 KiB.")
+    }
+}
+
+impl std::error::Error for FramingTooLarge {}
+
 const SEND_FILE: &str = "Send multipart/form-data with exactly one file field named 'file'.";
 
 async fn upload(
@@ -28,15 +47,39 @@ async fn upload(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| multer::parse_boundary(value).ok())
+        .filter(|boundary| !boundary.is_empty() && boundary.len() <= MAX_BOUNDARY)
         .ok_or_else(|| bad_request("Invalid multipart request."))?;
     let mut body = request.into_body().into_data_stream();
-    // Give the parser a chance to process each chunk even if the body is
-    // immediately ready; multer otherwise reads ahead while the stream is ready.
-    let stream = futures_util::stream::unfold(&mut body, |body| async {
-        tokio::task::yield_now().await;
-        body.next().await.map(|chunk| (chunk, body))
-    });
-    let mut multipart = multer::Multipart::new(stream, boundary);
+    // While next_field is looking for a part, bound the bytes offered to
+    // multer, which buffers the preamble and headers until their terminators.
+    let budget = AtomicUsize::new(FRAMING_LIMIT);
+    let stream = futures_util::stream::unfold(
+        (&mut body, Bytes::new(), &budget),
+        |(body, mut pending, budget)| async move {
+            // Multer otherwise reads ahead while the stream remains ready.
+            tokio::task::yield_now().await;
+            let remaining = budget.load(Ordering::Relaxed);
+            if remaining == 0 {
+                return Some((
+                    Err(axum::BoxError::from(FramingTooLarge)),
+                    (body, pending, budget),
+                ));
+            }
+            while pending.is_empty() {
+                match body.next().await? {
+                    Ok(chunk) => pending = chunk,
+                    Err(error) => return Some((Err(error.into()), (body, pending, budget))),
+                }
+            }
+            let count = pending.len().min(PARSER_CHUNK).min(remaining);
+            if remaining != FILE_DATA {
+                budget.store(remaining - count, Ordering::Relaxed);
+            }
+            Some((Ok(pending.split_to(count)), (body, pending, budget)))
+        },
+    );
+    let constraints = multer::Constraints::new().allowed_fields(vec!["file"]);
+    let mut multipart = multer::Multipart::with_constraints(stream, boundary, constraints);
     let mut field = multipart
         .next_field()
         .await
@@ -45,6 +88,7 @@ async fn upload(
             field.name() == Some("file") && field.file_name().is_some_and(|name| !name.is_empty())
         })
         .ok_or_else(|| bad_request("A file field with a filename is required."))?;
+    budget.store(FILE_DATA, Ordering::Relaxed);
     let store = state.harness().uploads();
     let mut staged = store
         .stage(field.file_name().expect("checked filename"))
@@ -58,6 +102,12 @@ async fn upload(
         staged.write_chunk(&chunk).await.map_err(storage_problem)?;
     }
     drop(field);
+    // Multer can retain a partial delimiter (CRLF + "--" + boundary)
+    // and one chunk that already contains part of the next header.
+    budget.store(
+        FRAMING_LIMIT - PARSER_CHUNK - MAX_BOUNDARY - 4,
+        Ordering::Relaxed,
+    );
     if multipart
         .next_field()
         .await
@@ -123,6 +173,13 @@ fn bad_request(detail: &str) -> Problem {
 
 fn multipart_problem(mut error: &(dyn std::error::Error + 'static)) -> Problem {
     loop {
+        if error.is::<FramingTooLarge>() {
+            return Problem::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                error.to_string(),
+                "Send the file without a large multipart preamble or part headers.",
+            );
+        }
         if error.is::<http_body_util::LengthLimitError>() {
             return storage_problem(UploadError::TooLarge);
         }
