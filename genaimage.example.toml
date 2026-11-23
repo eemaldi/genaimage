@@ -1,0 +1,12 @@
+active_profile = "local"
+
+[profiles.local]
+base_url = "http://127.0.0.1:8188"
+request_timeout_seconds = 60
+websocket_reconnect_seconds = 2
+
+[paths]
+state_database = ".genaimage/state.sqlite3"
+workflows = "workflows/comfyui"
+runs = "runs"
+characters = "characters"

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import unquote
@@ -57,6 +60,8 @@ def check_skill_mirrors():
             path.relative_to(root).as_posix(): path.read_bytes()
             for path in root.rglob("*")
             if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix not in {".pyc", ".pyo"}
         }
 
     copilot_files = files(copilot_root)
@@ -114,6 +119,35 @@ def check_skill_lock():
     return []
 
 
+def run_command(label, command, cwd=ROOT):
+    print(f"==> {label}", flush=True)
+    environment = os.environ.copy()
+    cargo_bin = str(Path.home() / ".cargo" / "bin")
+    if cargo_bin not in environment.get("PATH", "").split(os.pathsep):
+        environment["PATH"] = cargo_bin + os.pathsep + environment.get("PATH", "")
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        env=environment,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def check_runtime_tooling():
+    errors = []
+    for command in ("cargo", "rustfmt", "npm", "node"):
+        locations = [
+            shutil.which(command),
+            str(Path.home() / ".cargo" / "bin" / command)
+            if command in {"cargo", "rustfmt"}
+            else None,
+        ]
+        if not any(location and Path(location).is_file() for location in locations):
+            errors.append(f"required command is not installed: {command}")
+    return errors
+
+
 def main():
     errors = []
     errors.extend(check_relative_links())
@@ -124,6 +158,70 @@ def main():
         print("CI checks failed:")
         for error in errors:
             print(f"- {error}")
+        return 1
+
+    errors.extend(check_runtime_tooling())
+    if errors:
+        print("CI prerequisites failed:")
+        for error in errors:
+            print(f"- {error}")
+        return 1
+
+    commands = [
+        ("Rust formatting", ["cargo", "fmt", "--all", "--", "--check"], ROOT),
+        (
+            "Rust linting",
+            ["cargo", "clippy", "--workspace", "--all-targets"],
+            ROOT,
+        ),
+        (
+            "Rust tests",
+            ["cargo", "test", "--workspace", "--all-targets", "--locked"],
+            ROOT,
+        ),
+        ("Frontend install", ["npm", "ci"], ROOT / "apps" / "desktop"),
+        (
+            "Frontend dependency audit",
+            ["npm", "audit", "--audit-level=moderate"],
+            ROOT / "apps" / "desktop",
+        ),
+        ("Frontend type check", ["npm", "run", "typecheck"], ROOT / "apps" / "desktop"),
+        ("Frontend tests", ["npm", "test"], ROOT / "apps" / "desktop"),
+        ("Frontend build", ["npm", "run", "build"], ROOT / "apps" / "desktop"),
+        (
+            "QA helper tests",
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                ".agents/skills/generated-media-qa/tests",
+            ],
+            ROOT,
+        ),
+        (
+            "Manifest helper tests",
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                ".agents/skills/media-qc-delivery/tests",
+            ],
+            ROOT,
+        ),
+    ]
+    failed = [
+        label
+        for label, command, cwd in commands
+        if not run_command(label, command, cwd)
+    ]
+    if failed:
+        print("CI commands failed:")
+        for label in failed:
+            print(f"- {label}")
         return 1
 
     print("CI checks passed.")

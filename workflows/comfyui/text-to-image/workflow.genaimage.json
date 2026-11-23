@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "id": "text-to-image",
+  "version": "1.0.0",
+  "title": "Explicit text-to-image",
+  "workflow": "api-workflow.json",
+  "generation_mode": "generic",
+  "parameters": {
+    "checkpoint": {
+      "node": "4",
+      "input": "ckpt_name",
+      "kind": "string",
+      "required": true,
+      "description": "ComfyUI checkpoint filename as shown by the local server."
+    },
+    "positive_prompt": {
+      "node": "6",
+      "input": "text",
+      "kind": "string",
+      "required": true,
+      "description": "Approved positive prompt."
+    },
+    "negative_prompt": {
+      "node": "7",
+      "input": "text",
+      "kind": "string",
+      "required": false,
+      "default": "blurry, low quality",
+      "description": "Exclusions passed to the negative prompt encoder."
+    },
+    "seed": {
+      "node": "3",
+      "input": "seed",
+      "kind": "seed",
+      "required": true,
+      "default": 42,
+      "description": "Deterministic sampler seed."
+    },
+    "steps": {
+      "node": "3",
+      "input": "steps",
+      "kind": "integer",
+      "required": true,
+      "default": 20,
+      "minimum": 1,
+      "maximum": 150
+    },
+    "cfg": {
+      "node": "3",
+      "input": "cfg",
+      "kind": "number",
+      "required": true,
+      "default": 8,
+      "minimum": 0,
+      "maximum": 30
+    },
+    "width": {
+      "node": "5",
+      "input": "width",
+      "kind": "integer",
+      "required": true,
+      "default": 1024,
+      "minimum": 64,
+      "maximum": 4096
+    },
+    "height": {
+      "node": "5",
+      "input": "height",
+      "kind": "integer",
+      "required": true,
+      "default": 1024,
+      "minimum": 64,
+      "maximum": 4096
+    },
+    "filename_prefix": {
+      "node": "9",
+      "input": "filename_prefix",
+      "kind": "string",
+      "required": false,
+      "default": "genaimage"
+    }
+  },
+  "presets": {
+    "fast": {
+      "seed": 42,
+      "steps": 12,
+      "cfg": 7,
+      "width": 768,
+      "height": 768
+    },
+    "square": {
+      "seed": 42,
+      "steps": 24,
+      "cfg": 8,
+      "width": 1024,
+      "height": 1024
+    }
+  },
+  "outputs": [
+    {
+      "node": "9",
+      "kind": "image"
+    }
+  ]
+}
