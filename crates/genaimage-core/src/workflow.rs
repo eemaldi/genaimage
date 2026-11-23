@@ -98,7 +98,20 @@ pub struct LoadedWorkflow {
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
         let manifest_bytes = fs::read(manifest_path)?;
-        let manifest: WorkflowManifest = serde_json::from_slice(&manifest_bytes)?;
+        let manifest: WorkflowManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            if serde_json::from_slice::<Value>(&manifest_bytes)
+                .is_ok_and(|manifest| manifest.get("required_gates").is_some())
+            {
+                return HarnessError::Workflow(format!(
+                    "manifest '{}' uses retired approval gates; remove the 'required_gates' field and validate it again",
+                    manifest_path.display()
+                ));
+            }
+            HarnessError::Workflow(format!(
+                "cannot parse manifest '{}': {error}",
+                manifest_path.display()
+            ))
+        })?;
         if manifest.schema_version != MANIFEST_VERSION {
             return Err(HarnessError::Workflow(format!(
                 "manifest '{}' uses schema version {}, expected {}",

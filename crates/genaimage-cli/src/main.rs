@@ -165,7 +165,17 @@ fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError
 fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
     let harness = Harness::open(&cli.workspace)?;
     match command {
-        WorkflowCommand::List => output(cli, &harness.discover_workflows()?)?,
+        WorkflowCommand::List => {
+            let discovery = harness.discover_workflows()?;
+            for diagnostic in discovery.diagnostics {
+                eprintln!(
+                    "warning: skipping manifest '{}': {}",
+                    diagnostic.path.display(),
+                    diagnostic.error
+                );
+            }
+            output(cli, &discovery.manifests)?;
+        }
         WorkflowCommand::Validate { workflow } => {
             let loaded = harness.load_workflow(workflow)?;
             output(

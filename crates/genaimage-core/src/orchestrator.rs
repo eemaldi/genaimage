@@ -44,6 +44,18 @@ pub struct RunProgress {
     pub event: Option<ComfyUiEvent>,
 }
 
+#[derive(Debug, Default)]
+pub struct WorkflowDiscovery {
+    pub manifests: Vec<WorkflowManifest>,
+    pub diagnostics: Vec<WorkflowDiagnostic>,
+}
+
+#[derive(Debug)]
+pub struct WorkflowDiagnostic {
+    pub path: PathBuf,
+    pub error: HarnessError,
+}
+
 #[derive(Clone)]
 pub struct Harness {
     config: ResolvedConfig,
@@ -75,24 +87,22 @@ impl Harness {
         &self.repository
     }
 
-    pub fn discover_workflows(&self) -> Result<Vec<WorkflowManifest>> {
-        if !self.config.workflows.exists() {
-            return Ok(Vec::new());
-        }
-        let mut manifests = Vec::new();
-        visit_files(&self.config.workflows, &mut |path| {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".genaimage.json"))
-            {
-                let loaded = LoadedWorkflow::load(path)?;
-                manifests.push(loaded.manifest);
-            }
-            Ok(())
+    pub fn discover_workflows(&self) -> Result<WorkflowDiscovery> {
+        let mut discovery = WorkflowDiscovery::default();
+        visit_workflows(&self.config.workflows, |path, workflow| match workflow {
+            Ok(loaded) => discovery.manifests.push(loaded.manifest),
+            Err(error) => discovery.diagnostics.push(WorkflowDiagnostic {
+                path: path.to_path_buf(),
+                error,
+            }),
         })?;
-        manifests.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(manifests)
+        discovery
+            .manifests
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        discovery
+            .diagnostics
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(discovery)
     }
 
     pub fn load_workflow(&self, workflow: &str) -> Result<LoadedWorkflow> {
@@ -118,23 +128,21 @@ impl Harness {
             }
         }
         let mut matches = Vec::new();
-        visit_files(&self.config.workflows, &mut |path| {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".genaimage.json"))
-            {
-                let loaded = LoadedWorkflow::load(path)?;
-                if loaded.manifest.id == workflow {
-                    matches.push(loaded);
-                }
-            }
-            Ok(())
+        let mut skipped = false;
+        visit_workflows(&self.config.workflows, |_, result| match result {
+            Ok(loaded) if loaded.manifest.id == workflow => matches.push(loaded),
+            Err(_) => skipped = true,
+            _ => {}
         })?;
         match matches.len() {
             0 => Err(HarnessError::Workflow(format!(
-                "workflow '{workflow}' was not found below '{}'",
-                self.config.workflows.display()
+                "workflow '{workflow}' was not found below '{}'{}",
+                self.config.workflows.display(),
+                if skipped {
+                    "; some manifests could not be loaded; use 'workflow list' for details"
+                } else {
+                    ""
+                }
             ))),
             1 => Ok(matches.remove(0)),
             _ => Err(HarnessError::Workflow(format!(
@@ -559,7 +567,22 @@ fn read_manifest_path(output_dir: &Path) -> Result<PathBuf> {
         })
 }
 
-fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
+fn visit_workflows(
+    directory: &Path,
+    mut visitor: impl FnMut(&Path, Result<LoadedWorkflow>),
+) -> Result<()> {
+    visit_files(directory, &mut |path| {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".genaimage.json"))
+        {
+            visitor(path, LoadedWorkflow::load(path));
+        }
+    })
+}
+
+fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path)) -> Result<()> {
     if !directory.exists() {
         return Ok(());
     }
@@ -568,7 +591,7 @@ fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path) -> Result<()>) -
         if path.is_dir() {
             visit_files(&path, visitor)?;
         } else {
-            visitor(&path)?;
+            visitor(&path);
         }
     }
     Ok(())

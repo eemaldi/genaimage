@@ -50,7 +50,11 @@ Use `jobs reconcile` to compare persisted prompt/client IDs with ComfyUI queue
 and history. A WebSocket failure is recoverable while HTTP reconciliation
 remains available, and the event is kept in the run history.
 
-## A legacy workspace configuration fails to load
+## A legacy workflow is missing from the list
 
-Remove `characters` from `[paths]` in `genaimage.toml`. This does not
-require changing the state database or any existing run manifests.
+`workflow list` warns on stderr about sidecars it could not load and still
+lists valid workflows. If a sidecar has the retired `required_gates` field,
+remove that field and run `workflow validate <manifest-path>` again.
+
+The obsolete `paths.characters` setting in `genaimage.toml` is ignored. You
+can remove it without changing the state database or existing run manifests.

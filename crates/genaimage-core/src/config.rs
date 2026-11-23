@@ -58,6 +58,8 @@ pub struct HarnessPaths {
     pub state_database: PathBuf,
     pub workflows: PathBuf,
     pub runs: PathBuf,
+    #[serde(rename = "characters", skip_serializing)]
+    _retired_path: Option<serde::de::IgnoredAny>,
 }
 
 impl Default for HarnessPaths {
@@ -66,6 +68,7 @@ impl Default for HarnessPaths {
             state_database: PathBuf::from(".genaimage/state.sqlite3"),
             workflows: PathBuf::from("workflows/comfyui"),
             runs: PathBuf::from("runs"),
+            _retired_path: None,
         }
     }
 }

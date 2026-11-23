@@ -7,8 +7,7 @@ and the [architecture](docs/architecture.md). The server, portal and LLM
 assistance are planned; the existing CLI will become a thin server client.
 
 Today it validates API-format workflows, submits explicit parameter values,
-tracks queue state, captures outputs and provenance, and enforces the existing
-character concept art approval gates.
+tracks queue state, and captures outputs and provenance.
 
 ComfyUI remains a separate process. GenAImage does not install, start, bundle,
 or replace ComfyUI, models, weights, or custom nodes.
@@ -17,19 +16,15 @@ or replace ComfyUI, models, weights, or custom nodes.
 
 The current interface is `genaimage`, the Rust command-line application for
 scripts and reproducible operation. It calls the shared `genaimage-core` crate.
-The character gate pilot is being retired in favour of the planned
-general-purpose harness.
 
 ## Current scope
 
 - One local ComfyUI host on a loopback URL.
 - ComfyUI API-format workflow JSON, never an implicit prompt-only path.
-- Strict workflow manifests with typed node bindings, presets, uploads, outputs,
-  and required gates.
+- Strict workflow manifests with typed node bindings, presets, uploads and outputs.
 - Queue inspection, WebSocket progress, queued deletion, active interruption,
   and reconciliation after either process restarts.
 - SQLite operational state plus portable, checksummed run manifests.
-- Ordered character approvals with an immutable decision history.
 
 Remote/multi-host routing, cloud storage, model installation, and custom-node
 management are outside the current scope. The planned outbound endpoint policy
@@ -90,38 +85,19 @@ Install the CLI binary:
 cargo install --locked --path crates/genaimage-cli
 ```
 
-## Character concept workflow (current, being retired)
+## Character concept-art pilot (retired)
 
-The existing character workflow remains human-controlled until it is removed:
-
-```bash
-genaimage character init CHR-001 --name "Character name"
-genaimage character approve CHR-001 \
-  --gate gate1 \
-  --approver "Human approver" \
-  --note "Input is complete"
-genaimage character status CHR-001
-```
-
-Approve Gate 1 through Gate 3 in order. A generation workflow is blocked before
-anything reaches ComfyUI unless the required approvals are present. A multi-view
-workflow additionally requires Gate 5. A successful image never advances a
-gate.
-
-Read [the complete workflow](workflows/character-concept-art/WORKFLOW.md).
-Character templates remain in
-[templates/character-concept-art/](templates/character-concept-art/).
+The [pilot workflow](workflows/character-concept-art/WORKFLOW.md) and
+[templates](templates/character-concept-art/) remain as historical material.
+The CLI no longer tracks or enforces the pilot's approval gates. Existing
+pilot records and outputs are left in place.
 
 ## Persistent records
 
 - `.genaimage/state.sqlite3` contains rebuildable operational state: run status,
   ComfyUI IDs, events, cancellation, and outputs.
-- `characters/<id>/workflow-state.json` contains portable gate state and every
-  approval/rejection decision.
-- `characters/<id>/production-record.md` contains the readable production
-  record. GenAImage updates only its marked gate-state block.
-- `runs/` and `characters/<id>/generations/` contain resolved workflows,
-  preflight records, checksummed outputs, and `run-manifest.json`.
+- `runs/` contains resolved workflows, preflight records, checksummed outputs,
+  and `run-manifest.json`.
 
 An ambiguous prompt submission is never automatically replayed. Reconcile the
 run against ComfyUI queue/history first, then decide whether a new run is
@@ -131,8 +107,7 @@ appropriate.
 
 Each workflow has an unmodified ComfyUI API export plus a sidecar manifest ending
 in `.genaimage.json`. The manifest maps named harness parameters to node inputs
-and declares presets, uploaded references, outputs, generation mode, and
-required gates.
+and declares presets, uploaded references, outputs and generation mode.
 
 See the [workflow manifest reference](docs/workflow-manifest.md) and
 [architecture](docs/architecture.md).
@@ -151,8 +126,8 @@ Rust workspace, runs Rust tests, and checks the Python skill helpers.
 ## Project agent and skills
 
 In GitHub Copilot Chat, select the **GenAImage** agent. It routes requests to the
-focused project skills and the implemented ComfyUI or character workflow. It
-does not imply that a required ComfyUI host, model, node, or approval exists.
+focused project skills and the implemented ComfyUI workflow. It does not imply
+that a required ComfyUI host, model or node exists.
 
 Project-local skills remain installed under `.agents/skills/` and mirrored
 unchanged under `.claude/skills/`.
