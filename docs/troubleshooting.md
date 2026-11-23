@@ -53,8 +53,9 @@ remains available, and the event is kept in the run history.
 ## A legacy workflow is missing from the list
 
 `workflow list` warns on stderr about sidecars it could not load and still
-lists valid workflows. If a sidecar has the retired `required_gates` field,
-remove that field and run `workflow validate <manifest-path>` again. If an
+lists valid workflows. Upgrade a version 1 sidecar as described in the
+[manifest guide](workflow-manifest.md#upgrading-from-version-1), then run
+`workflow validate <manifest-path>` again. If an
 invalid sidecar shares an ID with a valid one, select an explicit manifest path
 rather than using the shared ID.
 

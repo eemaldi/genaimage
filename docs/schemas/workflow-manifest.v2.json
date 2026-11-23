@@ -1,0 +1,410 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GenAImage workflow manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "version",
+    "workflow"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "title": {
+      "type": "string"
+    },
+    "workflow": {
+      "type": "string"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tags": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "category": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thumbnail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/parameter"
+      }
+    },
+    "presets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/output"
+      }
+    }
+  },
+  "definitions": {
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "input",
+        "kind"
+      ],
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "seed",
+            "image_upload"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {},
+        "allowed_values": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {}
+        },
+        "minimum": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "maximum": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "widget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "options": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {},
+          "minItems": 1
+        },
+        "group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "advanced": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "placeholder": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "string"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "text",
+                  "textarea",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "image_upload"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "string"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "file",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "integer",
+                  "seed"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": -9223372036854775808,
+                "maximum": 18446744073709551615
+              },
+              "options": {
+                "items": {
+                  "type": "integer",
+                  "minimum": -9223372036854775808,
+                  "maximum": 18446744073709551615
+                }
+              },
+              "widget": {
+                "enum": [
+                  "number",
+                  "slider",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "number"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "number"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "number",
+                  "slider",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "boolean"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "checkbox",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node"
+      ],
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "description": "Structural and kind-specific validation. Cross-field constraints, preset-to-parameter references and workflow node bindings also require GenAImage workflow validation."
+}

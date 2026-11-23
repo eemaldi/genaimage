@@ -33,11 +33,10 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
             .path()
             .join("workflows/comfyui/example/valid.genaimage.json"),
         r#"{
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "example",
   "version": "1.0.0",
   "workflow": "api.json",
-  "generation_mode": "generic",
   "parameters": {
     "seed": {
       "node": "3",
@@ -74,7 +73,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     assert_eq!(manifests.len(), 1);
     assert_eq!(manifests[0]["id"], "example");
     assert!(warnings.contains("legacy.genaimage.json"));
-    assert!(warnings.contains("remove the 'required_gates' field"));
+    assert!(warnings.contains("upgrade to version 2"));
     assert!(warnings.contains("broken.genaimage.json"));
 
     let validate = cli()
@@ -103,7 +102,43 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
     let message = error["error"].as_str().expect("error message");
     assert!(message.contains(legacy));
-    assert!(message.contains("remove the 'required_gates' field"));
+    assert!(message.contains("upgrade to version 2"));
+}
+
+#[test]
+fn integer_boundaries_are_enforced_by_the_cli() {
+    let temp = TempDir::new().expect("temp");
+    let workflow_dir = temp.path().join("workflows/comfyui/example");
+    write(
+        &workflow_dir.join("api.json"),
+        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
+    );
+    for kind in ["integer", "seed"] {
+        for (value, valid) in [
+            ("-9223372036854775808", true),
+            ("18446744073709551615", true),
+            ("-9223372036854775809", false),
+            ("18446744073709551616", false),
+        ] {
+            let manifest = format!(
+                r#"{{"schema_version":2,"id":"example","version":"1.0.0","workflow":"api.json","parameters":{{"seed":{{"node":"3","input":"seed","kind":"{kind}","default":{value}}}}}}}"#
+            );
+            write(&workflow_dir.join("example.genaimage.json"), &manifest);
+            let output = cli()
+                .arg("--workspace")
+                .arg(temp.path())
+                .arg("--json")
+                .args(["workflow", "validate", "example"])
+                .output()
+                .expect("run CLI");
+            assert_eq!(
+                output.status.success(),
+                valid,
+                "{kind}/{value}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }
 
 #[test]
@@ -116,7 +151,7 @@ fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
     );
     write(
         &workflows.join("valid.genaimage.json"),
-        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
+        r#"{"schema_version":2,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
     );
     write(
         &workflows.join("legacy.genaimage.json"),

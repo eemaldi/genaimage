@@ -25,4 +25,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+jsonschema = { version = "0.18", default-features = false }
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
 tempfile = "3"

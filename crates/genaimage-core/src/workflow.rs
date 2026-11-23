@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{HarnessError, Result};
 
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +22,13 @@ pub struct WorkflowManifest {
     pub title: String,
     pub workflow: PathBuf,
     #[serde(default)]
-    pub generation_mode: GenerationMode,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, ParameterDefinition>,
     #[serde(default)]
@@ -31,6 +37,7 @@ pub struct WorkflowManifest {
     pub outputs: Vec<OutputDefinition>,
 }
 
+// Retained for reading and writing historical run records, not workflow manifests.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationMode {
@@ -61,6 +68,18 @@ pub struct ParameterDefinition {
     pub minimum: Option<f64>,
     #[serde(default)]
     pub maximum: Option<f64>,
+    #[serde(default)]
+    pub widget: Option<String>,
+    #[serde(default)]
+    pub step: Option<f64>,
+    #[serde(default)]
+    pub options: Option<Vec<Value>>,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub advanced: Option<bool>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -98,20 +117,23 @@ pub struct LoadedWorkflow {
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
         let manifest_bytes = fs::read(manifest_path)?;
-        let manifest: WorkflowManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
-            if serde_json::from_slice::<Value>(&manifest_bytes)
-                .is_ok_and(|manifest| manifest.get("required_gates").is_some())
-            {
-                return HarnessError::Workflow(format!(
-                    "manifest '{}' uses retired approval gates; remove the 'required_gates' field and validate it again",
-                    manifest_path.display()
-                ));
-            }
-            HarnessError::Workflow(format!(
-                "cannot parse manifest '{}': {error}",
+        // Inspect the version before strict deserialisation so legacy fields cannot hide
+        // the actionable upgrade error.
+        if serde_json::from_slice::<Value>(&manifest_bytes)
+            .is_ok_and(|manifest| manifest.get("schema_version").and_then(Value::as_u64) == Some(1))
+        {
+            return Err(HarnessError::Workflow(format!(
+                "manifest '{}' uses schema version 1; upgrade to version 2: remove 'generation_mode' and 'required_gates', set 'schema_version' to 2, and validate against docs/schemas/workflow-manifest.v2.json",
                 manifest_path.display()
-            ))
-        })?;
+            )));
+        }
+        let manifest: WorkflowManifest =
+            serde_json::from_slice(&manifest_bytes).map_err(|error| {
+                HarnessError::Workflow(format!(
+                    "cannot parse manifest '{}': {error}",
+                    manifest_path.display()
+                ))
+            })?;
         if manifest.schema_version != MANIFEST_VERSION {
             return Err(HarnessError::Workflow(format!(
                 "manifest '{}' uses schema version {}, expected {}",
@@ -304,6 +326,7 @@ impl LoadedWorkflow {
             if let Some(default) = &parameter.default {
                 parameter.validate_value(name, default)?;
             }
+            parameter.validate_hints(name)?;
         }
         for name in self.manifest.presets.keys() {
             self.validate_values(
@@ -341,6 +364,60 @@ impl LoadedWorkflow {
 }
 
 impl ParameterDefinition {
+    fn validate_hints(&self, name: &str) -> Result<()> {
+        if let Some(widget) = &self.widget {
+            let valid = match self.kind {
+                ParameterKind::String => matches!(widget.as_str(), "text" | "textarea" | "select"),
+                ParameterKind::ImageUpload => widget == "file",
+                ParameterKind::Integer | ParameterKind::Number | ParameterKind::Seed => {
+                    matches!(widget.as_str(), "number" | "slider" | "select")
+                }
+                ParameterKind::Boolean => matches!(widget.as_str(), "checkbox" | "select"),
+            };
+            if !valid {
+                return Err(HarnessError::Workflow(format!(
+                    "parameter '{name}' widget '{widget}' is not supported for {:?}",
+                    self.kind
+                )));
+            }
+        }
+        if let Some(step) = self.step {
+            let numeric = matches!(
+                self.kind,
+                ParameterKind::Integer | ParameterKind::Number | ParameterKind::Seed
+            );
+            let integer = matches!(self.kind, ParameterKind::Integer | ParameterKind::Seed);
+            if !numeric || !step.is_finite() || step <= 0.0 || (integer && step.fract() != 0.0) {
+                return Err(HarnessError::Workflow(format!(
+                    "parameter '{name}' step must be positive and compatible with {:?}",
+                    self.kind
+                )));
+            }
+        }
+        if let Some(options) = &self.options {
+            if options.is_empty() {
+                return Err(HarnessError::Workflow(format!(
+                    "parameter '{name}' options must not be empty"
+                )));
+            }
+            for option in options {
+                self.validate_value(name, option).map_err(|error| {
+                    HarnessError::Workflow(format!(
+                        "invalid option for parameter '{name}': {error}"
+                    ))
+                })?;
+            }
+            if let Some(default) = &self.default {
+                if !options.contains(default) {
+                    return Err(HarnessError::Workflow(format!(
+                        "parameter '{name}' default must appear in its options"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_value(&self, name: &str, value: &Value) -> Result<()> {
         let valid_type = match self.kind {
             ParameterKind::String | ParameterKind::ImageUpload => value.is_string(),

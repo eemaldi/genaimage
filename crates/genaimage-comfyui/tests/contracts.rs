@@ -376,11 +376,10 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
     let reference = temp.path().join("reference.png");
     fs::write(&reference, b"reference-payload").expect("reference");
     let manifest = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "id": "image-input",
         "version": "1.0.0",
         "workflow": "workflow.api.json",
-        "generation_mode": "generic",
         "parameters": {
             "reference": {
                 "node": "1",

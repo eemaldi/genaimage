@@ -1,10 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "text-to-image",
   "version": "1.0.0",
   "title": "Explicit text-to-image",
   "workflow": "api-workflow.json",
-  "generation_mode": "generic",
+  "description": "Generate an image using an explicitly selected checkpoint and prompts.",
+  "tags": ["text-to-image"],
+  "category": "image generation",
   "parameters": {
     "checkpoint": {
       "node": "4",
