@@ -9,7 +9,13 @@ fn write(path: &Path, value: &str) {
 }
 
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_genaimage"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_genaimage"));
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GENAIMAGE_") {
+            command.env_remove(name);
+        }
+    }
+    command
 }
 
 #[test]
@@ -63,6 +69,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let list = cli()
         .current_dir(temp.path())
         .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
@@ -81,6 +88,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let validate = cli()
         .current_dir(temp.path())
         .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
@@ -98,6 +106,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let rejected = cli()
         .current_dir(temp.path())
         .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
@@ -167,6 +176,7 @@ fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
         cli()
             .current_dir(temp.path())
             .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
             .arg("--workspace")
             .arg(temp.path())
             .arg("--json")
@@ -209,6 +219,7 @@ fn legacy_keys_are_rejected_with_migration_guidance() {
     let output = cli()
         .current_dir(temp.path())
         .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .args(["--json", "config", "show"])
         .output()
         .expect("run CLI");
@@ -233,6 +244,7 @@ fn explicit_config_overrides_environment_and_current_directory() {
     let output = cli()
         .current_dir(temp.path())
         .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .env("GENAIMAGE_CONFIG", temp.path().join("env.toml"))
         .args(["--config", "selected.toml", "--json", "config", "show"])
         .output()
@@ -244,4 +256,54 @@ fn explicit_config_overrides_environment_and_current_directory() {
     );
     let config: Value = serde_json::from_slice(&output.stdout).expect("config JSON");
     assert_eq!(config["server"]["port"], 3333);
+}
+
+#[test]
+fn offline_commands_do_not_resolve_comfyui() {
+    let temp = TempDir::new().unwrap();
+    write(&temp.path().join("genaimage.toml"), "[comfyui]\nbase_url = 'http://missing.invalid:8188'\nallowed_hosts = ['missing.invalid']\nrequest_timeout_seconds = 1\n");
+    let workflow_dir = temp.path().join("workflows/comfyui");
+    write(
+        &workflow_dir.join("workflow.api.json"),
+        include_str!("../../genaimage-core/tests/fixtures/contract-workflow.api.json"),
+    );
+    write(
+        &workflow_dir.join("contract.genaimage.json"),
+        include_str!("../../genaimage-core/tests/fixtures/contract-workflow.genaimage.json"),
+    );
+    for args in [
+        &["workflow", "list"][..],
+        &["workflow", "inspect", "contract-workflow"][..],
+        &["jobs", "list"][..],
+    ] {
+        let output = cli()
+            .current_dir(temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .arg("--json")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .arg("--json")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("comfyui.base_url")
+            && (error.contains("cannot resolve local host")
+                || error.contains("DNS resolution timed out")),
+        "{error}"
+    );
 }

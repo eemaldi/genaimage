@@ -760,3 +760,42 @@ fn legacy_generic_run_and_manifest_are_still_readable() {
         .expect("insert new run into legacy database");
     assert_eq!(repository.list(10).expect("list old and new runs").len(), 2);
 }
+
+#[test]
+fn legacy_database_requires_verified_claim_and_remains_bound() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("state.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(include_str!("fixtures/legacy-runs.sql"))
+        .unwrap();
+    drop(db);
+    let repo = RunRepository::open(&path).unwrap();
+    let original = repo.get("run-legacy").unwrap();
+    let error = repo
+        .bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("GENAIMAGE_CLAIM_LEGACY_STATE=1"));
+    repo.bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", true)
+        .unwrap();
+    assert!(repo
+        .bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:9999/", true)
+        .is_err());
+    assert!(repo
+        .bind_identity(
+            &temp.path().join("other"),
+            "ComfyUI",
+            "http://127.0.0.1:8188/",
+            true
+        )
+        .is_err());
+    let retained = repo.get("run-legacy").unwrap();
+    assert_eq!(original.output_dir, retained.output_dir);
+    assert_eq!(original.manifest_path, retained.manifest_path);
+    assert_eq!(original.status, retained.status);
+    drop(repo);
+    RunRepository::open(&path)
+        .unwrap()
+        .bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
+        .unwrap();
+}

@@ -1,10 +1,11 @@
 use std::{
     env, fs,
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use url::{Host, Url};
 
 use crate::{HarnessError, Result};
@@ -50,9 +51,13 @@ impl ComfyUiProfile {
         validate_endpoint("comfyui.base_url", &self.base_url, &self.allowed_hosts)
     }
 
-    /// Resolve once and pin connections to the validated addresses, including WebSockets.
-    pub fn resolve_addresses(&self) -> Result<Vec<SocketAddr>> {
-        resolve_endpoint("comfyui.base_url", &self.base_url, &self.allowed_hosts)
+    pub fn validate_addresses(&self, addresses: &[SocketAddr]) -> Result<()> {
+        validate_endpoint_addresses(
+            "comfyui.base_url",
+            &self.base_url,
+            &self.allowed_hosts,
+            addresses,
+        )
     }
 }
 
@@ -104,6 +109,7 @@ pub struct ResolvedConfig {
     pub workflows: PathBuf,
     pub runs: PathBuf,
     pub uploads: PathBuf,
+    pub claim_legacy_state: bool,
 }
 
 impl HarnessConfig {
@@ -277,11 +283,26 @@ impl HarnessConfig {
                 workspace.join(path)
             })
         };
+        let claim_legacy_state = match env("GENAIMAGE_CLAIM_LEGACY_STATE").as_deref() {
+            None | Some("0") => false,
+            Some("1") => true,
+            Some(value) => {
+                return Err(invalid(
+                    "GENAIMAGE_CLAIM_LEGACY_STATE",
+                    value,
+                    "use 1 to explicitly claim verified legacy records, or unset it",
+                ))
+            }
+        };
+        let workspace_id = hex::encode(Sha256::digest(workspace.as_os_str().as_encoded_bytes()));
         Ok(ResolvedConfig {
+            claim_legacy_state,
             state_database: resolve(
                 "paths.state_database",
                 config.paths.state_database,
-                data.join("state.sqlite3"),
+                data.join("workspaces")
+                    .join(workspace_id)
+                    .join("state.sqlite3"),
             )?,
             workflows: resolve(
                 "paths.workflows",
@@ -307,8 +328,16 @@ fn invalid(key: &str, value: &str, fix: &str) -> HarnessError {
 }
 
 fn is_loopback_name(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(loopback_ip)
+}
+
+fn loopback_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map_or_else(|| ip.is_loopback(), |v4| v4.is_loopback()),
+        IpAddr::V4(ip) => ip.is_loopback(),
+    }
 }
 
 fn local_ip(ip: IpAddr) -> bool {
@@ -389,38 +418,22 @@ pub fn validate_endpoint(key: &str, value: &str, allowed_hosts: &[String]) -> Re
     Ok(url)
 }
 
-/// Resolve all addresses and fail closed if any are public. Use the returned addresses for connections.
-pub fn resolve_endpoint(
+/// Validate every DNS answer before using these exact addresses for connections.
+pub fn validate_endpoint_addresses(
     key: &str,
     value: &str,
     allowed_hosts: &[String],
-) -> Result<Vec<SocketAddr>> {
+    addresses: &[SocketAddr],
+) -> Result<()> {
     let url = validate_endpoint(key, value, allowed_hosts)?;
     let host = match url.host().expect("validated host") {
         Host::Domain(s) => s.to_owned(),
         Host::Ipv4(ip) => ip.to_string(),
         Host::Ipv6(ip) => ip.to_string(),
     };
-    let port = url
-        .port_or_known_default()
-        .expect("http(s) has a default port");
-    let addresses: Vec<_> = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|e| invalid(key, value, &format!("ensure the local host resolves ({e})")))?
-        .collect();
-    validate_resolved_addresses(key, value, &host, &addresses)?;
-    Ok(addresses)
-}
-
-fn validate_resolved_addresses(
-    key: &str,
-    value: &str,
-    host: &str,
-    addresses: &[SocketAddr],
-) -> Result<()> {
     if addresses.is_empty()
         || addresses.iter().any(|address| {
-            !local_ip(address.ip()) || (is_loopback_name(host) && !address.ip().is_loopback())
+            !local_ip(address.ip()) || (is_loopback_name(&host) && !loopback_ip(address.ip()))
         })
     {
         return Err(invalid(key, value, "ensure every resolved address is private or loopback; public addresses are not permitted"));
@@ -494,7 +507,16 @@ mod tests {
         let defaults = load(&temp, None, &vars).unwrap();
         assert_eq!(
             defaults.state_database,
-            temp.path().join("data/genaimage/state.sqlite3")
+            temp.path()
+                .join("data/genaimage/workspaces")
+                .join(hex::encode(Sha256::digest(
+                    temp.path()
+                        .canonicalize()
+                        .unwrap()
+                        .as_os_str()
+                        .as_encoded_bytes()
+                )))
+                .join("state.sqlite3")
         );
         assert_eq!(defaults.runs, temp.path().join("data/genaimage/runs"));
         assert_eq!(defaults.uploads, temp.path().join("data/genaimage/uploads"));
@@ -550,6 +572,28 @@ mod tests {
     }
 
     #[test]
+    fn default_databases_are_scoped_by_canonical_workspace() {
+        let parent = TempDir::new().unwrap();
+        let first = parent.path().join("one");
+        let second = parent.path().join("two");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let vars = values(&parent);
+        let env: HashMap<_, _> = vars.into_iter().collect();
+        let load = |workspace: &Path| {
+            HarnessConfig::load_with(workspace, None, parent.path(), |key| env.get(key).cloned())
+                .unwrap()
+        };
+        let a = load(&first);
+        let b = load(&second);
+        assert_ne!(a.state_database, b.state_database);
+        assert!(a
+            .state_database
+            .starts_with(parent.path().join("data/genaimage/workspaces")));
+        assert_eq!(a.runs, b.runs);
+    }
+
+    #[test]
     fn xdg_falls_back_to_home_and_invalid_paths_fail() {
         let temp = TempDir::new().unwrap();
         let home = temp.path().display().to_string();
@@ -591,7 +635,7 @@ mod tests {
 
     #[test]
     fn endpoint_policy_rejects_public_and_requires_exact_allowlist() {
-        for host in ["localhost", "127.0.0.5", "[::1]"] {
+        for host in ["localhost", "127.0.0.5", "[::1]", "[::ffff:127.0.0.1]"] {
             assert!(
                 validate_endpoint("comfyui.base_url", &format!("http://{host}:8188"), &[]).is_ok()
             );
@@ -624,28 +668,50 @@ mod tests {
                 .is_err()
         );
         assert!(validate_endpoint("llm.base_url", "http://user:pass@localhost", &[]).is_err());
-        assert!(resolve_endpoint("comfyui.base_url", "http://127.0.0.1:8188", &[]).is_ok());
         let local: SocketAddr = "10.0.0.1:8188".parse().unwrap();
         let public: SocketAddr = "8.8.8.8:8188".parse().unwrap();
-        assert!(validate_resolved_addresses(
+        assert!(validate_endpoint_addresses(
             "comfyui.base_url",
             "http://comfyui:8188",
-            "comfyui",
+            &["comfyui".into()],
             &[local]
         )
         .is_ok());
-        assert!(validate_resolved_addresses(
+        assert!(validate_endpoint_addresses(
             "comfyui.base_url",
             "http://comfyui:8188",
-            "comfyui",
+            &["comfyui".into()],
             &[local, public]
         )
         .is_err());
-        assert!(validate_resolved_addresses(
+        assert!(validate_endpoint_addresses(
             "comfyui.base_url",
             "http://localhost:8188",
-            "localhost",
+            &[],
             &[local]
+        )
+        .is_err());
+        let mapped: SocketAddr = "[::ffff:127.0.0.1]:8188".parse().unwrap();
+        assert!(validate_endpoint_addresses(
+            "comfyui.base_url",
+            "http://[::ffff:127.0.0.1]:8188",
+            &[],
+            &[mapped]
+        )
+        .is_ok());
+        assert!(validate_endpoint_addresses(
+            "comfyui.base_url",
+            "http://localhost:8188",
+            &[],
+            &[mapped]
+        )
+        .is_ok());
+        let public_mapped: SocketAddr = "[::ffff:8.8.8.8]:8188".parse().unwrap();
+        assert!(validate_endpoint_addresses(
+            "comfyui.base_url",
+            "http://localhost:8188",
+            &[],
+            &[public_mapped]
         )
         .is_err());
     }

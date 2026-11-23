@@ -14,7 +14,8 @@ model = ""
 allowed_hosts = []
 
 [paths]
-# Omitted data paths default to $XDG_DATA_HOME/genaimage (or ~/.local/share/genaimage).
+# Omitted data paths default under $XDG_DATA_HOME/genaimage (or ~/.local/share/genaimage).
+# State is scoped to the canonical workspace and bound to the backend endpoint.
 # state_database = "/absolute/path/state.sqlite3"
 # runs = "/absolute/path/runs"
 # uploads = "/absolute/path/uploads"

@@ -127,8 +127,7 @@ impl ExtensionRegistry {
         connect: impl FnOnce(&ComfyUiProfile) -> Result<B>,
     ) -> Result<Self> {
         let mut registry = Self::default();
-        registry
-            .register_image_backend(COMFYUI_BACKEND, Arc::new(connect(&config.comfyui)?))?;
+        registry.register_image_backend(COMFYUI_BACKEND, Arc::new(connect(&config.comfyui)?))?;
         Ok(registry)
     }
 

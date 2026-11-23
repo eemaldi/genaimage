@@ -31,10 +31,13 @@ their validated settings do not start either service. Set `llm.model` explicitly
 when an LLM integration becomes available: no model is selected automatically.
 The server bind host is restricted to loopback regardless of outbound settings.
 
-State defaults to `$XDG_DATA_HOME/genaimage/state.sqlite3`, runs to
+State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`, runs to
 `$XDG_DATA_HOME/genaimage/runs`, and uploads to
 `$XDG_DATA_HOME/genaimage/uploads`. If unset, `XDG_DATA_HOME` defaults to
 `~/.local/share`. Workflows remain under `workflows/comfyui` in the workspace.
+Each canonical workspace gets its own database. A database is bound atomically to
+its workspace and backend endpoint, including when a custom path is used.
+Changing either requires its original settings or a separate database.
 Uploads is reserved for future use; the current adapter uploads explicit input
 files directly. XDG directories must be absolute.
 
@@ -54,6 +57,7 @@ comma-separated; an empty value clears the list.
 | `llm.allowed_hosts` | `GENAIMAGE_LLM_ALLOWED_HOSTS` |
 | `paths.state_database`, `paths.workflows` | `GENAIMAGE_STATE_DATABASE`, `GENAIMAGE_WORKFLOWS` |
 | `paths.runs`, `paths.uploads` | `GENAIMAGE_RUNS`, `GENAIMAGE_UPLOADS` |
+| One-time legacy state claim | `GENAIMAGE_CLAIM_LEGACY_STATE=1` |
 
 Loopback endpoints are allowed. A private IP or Compose service name must be
 listed exactly in that service's `allowed_hosts`, for example:
@@ -70,9 +74,10 @@ model = "your-explicit-model"
 ```
 
 Allow-listing never permits public addresses. The ComfyUI adapter resolves all
-addresses, rejects any public result and pins HTTP and WebSocket connections to
-the validated addresses. HTTP redirects and proxies are disabled. Service
-names must resolve locally when connecting. The future LLM adapter must use the
+addresses on the first network operation (with a bounded DNS lookup), rejects
+any public result and pins HTTP and WebSocket connections to the validated
+addresses. HTTP redirects and proxies are disabled. Offline commands do not
+resolve service names. The future LLM adapter must use the
 same resolved-address policy; its endpoint is not contacted today.
 
 ### Migrating legacy configuration and data
@@ -83,10 +88,23 @@ reconnect settings. Remove `GENAIMAGE_PROFILE`; set `GENAIMAGE_COMFYUI_URL` or
 edit `[comfyui]` instead. Remove the retired `paths.characters` key. Unknown
 and old keys are rejected rather than ignored.
 
-The new defaults do not move existing data. To retain old records, either set
-`paths.state_database = ".genaimage/state.sqlite3"` and `paths.runs = "runs"`
-in the new file, or stop GenAImage and copy the old database (including any
-SQLite WAL/SHM files) and runs directory to the new locations. Keep backups.
+The new defaults do not move existing data. **Keep the original database and
+runs directory at their original absolute locations**: run records and output
+records contain absolute paths, so copying or moving these directories alone
+will not preserve access. Back them up with SQLite-aware tooling while the
+application is stopped. Set `paths.state_database = ".genaimage/state.sqlite3"`
+and `paths.runs = "runs"` for the original workspace, and keep the original
+ComfyUI endpoint. Do not copy the files to the new defaults and delete the old
+locations.
+
+Legacy databases do not record workspace or endpoint identity. Before opening
+one, verify that **all** its runs belong to this workspace and ComfyUI endpoint;
+if not, keep it separate and do not reconcile or cancel those runs. Once verified,
+set `GENAIMAGE_CLAIM_LEGACY_STATE=1` for the first command opening it. This
+atomically binds the database to that workspace and endpoint; unset the variable
+afterwards. Subsequent attempts to use the database with a different workspace
+or endpoint fail, even if the variable is set. Use a separate database for each
+workspace and endpoint. No automatic path rewriting or data migration is offered.
 
 ## 3. CLI
 

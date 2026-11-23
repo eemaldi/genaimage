@@ -67,6 +67,12 @@ pub struct Harness {
 impl Harness {
     pub fn new(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
         let repository = RunRepository::open(&config.state_database)?;
+        repository.bind_identity(
+            &config.workspace,
+            backend.name(),
+            backend.base_url(),
+            config.claim_legacy_state,
+        )?;
         Ok(Self {
             config,
             repository,
@@ -76,17 +82,9 @@ impl Harness {
 
     /// Opens the state database on the blocking pool, using the supplied backend.
     pub async fn new_async(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
-        let path = config.state_database.clone();
-        let repository = tokio::task::spawn_blocking(move || RunRepository::open(&path))
+        tokio::task::spawn_blocking(move || Self::new(config, backend))
             .await
-            .map_err(|error| {
-                HarnessError::Database(format!("state database task failed: {error}"))
-            })??;
-        Ok(Self {
-            config,
-            repository,
-            backend,
-        })
+            .map_err(|error| HarnessError::Database(format!("state database task failed: {error}")))?
     }
 
     fn backend_error(&self, message: String) -> HarnessError {

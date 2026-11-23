@@ -55,7 +55,7 @@ local options when their compatible APIs are enabled.
 
 The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 `AssistantTool` and `EventSink` contracts. The CLI builds an `ExtensionRegistry`
-from the resolved active profile using an adapter factory supplied by the CLI;
+from the resolved ComfyUI settings using an adapter factory supplied by the CLI;
 core does not construct adapters. The registry looks up registered extensions by
 name without a fallback. Only the image backend is configured today; the LLM
 and tool contracts have no runtime implementation, and progress still uses the

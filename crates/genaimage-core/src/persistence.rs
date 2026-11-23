@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -146,6 +146,52 @@ impl RunRepository {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
+    }
+
+    /// Atomically bind a database to the workspace and backend that own its runs.
+    pub fn bind_identity(
+        &self,
+        workspace: &Path,
+        backend: &str,
+        endpoint: &str,
+        claim_legacy: bool,
+    ) -> Result<()> {
+        let workspace = workspace.to_str().ok_or_else(|| {
+            HarnessError::Configuration(format!(
+                "workspace '{}': use a UTF-8 path to protect run ownership",
+                workspace.display()
+            ))
+        })?;
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let existing: Option<(String, String, String)> = transaction.query_row(
+            "SELECT workspace, backend, endpoint FROM genaimage_database_identity WHERE singleton = 1", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        ).optional()?;
+        match existing {
+            Some((stored_workspace, stored_backend, stored_endpoint)) => {
+                if (
+                    stored_workspace.as_str(),
+                    stored_backend.as_str(),
+                    stored_endpoint.as_str(),
+                ) != (workspace, backend, endpoint)
+                {
+                    return Err(HarnessError::Configuration(format!("paths.state_database belongs to workspace '{stored_workspace}', backend '{stored_backend}', endpoint '{stored_endpoint}', not workspace '{workspace}', backend '{backend}', endpoint '{endpoint}'; select the original workspace and endpoint or a separate state database")));
+                }
+            }
+            None => {
+                let has_runs: bool =
+                    transaction
+                        .query_row("SELECT EXISTS(SELECT 1 FROM runs)", [], |row| row.get(0))?;
+                if has_runs && !claim_legacy {
+                    return Err(HarnessError::Configuration(format!("paths.state_database contains legacy runs with unknown workspace and endpoint; verify every record belongs to workspace '{workspace}' and endpoint '{endpoint}', then set GENAIMAGE_CLAIM_LEGACY_STATE=1 once; otherwise use a separate database")));
+                }
+                transaction.execute("INSERT INTO genaimage_database_identity (singleton, workspace, backend, endpoint) VALUES (1, ?1, ?2, ?3)", params![workspace, backend, endpoint])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn insert(&self, run: &NewRun) -> Result<RunRecord> {
@@ -435,7 +481,15 @@ const MIGRATION_1: &str = r#"
             );
             CREATE INDEX IF NOT EXISTS outputs_run_id_idx ON outputs(run_id);
 "#;
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1];
+const MIGRATION_3: &str = r#"
+    CREATE TABLE IF NOT EXISTS genaimage_database_identity (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        workspace TEXT NOT NULL,
+        backend TEXT NOT NULL,
+        endpoint TEXT NOT NULL
+    );
+"#;
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1, MIGRATION_3];
 
 fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -470,6 +524,7 @@ fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {
             "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0",
             "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0",
             "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0",
+            "SELECT singleton, workspace, backend, endpoint FROM genaimage_database_identity LIMIT 0",
         ] {
             transaction.prepare(query)?;
         }
