@@ -108,7 +108,8 @@ deadline; its fake-backend request timeout defaults to five seconds. Its default
 queue and history track the most recently submitted prompt. Await
 `wait_for_progress_listener` with a deadline before sending scripted WebSocket
 events.
-Dropping the fixture stops both listener tasks.
+Call `shutdown().await` to signal the server and await a bounded graceful
+drain; dropping the fixture signals shutdown and applies a best-effort deadline.
 
 ## Providers, extensions and deployment
 

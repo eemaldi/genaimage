@@ -10,13 +10,13 @@ pub async fn serve(state: AppState) -> io::Result<()> {
     let config = &state.harness.config().server;
     let listener = bind_loopback(&config.host, config.port).await?;
     let signal = shutdown_signal()?;
-    let shutdown = state.shutdown.clone();
+    let shutdown = state.clone();
     let address = listener.local_addr()?;
     tracing::info!(%address, "GenAImage server listening");
     axum::serve(listener, build_app(state, address.port()))
         .with_graceful_shutdown(async move {
             signal.await;
-            shutdown.send_replace(true);
+            shutdown.begin_shutdown();
             tracing::info!("Shutdown requested; draining in-flight requests");
         })
         .await

@@ -14,6 +14,7 @@ use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{Event, ImageBackend, RunRequest, RunStatus};
 use reqwest::{header, Method, StatusCode};
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn install_workflow(api: &ApiHarness) {
     let dir = &api.core.config().workflows;
@@ -273,6 +274,58 @@ async fn fixture_uses_default_server_limits_and_explicit_backend_timeout() {
             .unwrap();
         ApiHarness::assert_problem(response, expected).await;
     }
+}
+
+async fn stalled_request(api: &ApiHarness) -> tokio::net::TcpStream {
+    let address = api.origin.strip_prefix("http://").unwrap();
+    let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+    client.write_all(format!(
+        "POST /api/v1/health HTTP/1.1\r\nHost: {address}\r\nOrigin: {}\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n",
+        api.origin,
+    ).as_bytes()).await.unwrap();
+    let mut interim = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !interim.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            client.read_exact(&mut byte).await.unwrap();
+            interim.push(byte[0]);
+        }
+    })
+    .await
+    .expect("body was not polled");
+    assert!(interim.starts_with(b"HTTP/1.1 100"));
+    client
+}
+
+async fn assert_drained_response(mut client: tokio::net::TcpStream) {
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+        .await
+        .expect("stalled request was not drained")
+        .unwrap();
+    assert!(
+        response.starts_with(b"HTTP/1.1 503"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+}
+
+#[tokio::test]
+async fn shutdown_drains_stalled_request_before_removing_workspace() {
+    let api = ApiHarness::start().await;
+    let workspace = api.workspace().to_owned();
+    let client = stalled_request(&api).await;
+    api.shutdown().await;
+    assert!(!workspace.exists());
+    assert_drained_response(client).await;
+}
+
+#[tokio::test]
+async fn drop_notifies_stalled_request() {
+    let api = ApiHarness::start().await;
+    let client = stalled_request(&api).await;
+    drop(api);
+    assert_drained_response(client).await;
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 //! Isolated API fixture: `ApiHarness::start()` opens loopback listeners and a
 //! temporary workspace. Script `fake`, subscribe before an action, then use
-//! the JSON/request helpers and `await_event`. Dropping it stops both servers.
+//! the JSON/request helpers and `await_event`. Use `shutdown().await` for a
+//! bounded graceful drain; dropping the fixture signals shutdown as best effort.
 #![allow(dead_code)]
 
 use std::{path::Path, sync::Arc, time::Duration};
@@ -17,11 +18,14 @@ use serde::{de::DeserializeOwned, Serialize};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, task::JoinHandle, time::timeout};
 
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct ApiHarness {
     pub fake: FakeComfyState,
     _backend: FakeComfyServer,
     pub core: Arc<Harness>,
-    server: JoinHandle<()>,
+    server: Option<JoinHandle<()>>,
+    state: AppState,
     client: reqwest::Client,
     pub origin: String,
     workspace: TempDir,
@@ -69,9 +73,14 @@ impl ApiHarness {
         .unwrap();
         let adapter = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
         let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
-        let app = build_app(AppState::new(core.clone()), address.port());
+        let state = AppState::new(core.clone());
+        let app = build_app(state.clone(), address.port());
+        let shutdown = state.clone();
         let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("API server");
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move { shutdown.wait_for_shutdown().await })
+                .await
+                .expect("API server");
         });
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         Self {
@@ -79,9 +88,26 @@ impl ApiHarness {
             fake,
             _backend: backend,
             core,
-            server,
+            server: Some(server),
+            state,
             client,
             origin,
+        }
+    }
+
+    /// Signal draining and wait for all HTTP connections, failing on timeout.
+    pub async fn shutdown(mut self) {
+        self.state.begin_shutdown();
+        let server = self.server.as_mut().expect("API server task");
+        match timeout(SHUTDOWN_TIMEOUT, &mut *server).await {
+            Ok(result) => {
+                self.server = None;
+                result.expect("API server task failed");
+            }
+            Err(_) => {
+                server.abort();
+                panic!("timed out draining API server");
+            }
         }
     }
 
@@ -181,6 +207,17 @@ impl ApiHarness {
 
 impl Drop for ApiHarness {
     fn drop(&mut self) {
-        self.server.abort();
+        self.state.begin_shutdown();
+        if let Some(mut server) = self.server.take() {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if timeout(SHUTDOWN_TIMEOUT, &mut server).await.is_err() {
+                        server.abort();
+                    }
+                });
+            } else {
+                server.abort();
+            }
+        }
     }
 }
