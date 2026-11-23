@@ -67,6 +67,8 @@ port to `build_app`; in-process callers must provide the intended port.
   hint. On SIGINT or SIGTERM, the listener stops accepting requests and drains
   in-flight requests without changing stored run statuses. Long-lived handlers
   can await `AppState::wait_for_shutdown` to close their streams as draining starts.
+  The server closes any connections still open after five seconds, including
+  clients that have stopped reading.
 
 The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
 Host headers for its actual port, plus the configured bind IP when it is a
@@ -135,9 +137,13 @@ its JSON `data` has a `reason` and the corresponding details:
 | `invalidated` | `id`: the invalidation boundary |
 
 A client receiving `resync` should stop automatic reconnects (close the
-`EventSource` in its `resync` listener), refresh authoritative state and open a
-new stream without the stale cursor. Resync frames are not subject to `run_id`
-filtering. Slow readers do not block event publishers.
+`EventSource` in its `resync` listener). Open a replacement stream without the
+stale cursor and begin buffering its events before fetching an authoritative
+snapshot. Once the snapshot arrives, apply buffered events in order,
+idempotently and without overwriting newer snapshot state, then continue
+processing live events. If the replacement stream also signals `resync`, start
+again with a fresh stream and snapshot. Resync frames are not subject to
+`run_id` filtering. Slow readers do not block event publishers.
 
 ### API integration tests
 
