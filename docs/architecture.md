@@ -92,6 +92,16 @@ shutdown starts, so a stalled upload cannot prevent draining.
 Workflows, runs, events (SSE), outputs, uploads, settings and OpenAPI endpoints
 are planned, as is the browser portal.
 
+### API integration tests
+
+`crates/genaimage-server/tests/common` provides `ApiHarness::start()` with an
+isolated temporary configuration, data paths, loopback API and the shared
+scriptable fake ComfyUI in `genaimage-test-support` (a dev-only dependency).
+Tests can script backend state, issue typed JSON requests with same-origin
+headers, submit explicitly through core until the run route exists, and
+subscribe before an action then await matching core events with a deadline.
+Dropping the fixture stops both listener tasks.
+
 ## Providers, extensions and deployment
 
 The planned LLM provider uses an OpenAI-compatible API, with an explicitly

@@ -19,8 +19,11 @@ tracing.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
+genaimage-test-support = { path = "../genaimage-test-support" }
 genaimage-comfyui = { path = "../genaimage-comfyui" }
+serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }

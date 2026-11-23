@@ -5,6 +5,7 @@ members = [
   "crates/genaimage-comfyui",
   "crates/genaimage-core",
   "crates/genaimage-server",
+  "crates/genaimage-test-support",
 ]
 resolver = "2"
 

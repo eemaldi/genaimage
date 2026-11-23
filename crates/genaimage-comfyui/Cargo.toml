@@ -19,5 +19,6 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]
+genaimage-test-support = { path = "../genaimage-test-support" }
 axum = "0.8"
 tempfile = "3"
