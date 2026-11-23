@@ -52,7 +52,13 @@ pub trait ImageBackend: Send + Sync {
     /// Request deletion. Acknowledgement alone does not confirm cancellation.
     async fn delete_queued(&self, prompt_id: &str) -> Result<Value>;
 
-    /// Request interruption of only the named prompt; never fall back to an unscoped interrupt.
+    /// Check targeted interruption support without sending a mutation.
+    async fn prepare_interrupt(&self, _prompt_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Request interruption of only the named prompt after `prepare_interrupt` succeeds.
+    /// Never fall back to an unscoped interrupt.
     async fn interrupt(&self, prompt_id: &str) -> Result<Value>;
     async fn upload_image(&self, path: &Path) -> Result<UploadResponse>;
     async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>>;

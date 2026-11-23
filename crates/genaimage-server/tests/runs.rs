@@ -376,3 +376,68 @@ async fn accepted_partial_prompt_persists_warnings_and_monitors_to_completion() 
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
     api.shutdown().await;
 }
+
+#[tokio::test]
+async fn shutdown_rolls_back_unsent_cancellation_and_records_uncertain_send() {
+    for attempted in [false, true] {
+        let mut api = ApiHarness::start_with_deadlines(30, Duration::from_millis(150)).await;
+        install_workflow(&api);
+        let submitted = run(
+            submit(&api, "cancel-during-shutdown", &request()).await,
+            StatusCode::ACCEPTED,
+        )
+        .await;
+        api.fake.running.store(true, Ordering::SeqCst);
+        api.fake.cancellation_history.store(false, Ordering::SeqCst);
+        api.fake.health_hangs.store(!attempted, Ordering::SeqCst);
+        api.fake
+            .hang_interrupt_response
+            .store(attempted, Ordering::SeqCst);
+        let request = api.request(Method::POST, &format!("{RUNS}/{}/cancel", submitted.id));
+        let pending = tokio::spawn(request.send());
+        tokio::time::timeout(DEADLINE, async {
+            let calls = if attempted {
+                &api.fake.interrupt_calls
+            } else {
+                &api.fake.health_calls
+            };
+            while calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("cancellation reached the scripted gate");
+        assert_eq!(
+            api.core.get_run(&submitted.id).unwrap().status,
+            genaimage_core::RunStatus::Cancelling
+        );
+        pending.abort();
+        let _ = pending.await;
+        api.drain().await;
+        let current = api.core.get_run(&submitted.id).unwrap();
+        let events = api.core.run_events(&submitted.id, 20).unwrap();
+        if attempted {
+            assert_eq!(current.status, genaimage_core::RunStatus::Cancelling);
+            assert!(events
+                .iter()
+                .any(|event| event.event_type == "cancellation_unknown"));
+            api.fake.cancellation_history.store(true, Ordering::SeqCst);
+            assert_eq!(
+                api.core.reconcile(&submitted.id).await.unwrap().run.status,
+                genaimage_core::RunStatus::Cancelled
+            );
+        } else {
+            assert!(matches!(
+                current.status,
+                genaimage_core::RunStatus::Queued | genaimage_core::RunStatus::Running
+            ));
+            assert!(events
+                .iter()
+                .any(|event| event.event_type == "cancellation_not_sent"));
+        }
+        assert_eq!(
+            api.fake.interrupt_calls.load(Ordering::SeqCst),
+            usize::from(attempted)
+        );
+    }
+}

@@ -50,6 +50,8 @@ pub struct FakeComfyState {
     pub node_errors: Arc<Mutex<Value>>,
     pub health_unavailable: Arc<AtomicBool>,
     pub health_hangs: Arc<AtomicBool>,
+    pub health_calls: Arc<AtomicUsize>,
+    pub hang_interrupt_response: Arc<AtomicBool>,
     pub missing_classes: Arc<Mutex<Vec<String>>>,
     pub object_info_unavailable: Arc<AtomicBool>,
     pub object_info_hangs: Arc<AtomicBool>,
@@ -82,6 +84,8 @@ impl Default for FakeComfyState {
             node_errors: Arc::new(Mutex::new(json!({}))),
             health_unavailable: Default::default(),
             health_hangs: Default::default(),
+            health_calls: Default::default(),
+            hang_interrupt_response: Default::default(),
             missing_classes: Default::default(),
             object_info_unavailable: Default::default(),
             object_info_hangs: Default::default(),
@@ -135,6 +139,7 @@ async fn fake_websocket(State(state): State<FakeComfyState>, ws: WebSocketUpgrad
 }
 
 async fn fake_system(State(state): State<FakeComfyState>) -> Response {
+    state.health_calls.fetch_add(1, Ordering::SeqCst);
     if state.health_hangs.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -278,6 +283,9 @@ async fn fake_interrupt(
         if running == original {
             state.cancelled.store(true, Ordering::SeqCst);
         }
+    }
+    if state.hang_interrupt_response.load(Ordering::SeqCst) {
+        let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
     }
     StatusCode::OK
 }

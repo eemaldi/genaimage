@@ -634,7 +634,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
+    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {
@@ -996,11 +996,12 @@ async fn delayed_submission_response_cannot_undo_cancellation() {
     );
     gate.release.add_permits(1);
     assert_eq!(submit.await.unwrap().unwrap().status, RunStatus::Cancelling);
+    let event = timeout(Duration::from_secs(2), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
-        timeout(Duration::from_millis(100), events.recv())
-            .await
-            .is_err(),
-        "late acceptance must not publish queued"
+        matches!(event.event, Event::RunProgress { run, .. } if run.status == RunStatus::Cancelling)
     );
 }
 
@@ -1286,4 +1287,115 @@ async fn abandoned_reservation_is_recovered_without_resending() {
             1
         );
     }
+}
+
+#[tokio::test]
+async fn failed_cancel_after_prompt_ack_restores_queued_and_preserves_warnings() {
+    let (_workspace, harness, state, request) = setup(false);
+    let (submit_gate, mut submitting) = new_gate();
+    let (interrupt_gate, mut interrupting) = new_gate();
+    {
+        let mut state = state.lock().unwrap();
+        state.submit_gate = Some(submit_gate.clone());
+        state.interrupt_gate = Some(interrupt_gate.clone());
+        state.submission_warnings = true;
+        state.fail_interrupt = true;
+    }
+    let submit = {
+        let harness = harness.clone();
+        let request = request.clone();
+        tokio::spawn(async move { harness.submit_keyed("ack-and-cancel".into(), request).await })
+    };
+    timeout(Duration::from_secs(2), submitting.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let run = harness.list_runs(1).unwrap().remove(0);
+    state.lock().unwrap().queue_position = Some(QueuePosition::Running);
+    let cancel = {
+        let harness = harness.clone();
+        let id = run.id.clone();
+        tokio::spawn(async move { harness.cancel(&id).await })
+    };
+    timeout(Duration::from_secs(2), interrupting.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    submit_gate.release.add_permits(1);
+    let accepted = submit.await.unwrap().unwrap().run;
+    assert_eq!(accepted.status, RunStatus::Cancelling);
+    assert_eq!(accepted.node_warnings, Some(json!({"node": "invalid"})));
+    interrupt_gate.release.add_permits(1);
+    assert!(cancel.await.unwrap().is_err());
+    let replay = harness
+        .submit_keyed("ack-and-cancel".into(), request)
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.run.id, accepted.id);
+    assert_eq!(replay.run.prompt_id, accepted.prompt_id);
+    assert_eq!(replay.run.node_warnings, accepted.node_warnings);
+    assert_eq!(replay.run.status, RunStatus::Queued);
+    assert!(harness
+        .run_events(&accepted.id, 10)
+        .unwrap()
+        .iter()
+        .any(|event| event.event_type == "submission_acknowledged"
+            && event.payload["node_errors"] == json!({"node": "invalid"})));
+}
+
+#[tokio::test]
+async fn legacy_submitting_record_requires_backend_evidence() {
+    let (_workspace, harness, state, request) = setup(false);
+    let (gate, mut entered) = new_gate();
+    state.lock().unwrap().submit_gate = Some(gate);
+    let task = {
+        let harness = harness.clone();
+        let request = request.clone();
+        tokio::spawn(async move {
+            harness
+                .submit_keyed_until("legacy".into(), request, &CancellationToken::new())
+                .await
+        })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let run = harness.list_runs(1).unwrap().remove(0);
+    let config = harness.config().clone();
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    drop(harness);
+    let db = rusqlite::Connection::open(&config.state_database).unwrap();
+    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; PRAGMA user_version=5;").unwrap();
+    drop(db);
+    let lock_dir = config.state_database.with_extension("sqlite3.submissions");
+    fs::remove_dir_all(&lock_dir).unwrap();
+    let reopened = Harness::new(
+        config,
+        Arc::new(FakeImageBackend {
+            state: state.clone(),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    state.lock().unwrap().queue_position = None;
+    let replay = reopened
+        .submit_keyed("legacy".into(), request)
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.run.id, run.id);
+    assert_eq!(replay.run.status, RunStatus::Submitting);
+    assert_eq!(
+        reopened.reconcile(&run.id).await.unwrap().run.status,
+        RunStatus::Submitting
+    );
+    assert!(!lock_dir.exists());
+    state.lock().unwrap().queue_position = Some(QueuePosition::Running);
+    assert_eq!(
+        reopened.reconcile(&run.id).await.unwrap().run.status,
+        RunStatus::Running
+    );
 }

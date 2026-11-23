@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -268,7 +268,21 @@ impl RunRepository {
     }
 
     pub fn insert(&self, run: &NewRun) -> Result<RunRecord> {
-        self.guarded(|connection| insert_run(connection, run))
+        self.guarded(|connection| insert_run(connection, run, false))
+    }
+
+    fn insert_owned_submission(&self, run: &NewRun) -> Result<RunRecord> {
+        self.guarded(|connection| insert_run(connection, run, true))
+    }
+
+    fn uses_submission_lock(&self, id: &str) -> Result<bool> {
+        self.guarded_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT uses_submission_lock FROM runs WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
     }
 
     pub(crate) fn find_submission(
@@ -290,7 +304,7 @@ impl RunRepository {
             if let Some(run) = find_submission(connection, key, fingerprint)? {
                 return Ok(SubmissionReservation::Existing(run));
             }
-            let run = insert_run(connection, run)?;
+            let run = insert_run(connection, run, true)?;
             connection.execute(
                 "INSERT INTO run_submission_keys (key, fingerprint, run_id) VALUES (?1, ?2, ?3)",
                 params![key, fingerprint, run.id],
@@ -469,10 +483,24 @@ impl RunRepository {
         let warnings = warnings.map(serde_json::to_string).transpose()?;
         self.guarded(|connection| {
             Ok(connection.query_row(
-                "UPDATE runs SET status = 'queued', prompt_id = ?2, updated_at = ?3, node_warnings_json = ?4
-                 WHERE id = ?1 AND status = 'submitting' RETURNING *",
+                "UPDATE runs SET status = CASE WHEN status = 'submitting' THEN 'queued' ELSE status END,
+                    prompt_id = ?2, updated_at = ?3, node_warnings_json = ?4, submission_acknowledged = 1
+                 WHERE id = ?1 AND submission_acknowledged = 0 RETURNING *",
                 params![id, prompt_id, Utc::now().to_rfc3339(), warnings], map_run,
             ).optional()?)
+        })
+    }
+
+    fn rollback_cancellation(&self, id: &str, previous: RunStatus, error: &str) -> Result<()> {
+        self.guarded(|connection| {
+            connection.execute(
+                "UPDATE runs SET status = CASE
+                    WHEN submission_acknowledged = 1 AND ?2 IN ('created', 'submitting', 'unknown_submission') THEN 'queued'
+                    ELSE ?2 END, error = ?3, updated_at = ?4
+                 WHERE id = ?1 AND status = 'cancelling'",
+                params![id, previous.as_str(), error, Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
         })
     }
 
@@ -709,15 +737,15 @@ fn find_submission(
     }
 }
 
-fn insert_run(connection: &Connection, run: &NewRun) -> Result<RunRecord> {
+fn insert_run(connection: &Connection, run: &NewRun, owned: bool) -> Result<RunRecord> {
     let now = Utc::now().to_rfc3339();
     connection.execute(
         r#"
             INSERT INTO runs (
                 id, prompt_id, client_id, workflow_id, workflow_version,
                 workflow_sha256, generation_mode, status, parameters_json,
-                output_dir, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+                output_dir, created_at, updated_at, uses_submission_lock
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)
             "#,
         params![
             run.id,
@@ -731,6 +759,7 @@ fn insert_run(connection: &Connection, run: &NewRun) -> Result<RunRecord> {
             serde_json::to_string(&run.parameters)?,
             run.output_dir,
             now,
+            owned,
         ],
     )?;
     load_run(connection, &run.id)
@@ -808,12 +837,17 @@ const MIGRATION_4: &str = r#"
     CREATE INDEX runs_created_id_idx ON runs(created_at, id);
 "#;
 const MIGRATION_5: &str = "ALTER TABLE runs ADD COLUMN node_warnings_json TEXT;";
+const MIGRATION_6: &str = "
+    ALTER TABLE runs ADD COLUMN uses_submission_lock INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE runs ADD COLUMN submission_acknowledged INTEGER NOT NULL DEFAULT 0;
+";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
     MIGRATION_3,
     MIGRATION_4,
     MIGRATION_5,
+    MIGRATION_6,
 ];
 
 // The first version that must already contain each table before migration.
@@ -983,6 +1017,27 @@ impl AsyncRunRepository {
     pub async fn insert(&self, run: &NewRun) -> Result<RunRecord> {
         let run = run.clone();
         self.call(move |repo| repo.insert(&run)).await
+    }
+
+    pub(crate) async fn insert_owned_submission(&self, run: NewRun) -> Result<RunRecord> {
+        self.call(move |repo| repo.insert_owned_submission(&run))
+            .await
+    }
+
+    pub(crate) async fn uses_submission_lock(&self, id: &str) -> Result<bool> {
+        let id = id.to_owned();
+        self.call(move |repo| repo.uses_submission_lock(&id)).await
+    }
+
+    pub(crate) async fn rollback_cancellation(
+        &self,
+        id: &str,
+        previous: RunStatus,
+        error: String,
+    ) -> Result<()> {
+        let id = id.to_owned();
+        self.call(move |repo| repo.rollback_cancellation(&id, previous, &error))
+            .await
     }
 
     pub(crate) async fn find_submission(

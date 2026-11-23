@@ -79,6 +79,17 @@ impl Drop for TransitionGuard {
     }
 }
 
+pub(crate) async fn before_deadline<T>(
+    deadline: &CancellationToken,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = deadline.cancelled() => Err(HarnessError::ShuttingDown),
+        result = operation => result,
+    }
+}
+
 fn transition_task_error(error: tokio::task::JoinError) -> HarnessError {
     HarnessError::Database(format!("run transition task failed: {error}"))
 }
@@ -436,7 +447,7 @@ impl Harness {
             .await?
         {
             return Ok(KeyedSubmission {
-                run: self.recover_submission(run).await?,
+                run: self.recover_submission(run).await?.0,
                 replayed: true,
             });
         }
@@ -467,18 +478,27 @@ impl Harness {
         }
     }
 
-    async fn recover_submission(&self, run: RunRecord) -> Result<RunRecord> {
-        if run.status != RunStatus::Submitting {
-            return Ok(run);
+    /// Return the refreshed run and whether it is still owned by a live task.
+    async fn recover_submission(&self, run: RunRecord) -> Result<(RunRecord, bool)> {
+        if run.status != RunStatus::Submitting
+            || !self
+                .repository
+                .as_async()
+                .uses_submission_lock(&run.id)
+                .await?
+        {
+            return Ok((run, false));
         }
         let Some(_owner) = self.try_claim_submission(&run.id)? else {
-            return Ok(run);
+            return Ok((run, true));
         };
-        self.mark_submission_unknown(
-            &run.id,
-            "The submission owner exited before the prompt acknowledgement was recorded.",
-        )
-        .await
+        let run = self
+            .mark_submission_unknown(
+                &run.id,
+                "The submission owner exited before the prompt acknowledgement was recorded.",
+            )
+            .await?;
+        Ok((run, false))
     }
 
     async fn submit_inner(
@@ -580,7 +600,7 @@ impl Harness {
             {
                 SubmissionReservation::Existing(run) => {
                     return Ok(KeyedSubmission {
-                        run: self.recover_submission(run).await?,
+                        run: self.recover_submission(run).await?.0,
                         replayed: true,
                     })
                 }
@@ -610,7 +630,7 @@ impl Harness {
             run
         } else {
             prepare_files.await?;
-            repository.insert(&new_run).await?
+            repository.insert_owned_submission(new_run).await?
         };
         repository
             .record_event(
@@ -696,15 +716,27 @@ impl Harness {
         } else {
             " accepted the prompt"
         };
+        let queued = run.status == RunStatus::Queued;
         repository
             .record_event(
                 &run.id,
-                "prompt_queued",
+                if queued {
+                    "prompt_queued"
+                } else {
+                    "submission_acknowledged"
+                },
                 Some(&format!("{}{message}", self.backend.name())),
                 &serde_json::to_value(response)?,
             )
             .await?;
-        transition.publish(Event::RunQueued { run: run.clone() });
+        if queued {
+            transition.publish(Event::RunQueued { run: run.clone() });
+        } else {
+            transition.publish(Event::RunProgress {
+                run: run.clone(),
+                backend_event: None,
+            });
+        }
         Ok(run)
     }
 
@@ -751,27 +783,36 @@ impl Harness {
     pub async fn reconcile(&self, run_id: &str) -> Result<ReconcileResult> {
         let harness = self.clone();
         let run_id = run_id.to_owned();
-        tokio::spawn(async move { harness.reconcile_inner(&run_id).await })
-            .await
-            .map_err(transition_task_error)?
+        tokio::spawn(async move {
+            harness
+                .reconcile_until(&run_id, &CancellationToken::new())
+                .await
+        })
+        .await
+        .map_err(transition_task_error)?
     }
 
-    async fn reconcile_inner(&self, run_id: &str) -> Result<ReconcileResult> {
+    /// Reconcile within the caller's task, stopping backend I/O at the deadline.
+    pub async fn reconcile_until(
+        &self,
+        run_id: &str,
+        deadline: &CancellationToken,
+    ) -> Result<ReconcileResult> {
         let lock = self
             .events
             .run_lock(&self.database_identity, run_id, RunLockKind::Reconcile);
-        let _guard = lock.lock().await;
+        let _guard = before_deadline(deadline, async { Ok(lock.lock().await) }).await?;
         let repository = self.repository.as_async();
-        let mut run = self
+        let (mut run, live_owner) = self
             .recover_submission(repository.get(run_id).await?)
             .await?;
-        if run.status.is_terminal() || run.status == RunStatus::Submitting {
+        if run.status.is_terminal() || live_owner {
             return Ok(ReconcileResult {
                 outputs: repository.outputs(run_id).await?,
                 run,
             });
         }
-        let queue = self.backend.queue().await?;
+        let queue = before_deadline(deadline, self.backend.queue()).await?;
         let transition_status = if queue.is_running(&run.prompt_id) {
             (!matches!(run.status, RunStatus::Running | RunStatus::Cancelling))
                 .then_some(RunStatus::Running)
@@ -828,7 +869,7 @@ impl Harness {
             }
         }
 
-        let history = self.backend.history(&run.prompt_id).await?;
+        let history = before_deadline(deadline, self.backend.history(&run.prompt_id)).await?;
         if history.prompt_id != run.prompt_id {
             return Err(self.backend_error(format!(
                 "requested history for prompt '{}', but received history for '{}'",
@@ -862,6 +903,7 @@ impl Harness {
                     &workflow_manifest_path,
                     source_inputs,
                     &history,
+                    deadline,
                 )
                 .await?;
                 if let Some((updated, transition)) = self
@@ -942,6 +984,18 @@ impl Harness {
         Ok(results)
     }
 
+    /// Reconcile all active runs in the caller's task, with one shared deadline.
+    pub async fn reconcile_all_until(
+        &self,
+        deadline: &CancellationToken,
+    ) -> Result<Vec<ReconcileResult>> {
+        let mut results = Vec::new();
+        for run in self.repository.as_async().active().await? {
+            results.push(self.reconcile_until(&run.id, deadline).await?);
+        }
+        Ok(results)
+    }
+
     pub async fn wait_for_run(&self, run_id: &str) -> Result<RunRecord> {
         self.wait_for_run_inner(run_id, None).await
     }
@@ -953,23 +1007,25 @@ impl Harness {
         stop: &CancellationToken,
         deadline: &CancellationToken,
     ) -> Result<()> {
-        tokio::select! {
-            biased;
-            _ = deadline.cancelled() => Ok(()),
-            result = self.wait_for_run_inner(run_id, Some(stop)) => result.map(|_| ()),
+        match self
+            .wait_for_run_inner(run_id, Some((stop, deadline)))
+            .await
+        {
+            Ok(_) | Err(HarnessError::ShuttingDown) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
     async fn wait_for_run_inner(
         &self,
         run_id: &str,
-        stop: Option<&CancellationToken>,
+        stop: Option<(&CancellationToken, &CancellationToken)>,
     ) -> Result<RunRecord> {
         let repository = self.repository.as_async();
         let initial = repository.get(run_id).await?;
         let stopped = async {
             match stop {
-                Some(stop) => stop.cancelled().await,
+                Some((stop, _)) => stop.cancelled().await,
                 None => std::future::pending().await,
             }
         };
@@ -1004,8 +1060,8 @@ impl Harness {
                     }
                 }
                 _ = poll.tick() => {
-                    let result = if stop.is_some() {
-                        self.reconcile_inner(run_id).await?
+                    let result = if let Some((_, deadline)) = stop {
+                        self.reconcile_until(run_id, deadline).await?
                     } else {
                         self.reconcile(run_id).await?
                     };
@@ -1021,16 +1077,25 @@ impl Harness {
     pub async fn cancel(&self, run_id: &str) -> Result<RunRecord> {
         let harness = self.clone();
         let run_id = run_id.to_owned();
-        tokio::spawn(async move { harness.cancel_inner(&run_id).await })
-            .await
-            .map_err(transition_task_error)?
+        tokio::spawn(async move {
+            harness
+                .cancel_until(&run_id, &CancellationToken::new())
+                .await
+        })
+        .await
+        .map_err(transition_task_error)?
     }
 
-    async fn cancel_inner(&self, run_id: &str) -> Result<RunRecord> {
+    /// Cancel within the caller's task; only backend I/O is cut off at the deadline.
+    pub async fn cancel_until(
+        &self,
+        run_id: &str,
+        deadline: &CancellationToken,
+    ) -> Result<RunRecord> {
         let lock = self
             .events
             .run_lock(&self.database_identity, run_id, RunLockKind::Cancel);
-        let _guard = lock.lock().await;
+        let _guard = before_deadline(deadline, async { Ok(lock.lock().await) }).await?;
         let repository = self.repository.as_async();
         let run = repository.get(run_id).await?;
         if run.status.is_terminal() {
@@ -1039,7 +1104,7 @@ impl Harness {
                 run.status.as_str()
             )));
         }
-        let queue = self.backend.queue().await?;
+        let queue = before_deadline(deadline, self.backend.queue()).await?;
         let running = queue.is_running(&run.prompt_id);
         if !running && !queue.contains(&run.prompt_id) {
             return Err(HarnessError::RunConflict(format!(
@@ -1064,22 +1129,42 @@ impl Harness {
                 break current.status;
             }
         };
-        let response = if running {
-            self.backend.interrupt(&run.prompt_id).await
+        let preparation = if running {
+            before_deadline(deadline, self.backend.prepare_interrupt(&run.prompt_id)).await
         } else {
-            self.backend.delete_queued(&run.prompt_id).await
+            Ok(())
         };
+        if let Err(error) = preparation {
+            self.finish_unsent_cancellation(run_id, previous, &error)
+                .await?;
+            return Err(error);
+        }
+        let mut attempted = false;
+        let response = before_deadline(deadline, async {
+            attempted = true;
+            if running {
+                self.backend.interrupt(&run.prompt_id).await
+            } else {
+                self.backend.delete_queued(&run.prompt_id).await
+            }
+        })
+        .await;
         let response = match response {
             Ok(response) => response,
+            Err(error @ HarnessError::ShuttingDown) if !attempted => {
+                self.finish_unsent_cancellation(run_id, previous, &error)
+                    .await?;
+                return Err(error);
+            }
+            Err(error @ HarnessError::ShuttingDown) => {
+                repository.record_event(run_id, "cancellation_unknown",
+                    Some("The shutdown deadline expired while waiting for cancellation acknowledgement; reconcile the run."),
+                    &json!({"prompt_id": run.prompt_id})).await?;
+                return Err(error);
+            }
             Err(error) => {
                 repository
-                    .compare_and_set_status(
-                        run_id,
-                        RunStatus::Cancelling,
-                        previous,
-                        Some(&error.to_string()),
-                        None,
-                    )
+                    .rollback_cancellation(run_id, previous, error.to_string())
                     .await?;
                 return Err(error);
             }
@@ -1105,6 +1190,26 @@ impl Harness {
             .record_event(run_id, event_type, Some(&message), &response)
             .await?;
         repository.get(run_id).await
+    }
+
+    async fn finish_unsent_cancellation(
+        &self,
+        id: &str,
+        previous: RunStatus,
+        error: &HarnessError,
+    ) -> Result<()> {
+        let repository = self.repository.as_async();
+        repository
+            .rollback_cancellation(id, previous, error.to_string())
+            .await?;
+        repository
+            .record_event(
+                id,
+                "cancellation_not_sent",
+                Some("The cancellation request was not sent."),
+                &json!({"error": error.to_string()}),
+            )
+            .await
     }
 
     fn output_directory(

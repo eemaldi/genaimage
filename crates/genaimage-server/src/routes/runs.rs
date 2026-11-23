@@ -51,14 +51,14 @@ async fn submit(
     })?;
     let key = key.to_owned();
     let task_state = state.clone();
-    let result = state.spawn_run_task(async move {
+    let result = run_mutation(&state, async move {
         let result = task_state.harness.submit_keyed_until(key, RunRequest {
             workflow: body.workflow,
             preset: body.preset,
             parameters: body.parameters,
             version: body.version,
         }, &task_state.lifecycle.deadline).await?;
-        if !result.replayed && result.run.status == RunStatus::Queued {
+        if !result.replayed && matches!(result.run.status, RunStatus::Queued | RunStatus::Cancelling) {
             let id = result.run.id.clone();
             let monitor_state = task_state.clone();
             task_state.spawn_run_task(async move {
@@ -69,9 +69,7 @@ async fn submit(
             });
         }
         Ok::<_, HarnessError>(result)
-    }).ok_or_else(|| problem(HarnessError::ShuttingDown))?
-        .await.map_err(|error| problem(HarnessError::Database(format!("run submission task failed: {error}"))))?
-        .map_err(problem)?;
+    }).await?;
     let status = if result.replayed {
         StatusCode::OK
     } else {
@@ -155,36 +153,64 @@ async fn cancel(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
-    state
-        .harness
-        .cancel(&parse_id(id)?)
-        .await
-        .map(|run| Json(run_response(run)))
-        .map_err(problem)
+    let id = parse_id(id)?;
+    let task = state.clone();
+    let run = run_mutation(&state, async move {
+        task.harness
+            .cancel_until(&id, &task.lifecycle.deadline)
+            .await
+    })
+    .await?;
+    Ok(Json(run_response(run)))
 }
 
 async fn reconcile(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
-    state
-        .harness
-        .reconcile(&parse_id(id)?)
-        .await
-        .map(|result| Json(run_response(result.run)))
-        .map_err(problem)
+    let id = parse_id(id)?;
+    let task = state.clone();
+    let result = run_mutation(&state, async move {
+        task.harness
+            .reconcile_until(&id, &task.lifecycle.deadline)
+            .await
+    })
+    .await?;
+    Ok(Json(run_response(result.run)))
 }
 
 async fn reconcile_all(
     State(state): State<AppState>,
 ) -> Result<Json<api::ReconcileRunsResponse>, Problem> {
-    let results = state.harness.reconcile_all().await.map_err(problem)?;
+    let task = state.clone();
+    let results = run_mutation(&state, async move {
+        task.harness
+            .reconcile_all_until(&task.lifecycle.deadline)
+            .await
+    })
+    .await?;
     Ok(Json(api::ReconcileRunsResponse {
         runs: results
             .into_iter()
             .map(|result| run_response(result.run))
             .collect(),
     }))
+}
+
+async fn run_mutation<T: Send + 'static>(
+    state: &AppState,
+    operation: impl std::future::Future<Output = genaimage_core::Result<T>> + Send + 'static,
+) -> Result<T, Problem> {
+    state
+        .spawn_run_task(operation)
+        .ok_or_else(|| problem(HarnessError::ShuttingDown))?
+        .await
+        .map_err(|error| {
+            problem(HarnessError::Database(format!(
+                "run mutation task failed: {error}"
+            )))
+        })?
+        .map_err(problem)
 }
 
 fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem> {
@@ -211,7 +237,7 @@ fn problem(error: HarnessError) -> Problem {
     let (status, recovery) = match &error {
         HarnessError::ShuttingDown => (
             StatusCode::SERVICE_UNAVAILABLE,
-            "Try again after the server restarts, using the same idempotency key.",
+            "After restart, use the same key for submissions and reconcile before retrying cancellation.",
         ),
         HarnessError::UnsupportedOperation(_) => (
             StatusCode::BAD_GATEWAY,

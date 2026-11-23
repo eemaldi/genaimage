@@ -211,7 +211,7 @@ impl ImageBackend for ComfyUiClient {
             .await
     }
 
-    async fn interrupt(&self, prompt_id: &str) -> Result<Value> {
+    async fn prepare_interrupt(&self, prompt_id: &str) -> Result<()> {
         // Older ComfyUI versions ignore the JSON and interrupt the queue head.
         let stats = self.get_json_with_attempts("system_stats", 1).await?;
         let version = stats
@@ -220,6 +220,15 @@ impl ImageBackend for ComfyUiClient {
         if !version.is_some_and(supports_targeted_interrupt) || prompt_id.is_empty() {
             return Err(HarnessError::UnsupportedOperation(
                 "Targeted interruption requires a prompt ID and ComfyUI 0.3.57 or later with a recognised release version. Upgrade ComfyUI or manage the run in ComfyUI itself; no global interrupt was sent.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn interrupt(&self, prompt_id: &str) -> Result<Value> {
+        if prompt_id.is_empty() {
+            return Err(HarnessError::UnsupportedOperation(
+                "A prompt ID is required for targeted interruption.".into(),
             ));
         }
         self.post_json("interrupt", &json!({"prompt_id": prompt_id}))

@@ -72,10 +72,12 @@ callers must provide the intended port.
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
   hint. On SIGINT or SIGTERM, the listener stops accepting requests and new
-  submissions, signals monitors and SSE streams to stop, and drains connections
-  and run tasks concurrently. After five seconds it closes remaining
-  connections and ends pending acknowledgement waits, recording unconfirmed
-  submissions as `unknown_submission` before exiting.
+  run mutations, signals monitors and SSE streams to stop, and drains
+  connections and run tasks concurrently. After five seconds it closes
+  remaining connections and ends pending backend calls. Before exiting it
+  records unconfirmed submissions as `unknown_submission`, rolls back
+  cancellations that were not sent, and records attempted but unconfirmed
+  cancellations for reconciliation.
 
 The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
 Host headers for its actual port, plus the configured bind IP when it is a
@@ -211,7 +213,8 @@ and `version` (an optional new output directory name) are optional. Server-side
 image file paths are not accepted; the uploads API is planned. The response
 includes the run and prompt IDs, workflow ID/version/hash, effective parameters,
 status, timestamps and any recorded error. An acknowledged partial submission
-is accepted, and its `node_warnings` appear in the run and its queued event.
+is accepted, and its `node_warnings` appear in the run and its persisted
+acknowledgement event even if cancellation is in progress.
 
 Every submission requires one `Idempotency-Key` of 1–128 visible ASCII
 characters, excluding commas. Use a fresh key for each distinct run. The server
@@ -223,8 +226,11 @@ run's **current** state; a different request for a reserved key returns 409.
 Validation rejected before reservation does not consume the key. If artefact
 preparation fails after reservation, the run is recorded as `failed` and is not
 sent. A process crash can leave a `submitting` record. Replaying its key or
-reconciling it recovers it as `unknown_submission` when no process holds its
-submission lock. This does not release the key or resend the prompt.
+reconciling it recovers it as `unknown_submission` when the run uses the
+submission-lock protocol and no process holds its lock. This does not release
+the key or resend the prompt. Older runs without a protocol marker require
+queue or history evidence to advance; if neither identifies the prompt, an
+operator must investigate and decide how to recover.
 
 A timeout or other unconfirmed `/prompt` response produces
 `unknown_submission`. Neither a retry with the same key nor reconciliation
