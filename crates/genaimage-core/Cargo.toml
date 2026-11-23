@@ -28,3 +28,8 @@ tokio = { workspace = true, features = ["test-util"] }
 jsonschema = { version = "0.18", default-features = false }
 serde_json = { workspace = true, features = ["arbitrary_precision"] }
 tempfile = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "performance"
+harness = false

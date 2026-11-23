@@ -47,3 +47,31 @@ jobs:
 
       - name: Run repository checks
         run: python3 scripts/ci_check.py
+
+  performance-budget:
+    name: Performance budget (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run quick Criterion benchmarks
+        run: cargo bench --locked -p genaimage-core --bench performance -- --quick
+        continue-on-error: true
+
+      - name: Measure performance budgets and verify summary
+        run: |
+          python3 scripts/perf_check.py --quick
+          cat "$GITHUB_STEP_SUMMARY"
+          grep -q '^## Performance budget' "$GITHUB_STEP_SUMMARY"
+          grep -q '^## Benchmarks' "$GITHUB_STEP_SUMMARY"
+        continue-on-error: true
