@@ -8,10 +8,12 @@ from scripts import ci_check
 
 
 class RunnerTests(unittest.TestCase):
-    def run_main(self, portal_present, command_results=None, failed_check=None):
+    def run_main(self, portal_present, command_results=None, failed_check=None,
+                 lockfiles=('package-lock.json',)):
         root = Path('/project')
+        is_file = lambda path: portal_present and path.name in ('package.json', *lockfiles)
         with mock.patch.object(ci_check, 'ROOT', root), \
-             mock.patch.object(Path, 'is_file', return_value=portal_present), \
+             mock.patch.object(Path, 'is_file', is_file), \
              mock.patch.object(ci_check, 'check_relative_links', return_value=failed_check or []), \
              mock.patch.object(ci_check, 'check_skill_mirrors', return_value=[]) as mirrors, \
              mock.patch.object(ci_check, 'check_skill_lock', return_value=[]), \
@@ -37,6 +39,22 @@ class RunnerTests(unittest.TestCase):
             (['npm', 'run', 'lint'], Path('/project/apps/portal')),
             (['npm', 'test'], Path('/project/apps/portal')),
             (['npm', 'run', 'build'], Path('/project/apps/portal')),
+        ])
+
+    def test_portal_accepts_npm_shrinkwrap_without_package_lock(self):
+        result, calls, _, _ = self.run_main(True, lockfiles=('npm-shrinkwrap.json',))
+        self.assertEqual(result, 0)
+        self.assertTrue(any(call.args[1] == ['npm', 'ci'] for call in calls))
+
+    def test_portal_without_lockfile_fails_before_commands(self):
+        result, calls, tooling, _ = self.run_main(True, lockfiles=())
+        self.assertEqual(result, 1)
+        self.assertEqual(calls, [])
+        tooling.assert_not_called()
+        with mock.patch.object(Path, 'is_file', return_value=False):
+            errors = ci_check.check_portal_lockfile(Path('/project/apps/portal'))
+        self.assertEqual(errors, [
+            'apps/portal requires package-lock.json or npm-shrinkwrap.json for npm ci'
         ])
 
     def test_command_failure_stops_subsequent_commands(self):

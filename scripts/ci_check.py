@@ -160,6 +160,14 @@ def check_runtime_tooling(portal_present=False):
     return errors
 
 
+def check_portal_lockfile(portal):
+    if not any((portal / name).is_file() for name in ("package-lock.json", "npm-shrinkwrap.json")):
+        return [
+            "apps/portal requires package-lock.json or npm-shrinkwrap.json for npm ci"
+        ]
+    return []
+
+
 def run_check(label, check):
     print(f"==> {label}", flush=True)
     errors = check()
@@ -177,6 +185,7 @@ def main():
         ("Relative links", check_relative_links),
         ("Skill mirrors", check_skill_mirrors),
         ("Skill lock", check_skill_lock),
+        ("Portal lockfile", lambda: check_portal_lockfile(portal) if portal_present else []),
         ("Prerequisites", lambda: check_runtime_tooling(portal_present)),
     ]
     for label, check in checks:
@@ -188,7 +197,7 @@ def main():
         ("Rust formatting", ["cargo", "fmt", "--all", "--", "--check"], ROOT),
         (
             "Rust linting",
-            ["cargo", "clippy", "--workspace", "--all-targets"],
+            ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
             ROOT,
         ),
         (
