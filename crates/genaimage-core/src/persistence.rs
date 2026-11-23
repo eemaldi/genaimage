@@ -4,13 +4,13 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +113,7 @@ pub struct OutputRecord {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Clone)]
 pub struct NewRun {
     pub id: String,
     pub prompt_id: String,
@@ -136,58 +137,12 @@ impl RunRepository {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(10))?;
-        // Legacy gate columns are nullable and are left untouched in existing databases.
-        connection.execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS runs (
-                id TEXT PRIMARY KEY,
-                prompt_id TEXT NOT NULL UNIQUE,
-                client_id TEXT NOT NULL,
-                workflow_id TEXT NOT NULL,
-                workflow_version TEXT NOT NULL,
-                workflow_sha256 TEXT NOT NULL,
-                generation_mode TEXT NOT NULL,
-                status TEXT NOT NULL,
-                parameters_json TEXT NOT NULL,
-                output_dir TEXT NOT NULL,
-                manifest_path TEXT,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                completed_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS run_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                event_type TEXT NOT NULL,
-                message TEXT,
-                payload_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS run_events_run_id_idx
-                ON run_events(run_id, id);
-            CREATE TABLE IF NOT EXISTS outputs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                node_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                source_filename TEXT NOT NULL,
-                source_subfolder TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                local_path TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                byte_size INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(run_id, source_filename, source_subfolder, source_type)
-            );
-            CREATE INDEX IF NOT EXISTS outputs_run_id_idx ON outputs(run_id);
-            "#,
-        )?;
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        migrate(&mut connection, path)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -432,6 +387,210 @@ impl RunRepository {
             HarnessError::Database(format!("state database lock was poisoned: {error}"))
         })
     }
+}
+
+// Version 1 is the original run schema. Version 2 also repairs databases from
+// older releases that marked version 1 before creating all tables and indexes.
+const MIGRATION_1: &str = r#"
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                prompt_id TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                workflow_id TEXT NOT NULL,
+                workflow_version TEXT NOT NULL,
+                workflow_sha256 TEXT NOT NULL,
+                generation_mode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                parameters_json TEXT NOT NULL,
+                output_dir TEXT NOT NULL,
+                manifest_path TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS run_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                message TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS run_events_run_id_idx
+                ON run_events(run_id, id);
+            CREATE TABLE IF NOT EXISTS outputs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source_filename TEXT NOT NULL,
+                source_subfolder TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                byte_size INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(run_id, source_filename, source_subfolder, source_type)
+            );
+            CREATE INDEX IF NOT EXISTS outputs_run_id_idx ON outputs(run_id);
+"#;
+const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1];
+
+fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if !(0..=SCHEMA_VERSION).contains(&version) {
+        return Err(HarnessError::Database(format!(
+            "state database '{}' has unsupported schema version {version}; use a compatible GenAImage version",
+            path.display()
+        )));
+    }
+    let migration_result = (|| -> rusqlite::Result<()> {
+        if version == 0 {
+            let objects: i64 = transaction.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                [], |row| row.get(0),
+            )?;
+            let runs: i64 = transaction.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'runs'",
+                [],
+                |row| row.get(0),
+            )?;
+            if objects > 0 && runs == 0 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+        }
+        for (index, migration) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+            transaction.execute_batch(migration)?;
+            transaction.pragma_update(None, "user_version", (index + 1) as i64)?;
+        }
+        // Check the columns needed by every operation before accepting a legacy schema.
+        for query in [
+            "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0",
+            "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0",
+            "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0",
+        ] {
+            transaction.prepare(query)?;
+        }
+        Ok(())
+    })();
+    migration_result.map_err(|error| HarnessError::Database(format!(
+        "could not migrate state database '{}': {error}. Back up the database, then move it aside to rebuild the operational cache; keep the run records on disk",
+        path.display()
+    )))?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// An async boundary for the synchronous repository. Each operation runs on
+/// Tokio's blocking pool; cancelling a future does not cancel an in-flight write.
+#[derive(Clone)]
+pub struct AsyncRunRepository {
+    repository: RunRepository,
+}
+
+impl RunRepository {
+    pub fn as_async(&self) -> AsyncRunRepository {
+        AsyncRunRepository {
+            repository: self.clone(),
+        }
+    }
+}
+
+impl AsyncRunRepository {
+    pub async fn open(path: &Path) -> Result<Self> {
+        let path = path.to_path_buf();
+        let repository = tokio::task::spawn_blocking(move || RunRepository::open(&path))
+            .await
+            .map_err(blocking_task_error)??;
+        Ok(repository.as_async())
+    }
+
+    async fn call<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(RunRepository) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let repository = self.repository.clone();
+        tokio::task::spawn_blocking(move || operation(repository))
+            .await
+            .map_err(blocking_task_error)?
+    }
+
+    pub async fn insert(&self, run: &NewRun) -> Result<RunRecord> {
+        let run = run.clone();
+        self.call(move |repo| repo.insert(&run)).await
+    }
+
+    pub async fn get(&self, run_id: &str) -> Result<RunRecord> {
+        let run_id = run_id.to_owned();
+        self.call(move |repo| repo.get(&run_id)).await
+    }
+
+    pub async fn list(&self, limit: usize) -> Result<Vec<RunRecord>> {
+        self.call(move |repo| repo.list(limit)).await
+    }
+
+    pub async fn active(&self) -> Result<Vec<RunRecord>> {
+        self.call(move |repo| repo.active()).await
+    }
+
+    pub async fn update_status(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        error: Option<&str>,
+        manifest_path: Option<&str>,
+    ) -> Result<RunRecord> {
+        let run_id = run_id.to_owned();
+        let error = error.map(str::to_owned);
+        let manifest_path = manifest_path.map(str::to_owned);
+        self.call(move |repo| {
+            repo.update_status(&run_id, status, error.as_deref(), manifest_path.as_deref())
+        })
+        .await
+    }
+
+    pub async fn update_prompt_id(&self, run_id: &str, prompt_id: &str) -> Result<RunRecord> {
+        let run_id = run_id.to_owned();
+        let prompt_id = prompt_id.to_owned();
+        self.call(move |repo| repo.update_prompt_id(&run_id, &prompt_id))
+            .await
+    }
+
+    pub async fn record_event(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        message: Option<&str>,
+        payload: &Value,
+    ) -> Result<()> {
+        let run_id = run_id.to_owned();
+        let event_type = event_type.to_owned();
+        let message = message.map(str::to_owned);
+        let payload = payload.clone();
+        self.call(move |repo| repo.record_event(&run_id, &event_type, message.as_deref(), &payload))
+            .await
+    }
+
+    pub async fn events(&self, run_id: &str, limit: usize) -> Result<Vec<RunEvent>> {
+        let run_id = run_id.to_owned();
+        self.call(move |repo| repo.events(&run_id, limit)).await
+    }
+
+    pub async fn record_output(&self, output: &OutputRecord) -> Result<()> {
+        let output = output.clone();
+        self.call(move |repo| repo.record_output(&output)).await
+    }
+
+    pub async fn outputs(&self, run_id: &str) -> Result<Vec<OutputRecord>> {
+        let run_id = run_id.to_owned();
+        self.call(move |repo| repo.outputs(&run_id)).await
+    }
+}
+
+fn blocking_task_error(error: tokio::task::JoinError) -> HarnessError {
+    HarnessError::Database(format!("state database task failed: {error}"))
 }
 
 fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {

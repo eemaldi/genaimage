@@ -112,6 +112,19 @@ SQLite holds operational queue and event state. Portable run manifests record
 resolved inputs, workflow, identifiers, outputs and checksums; preserve them
 across reconnects and migrations.
 
+The state database uses versioned, transactional SQLite migrations, WAL,
+foreign-key enforcement, a ten-second busy timeout and `synchronous=NORMAL`.
+Async callers use the blocking-pool repository boundary and `Harness::new_async`
+for database opening; synchronous repository methods are for non-async callers.
+A legacy unversioned database is migrated in place when its schema is
+compatible, with old nullable gate columns left untouched. If migration fails,
+stop all GenAImage processes, back up the state database and move it aside
+before restarting with a fresh operational cache. Also preserve its `-wal` and `-shm` files if present, and keep `runs/`:
+run records are the source of truth. This does not automatically reimport old
+runs or recover in-flight queue state. Newer schema versions require a
+compatible GenAImage version, rather than a downgrade. Once started, a
+blocking-pool write may finish even if its async caller is cancelled.
+
 ## Performance budgets
 
 These are target budgets to measure as the planned components are delivered:

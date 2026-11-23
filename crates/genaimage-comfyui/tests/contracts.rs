@@ -227,7 +227,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
         include_str!("../../../workflows/comfyui/text-to-image/api-workflow.json"),
     );
 
-    let harness = open_harness(temp.path()).expect("open harness");
+    let harness = open_harness(temp.path()).await.expect("open harness");
     let submitted = harness
         .submit(RunRequest {
             workflow: "text-to-image".to_owned(),
@@ -244,7 +244,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
     assert_eq!(submitted.status, RunStatus::Queued);
 
     drop(harness);
-    let reopened = open_harness(temp.path()).expect("reopen harness");
+    let reopened = open_harness(temp.path()).await.expect("reopen harness");
     assert_eq!(
         reopened
             .get_run(&submitted.id)
@@ -277,7 +277,7 @@ async fn queue_deletion_acknowledgement_without_history_is_not_confirmation() {
     let address = start_fake_comfyui(state).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = open_harness(temp.path()).expect("open harness");
+    let harness = open_harness(temp.path()).await.expect("open harness");
     let submitted = harness
         .submit(test_run_request("contract-workflow"))
         .await
@@ -300,7 +300,7 @@ async fn running_prompt_is_interrupted_then_reconciled() {
     let address = start_fake_comfyui(state.clone()).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = open_harness(temp.path()).expect("open harness");
+    let harness = open_harness(temp.path()).await.expect("open harness");
     let submitted = harness
         .submit(test_run_request("contract-workflow"))
         .await
@@ -324,7 +324,7 @@ async fn ambiguous_submission_is_reconciled_without_automatic_retry() {
     let address = start_fake_comfyui(state.clone()).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = open_harness(temp.path()).expect("open harness");
+    let harness = open_harness(temp.path()).await.expect("open harness");
 
     let run = harness
         .submit(test_run_request("contract-workflow"))
@@ -352,7 +352,7 @@ async fn submission_is_not_replayed_after_a_post_preserving_redirect() {
     let address = start_fake_comfyui(state.clone()).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = open_harness(temp.path()).expect("open harness");
+    let harness = open_harness(temp.path()).await.expect("open harness");
     let run = harness
         .submit(test_run_request("contract-workflow"))
         .await
@@ -413,7 +413,7 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
         &manifest_path,
         &serde_json::to_string_pretty(&manifest).expect("manifest JSON"),
     );
-    let harness = open_harness(temp.path()).expect("open harness");
+    let harness = open_harness(temp.path()).await.expect("open harness");
 
     let run = harness
         .submit(RunRequest {
@@ -452,10 +452,10 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
     );
 }
 
-fn open_harness(workspace: &Path) -> genaimage_core::Result<Harness> {
+async fn open_harness(workspace: &Path) -> genaimage_core::Result<Harness> {
     let config = HarnessConfig::load(workspace)?;
     let backend = Arc::new(ComfyUiClient::new(&config.comfyui)?);
-    Harness::new(config, backend)
+    Harness::new_async(config, backend).await
 }
 
 fn configure_harness(temp: &TempDir, address: SocketAddr) {

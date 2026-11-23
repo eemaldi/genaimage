@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     image_backend::{HistorySnapshot, ImageBackend},
-    persistence::{OutputRecord, RunRecord, RunRepository},
+    persistence::{AsyncRunRepository, OutputRecord, RunRecord},
     workflow::BoundWorkflow,
     HarnessError, Result,
 };
@@ -83,7 +83,7 @@ pub async fn initialise_run_files(
 
 pub(crate) async fn materialise_history(
     client: &dyn ImageBackend,
-    repository: &RunRepository,
+    repository: &AsyncRunRepository,
     run: &RunRecord,
     workflow_manifest_path: &Path,
     source_inputs: Vec<InputFileRecord>,
@@ -123,7 +123,7 @@ pub(crate) async fn materialise_history(
             byte_size: bytes.len() as u64,
             created_at: Utc::now(),
         };
-        repository.record_output(&record)?;
+        repository.record_output(&record).await?;
         output_records.push(record);
     }
 
