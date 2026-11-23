@@ -121,7 +121,9 @@ python3 scripts/ci_check.py
 ```
 
 The command verifies repository links and skill mirrors, formats and lints the
-Rust workspace, runs Rust tests, and checks the Python skill helpers.
+Rust workspace, runs Rust tests, and checks the Python skill helpers. If
+`apps/portal/package.json` exists, it also installs portal dependencies and runs
+its lint, test and build checks; those steps require Node.js 22 and npm.
 
 ## Project agent and skills
 

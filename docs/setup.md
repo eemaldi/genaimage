@@ -62,3 +62,7 @@ python3 scripts/ci_check.py
 ```
 
 It expects Python 3.11 or newer and the Rust toolchain with rustfmt and clippy.
+When `apps/portal/package.json` exists, Node.js 22 and npm are also required;
+the command installs locked dependencies and runs the portal lint, test and
+build checks. The portal must include `package-lock.json` or
+`npm-shrinkwrap.json` for `npm ci`. CI runs the same command.
