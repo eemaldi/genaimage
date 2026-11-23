@@ -10,8 +10,6 @@ pub enum HarnessError {
     Configuration(String),
     #[error("workflow validation failed: {0}")]
     Workflow(String),
-    #[error("approval gate blocked: {0}")]
-    Gate(String),
     #[error("ComfyUI request failed: {0}")]
     ComfyUi(String),
     #[error("state database error: {0}")]

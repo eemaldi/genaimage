@@ -26,7 +26,7 @@ pub struct InputFileRecord {
     pub uploaded_name: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunManifest {
     pub schema_version: u32,
     pub run_id: String,
@@ -34,9 +34,7 @@ pub struct RunManifest {
     pub client_id: String,
     pub workflow: WorkflowManifestRecord,
     pub preset: Option<String>,
-    pub character_id: Option<String>,
     pub parameters: Value,
-    pub gate_snapshot: Option<Value>,
     pub comfyui_base_url: String,
     pub source_inputs: Vec<InputFileRecord>,
     pub outputs: Vec<OutputRecord>,
@@ -45,7 +43,7 @@ pub struct RunManifest {
     pub comfyui_history: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkflowManifestRecord {
     pub id: String,
     pub version: String,
@@ -144,9 +142,7 @@ pub async fn materialise_history(
         },
         preset: read_preflight_field(&output_dir, "preset")?
             .and_then(|value| value.as_str().map(str::to_owned)),
-        character_id: run.character_id.clone(),
         parameters: run.parameters.clone(),
-        gate_snapshot: run.gate_snapshot.clone(),
         comfyui_base_url: client.base_url().to_string(),
         source_inputs,
         outputs: output_records,
@@ -176,17 +172,13 @@ fn output_file_name(index: usize, kind: &str, source: &str) -> String {
     let extension = Path::new(source)
         .extension()
         .and_then(|extension| extension.to_str())
-        .filter(|extension| {
-            extension
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric())
-        })
+        .filter(|extension| extension.chars().all(|ch| ch.is_ascii_alphanumeric()))
         .unwrap_or("bin");
     let safe_kind: String = kind
         .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
             } else {
                 '_'
             }

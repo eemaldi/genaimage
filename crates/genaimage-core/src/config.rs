@@ -58,7 +58,6 @@ pub struct HarnessPaths {
     pub state_database: PathBuf,
     pub workflows: PathBuf,
     pub runs: PathBuf,
-    pub characters: PathBuf,
 }
 
 impl Default for HarnessPaths {
@@ -67,7 +66,6 @@ impl Default for HarnessPaths {
             state_database: PathBuf::from(".genaimage/state.sqlite3"),
             workflows: PathBuf::from("workflows/comfyui"),
             runs: PathBuf::from("runs"),
-            characters: PathBuf::from("characters"),
         }
     }
 }
@@ -80,7 +78,6 @@ pub struct ResolvedConfig {
     pub state_database: PathBuf,
     pub workflows: PathBuf,
     pub runs: PathBuf,
-    pub characters: PathBuf,
 }
 
 impl HarnessConfig {
@@ -126,7 +123,6 @@ impl HarnessConfig {
 
         let workflows = resolve(&config.paths.workflows);
         let runs = resolve(&config.paths.runs);
-        let characters = resolve(&config.paths.characters);
 
         Ok(ResolvedConfig {
             workspace,
@@ -135,7 +131,6 @@ impl HarnessConfig {
             state_database,
             workflows,
             runs,
-            characters,
         })
     }
 
@@ -151,7 +146,6 @@ websocket_reconnect_seconds = 2
 state_database = ".genaimage/state.sqlite3"
 workflows = "workflows/comfyui"
 runs = "runs"
-characters = "characters"
 "#
         .to_owned()
     }

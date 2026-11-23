@@ -82,8 +82,5 @@
       "node": "9",
       "kind": "image"
     }
-  ],
-  "required_gates": [
-    "gate3"
   ]
 }

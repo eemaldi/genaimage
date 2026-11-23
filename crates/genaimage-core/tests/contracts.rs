@@ -17,7 +17,10 @@ use axum::{
     Json, Router,
 };
 use genaimage_core::{
-    workflow::LoadedWorkflow, ApprovalStatus, GateId, Harness, HarnessError, RunRequest, RunStatus,
+    artifacts::RunManifest,
+    persistence::{NewRun, RunRepository},
+    workflow::{GenerationMode, LoadedWorkflow},
+    Harness, RunRequest, RunStatus,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -112,7 +115,6 @@ fn workflow_manifest_validates_and_applies_typed_parameters() {
 
     assert_eq!(bound.workflow["3"]["inputs"]["seed"], json!(99));
     assert_eq!(bound.workflow["3"]["inputs"]["steps"], json!(10));
-    assert_eq!(loaded.required_gates(), Vec::new());
 }
 
 #[test]
@@ -150,67 +152,47 @@ fn workflow_rejects_out_of_range_parameter_before_submission() {
 }
 
 #[test]
-fn gate_approval_is_sequential_and_persistent() {
+fn legacy_generic_run_and_manifest_are_still_readable() {
     let temp = TempDir::new().expect("temp directory");
-    let character_dir = temp.path().join("characters/CHR-001");
-    let mut state = genaimage_core::CharacterState::new("CHR-001", Some("Ada".to_owned()));
+    let path = temp.path().join("state.sqlite3");
+    let database = rusqlite::Connection::open(&path).expect("legacy database");
+    database
+        .execute_batch(include_str!("fixtures/legacy-runs.sql"))
+        .expect("install legacy schema and run");
+    drop(database);
 
-    let blocked = state.decide(
-        GateId::Gate3,
-        ApprovalStatus::Approved,
-        "operator",
-        "premature approval",
-    );
-    assert!(matches!(blocked, Err(HarnessError::Gate(_))));
+    let repository = RunRepository::open(&path).expect("open legacy database");
+    let run = repository.get("run-legacy").expect("read legacy run");
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.generation_mode, GenerationMode::Generic);
+    assert!(run.updated_at > run.created_at);
 
-    for gate in [GateId::Gate1, GateId::Gate2, GateId::Gate3] {
-        state
-            .decide(gate, ApprovalStatus::Approved, "operator", "approved")
-            .expect("ordered approval");
-    }
-    state.save(&character_dir).expect("save state");
+    let manifest: RunManifest =
+        serde_json::from_str(include_str!("fixtures/legacy-run-manifest.json"))
+            .expect("read legacy manifest");
+    assert_eq!(manifest.run_id, run.id);
+    assert_eq!(manifest.prompt_id, run.prompt_id);
+    assert_eq!(manifest.workflow.id, run.workflow_id);
+    assert_eq!(manifest.parameters, run.parameters);
+    assert_eq!(manifest.created_at, run.created_at);
+    assert_eq!(Some(manifest.completed_at), run.completed_at);
+    assert_eq!(manifest.outputs[0].source_filename, "example.png");
 
-    let reloaded = genaimage_core::CharacterState::load(&character_dir).expect("reload state");
-    reloaded
-        .assert_approved(&[GateId::Gate3])
-        .expect("Gate 3 approved");
-    let markdown = fs::read_to_string(character_dir.join("production-record.md")).expect("record");
-    assert!(markdown.contains("<!-- BEGIN GENAIMAGE GATE STATE -->"));
-    assert!(markdown.contains("Gate 3 - Brief approval | Approved"));
-    assert_eq!(reloaded.decisions.len(), 3);
-}
-
-#[test]
-fn rejecting_an_earlier_gate_resets_later_approvals() {
-    let mut state = genaimage_core::CharacterState::new("CHR-001", None);
-    for gate in [
-        GateId::Gate1,
-        GateId::Gate2,
-        GateId::Gate3,
-        GateId::Phase04Review,
-        GateId::Gate4,
-        GateId::Gate5,
-    ] {
-        state
-            .decide(gate, ApprovalStatus::Approved, "operator", "approved")
-            .expect("ordered approval");
-    }
-    state
-        .decide(
-            GateId::Gate3,
-            ApprovalStatus::Rejected,
-            "operator",
-            "brief changed",
-        )
-        .expect("reject earlier gate");
-
-    assert_eq!(state.gates[&GateId::Gate3].status, ApprovalStatus::Rejected);
-    assert_eq!(state.gates[&GateId::Gate5].status, ApprovalStatus::Pending);
-    assert_eq!(state.decisions.len(), 7);
-    assert!(
-        state.assert_approved(&[GateId::Gate5]).is_err(),
-        "later work must remain blocked"
-    );
+    repository
+        .insert(&NewRun {
+            id: "run-new".to_owned(),
+            prompt_id: "prompt-new".to_owned(),
+            client_id: "client-new".to_owned(),
+            workflow_id: run.workflow_id,
+            workflow_version: run.workflow_version,
+            workflow_sha256: run.workflow_sha256,
+            generation_mode: run.generation_mode,
+            status: RunStatus::Queued,
+            parameters: run.parameters,
+            output_dir: "runs/text-to-image/v2".to_owned(),
+        })
+        .expect("insert new run into legacy database");
+    assert_eq!(repository.list(10).expect("list old and new runs").len(), 2);
 }
 
 #[derive(Clone, Default)]
@@ -219,7 +201,7 @@ struct FakeComfyState {
     complete: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
-    reject_prompt: Arc<AtomicBool>,
+    fail_submit_response: Arc<AtomicBool>,
     prompt_calls: Arc<AtomicUsize>,
     upload_calls: Arc<AtomicUsize>,
     interrupt_calls: Arc<AtomicUsize>,
@@ -231,6 +213,10 @@ async fn fake_system() -> Json<Value> {
 
 async fn fake_object_info() -> Json<Value> {
     Json(json!({
+        "CheckpointLoaderSimple": {},
+        "CLIPTextEncode": {},
+        "EmptyLatentImage": {},
+        "VAEDecode": {},
         "KSampler": {
             "input": {
                 "required": {
@@ -270,17 +256,14 @@ async fn fake_prompt(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     state.prompt_calls.fetch_add(1, Ordering::SeqCst);
-    if state.reject_prompt.load(Ordering::SeqCst) {
+    let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
+    *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    if state.fail_submit_response.load(Ordering::SeqCst) {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "deliberate fake failure" })),
         ));
     }
-    let prompt_id = body["prompt_id"]
-        .as_str()
-        .unwrap_or("fake-prompt")
-        .to_owned();
-    *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
     Ok(Json(json!({
         "prompt_id": prompt_id,
         "number": 1,
@@ -384,32 +367,27 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
     let address = start_fake_comfyui(state.clone()).await;
+    configure_harness(&temp, address);
+    let workflow_dir = temp.path().join("workflows/comfyui/text-to-image");
     write_file(
-        &temp.path().join("genaimage.toml"),
-        &format!(
-            "[profiles.local]\nbase_url = \"http://{address}\"\nrequest_timeout_seconds = 5\nwebsocket_reconnect_seconds = 1\n"
-        ),
-    );
-    let manifest_path = temp
-        .path()
-        .join("workflows/comfyui/contract.genaimage.json");
-    fs::create_dir_all(manifest_path.parent().expect("manifest parent")).expect("workflow dir");
-    write_file(
-        &manifest_path.with_file_name("workflow.api.json"),
-        &serde_json::to_string_pretty(&valid_workflow()).expect("workflow JSON"),
+        &workflow_dir.join("workflow.genaimage.json"),
+        include_str!("../../../workflows/comfyui/text-to-image/workflow.genaimage.json"),
     );
     write_file(
-        &manifest_path,
-        &serde_json::to_string_pretty(&valid_manifest("workflow.api.json")).expect("manifest JSON"),
+        &workflow_dir.join("api-workflow.json"),
+        include_str!("../../../workflows/comfyui/text-to-image/api-workflow.json"),
     );
 
     let harness = Harness::open(temp.path()).expect("open harness");
     let submitted = harness
         .submit(RunRequest {
-            workflow: "contract-workflow".to_owned(),
+            workflow: "text-to-image".to_owned(),
             preset: Some("fast".to_owned()),
-            parameters: BTreeMap::new(),
-            character_id: None,
+            parameters: BTreeMap::from([
+                ("checkpoint".to_owned(), json!("explicit.safetensors")),
+                ("positive_prompt".to_owned(), json!("A blue sphere")),
+                ("seed".to_owned(), json!(99)),
+            ]),
             version: Some("v0.1".to_owned()),
         })
         .await
@@ -435,52 +413,12 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
         serde_json::from_slice(&fs::read(manifest_path).expect("read manifest")).expect("manifest");
     assert_eq!(manifest["run_id"], json!(submitted.id));
     assert_eq!(manifest["preset"], json!("fast"));
+    assert_eq!(
+        manifest["parameters"]["checkpoint"],
+        json!("explicit.safetensors")
+    );
+    assert_eq!(manifest["parameters"]["seed"], json!(99));
     assert_eq!(manifest["outputs"].as_array().expect("outputs").len(), 1);
-}
-
-#[tokio::test]
-async fn gate_three_blocks_character_run_before_comfyui_submission() {
-    let temp = TempDir::new().expect("temp directory");
-    write_file(
-        &temp.path().join("genaimage.toml"),
-        "[profiles.local]\nbase_url = \"http://127.0.0.1:9\"\n",
-    );
-    let manifest_path = temp
-        .path()
-        .join("workflows/comfyui/character.genaimage.json");
-    let mut manifest = valid_manifest("workflow.api.json");
-    manifest["generation_mode"] = json!("initial_concept");
-    fs::create_dir_all(manifest_path.parent().expect("manifest parent")).expect("workflow dir");
-    write_file(
-        &manifest_path.with_file_name("workflow.api.json"),
-        &serde_json::to_string_pretty(&valid_workflow()).expect("workflow JSON"),
-    );
-    write_file(
-        &manifest_path,
-        &serde_json::to_string_pretty(&manifest).expect("manifest JSON"),
-    );
-    let harness = Harness::open(temp.path()).expect("open harness");
-    harness
-        .initialise_character("CHR-001", Some("Ada".to_owned()))
-        .expect("initialise character");
-    assert!(
-        temp.path()
-            .join("characters/CHR-001/input-package.md")
-            .is_file(),
-        "the character package must contain the copied input template"
-    );
-
-    let error = harness
-        .submit(RunRequest {
-            workflow: "character".to_owned(),
-            preset: Some("fast".to_owned()),
-            parameters: BTreeMap::new(),
-            character_id: Some("CHR-001".to_owned()),
-            version: None,
-        })
-        .await
-        .expect_err("gate must block run");
-    assert!(matches!(error, HarnessError::Gate(_)));
 }
 
 #[tokio::test]
@@ -530,10 +468,10 @@ async fn running_prompt_is_interrupted_then_reconciled() {
 }
 
 #[tokio::test]
-async fn ambiguous_submission_is_persisted_without_automatic_retry() {
+async fn ambiguous_submission_is_reconciled_without_automatic_retry() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
-    state.reject_prompt.store(true, Ordering::SeqCst);
+    state.fail_submit_response.store(true, Ordering::SeqCst);
     let address = start_fake_comfyui(state.clone()).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp, valid_manifest("workflow.api.json"));
@@ -547,17 +485,14 @@ async fn ambiguous_submission_is_persisted_without_automatic_retry() {
     assert_eq!(run.status, RunStatus::UnknownSubmission);
     assert_eq!(state.prompt_calls.load(Ordering::SeqCst), 1);
     assert!(run.error.expect("submission error").contains("500"));
-    assert_eq!(
-        harness
-            .repository()
-            .active()
-            .expect("active runs")
-            .iter()
-            .filter(|candidate| candidate.id == run.id)
-            .count(),
-        1,
-        "reconcile-all must continue to see ambiguous submissions"
-    );
+    let reconciled = harness
+        .reconcile_all()
+        .await
+        .expect("reconcile active runs");
+    assert_eq!(reconciled.len(), 1);
+    assert_eq!(reconciled[0].run.id, run.id);
+    assert_eq!(reconciled[0].run.status, RunStatus::Queued);
+    assert_eq!(state.prompt_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -616,7 +551,6 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
                 "reference".to_owned(),
                 json!(reference.display().to_string()),
             )]),
-            character_id: None,
             version: None,
         })
         .await
@@ -676,7 +610,6 @@ fn test_run_request(workflow: &str) -> RunRequest {
         workflow: workflow.to_owned(),
         preset: Some("fast".to_owned()),
         parameters: BTreeMap::new(),
-        character_id: None,
         version: Some("v0.1".to_owned()),
     }
 }

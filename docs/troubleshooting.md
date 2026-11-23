@@ -50,17 +50,7 @@ Use `jobs reconcile` to compare persisted prompt/client IDs with ComfyUI queue
 and history. A WebSocket failure is recoverable while HTTP reconciliation
 remains available, and the event is kept in the run history.
 
-## Gate 3 or Gate 5 is blocked
+## A legacy workspace configuration fails to load
 
-Load the character status and record every predecessor explicitly:
-
-```bash
-genaimage character status <character-id>
-genaimage character approve <character-id> \
-  --gate <gate-id> \
-  --approver <name> \
-  --note <decision>
-```
-
-A score, successful generation, or silence is not approval. A rejected earlier
-gate resets later approvals to pending.
+Remove `characters` from `[paths]` in `genaimage.toml`. This does not
+require changing the state database or any existing run manifests.

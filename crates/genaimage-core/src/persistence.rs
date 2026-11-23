@@ -79,10 +79,8 @@ pub struct RunRecord {
     pub workflow_version: String,
     pub workflow_sha256: String,
     pub generation_mode: GenerationMode,
-    pub character_id: Option<String>,
     pub status: RunStatus,
     pub parameters: Value,
-    pub gate_snapshot: Option<Value>,
     pub output_dir: String,
     pub manifest_path: Option<String>,
     pub error: Option<String>,
@@ -101,7 +99,7 @@ pub struct RunEvent {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OutputRecord {
     pub run_id: String,
     pub node_id: String,
@@ -123,10 +121,8 @@ pub struct NewRun {
     pub workflow_version: String,
     pub workflow_sha256: String,
     pub generation_mode: GenerationMode,
-    pub character_id: Option<String>,
     pub status: RunStatus,
     pub parameters: Value,
-    pub gate_snapshot: Option<Value>,
     pub output_dir: String,
 }
 
@@ -142,6 +138,7 @@ impl RunRepository {
         }
         let connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(10))?;
+        // Legacy gate columns are nullable and are left untouched in existing databases.
         connection.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -154,10 +151,8 @@ impl RunRepository {
                 workflow_version TEXT NOT NULL,
                 workflow_sha256 TEXT NOT NULL,
                 generation_mode TEXT NOT NULL,
-                character_id TEXT,
                 status TEXT NOT NULL,
                 parameters_json TEXT NOT NULL,
-                gate_snapshot_json TEXT,
                 output_dir TEXT NOT NULL,
                 manifest_path TEXT,
                 error TEXT,
@@ -205,9 +200,9 @@ impl RunRepository {
             r#"
             INSERT INTO runs (
                 id, prompt_id, client_id, workflow_id, workflow_version,
-                workflow_sha256, generation_mode, character_id, status,
-                parameters_json, gate_snapshot_json, output_dir, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+                workflow_sha256, generation_mode, status, parameters_json,
+                output_dir, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             "#,
             params![
                 run.id,
@@ -217,13 +212,8 @@ impl RunRepository {
                 run.workflow_version,
                 run.workflow_sha256,
                 generation_mode_name(run.generation_mode),
-                run.character_id,
                 run.status.as_str(),
                 serde_json::to_string(&run.parameters)?,
-                run.gate_snapshot
-                    .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()?,
                 run.output_dir,
                 now,
             ],
@@ -445,6 +435,7 @@ impl RunRepository {
 }
 
 fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
+    let completed_at_index = row.as_ref().column_index("completed_at")?;
     Ok(RunRecord {
         id: row.get("id")?,
         prompt_id: row.get("prompt_id")?,
@@ -454,28 +445,22 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         workflow_sha256: row.get("workflow_sha256")?,
         generation_mode: parse_generation_mode(&row.get::<_, String>("generation_mode")?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
-        character_id: row.get("character_id")?,
         status: RunStatus::parse(&row.get::<_, String>("status")?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
         parameters: parse_json_column(row, "parameters_json")?,
-        gate_snapshot: row
-            .get::<_, Option<String>>("gate_snapshot_json")?
-            .map(|value| serde_json::from_str(&value))
-            .transpose()
-            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
         output_dir: row.get("output_dir")?,
         manifest_path: row.get("manifest_path")?,
         error: row.get("error")?,
-        created_at: parse_sqlite_time(row, 14)?,
-        updated_at: parse_sqlite_time(row, 15)?,
+        created_at: parse_sqlite_time(row, row.as_ref().column_index("created_at")?)?,
+        updated_at: parse_sqlite_time(row, row.as_ref().column_index("updated_at")?)?,
         completed_at: row
-            .get::<_, Option<String>>("completed_at")?
+            .get::<_, Option<String>>(completed_at_index)?
             .map(|value| {
                 DateTime::parse_from_rfc3339(&value)
                     .map(|time| time.with_timezone(&Utc))
                     .map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            16,
+                            completed_at_index,
                             rusqlite::types::Type::Text,
                             Box::new(error),
                         )
