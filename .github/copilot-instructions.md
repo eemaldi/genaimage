@@ -1,24 +1,28 @@
 # Instructions for GitHub Copilot
 
-Read the repository-root [AGENTS.md](../AGENTS.md) before making changes. It
-contains the shared GenAImage project direction and repository conventions.
+Read the repository-root [AGENTS.md](../AGENTS.md) and
+[ADR 0001](../docs/adr/0001-target-architecture.md) before making changes.
+They contain the shared project direction, guardrails and conventions.
 
-GenAImage is a local ComfyUI harness with a shared Rust core, a Rust CLI, and a
-Tauri/React desktop. ComfyUI remains an external local process. Use English
-(UK) for documentation and user-facing text. Keep ComfyUI transport, workflow
-orchestration, gates, persistence, and provenance in `genaimage-core`; do not
-duplicate them in the CLI or frontend.
+GenAImage is a thin, fast local harness with a shared Rust core and CLI. Its
+planned loopback server and embedded Svelte portal replace the existing Tauri
+desktop; the character approval-gate pilot is also being retired. Preserve
+current checks and records until removal. Keep generation orchestration,
+transport, run state, provenance and the planned assistant runtime in the core.
 
-Run the repository CI checks locally with
-`python3 scripts/ci_check.py`. Keep [AGENTS.md](../AGENTS.md) and this file
-aligned when project tooling changes.
+Use API-format ComfyUI JSON and strict manifests. Never silently substitute a
+model, node, seed, image, prompt or setting. LLM output is a proposal the user
+can edit and must explicitly confirm; the assistant never submits a run without
+that confirmation. Reconcile ambiguous prompt submissions against ComfyUI
+queue/history, never blindly retry them. Preserve run records by creating new
+versions instead of overwriting. A technical success is not creative approval.
 
-Use strict workflow manifests and API-format ComfyUI JSON. Never silently
-substitute a model, node, seed, image, prompt, or setting. A successful technical
-run does not approve creative output or advance a character gate. Prompt
-submission with an ambiguous network result must be reconciled rather than
-blindly retried.
+Everything runs locally; the planned server binds to loopback only. Outbound
+services default to loopback, with explicitly allow-listed private/Compose hosts
+planned as the only exceptions. Keep documentation and user-facing text in
+English (UK), and respect the performance budgets in ADR 0001.
 
-Project-local skills are installed under `.agents/skills/` for GitHub Copilot
-and mirrored unchanged under `.claude/skills/` for Claude Code. Follow the
-shared Agent Skills format and keep the two copies aligned.
+Run `python3 scripts/ci_check.py` locally. Project-local skills under
+`.agents/skills/` are mirrored identically under `.claude/skills/`; keep both
+copies aligned. Keep this file and [AGENTS.md](../AGENTS.md) aligned when
+project direction or tooling changes.

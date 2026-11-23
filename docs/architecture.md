@@ -1,76 +1,104 @@
 # Harness architecture
 
+[ADR 0001](adr/0001-target-architecture.md) records the accepted target
+direction. This document distinguishes that target from the implementation
+available today; planned components and budgets are not yet guarantees.
+
 ## Responsibility boundary
 
-GenAImage has one domain core and two operator surfaces:
+GenAImage is a thin, fast, local glue layer between an operator, a local LLM
+and ComfyUI. ComfyUI generates images; GenAImage owns the workflow manifests,
+explicit parameter binding, run queue, reconciliation, provenance and, in the
+planned architecture, the assistant tool runtime and self-hosted web portal.
 
 ```text
-CLI (Rust)          Tauri commands
-     \                  /
-      └── genaimage-core
-            ├── configuration and profiles
-            ├── workflow manifests and binding
-            ├── ComfyUI HTTP/WebSocket client
-            ├── character gate transitions
-            ├── SQLite run repository
-            ├── reconciliation and cancellation
-            └── immutable output/provenance capture
-                         |
-                         v
-              external local ComfyUI
+CLI (thin client, planned) ──┐
+                             ├── loopback Rust server + embedded Svelte portal
+Browser (local portal) ──────┘                     (planned)
+                                      │
+                              genaimage-core
+                         ┌────────────┼─────────────┐
+                    workflows,     assistant      run state,
+                    bindings and   tool runtime   reconciliation,
+                    ComfyUI client (planned)      provenance
+                         │             │
+                   local ComfyUI   local LLM endpoint
 ```
 
-The desktop React application never opens a network connection to ComfyUI.
-Tauri invokes `genaimage-core`, and the Rust core remains the source of truth
-for all generation and approval rules.
+- `crates/genaimage-core` is the domain and generation source of truth. It
+  currently owns configuration, workflow binding, ComfyUI transport, SQLite
+  run state, cancellation/reconnect and provenance. The assistant runtime and
+  provider abstractions are planned here, not in the frontend or CLI.
+- `crates/genaimage-cli` currently calls the core directly. Its target is a
+  thin scripted client of the same local server API used by the portal.
+- A Rust server component, embedded Svelte portal and local API are planned;
+  their exact crate and asset paths are not yet established. One server binary
+  will serve both API and portal, bound to loopback only.
+- The current `apps/desktop` Tauri/React application and character approval
+  gates still exist and are enforced where applicable. Both are being retired
+  under [epic #2](https://github.com/eemaldi/genaimage/issues/2); neither is the
+  future operator surface or approval model. Until removal, do not bypass
+  existing checks.
 
-## Runtime sequence
+## Providers, extensions and deployment
 
-1. Load the project and named loopback ComfyUI profile.
-2. Load the ComfyUI API-format workflow and its GenAImage manifest.
-3. Validate JSON shape, node IDs, inputs, value types/ranges, output nodes,
-   presets, and required gate context.
-4. Assert the complete predecessor chain and required gate approvals.
-5. Ask ComfyUI for object information and verify every workflow class exists.
-6. Upload image inputs, then record each source hash and returned filename.
-7. Save the resolved workflow and preflight snapshot under a new run directory.
-8. Submit once with a harness-selected prompt ID and client ID.
-9. Observe WebSocket progress and reconcile with queue/history state.
-10. Download output bytes atomically, compute SHA-256 hashes, and write the run
-    manifest.
+The planned LLM provider uses an OpenAI-compatible API, with an explicitly
+configured endpoint and model. Ollama, llama.cpp and LM Studio are intended
+local options when their compatible APIs are enabled. Traits will provide
+extension points for providers, ComfyUI transport and assistant tools; fakes
+can exercise them in tests without real models. They do not imply arbitrary
+plugin loading or providers already implemented.
 
-Prompt submission is deliberately different from safe reads. Queue, history,
-health, and download reads retry with backoff. A prompt submission that times
-out remains `unknown_submission` and is not replayed automatically.
+ComfyUI and the LLM service remain separate from GenAImage. A planned local
+Docker Compose setup can run the dependencies with host-published ports bound
+to loopback; GenAImage can run on the host. Compose does not change the server's
+loopback-only bind or justify automatically installing or changing models,
+nodes or settings.
 
-## State model
+Outbound ComfyUI and LLM endpoints default to loopback. The target policy also
+permits explicitly allow-listed private hosts or Compose service names, subject
+to local reachability and validation of resolved addresses and redirects;
+public endpoints and blanket private-network access are excluded. This is
+planned: current ComfyUI profiles accept loopback only. Inbound server binding
+remains loopback only even when an outbound host is allow-listed.
 
-The SQLite database is an operational cache of queue and event state. It is
-ignored by Git and can be removed for a clean reconnect, provided run manifests
-and character state are retained.
+## Run and assistant flow
 
-Character gate state is not hidden in SQLite. It is stored as project JSON and
-mirrored into the existing human-readable production record. This keeps the
-approval basis portable and reviewable.
+1. Load a ComfyUI API-format workflow and strict GenAImage sidecar manifest;
+   validate node/input bindings, types, presets and explicit parameter values.
+2. A planned assistant may propose values or actions through its tool runtime.
+   The user can edit the proposal and must explicitly confirm it before the
+   assistant submits a run; model output or a tool call is not confirmation.
+3. Check available workflow classes with ComfyUI, upload explicit image inputs,
+   and record source hashes and returned filenames. Save the resolved workflow
+   and preflight snapshot under a new run directory.
+4. Submit once with a harness-selected prompt ID and client ID. Observe
+   progress, reconcile queue/history and capture checksummed output and run
+   provenance.
 
-## Gate enforcement
+Never silently substitute a model, node, seed, image, prompt or setting. Safe
+reads may retry, but an ambiguous prompt submission remains
+`unknown_submission`: reconcile with ComfyUI queue/history rather than blindly
+retrying. Preserve source workflows and existing run records; write new
+versions instead of overwriting them. A successful technical run is not creative
+approval.
 
-Generation mode provides a default gate requirement:
+## State and provenance
 
-| Generation mode | Required gate |
+SQLite holds operational queue and event state. Portable run manifests record
+resolved inputs, workflow, identifiers, outputs and checksums; preserve them
+across reconnects and migrations. Existing character gate state and decision
+records remain in the current implementation until the pilot is retired; their
+retirement must not overwrite previously written records.
+
+## Performance budgets
+
+These are target budgets to measure as the planned components are delivered:
+
+| Measure | Budget |
 | --- | --- |
-| `initial_concept` / `correction` | Gate 3 |
-| `refinement` | Gate 4 |
-| `multi_view` | Gate 5 |
-
-A manifest may add required gates, but it cannot remove the mode-derived gate.
-Approval is ordered from Gate 1 through Phase 08. Rejecting an earlier gate
-resets later gate state to pending while preserving every decision in the audit
-history.
-
-## Desktop security boundary
-
-The current profile must resolve to `localhost`, `127.0.0.1`, or `::1`. Tauri
-starts no public web server and grants only the default command capability. The
-browser frontend accesses GenAImage through typed Tauri commands and receives
-run updates over local Tauri events.
+| Cold start | < 150 ms |
+| Idle RSS | < 40 MB |
+| Binary size | < 25 MB |
+| Portal initial JavaScript | < 150 KB gzip |
+| p95 non-ComfyUI API latency | < 20 ms |
