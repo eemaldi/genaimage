@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{self, InputFileRecord},
     config::ResolvedConfig,
-    image_backend::{BackendEvent, BackendHealth, ImageBackend},
+    image_backend::{BackendEvent, BackendHealth, HistoryOutcome, ImageBackend},
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
     workflow::{LoadedWorkflow, WorkflowManifest},
     HarnessError, Result,
@@ -400,10 +400,17 @@ impl Harness {
         }
 
         let history = self.backend.history(&run.prompt_id).await?;
-        if history.complete {
-            if run.status == RunStatus::Cancelling && !history.success {
+        if history.prompt_id != run.prompt_id {
+            return Err(self.backend_error(format!(
+                "requested history for prompt '{}', but received history for '{}'",
+                run.prompt_id, history.prompt_id
+            )));
+        }
+        match history.outcome {
+            HistoryOutcome::Unresolved => {}
+            HistoryOutcome::Cancelled => {
                 let message = format!(
-                    "{} stopped the prompt after the cancellation request",
+                    "{} confirmed cancellation of the prompt",
                     self.backend.name()
                 );
                 run = self.repository.update_status(
@@ -418,7 +425,8 @@ impl Harness {
                     Some(&message),
                     &history.raw,
                 )?;
-            } else if history.success {
+            }
+            HistoryOutcome::Completed => {
                 let source_inputs = read_source_inputs(&PathBuf::from(&run.output_dir))?;
                 let workflow_manifest_path = read_manifest_path(&PathBuf::from(&run.output_dir))?;
                 let manifest_path = artifacts::materialise_history(
@@ -445,7 +453,8 @@ impl Harness {
                         "manifest_path": manifest_path
                     }),
                 )?;
-            } else {
+            }
+            HistoryOutcome::Failed => {
                 let error = format!(
                     "{} completed prompt '{}' without a successful result",
                     self.backend.name(),
@@ -457,23 +466,6 @@ impl Harness {
                 self.repository
                     .record_event(run_id, "run_failed", Some(&error), &history.raw)?;
             }
-        } else if run.status == RunStatus::Cancelling && !queue.contains(&run.prompt_id) {
-            let message = format!(
-                "{} queue no longer contains the cancelled prompt",
-                self.backend.name()
-            );
-            run = self.repository.update_status(
-                run_id,
-                RunStatus::Cancelled,
-                Some(&message),
-                None,
-            )?;
-            self.repository.record_event(
-                run_id,
-                "run_cancelled",
-                Some(&message),
-                &serde_json::to_value(&queue)?,
-            )?;
         }
         Ok(ReconcileResult {
             outputs: self.repository.outputs(run_id)?,

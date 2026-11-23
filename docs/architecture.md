@@ -95,6 +95,13 @@ Never silently substitute a model, node, seed, image, prompt or setting. Safe
 reads may retry, but an ambiguous prompt submission remains
 `unknown_submission`: reconcile with ComfyUI queue/history rather than blindly
 retrying. If neither source identifies the prompt, leave the submission unknown.
+Cancellation is confirmed only by evidence for the target prompt, such as
+history recording an interruption. A queue/history gap or deletion request
+acknowledgement alone leaves the run in `cancelling`; a later success or error
+still resolves it. ComfyUI may provide no history for deletion of a queued
+prompt, and its global interrupt can affect a different prompt if the target
+finishes after the queue check.
+
 Preserve source workflows and existing run records; write new
 versions instead of overwriting them. A successful technical run is not creative
 approval.

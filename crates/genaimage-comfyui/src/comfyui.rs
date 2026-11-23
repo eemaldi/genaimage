@@ -15,8 +15,8 @@ use genaimage_core::{
     async_trait,
     config::ComfyUiProfile,
     image_backend::{
-        BackendEvent, BackendHealth, EventMonitor, HistorySnapshot, ImageBackend, OutputReference,
-        PromptResponse, QueueSnapshot, UploadResponse,
+        BackendEvent, BackendHealth, EventMonitor, HistoryOutcome, HistorySnapshot, ImageBackend,
+        OutputReference, PromptResponse, QueueSnapshot, UploadResponse,
     },
     HarnessError, Result,
 };
@@ -116,46 +116,7 @@ impl ImageBackend for ComfyUiClient {
 
     async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot> {
         let raw = self.get_json(&format!("history/{prompt_id}")).await?;
-        let entry = raw.get(prompt_id).cloned();
-        let Some(entry) = entry else {
-            return Ok(HistorySnapshot {
-                prompt_id: prompt_id.to_owned(),
-                complete: false,
-                success: false,
-                outputs: Vec::new(),
-                raw,
-            });
-        };
-        let status = entry.get("status");
-        let complete = status
-            .and_then(|value| value.get("completed"))
-            .and_then(Value::as_bool)
-            .unwrap_or_else(|| entry.get("outputs").is_some());
-        let explicit_status = status
-            .and_then(|value| value.get("status_str"))
-            .and_then(Value::as_str);
-        let success = explicit_status.map_or_else(
-            || {
-                complete
-                    && !status
-                        .and_then(|value| value.get("messages"))
-                        .and_then(Value::as_array)
-                        .is_some_and(|messages| messages.iter().any(is_execution_error))
-            },
-            |value| value == "success",
-        );
-        let outputs = entry
-            .get("outputs")
-            .and_then(Value::as_object)
-            .map_or_else(Vec::new, extract_outputs);
-
-        Ok(HistorySnapshot {
-            prompt_id: prompt_id.to_owned(),
-            complete,
-            success,
-            outputs,
-            raw,
-        })
+        Ok(parse_history(prompt_id, raw))
     }
 
     async fn delete_queued(&self, prompt_id: &str) -> Result<Value> {
@@ -462,12 +423,55 @@ fn extract_outputs(outputs: &Map<String, Value>) -> Vec<OutputReference> {
     references
 }
 
-fn is_execution_error(message: &Value) -> bool {
-    message
-        .as_array()
-        .and_then(|message| message.first())
-        .and_then(Value::as_str)
-        .is_some_and(|kind| kind == "execution_error")
+fn parse_history(prompt_id: &str, raw: Value) -> HistorySnapshot {
+    let entry = raw.get(prompt_id);
+    let status = entry.and_then(|entry| entry.get("status"));
+    let explicit_status = status
+        .and_then(|status| status.get("status_str"))
+        .and_then(Value::as_str);
+    let complete = status
+        .and_then(|status| status.get("completed"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| entry.is_some_and(|entry| entry.get("outputs").is_some()));
+    let messages = status
+        .and_then(|status| status.get("messages"))
+        .and_then(Value::as_array);
+    let has_message = |kind: &str| {
+        messages.is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message.get(0).and_then(Value::as_str) == Some(kind)
+                    && message
+                        .get(1)
+                        .and_then(|data| data.get("prompt_id"))
+                        .and_then(Value::as_str)
+                        == Some(prompt_id)
+            })
+        })
+    };
+    let outcome = if has_message("execution_error") {
+        HistoryOutcome::Failed
+    } else if explicit_status == Some("execution_interrupted")
+        || has_message("execution_interrupted")
+    {
+        // ComfyUI can report status_str="error" for an interrupted prompt.
+        HistoryOutcome::Cancelled
+    } else if explicit_status == Some("error") {
+        HistoryOutcome::Failed
+    } else if complete && matches!(explicit_status, None | Some("success")) {
+        HistoryOutcome::Completed
+    } else {
+        HistoryOutcome::Unresolved
+    };
+    let outputs = entry
+        .and_then(|entry| entry.get("outputs"))
+        .and_then(Value::as_object)
+        .map_or_else(Vec::new, extract_outputs);
+    HistorySnapshot {
+        prompt_id: prompt_id.to_owned(),
+        outcome,
+        outputs,
+        raw,
+    }
 }
 
 fn parse_event(text: &str) -> BackendEvent {
@@ -502,7 +506,32 @@ fn parse_event(text: &str) -> BackendEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_event;
+    use super::{parse_event, parse_history, HistoryOutcome};
+    use serde_json::json;
+
+    #[test]
+    fn history_distinguishes_interruption_from_failure_and_requires_the_target_prompt() {
+        for (kind, id, expected) in [
+            ("execution_interrupted", "target", HistoryOutcome::Cancelled),
+            ("execution_interrupted", "different", HistoryOutcome::Failed),
+            ("execution_error", "target", HistoryOutcome::Failed),
+        ] {
+            let raw = json!({"target": {"status": {
+                "status_str": "error", "completed": false,
+                "messages": [[kind, {"prompt_id": id}]],
+            }}});
+            assert_eq!(
+                parse_history("absent", raw.clone()).outcome,
+                HistoryOutcome::Unresolved
+            );
+            assert_eq!(parse_history("target", raw).outcome, expected);
+        }
+        let raw = json!({"target": {"status": {"status_str": "execution_interrupted", "completed": false}}});
+        assert_eq!(
+            parse_history("target", raw).outcome,
+            HistoryOutcome::Cancelled
+        );
+    }
 
     #[test]
     fn parses_comfyui_progress_event() {

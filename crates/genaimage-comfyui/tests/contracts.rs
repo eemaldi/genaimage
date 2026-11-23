@@ -147,6 +147,19 @@ async fn fake_history(
     State(state): State<FakeComfyState>,
     AxumPath(prompt_id): AxumPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if state.interrupt_calls.load(Ordering::SeqCst) > 0
+        && state.prompt_id.lock().expect("prompt lock").as_deref() == Some(prompt_id.as_str())
+    {
+        return Ok(Json(json!({
+            prompt_id.clone(): {
+                "status": {
+                    "status_str": "error",
+                    "completed": false,
+                    "messages": [["execution_interrupted", {"prompt_id": prompt_id}]]
+                }
+            }
+        })));
+    }
     if !state.complete.load(Ordering::SeqCst) {
         return Ok(Json(json!({})));
     }
@@ -258,7 +271,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
 }
 
 #[tokio::test]
-async fn queued_prompt_is_cancelled_only_after_deletion_is_observed() {
+async fn queue_deletion_acknowledgement_without_history_is_not_confirmation() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
     let address = start_fake_comfyui(state).await;
@@ -276,7 +289,7 @@ async fn queued_prompt_is_cancelled_only_after_deletion_is_observed() {
         .reconcile(&submitted.id)
         .await
         .expect("reconcile cancellation");
-    assert_eq!(reconciled.run.status, RunStatus::Cancelled);
+    assert_eq!(reconciled.run.status, RunStatus::Cancelling);
 }
 
 #[tokio::test]

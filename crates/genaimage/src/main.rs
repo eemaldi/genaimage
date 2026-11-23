@@ -92,6 +92,10 @@ enum JobsCommand {
     Wait {
         run_id: String,
     },
+    /// Request cancellation; a running ComfyUI job uses a global interrupt.
+    #[command(
+        long_about = "Request cancellation. ComfyUI uses a global interrupt for running jobs, so if the target finishes before the request arrives, it may interrupt a different prompt. A cancellation remains unconfirmed without evidence for the target prompt."
+    )]
     Cancel {
         run_id: String,
     },

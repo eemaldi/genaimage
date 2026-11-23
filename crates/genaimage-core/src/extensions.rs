@@ -62,6 +62,7 @@ pub enum ChatDelta {
     ToolCall(ToolCall),
 }
 
+/// Dropping the stream must cancel in-flight provider work and release its resources.
 pub type ChatStream = Pin<Box<dyn Stream<Item = Result<ChatDelta>> + Send>>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -73,7 +74,9 @@ pub struct LlmModel {
 
 /// Streams chat for the explicitly selected model, including tool proposals and
 /// vision inputs. Unsupported capabilities must fail rather than silently
-/// switch models or discard prompts, images or tools.
+/// switch models or discard prompts, images or tools. Reject a request for
+/// known unsupported capabilities with [`HarnessError::Configuration`] naming
+/// the model and capability before returning a stream.
 ///
 /// Tool calls are proposals, not confirmation or permission to submit a run.
 #[async_trait]
@@ -83,8 +86,9 @@ pub trait LlmProvider: Send + Sync {
 }
 
 /// The tool runtime must validate arguments against the schema and obtain any
-/// required user confirmation before invoking the tool. An assistant must never
-/// submit a run without explicit user confirmation, regardless of tool metadata.
+/// required user confirmation before invoking the tool. `requires_confirmation`
+/// is metadata, not enforcement. An assistant must never submit a run without
+/// explicit user approval of the effective proposal, regardless of tool metadata.
 #[async_trait]
 pub trait AssistantTool: Send + Sync {
     fn name(&self) -> &str;
@@ -95,7 +99,8 @@ pub trait AssistantTool: Send + Sync {
 }
 
 /// Consumes a run progress update. This contract does not dispatch events or
-/// define a bus, delivery guarantees or persistence policy.
+/// define a bus, delivery guarantees or persistence policy. When #21 adds a
+/// typed event envelope, use it here and keep sink handling off the publish path.
 #[async_trait]
 pub trait EventSink: Send + Sync {
     async fn handle(&self, event: &RunProgress) -> Result<()>;

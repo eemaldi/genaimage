@@ -37,7 +37,9 @@ pub trait ImageBackend: Send + Sync {
         client_id: &str,
         prompt_id: &str,
     ) -> Result<PromptResponse>;
+    /// Return evidence for the requested prompt only. A missing entry is unresolved.
     async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot>;
+    /// Request deletion. Acknowledgement alone does not confirm cancellation.
     async fn delete_queued(&self, prompt_id: &str) -> Result<Value>;
 
     /// Interrupt the currently executing prompt. The caller checks the queue
@@ -134,8 +136,21 @@ pub struct OutputReference {
 #[derive(Clone, Debug, Serialize)]
 pub struct HistorySnapshot {
     pub prompt_id: String,
-    pub complete: bool,
-    pub success: bool,
+    pub outcome: HistoryOutcome,
     pub outputs: Vec<OutputReference>,
     pub raw: Value,
+}
+
+/// What the backend can establish from prompt-specific history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryOutcome {
+    /// History is absent, incomplete, or does not establish a terminal outcome.
+    #[default]
+    Unresolved,
+    Completed,
+    Failed,
+    /// Explicit evidence that this prompt was interrupted or removed before execution.
+    /// Absence from the queue or an acknowledgement of a cancellation request is not evidence.
+    Cancelled,
 }

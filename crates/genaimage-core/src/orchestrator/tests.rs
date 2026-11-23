@@ -25,7 +25,7 @@ struct FakeState {
     lose_submit_response: bool,
     submission: Option<(Value, String, String)>,
     queue_position: Option<QueuePosition>,
-    history_success: Option<bool>,
+    history_outcome: HistoryOutcome,
     delete_requested: bool,
     interrupt_requested: bool,
     downloads: usize,
@@ -103,11 +103,10 @@ impl ImageBackend for FakeImageBackend {
     async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot> {
         let state = self.state.lock().unwrap();
         assert_eq!(prompt_id, state.submission.as_ref().unwrap().2);
-        let success = state.history_success == Some(true);
+        let success = state.history_outcome == HistoryOutcome::Completed;
         Ok(HistorySnapshot {
             prompt_id: prompt_id.to_owned(),
-            complete: state.history_success.is_some(),
-            success,
+            outcome: state.history_outcome,
             outputs: if success {
                 vec![OutputReference {
                     node_id: "9".to_owned(),
@@ -119,7 +118,7 @@ impl ImageBackend for FakeImageBackend {
             } else {
                 vec![]
             },
-            raw: json!({"id": prompt_id, "success": state.history_success}),
+            raw: json!({"id": prompt_id, "outcome": state.history_outcome}),
         })
     }
 
@@ -251,7 +250,7 @@ async fn runs_to_completion_with_progress_and_checksummed_output() {
     {
         let mut state = state.lock().unwrap();
         state.queue_position = None;
-        state.history_success = Some(true);
+        state.history_outcome = HistoryOutcome::Completed;
     }
     let completed = timeout(Duration::from_secs(3), waiter)
         .await
@@ -292,7 +291,7 @@ async fn failed_history_never_materialises_outputs() {
     {
         let mut state = state.lock().unwrap();
         state.queue_position = None;
-        state.history_success = Some(false);
+        state.history_outcome = HistoryOutcome::Failed;
     }
     let result = harness.reconcile(&run.id).await.unwrap();
     assert_eq!(result.run.status, RunStatus::Failed);
@@ -326,14 +325,51 @@ async fn cancellation_waits_for_backend_evidence_for_pending_and_running_prompts
                 matches!(position, QueuePosition::Running)
             );
             state.queue_position = None;
-            if matches!(position, QueuePosition::Running) {
-                state.history_success = Some(false);
-            }
+            state.history_outcome = HistoryOutcome::Cancelled;
         }
         let result = harness.reconcile(&run.id).await.unwrap();
         assert_eq!(result.run.status, RunStatus::Cancelled);
         assert!(result.outputs.is_empty());
     }
+}
+
+#[tokio::test]
+async fn ordinary_execution_failure_after_cancel_is_failed_not_cancelled() {
+    let (_workspace, harness, state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    state.lock().unwrap().queue_position = Some(QueuePosition::Running);
+    assert_eq!(
+        harness.cancel(&run.id).await.unwrap().status,
+        RunStatus::Cancelling
+    );
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Failed;
+    }
+    let result = harness.reconcile(&run.id).await.unwrap();
+    assert_eq!(result.run.status, RunStatus::Failed);
+    assert!(result.outputs.is_empty());
+}
+
+#[tokio::test]
+async fn queue_and_history_gap_after_cancel_leaves_run_open_for_later_success() {
+    let (_workspace, harness, state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    state.lock().unwrap().queue_position = Some(QueuePosition::Running);
+    assert_eq!(
+        harness.cancel(&run.id).await.unwrap().status,
+        RunStatus::Cancelling
+    );
+    state.lock().unwrap().queue_position = None;
+    let result = harness.reconcile(&run.id).await.unwrap();
+    assert_eq!(result.run.status, RunStatus::Cancelling);
+    assert!(result.outputs.is_empty());
+
+    state.lock().unwrap().history_outcome = HistoryOutcome::Completed;
+    let result = harness.reconcile(&run.id).await.unwrap();
+    assert_eq!(result.run.status, RunStatus::Completed);
+    assert_eq!(fs::read(&result.outputs[0].local_path).unwrap(), IMAGE);
 }
 
 #[tokio::test]
@@ -358,7 +394,7 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         {
             let mut state = state.lock().unwrap();
             state.queue_position = None;
-            state.history_success = Some(true);
+            state.history_outcome = HistoryOutcome::Completed;
         }
         let result = harness.reconcile(&run.id).await.unwrap();
         assert_eq!(result.run.status, RunStatus::Completed);
