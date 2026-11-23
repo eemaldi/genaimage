@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
-use genaimage_core::{Harness, HarnessConfig, HarnessError, RunProgress, RunRequest, RunStatus};
+use genaimage_comfyui::{Harness, RunProgress, RunRequest};
+use genaimage_core::{HarnessConfig, HarnessError, RunStatus};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;

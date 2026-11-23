@@ -12,14 +12,15 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{
+use genaimage_core::{
     artifacts::{self, InputFileRecord},
-    comfyui::{ComfyUiClient, ComfyUiEvent, ComfyUiHealth},
     config::ResolvedConfig,
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
     workflow::{LoadedWorkflow, WorkflowManifest},
-    HarnessError, Result,
+    HarnessConfig, HarnessError, Result,
 };
+
+use crate::comfyui::{ComfyUiClient, ComfyUiEvent, ComfyUiHealth};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunRequest {
@@ -65,7 +66,7 @@ pub struct Harness {
 
 impl Harness {
     pub fn open(workspace: &Path) -> Result<Self> {
-        let config = crate::HarnessConfig::load(workspace)?;
+        let config = HarnessConfig::load(workspace)?;
         let repository = RunRepository::open(&config.state_database)?;
         let client = ComfyUiClient::new(&config.comfyui)?;
         Ok(Self {
@@ -359,12 +360,13 @@ impl Harness {
                 let source_inputs = read_source_inputs(&PathBuf::from(&run.output_dir))?;
                 let workflow_manifest_path = read_manifest_path(&PathBuf::from(&run.output_dir))?;
                 let manifest_path = artifacts::materialise_history(
-                    &self.client,
+                    self.client.base_url().as_str(),
                     &self.repository,
                     &run,
                     &workflow_manifest_path,
                     source_inputs,
                     &history,
+                    |output| self.client.download_output(output),
                 )
                 .await?;
                 run = self.repository.update_status(

@@ -25,7 +25,7 @@ unattended generation.
   manifests, explicit parameter binding, ComfyUI transport, the run queue,
   reconciliation, persistence and provenance. The assistant tool runtime and
   its safety boundary are also planned in the core.
-- `crates/genaimage-cli` remains a thin scripted interface. The planned CLI
+- The CLI remains a thin scripted interface. The planned CLI
   calls the same local server API as the portal rather than duplicating domain
   or generation logic; its current direct-core operation remains in place until
   that API exists.

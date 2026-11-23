@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::{HarnessError, Result};
 
@@ -39,6 +40,30 @@ pub struct ComfyUiProfile {
     pub base_url: String,
     pub request_timeout_seconds: u64,
     pub websocket_reconnect_seconds: u64,
+}
+
+impl ComfyUiProfile {
+    pub fn validate_base_url(&self) -> Result<Url> {
+        let base_url = Url::parse(&self.base_url)?;
+        if !matches!(base_url.scheme(), "http" | "https") {
+            return Err(HarnessError::Configuration(format!(
+                "ComfyUI profile URL must use http or https, got '{}'",
+                base_url.scheme()
+            )));
+        }
+        if base_url.host_str().is_none() {
+            return Err(HarnessError::Configuration(
+                "ComfyUI profile URL is missing a host".to_owned(),
+            ));
+        }
+        if !is_loopback_host(base_url.host_str().unwrap_or_default()) {
+            return Err(HarnessError::Configuration(format!(
+                "this release supports one local ComfyUI host only; '{}' is not loopback",
+                base_url.host_str().unwrap_or_default()
+            )));
+        }
+        Ok(base_url)
+    }
 }
 
 impl Default for ComfyUiProfile {
@@ -175,7 +200,7 @@ runs = "runs"
         })?;
         profile.base_url = base_url.to_owned();
         config.active_profile = profile_name.to_owned();
-        crate::comfyui::ComfyUiClient::new(profile)?;
+        profile.validate_base_url()?;
         let encoded = toml::to_string_pretty(&config).map_err(|error| {
             HarnessError::Configuration(format!("cannot serialise configuration: {error}"))
         })?;
@@ -183,5 +208,23 @@ runs = "runs"
         fs::write(&temporary, encoded)?;
         fs::rename(temporary, config_path)?;
         Self::load(&workspace)
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_host;
+
+    #[test]
+    fn accepts_only_supported_local_hosts() {
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("::1"));
+        assert!(!is_loopback_host("192.168.1.10"));
+        assert!(!is_loopback_host("example.com"));
     }
 }

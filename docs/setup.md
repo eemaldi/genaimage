@@ -43,14 +43,14 @@ Install:
 Check the project without submitting:
 
 ```bash
-cargo run -p genaimage-cli -- workflow list
-cargo run -p genaimage-cli -- workflow validate text-to-image
+cargo run -p genaimage -- workflow list
+cargo run -p genaimage -- workflow validate text-to-image
 ```
 
 Check the actual local ComfyUI connection:
 
 ```bash
-cargo run -p genaimage-cli -- doctor
+cargo run -p genaimage -- doctor
 ```
 
 ## 4. Verification

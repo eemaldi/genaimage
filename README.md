@@ -44,21 +44,21 @@ Create project configuration:
 
 ```bash
 cp genaimage.example.toml genaimage.toml
-cargo run -p genaimage-cli -- doctor
+cargo run -p genaimage -- doctor
 ```
 
 List and inspect the bundled workflow examples:
 
 ```bash
-cargo run -p genaimage-cli -- workflow list
-cargo run -p genaimage-cli -- workflow validate text-to-image
-cargo run -p genaimage-cli -- workflow inspect text-to-image
+cargo run -p genaimage -- workflow list
+cargo run -p genaimage -- workflow validate text-to-image
+cargo run -p genaimage -- workflow inspect text-to-image
 ```
 
 Submit a generic run with every non-default value explicit:
 
 ```bash
-cargo run -p genaimage-cli -- run text-to-image \
+cargo run -p genaimage -- run text-to-image \
   --preset fast \
   --set checkpoint='"my-local-checkpoint.safetensors"' \
   --set positive_prompt='"an approved, specific visual description"' \
@@ -72,17 +72,17 @@ strings. Quote JSON strings as shown in the example.
 Useful job commands:
 
 ```bash
-cargo run -p genaimage-cli -- jobs list
-cargo run -p genaimage-cli -- jobs show <run-id>
-cargo run -p genaimage-cli -- jobs reconcile
-cargo run -p genaimage-cli -- jobs wait <run-id>
-cargo run -p genaimage-cli -- jobs cancel <run-id>
+cargo run -p genaimage -- jobs list
+cargo run -p genaimage -- jobs show <run-id>
+cargo run -p genaimage -- jobs reconcile
+cargo run -p genaimage -- jobs wait <run-id>
+cargo run -p genaimage -- jobs cancel <run-id>
 ```
 
 Install the CLI binary:
 
 ```bash
-cargo install --locked --path crates/genaimage-cli
+cargo install --locked --path crates/genaimage
 ```
 
 ## Persistent records

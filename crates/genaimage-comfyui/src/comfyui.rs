@@ -11,7 +11,8 @@ use serde_json::{json, Map, Value};
 use tokio::{sync::mpsc, task::JoinHandle, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{config::ComfyUiProfile, HarnessError, Result};
+pub use genaimage_core::artifacts::{HistorySnapshot, OutputReference};
+use genaimage_core::{config::ComfyUiProfile, HarnessError, Result};
 
 const MAX_SAFE_READ_ATTEMPTS: usize = 3;
 
@@ -62,24 +63,6 @@ pub struct UploadResponse {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct OutputReference {
-    pub node_id: String,
-    pub kind: String,
-    pub filename: String,
-    pub subfolder: String,
-    pub output_type: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct HistorySnapshot {
-    pub prompt_id: String,
-    pub complete: bool,
-    pub success: bool,
-    pub outputs: Vec<OutputReference>,
-    pub raw: Value,
-}
-
-#[derive(Clone, Debug, Serialize)]
 pub struct ComfyUiEvent {
     pub event_type: String,
     pub prompt_id: Option<String>,
@@ -109,25 +92,7 @@ impl Drop for EventMonitor {
 
 impl ComfyUiClient {
     pub fn new(profile: &ComfyUiProfile) -> Result<Self> {
-        let base_url = Url::parse(&profile.base_url)?;
-        if !matches!(base_url.scheme(), "http" | "https") {
-            return Err(HarnessError::Configuration(format!(
-                "ComfyUI profile URL must use http or https, got '{}'",
-                base_url.scheme()
-            )));
-        }
-        if base_url.host_str().is_none() {
-            return Err(HarnessError::Configuration(
-                "ComfyUI profile URL is missing a host".to_owned(),
-            ));
-        }
-        if !is_loopback_host(base_url.host_str().unwrap_or_default()) {
-            return Err(HarnessError::Configuration(format!(
-                "this release supports one local ComfyUI host only; '{}' is not loopback",
-                base_url.host_str().unwrap_or_default()
-            )));
-        }
-        let mut base_url = base_url;
+        let mut base_url = profile.validate_base_url()?;
         if !base_url.path().ends_with('/') {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
@@ -623,22 +588,9 @@ fn parse_event(text: &str) -> ComfyUiEvent {
     }
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "::1")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{is_loopback_host, parse_event};
-
-    #[test]
-    fn accepts_only_supported_local_hosts() {
-        assert!(is_loopback_host("127.0.0.1"));
-        assert!(is_loopback_host("localhost"));
-        assert!(is_loopback_host("::1"));
-        assert!(!is_loopback_host("192.168.1.10"));
-        assert!(!is_loopback_host("example.com"));
-    }
+    use super::parse_event;
 
     #[test]
     fn parses_comfyui_progress_event() {
