@@ -1,3 +1,4 @@
+use super::BinaryData;
 use std::{
     io::Read,
     path::{Component, Path},
@@ -57,7 +58,24 @@ async fn load(harness: std::sync::Arc<Harness>, id: String) -> Result<LoadedWork
         .ok_or_else(|| not_found(&id))
 }
 
-async fn list(State(state): State<AppState>) -> Result<Json<WorkflowListResponse>, Problem> {
+#[utoipa::path(
+    get, path = "/api/v1/workflows",
+    operation_id = "workflows_list",
+    description = "List workflows and discovery diagnostics.",
+    responses(
+        (status = 200, body = genaimage_api::WorkflowListResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn list(
+    State(state): State<AppState>,
+) -> Result<Json<WorkflowListResponse>, Problem> {
     let harness = state.harness();
     let discovery = tokio::task::spawn_blocking(move || harness.discover_workflows())
         .await
@@ -100,7 +118,24 @@ async fn list(State(state): State<AppState>) -> Result<Json<WorkflowListResponse
     }))
 }
 
-async fn details(
+#[utoipa::path(
+    get, path = "/api/v1/workflows/{id}",
+    operation_id = "workflows_details",
+    description = "Inspect a workflow manifest.",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 200, body = genaimage_api::WorkflowDetails),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn details(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<WorkflowDetails>, Problem> {
@@ -109,7 +144,27 @@ async fn details(
     Ok(Json(serde_json::from_value(value).map_err(internal_error)?))
 }
 
-async fn validate(
+#[utoipa::path(
+    post, path = "/api/v1/workflows/{id}/validate",
+    operation_id = "workflows_validate",
+    description = "Validate explicit workflow bindings without submitting a run.",
+    params(("id" = String, Path, description = "Workflow ID")),
+    request_body = genaimage_api::WorkflowValidationRequest,
+    responses(
+        (status = 200, body = genaimage_api::WorkflowValidationResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn validate(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
     request: Result<Json<WorkflowValidationRequest>, JsonRejection>,
@@ -182,7 +237,24 @@ async fn validate(
     }))
 }
 
-async fn thumbnail(
+#[utoipa::path(
+    get, path = "/api/v1/workflows/{id}/thumbnail",
+    operation_id = "workflows_thumbnail",
+    description = "Fetch a workflow thumbnail.",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 200, description = "Workflow thumbnail image", content((BinaryData = "image/png"), (BinaryData = "image/jpeg"), (BinaryData = "image/gif"), (BinaryData = "image/webp"), (BinaryData = "image/avif"))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn thumbnail(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, Problem> {

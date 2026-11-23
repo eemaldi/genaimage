@@ -21,6 +21,7 @@ mime_guess.workspace = true
 multer = "3"
 percent-encoding = "2"
 reqwest.workspace = true
+utoipa.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

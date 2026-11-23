@@ -24,7 +24,28 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/runs/{id}/reconcile", post(reconcile))
 }
 
-async fn submit(
+#[utoipa::path(
+    post, path = "/api/v1/runs",
+    operation_id = "runs_submit",
+    description = "Submit explicit bindings; use the same key for retries.",
+    params(("Idempotency-Key" = String, Header, description = "Required unique key, 1–128 visible ASCII characters excluding commas")),
+    request_body = api::SubmitRunRequest,
+    responses(
+        (status = 202, description = "Accepted", body = api::RunResponse, headers(("Location" = String, description = "Run URL"))), (status = 200, description = "Idempotent replay", body = api::RunResponse, headers(("Location" = String, description = "Run URL"))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn submit(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Result<Json<api::SubmitRunRequest>, JsonRejection>,
@@ -85,7 +106,23 @@ async fn submit(
     ))
 }
 
-async fn list(
+#[utoipa::path(
+    get, path = "/api/v1/runs",
+    operation_id = "runs_list",
+    description = "List runs.",
+    params(api::RunListQuery),
+    responses(
+        (status = 200, body = api::RunListResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn list(
     State(state): State<AppState>,
     query: Result<Query<api::RunListQuery>, QueryRejection>,
 ) -> Result<Json<api::RunListResponse>, Problem> {
@@ -110,7 +147,24 @@ async fn list(
     }))
 }
 
-async fn get_run(
+#[utoipa::path(
+    get, path = "/api/v1/runs/{id}",
+    operation_id = "runs_get_run",
+    description = "Read a run.",
+    params(("id" = String, Path, description = "Run ID")),
+    responses(
+        (status = 200, body = api::RunResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn get_run(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
@@ -124,7 +178,24 @@ async fn get_run(
         .map_err(problem)
 }
 
-async fn events(
+#[utoipa::path(
+    get, path = "/api/v1/runs/{id}/events",
+    operation_id = "runs_events",
+    description = "Read persisted run events.",
+    params(("id" = String, Path, description = "Run ID"), api::RunEventsQuery),
+    responses(
+        (status = 200, body = api::RunEventsResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn events(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
     query: Result<Query<api::RunEventsQuery>, QueryRejection>,
@@ -151,7 +222,26 @@ async fn events(
     }))
 }
 
-async fn cancel(
+#[utoipa::path(
+    post, path = "/api/v1/runs/{id}/cancel",
+    operation_id = "runs_cancel",
+    description = "Cancel a run.",
+    params(("id" = String, Path, description = "Run ID")),
+    responses(
+        (status = 200, body = api::RunResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn cancel(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
@@ -166,7 +256,26 @@ async fn cancel(
     Ok(Json(run_response(run)))
 }
 
-async fn reconcile(
+#[utoipa::path(
+    post, path = "/api/v1/runs/{id}/reconcile",
+    operation_id = "runs_reconcile",
+    description = "Reconcile a run against ComfyUI.",
+    params(("id" = String, Path, description = "Run ID")),
+    responses(
+        (status = 200, body = api::RunResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn reconcile(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
@@ -180,7 +289,23 @@ async fn reconcile(
     Ok(Json(run_response(result.run)))
 }
 
-async fn reconcile_all(
+#[utoipa::path(
+    post, path = "/api/v1/runs/reconcile",
+    operation_id = "runs_reconcile_all",
+    description = "Reconcile runs against ComfyUI.",
+    responses(
+        (status = 200, body = api::ReconcileRunsResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn reconcile_all(
     State(state): State<AppState>,
 ) -> Result<Json<api::ReconcileRunsResponse>, Problem> {
     let harness = state.harness();

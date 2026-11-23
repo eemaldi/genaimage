@@ -1,8 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Filters completed outputs. Date bounds are inclusive; pass the same filters on each page.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct OutputListQuery {
     pub run: Option<String>,
     pub workflow: Option<String>,
@@ -15,7 +17,7 @@ pub struct OutputListQuery {
 }
 
 /// An output and its provenance, without server-local file paths.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct OutputResponse {
     /// Opaque identifier to pass to the media endpoints.
     pub id: String,
@@ -31,14 +33,15 @@ pub struct OutputResponse {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct OutputListResponse {
     pub outputs: Vec<OutputResponse>,
     pub next_cursor: Option<String>,
 }
 
 /// Longest thumbnail edge in pixels: 128, 256, 512 or 1024.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ThumbnailQuery {
     pub size: u32,
 }

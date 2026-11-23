@@ -28,6 +28,7 @@ use tracing::Level;
 
 pub use listener::{serve, serve_on_listener};
 pub use problem::Problem;
+pub use routes::openapi;
 
 const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 

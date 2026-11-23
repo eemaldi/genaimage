@@ -24,7 +24,9 @@ health reports the image backend as `unavailable` until it responds. Server
 logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
 Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
-Health and settings are available. The portal and other API endpoints are planned.
+Health, events, workflows, runs, outputs, uploads and settings are available.
+The [OpenAPI 3.1 contract](api/openapi.json) is also served at
+`GET /api/v1/openapi.json`. The portal is planned.
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.
 Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be

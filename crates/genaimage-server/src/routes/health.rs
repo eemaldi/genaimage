@@ -12,7 +12,22 @@ pub(super) fn routes() -> Router<AppState> {
     Router::new().route("/health", get(health))
 }
 
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+#[utoipa::path(
+    get, path = "/api/v1/health",
+    operation_id = "health_health",
+    description = "Health of the local server and configured backends.",
+    responses(
+        (status = 200, body = genaimage_api::HealthResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let image_backend_reason = match timeout(PROBE_DEADLINE, state.harness().health()).await {
         Ok(Ok(_)) => None,
         Ok(Err(_)) => Some(ImageBackendHealthReason::ProbeFailed),
