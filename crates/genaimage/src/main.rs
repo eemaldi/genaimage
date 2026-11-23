@@ -3,11 +3,11 @@ use std::{collections::BTreeMap, path::PathBuf};
 use clap::{Args, Parser, Subcommand};
 use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{
-    ExtensionRegistry, Harness, HarnessConfig, HarnessError, RunProgress, RunRequest, RunStatus,
+    Event, EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError, ReceiveError,
+    RunRequest, RunStatus,
 };
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -130,7 +130,18 @@ async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
     let backend = registry
         .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
         .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
-    Harness::new_async(config, backend).await
+    let bus = EventBus::default();
+    let harness = Harness::with_event_bus_async(config, backend, bus.clone()).await?;
+    for (name, task) in registry.forward_event_sinks(&bus) {
+        tokio::spawn(async move {
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("event sink '{name}' failed: {error}"),
+                Err(error) => eprintln!("event sink '{name}' task failed: {error}"),
+            }
+        });
+    }
+    Ok(harness)
 }
 
 async fn execute(cli: &Cli) -> Result<(), HarnessError> {
@@ -237,19 +248,41 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
         .await?;
     output(cli, &run)?;
     if command.wait && run.status.is_trackable() {
-        let run_id = run.id.clone();
-        let (sender, mut receiver) = mpsc::unbounded_channel::<RunProgress>();
-        let waiting_harness = harness.clone();
-        let waiter =
-            tokio::spawn(async move { waiting_harness.wait_for_run(&run_id, Some(sender)).await });
-        while let Some(progress) = receiver.recv().await {
-            if !cli.json {
-                print_progress(&progress);
+        let completed = if cli.json {
+            let run_id = run.id.clone();
+            let waiting_harness = harness.clone();
+            tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await })
+                .await
+                .map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??
+        } else {
+            let mut receiver = harness.events().subscribe_run_progress(&run.id);
+            let run_id = run.id.clone();
+            let waiting_harness = harness.clone();
+            let mut waiter =
+                tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await });
+            loop {
+                tokio::select! {
+                    biased;
+                    event = receiver.recv() => match event {
+                        Ok(envelope) => {
+                            match envelope.event {
+                                Event::RunProgress { run: progress_run, backend_event } if progress_run.id == run.id => {
+                                    print_progress(&progress_run, backend_event.as_ref());
+                                }
+                                _ => {}
+                            }
+                        }
+                        // This stream carries every progress update and maintains no
+                        // lifecycle state; the final poll supplies the current run.
+                        Err(ReceiveError::ResyncRequired(_)) => {},
+                        Err(ReceiveError::Closed) => {
+                            break waiter.await.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??;
+                        }
+                    },
+                    result = &mut waiter => break result.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??,
+                }
             }
-        }
-        let completed = waiter
-            .await
-            .map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??;
+        };
         output(cli, &completed)?;
     }
     if run.status == RunStatus::UnknownSubmission {
@@ -283,7 +316,7 @@ async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessErr
             }
         }
         JobsCommand::Wait { run_id } => {
-            let completed = harness.wait_for_run(run_id, None).await?;
+            let completed = harness.wait_for_run(run_id).await?;
             output(cli, &completed)?;
         }
         JobsCommand::Cancel { run_id } => output(cli, &harness.cancel(run_id).await?)?,
@@ -320,8 +353,11 @@ fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, Harnes
     Ok(parameters)
 }
 
-fn print_progress(progress: &RunProgress) {
-    if let Some(event) = &progress.event {
+fn print_progress(
+    run: &genaimage_core::RunRecord,
+    event: Option<&genaimage_core::image_backend::BackendEvent>,
+) {
+    if let Some(event) = event {
         let suffix = event
             .value
             .zip(event.maximum)
@@ -329,6 +365,6 @@ fn print_progress(progress: &RunProgress) {
             .unwrap_or_default();
         eprintln!("{}{}", event.event_type, suffix);
     } else {
-        eprintln!("{}: {}", progress.run.id, progress.run.status.as_str());
+        eprintln!("{}: {}", run.id, run.status.as_str());
     }
 }

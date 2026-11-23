@@ -462,3 +462,204 @@ fn unselected_new_paths_only_config_does_not_block_xdg() {
         workspace.join("custom-runs").display().to_string()
     );
 }
+
+#[test]
+fn run_wait_preserves_json_and_human_progress() {
+    use serde_json::json;
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        process::Stdio,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread,
+        time::Duration,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server = {
+        let stopping = Arc::clone(&stopping);
+        thread::spawn(move || {
+            while !stopping.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fake server accept: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let (header_end, content_length) = loop {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert_ne!(n, 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..end]);
+                        let length = header
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        break (end + 4, length);
+                    }
+                };
+                while bytes.len() < header_end + content_length {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert_ne!(n, 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                let header = String::from_utf8_lossy(&bytes[..header_end]);
+                let path = header
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
+                let (status, body) = if path == "/object_info" {
+                    ("200 OK", json!({"KSampler": {}}))
+                } else if path == "/prompt" {
+                    let request: Value =
+                        serde_json::from_slice(&bytes[header_end..header_end + content_length])
+                            .unwrap();
+                    (
+                        "200 OK",
+                        json!({"prompt_id": request["prompt_id"], "node_errors": {}}),
+                    )
+                } else if path == "/queue" {
+                    ("200 OK", json!({"queue_running": [], "queue_pending": []}))
+                } else if let Some(prompt_id) = path.strip_prefix("/history/") {
+                    (
+                        "200 OK",
+                        json!({prompt_id: {"status": {"status_str": "success", "completed": true}, "outputs": {}}}),
+                    )
+                } else {
+                    ("400 Bad Request", json!({}))
+                };
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        })
+    };
+    let temp = TempDir::new().unwrap();
+    write(
+        &temp.path().join("genaimage.toml"),
+        &format!("[comfyui]\nbase_url = \"http://{address}\"\n"),
+    );
+    let workflows = temp.path().join("workflows/comfyui");
+    write(
+        &workflows.join("api.json"),
+        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
+    );
+    write(
+        &workflows.join("test.genaimage.json"),
+        r#"{"schema_version":2,"id":"test","version":"1.0.0","workflow":"api.json"}"#,
+    );
+
+    let test_cli = || {
+        let mut command = cli();
+        command
+            .current_dir(temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .arg("--config")
+            .arg(temp.path().join("genaimage.toml"));
+        command
+    };
+    for json_mode in [true, false] {
+        let mut command = test_cli();
+        command.arg("--workspace").arg(temp.path());
+        if json_mode {
+            command.arg("--json");
+        }
+        let output = command.args(["run", "test", "--wait"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let records: Vec<Value> = serde_json::Deserializer::from_slice(&output.stdout)
+            .into_iter::<Value>()
+            .map(|value| value.unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["status"], "queued");
+        assert_eq!(records[1]["status"], "completed");
+        assert_eq!(records[0]["id"], records[1]["id"]);
+        if json_mode {
+            assert!(output.stderr.is_empty());
+            assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 2);
+        } else {
+            let progress = String::from_utf8_lossy(&output.stderr);
+            let terminal = format!("{}: completed\n", records[0]["id"].as_str().unwrap());
+            assert_eq!(progress.matches(&terminal).count(), 1, "{progress}");
+            assert!(progress.ends_with(&terminal), "{progress}");
+        }
+    }
+    // Reconcile from a separate CLI process before the waiter's first poll.
+    let mut waiter = test_cli()
+        .arg("--workspace")
+        .arg(temp.path())
+        .args(["run", "test", "--wait"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(waiter.stdout.take().unwrap());
+    let mut queued_json = String::new();
+    loop {
+        let mut line = String::new();
+        assert_ne!(stdout.read_line(&mut line).unwrap(), 0);
+        queued_json.push_str(&line);
+        if line == "}\n" {
+            break;
+        }
+    }
+    let queued: Value = serde_json::from_str(&queued_json).unwrap();
+    assert_eq!(queued["status"], "queued");
+    let run_id = queued["id"].as_str().unwrap();
+    let other = test_cli()
+        .arg("--workspace")
+        .arg(temp.path())
+        .arg("--json")
+        .args(["jobs", "reconcile", run_id])
+        .output()
+        .unwrap();
+    assert!(
+        other.status.success(),
+        "{}",
+        String::from_utf8_lossy(&other.stderr)
+    );
+    let reconciliation: Value = serde_json::from_slice(&other.stdout).unwrap();
+    assert_eq!(reconciliation["run"]["status"], "completed");
+    let result = waiter.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut final_json = String::new();
+    stdout.read_to_string(&mut final_json).unwrap();
+    let completed: Value = serde_json::from_str(&final_json).unwrap();
+    assert_eq!(completed["status"], "completed");
+    let progress = String::from_utf8_lossy(&result.stderr);
+    let terminal = format!("{run_id}: completed\n");
+    assert_eq!(progress.matches(&terminal).count(), 1, "{progress}");
+    assert!(progress.ends_with(&terminal), "{progress}");
+    stopping.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+}

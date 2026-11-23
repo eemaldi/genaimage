@@ -211,6 +211,9 @@ fn empty_database_can_rebind_but_stale_handles_cannot_use_foreign_runs() {
         second
             .update_status("run", RunStatus::Cancelled, None, None)
             .map(|_| ()),
+        second
+            .compare_and_set_status("run", RunStatus::Queued, RunStatus::Cancelled, None, None)
+            .map(|_| ()),
     ] {
         assert!(result
             .unwrap_err()

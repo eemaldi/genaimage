@@ -70,7 +70,7 @@ impl RunStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunRecord {
     pub id: String,
     pub prompt_id: String,
@@ -316,6 +316,43 @@ impl RunRepository {
                 });
             }
             load_run(connection, run_id)
+        })
+    }
+
+    /// Update a status only if it still matches the observed value.
+    /// The returned snapshot is captured atomically with the update.
+    pub fn compare_and_set_status(
+        &self,
+        run_id: &str,
+        expected: RunStatus,
+        status: RunStatus,
+        error: Option<&str>,
+        manifest_path: Option<&str>,
+    ) -> Result<Option<RunRecord>> {
+        self.guarded(|connection| {
+            let now = Utc::now();
+            let completed_at = status.is_terminal().then(|| now.to_rfc3339());
+            Ok(connection
+                .query_row(
+                    r#"
+            UPDATE runs
+            SET status = ?3, error = ?4, manifest_path = COALESCE(?5, manifest_path),
+                updated_at = ?6, completed_at = COALESCE(?7, completed_at)
+            WHERE id = ?1 AND status = ?2
+            RETURNING *
+            "#,
+                    params![
+                        run_id,
+                        expected.as_str(),
+                        status.as_str(),
+                        error,
+                        manifest_path,
+                        now.to_rfc3339(),
+                        completed_at
+                    ],
+                    map_run,
+                )
+                .optional()?)
         })
     }
 
@@ -704,6 +741,29 @@ impl AsyncRunRepository {
         let manifest_path = manifest_path.map(str::to_owned);
         self.call(move |repo| {
             repo.update_status(&run_id, status, error.as_deref(), manifest_path.as_deref())
+        })
+        .await
+    }
+
+    pub async fn compare_and_set_status(
+        &self,
+        run_id: &str,
+        expected: RunStatus,
+        status: RunStatus,
+        error: Option<&str>,
+        manifest_path: Option<&str>,
+    ) -> Result<Option<RunRecord>> {
+        let run_id = run_id.to_owned();
+        let error = error.map(str::to_owned);
+        let manifest_path = manifest_path.map(str::to_owned);
+        self.call(move |repo| {
+            repo.compare_and_set_status(
+                &run_id,
+                expected,
+                status,
+                error.as_deref(),
+                manifest_path.as_deref(),
+            )
         })
         .await
     }
