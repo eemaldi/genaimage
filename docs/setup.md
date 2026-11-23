@@ -25,8 +25,10 @@ logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
 Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
 Only health is implemented. The portal and other API endpoints are planned.
-Requests must use `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>`
-as the Host, with the actual listener port. A rejected Host returns 421.
+Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
+or the configured loopback bind IP as the Host, with the actual listener port.
+Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be
+omitted from Host and Origin. A rejected Host returns 421.
 Mutating browser requests require a same-origin `Origin` or
 `Sec-Fetch-Site: same-origin`; conflicting or cross-site headers return 403.
 Local CLI and curl requests with neither header are allowed unless they carry
@@ -38,8 +40,9 @@ Avoid untrusted local applications and old browsers. There is no permissive CORS
 Request bodies are limited to 1 MiB by default. The planned upload route uses
 `server.max_upload_bytes` (default 33,554,432 bytes, or 32 MiB); its limit is
 configurable now but uploads are not yet implemented. Oversized requests return
-413. Bodies are buffered within their limit, so consider available memory before
-increasing it.
+413. Bodies must arrive within 30 seconds (408 on timeout); outstanding reads
+are cancelled with 503 when shutdown begins. Bodies are buffered within their
+limit, so consider available memory before increasing it.
 
 ## 2. Configuration
 

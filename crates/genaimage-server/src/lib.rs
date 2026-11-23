@@ -52,9 +52,12 @@ impl AppState {
 }
 
 /// Builds the application without opening a socket or installing signal handlers.
+/// `port` must be the actual listener port (or the intended port for in-process callers).
 pub fn build_app(state: AppState, port: u16) -> Router {
     let security = security::SecurityConfig {
         port,
+        bind_host: state.harness.config().server.host.parse().ok(),
+        app_state: state.clone(),
         max_upload_bytes: state.harness.config().server.max_upload_bytes,
     };
     Router::new()

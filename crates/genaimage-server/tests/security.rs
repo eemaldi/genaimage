@@ -19,10 +19,15 @@ use tokio::{
 use tower::ServiceExt;
 
 async fn app(workspace: &TempDir, port: u16) -> Router {
+    app_with_host(workspace, port, "127.0.0.1").await
+}
+
+async fn app_with_host(workspace: &TempDir, port: u16, host: &str) -> Router {
     let config =
         HarnessConfig::load_with(workspace.path(), None, workspace.path(), |key| match key {
             "HOME" => Some(workspace.path().to_str().unwrap().to_owned()),
             "GENAIMAGE_SERVER_MAX_UPLOAD_BYTES" => Some("16".to_owned()),
+            "GENAIMAGE_SERVER_HOST" => Some(host.to_owned()),
             _ => None,
         })
         .unwrap();
@@ -225,4 +230,115 @@ async fn ephemeral_listener_accepts_its_actual_port() {
     assert!(response.starts_with("HTTP/1.1 405"), "{response}");
     server.abort();
     let _ = server.await;
+}
+
+#[tokio::test]
+async fn only_the_configured_additional_loopback_address_is_allowed() {
+    let workspace = TempDir::new().unwrap();
+    let router = app_with_host(&workspace, 4567, "127.0.0.5").await;
+    for (host, status) in [
+        ("127.0.0.5:4567", StatusCode::METHOD_NOT_ALLOWED),
+        ("127.0.0.1:4567", StatusCode::METHOD_NOT_ALLOWED),
+        ("127.0.0.6:4567", StatusCode::MISDIRECTED_REQUEST),
+        ("127.0.0.5:4568", StatusCode::MISDIRECTED_REQUEST),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/health")
+                    .header(header::HOST, host)
+                    .header(header::ORIGIN, format!("http://{host}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        problem(response, status).await;
+    }
+    let listener = TcpListener::bind("127.0.0.5:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let network_router = app_with_host(&workspace, addr.port(), "127.0.0.5").await;
+    let server = tokio::spawn(async move { axum::serve(listener, network_router).await.unwrap() });
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client.write_all(format!("POST /api/v1/health HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 405"), "{response}");
+    server.abort();
+    let _ = server.await;
+
+    let workspace = TempDir::new().unwrap();
+    let router = app_with_host(&workspace, 4567, "::ffff:127.0.0.5").await;
+    let response = router
+        .oneshot(
+            Request::post("/api/v1/health")
+                .header(header::HOST, "[::ffff:7f00:5]:4567")
+                .header(header::ORIGIN, "http://[::ffff:127.0.0.5]:4567")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    problem(response, StatusCode::METHOD_NOT_ALLOWED).await;
+}
+
+#[tokio::test]
+async fn default_http_port_allows_both_canonical_and_explicit_authorities() {
+    let workspace = TempDir::new().unwrap();
+    let router = app(&workspace, 80).await;
+    for (host, origin) in [
+        ("localhost", "http://localhost"),
+        ("localhost:80", "http://localhost"),
+        ("127.0.0.1", "http://127.0.0.1:80"),
+        ("[::1]", "http://[::1]"),
+        ("[::1]:80", "http://[0:0:0:0:0:0:0:1]"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/health")
+                    .header(header::HOST, host)
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        problem(response, StatusCode::METHOD_NOT_ALLOWED).await;
+    }
+    let configured = app_with_host(&workspace, 80, "127.0.0.5").await;
+    let response = configured
+        .oneshot(
+            Request::post("/api/v1/health")
+                .header(header::HOST, "127.0.0.5")
+                .header(header::ORIGIN, "http://127.0.0.5:80")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    problem(response, StatusCode::METHOD_NOT_ALLOWED).await;
+    for (host, origin, status) in [
+        (
+            "localhost:81",
+            "http://localhost",
+            StatusCode::MISDIRECTED_REQUEST,
+        ),
+        ("localhost", "http://localhost:81", StatusCode::FORBIDDEN),
+        ("localhost", "http://127.0.0.1", StatusCode::FORBIDDEN),
+        ("localhost", "http://localhost/", StatusCode::FORBIDDEN),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/health")
+                    .header(header::HOST, host)
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        problem(response, status).await;
+    }
 }

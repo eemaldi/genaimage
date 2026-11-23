@@ -22,4 +22,5 @@ futures-util.workspace = true
 genaimage-comfyui = { path = "../genaimage-comfyui" }
 serde_json.workspace = true
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }

@@ -67,8 +67,11 @@ port to `build_app`; in-process callers must provide the intended port.
   in-flight requests without changing stored run statuses. Long-lived handlers
   can await `AppState::wait_for_shutdown` to close their streams as draining starts.
 
-The server accepts only `127.0.0.1:<port>`, `localhost:<port>` and
-`[::1]:<port>` Host headers for its actual port. Mutating requests must have a
+The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
+Host headers for its actual port, plus the configured bind IP when it is a
+loopback address. Other loopback IPs are not implicitly allowed. For HTTP port
+80, the port may be omitted from Host and Origin; equivalent IPv6 spellings
+are accepted. Mutating requests must have a
 same-origin `Origin` when present, and `Sec-Fetch-Site` must be `same-origin`
 when present. Browser-indicating requests missing both are rejected. Local
 non-browser clients without either header are allowed; these checks are not
@@ -82,7 +85,9 @@ header: 1 MiB by default, or `[server] max_upload_bytes` for the planned
 `/api/v1/uploads` route. Bodies are buffered up to that limit. Future routes
 that need a different limit must add their path to `security::body_limit` and
 consider the memory cost; Axum extractor limits are disabled because this
-middleware enforces the limit for all handlers.
+middleware enforces the limit for all handlers. Each body must arrive within
+30 seconds or receives 408; body reads are cancelled with 503 when graceful
+shutdown starts, so a stalled upload cannot prevent draining.
 
 Workflows, runs, events (SSE), outputs, uploads, settings and OpenAPI endpoints
 are planned, as is the browser portal.
