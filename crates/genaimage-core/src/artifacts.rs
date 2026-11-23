@@ -9,8 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    image_backend::{HistorySnapshot, ImageBackend},
     persistence::{OutputRecord, RunRecord, RunRepository},
-    transport::{ComfyUiTransport, HistorySnapshot},
     workflow::BoundWorkflow,
     HarnessError, Result,
 };
@@ -82,7 +82,7 @@ pub async fn initialise_run_files(
 }
 
 pub(crate) async fn materialise_history(
-    client: &impl ComfyUiTransport,
+    client: &dyn ImageBackend,
     repository: &RunRepository,
     run: &RunRecord,
     workflow_manifest_path: &Path,

@@ -3,6 +3,7 @@ use std::{path::Path, time::Duration};
 use futures_util::StreamExt;
 use reqwest::{
     multipart::{Form, Part},
+    redirect::Policy,
     Client, Url,
 };
 use serde::Deserialize;
@@ -11,10 +12,11 @@ use tokio::{sync::mpsc, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use genaimage_core::{
+    async_trait,
     config::ComfyUiProfile,
-    transport::{
-        ComfyUiEvent, ComfyUiHealth, ComfyUiTransport, EventMonitor, HistorySnapshot,
-        OutputReference, PromptResponse, QueueSnapshot, UploadResponse,
+    image_backend::{
+        BackendEvent, BackendHealth, EventMonitor, HistorySnapshot, ImageBackend, OutputReference,
+        PromptResponse, QueueSnapshot, UploadResponse,
     },
     HarnessError, Result,
 };
@@ -35,7 +37,19 @@ impl ComfyUiClient {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
         }
+        let submit_url = base_url.join("prompt")?;
+        let default_redirects = Policy::default();
         let http = Client::builder()
+            // Only explicit safe reads may retry. Never replay a prompt POST,
+            // including when a redirect preserves the request method and body.
+            .retry(reqwest::retry::never())
+            .redirect(Policy::custom(move |attempt| {
+                if attempt.previous().first() == Some(&submit_url) {
+                    attempt.stop()
+                } else {
+                    default_redirects.redirect(attempt)
+                }
+            }))
             .timeout(Duration::from_secs(profile.request_timeout_seconds))
             .build()
             .map_err(|error| HarnessError::ComfyUi(format!("cannot build HTTP client: {error}")))?;
@@ -47,14 +61,19 @@ impl ComfyUiClient {
     }
 }
 
-impl ComfyUiTransport for ComfyUiClient {
+#[async_trait]
+impl ImageBackend for ComfyUiClient {
+    fn name(&self) -> &str {
+        "ComfyUI"
+    }
+
     fn base_url(&self) -> &str {
         self.base_url.as_str()
     }
 
-    async fn health(&self) -> Result<ComfyUiHealth> {
+    async fn health(&self) -> Result<BackendHealth> {
         let value = self.get_json("system_stats").await?;
-        Ok(ComfyUiHealth { system: value })
+        Ok(BackendHealth { system: value })
     }
 
     async fn object_info(&self) -> Result<Value> {
@@ -212,7 +231,7 @@ impl ComfyUiTransport for ComfyUiClient {
         self.get_bytes(url).await
     }
 
-    fn monitor_events(&self, client_id: &str) -> Result<EventMonitor> {
+    async fn monitor_events(&self, client_id: &str) -> Result<EventMonitor> {
         let mut websocket_url = self.endpoint("ws")?;
         websocket_url
             .set_scheme(match websocket_url.scheme() {
@@ -234,7 +253,7 @@ impl ComfyUiTransport for ComfyUiClient {
                         while let Some(message) = stream.next().await {
                             let event = match message {
                                 Ok(Message::Text(text)) => parse_event(&text),
-                                Ok(Message::Close(frame)) => ComfyUiEvent {
+                                Ok(Message::Close(frame)) => BackendEvent {
                                     event_type: "websocket_closed".to_owned(),
                                     prompt_id: None,
                                     node_id: None,
@@ -244,7 +263,7 @@ impl ComfyUiTransport for ComfyUiClient {
                                     raw: Value::Null,
                                 },
                                 Ok(_) => continue,
-                                Err(error) => ComfyUiEvent {
+                                Err(error) => BackendEvent {
                                     event_type: "websocket_error".to_owned(),
                                     prompt_id: None,
                                     node_id: None,
@@ -260,7 +279,7 @@ impl ComfyUiTransport for ComfyUiClient {
                         }
                     }
                     Err(error) => {
-                        let event = ComfyUiEvent {
+                        let event = BackendEvent {
                             event_type: "websocket_error".to_owned(),
                             prompt_id: None,
                             node_id: None,
@@ -451,7 +470,7 @@ fn is_execution_error(message: &Value) -> bool {
         .is_some_and(|kind| kind == "execution_error")
 }
 
-fn parse_event(text: &str) -> ComfyUiEvent {
+fn parse_event(text: &str) -> BackendEvent {
     let raw: Value = serde_json::from_str(text).unwrap_or_else(|error| {
         json!({
             "type": "invalid_json",
@@ -459,7 +478,7 @@ fn parse_event(text: &str) -> ComfyUiEvent {
         })
     });
     let data = raw.get("data").unwrap_or(&Value::Null);
-    ComfyUiEvent {
+    BackendEvent {
         event_type: raw
             .get("type")
             .and_then(Value::as_str)

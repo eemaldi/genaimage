@@ -12,6 +12,8 @@ pub enum HarnessError {
     Workflow(String),
     #[error("ComfyUI request failed: {0}")]
     ComfyUi(String),
+    #[error("{backend} request failed: {message}")]
+    Backend { backend: String, message: String },
     #[error("state database error: {0}")]
     Database(String),
     #[error("run '{run_id}' was not found")]
