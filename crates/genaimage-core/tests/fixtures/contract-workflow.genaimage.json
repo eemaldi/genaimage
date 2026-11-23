@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "contract-workflow",
+  "version": "1.0.0",
+  "title": "Contract workflow",
+  "workflow": "workflow.api.json",
+  "generation_mode": "generic",
+  "parameters": {
+    "seed": {
+      "node": "3",
+      "input": "seed",
+      "kind": "seed",
+      "required": true
+    },
+    "steps": {
+      "node": "3",
+      "input": "steps",
+      "kind": "integer",
+      "required": true,
+      "minimum": 1,
+      "maximum": 100
+    }
+  },
+  "presets": {
+    "fast": {
+      "seed": 42,
+      "steps": 10
+    }
+  },
+  "outputs": [
+    {
+      "node": "9",
+      "kind": "image"
+    }
+  ]
+}

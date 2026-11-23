@@ -9,8 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    comfyui::{ComfyUiClient, HistorySnapshot},
     persistence::{OutputRecord, RunRecord, RunRepository},
+    transport::{ComfyUiTransport, HistorySnapshot},
     workflow::BoundWorkflow,
     HarnessError, Result,
 };
@@ -81,8 +81,8 @@ pub async fn initialise_run_files(
     )
 }
 
-pub async fn materialise_history(
-    client: &ComfyUiClient,
+pub(crate) async fn materialise_history(
+    client: &impl ComfyUiTransport,
     repository: &RunRepository,
     run: &RunRecord,
     workflow_manifest_path: &Path,
@@ -143,7 +143,7 @@ pub async fn materialise_history(
         preset: read_preflight_field(&output_dir, "preset")?
             .and_then(|value| value.as_str().map(str::to_owned)),
         parameters: run.parameters.clone(),
-        comfyui_base_url: client.base_url().to_string(),
+        comfyui_base_url: client.base_url().to_owned(),
         source_inputs,
         outputs: output_records,
         created_at: run.created_at,

@@ -445,10 +445,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "genaimage-cli"
+name = "genaimage"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "genaimage-comfyui",
  "genaimage-core",
  "serde",
  "serde_json",
@@ -458,15 +459,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "genaimage-core"
+name = "genaimage-api"
+version = "0.1.0"
+
+[[package]]
+name = "genaimage-comfyui"
 version = "0.1.0"
 dependencies = [
  "axum",
- "chrono",
  "futures-util",
- "hex",
+ "genaimage-core",
  "mime_guess",
  "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
+name = "genaimage-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -474,12 +491,14 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-tungstenite",
  "toml",
- "tracing",
  "url",
  "uuid",
 ]
+
+[[package]]
+name = "genaimage-server"
+version = "0.1.0"
 
 [[package]]
 name = "generic-array"
@@ -1797,19 +1816,7 @@ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
- "tracing-attributes",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-attributes"
-version = "0.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]

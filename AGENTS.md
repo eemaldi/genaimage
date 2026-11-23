@@ -7,12 +7,15 @@ ComfyUI image generation, assisted by local LLMs. Read
 
 ## Architecture
 
-- `crates/genaimage-core` owns configuration, ComfyUI transport, workflow
-  manifests and explicit binding, the run queue, reconciliation, persistence
-  and provenance. The assistant tool runtime and provider abstractions are
-  planned in the core; do not duplicate orchestration in operator surfaces.
-- `crates/genaimage-cli` is the scripted interface. The target is a thin client
-  of the same local API as the portal; today it calls the core directly.
+- `crates/genaimage-core` owns configuration, workflow manifests and explicit
+  binding, run orchestration, persistence and provenance. The assistant tool
+  runtime and provider abstractions are planned in the core; do not duplicate
+  orchestration in operator surfaces.
+- `crates/genaimage-comfyui` implements the core transport port using ComfyUI
+  HTTP and WebSocket connections.
+- `crates/genaimage` is the scripted interface. Today it calls the adapter and
+  the core directly; the target is a thin client of the same local API as the
+  portal. `crates/genaimage-api` and `crates/genaimage-server` are placeholders.
 - The planned Rust server serves its API and embedded Svelte portal from one
   loopback-bound binary. ComfyUI and the OpenAI-compatible local LLM service
   remain separate processes. Docker Compose support is planned for local

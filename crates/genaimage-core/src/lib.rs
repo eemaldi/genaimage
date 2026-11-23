@@ -1,9 +1,9 @@
 pub mod artifacts;
-pub mod comfyui;
 pub mod config;
 pub mod error;
 pub mod orchestrator;
 pub mod persistence;
+pub mod transport;
 pub mod workflow;
 
 pub use config::{HarnessConfig, ResolvedConfig};

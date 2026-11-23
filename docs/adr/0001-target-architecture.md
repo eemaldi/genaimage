@@ -3,6 +3,11 @@
 - **Status:** Accepted
 - **Scope:** GenAImage's target architecture; implementation is incremental.
 
+> Implementation note ([#18](https://github.com/eemaldi/genaimage/issues/18)):
+> [The workspace split](../architecture.md#workspace-crates) puts HTTP and
+> WebSocket transport in `genaimage-comfyui` and keeps run lifecycle policy
+> in `genaimage-core`.
+
 ## Context
 
 GenAImage is a thin, fast, local glue layer and harness. ComfyUI generates
@@ -25,7 +30,7 @@ unattended generation.
   manifests, explicit parameter binding, ComfyUI transport, the run queue,
   reconciliation, persistence and provenance. The assistant tool runtime and
   its safety boundary are also planned in the core.
-- `crates/genaimage-cli` remains a thin scripted interface. The planned CLI
+- The CLI remains a thin scripted interface. The planned CLI
   calls the same local server API as the portal rather than duplicating domain
   or generation logic; its current direct-core operation remains in place until
   that API exists.

@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::{path::Path, time::Duration};
 
 use futures_util::StreamExt;
@@ -6,12 +5,19 @@ use reqwest::{
     multipart::{Form, Part},
     Client, Url,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tokio::{sync::mpsc, task::JoinHandle, time::sleep};
+use tokio::{sync::mpsc, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{config::ComfyUiProfile, HarnessError, Result};
+use genaimage_core::{
+    config::ComfyUiProfile,
+    transport::{
+        ComfyUiEvent, ComfyUiHealth, ComfyUiTransport, EventMonitor, HistorySnapshot,
+        OutputReference, PromptResponse, QueueSnapshot, UploadResponse,
+    },
+    HarnessError, Result,
+};
 
 const MAX_SAFE_READ_ATTEMPTS: usize = 3;
 
@@ -22,112 +28,9 @@ pub struct ComfyUiClient {
     websocket_reconnect: Duration,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct ComfyUiHealth {
-    pub system: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PromptResponse {
-    pub prompt_id: String,
-    #[serde(default)]
-    pub number: Option<i64>,
-    #[serde(default)]
-    pub node_errors: Value,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct QueueSnapshot {
-    pub running: Vec<String>,
-    pub pending: Vec<String>,
-    pub raw: Value,
-}
-
-impl QueueSnapshot {
-    pub fn contains(&self, prompt_id: &str) -> bool {
-        self.running.contains(&prompt_id.to_owned()) || self.pending.contains(&prompt_id.to_owned())
-    }
-
-    pub fn is_running(&self, prompt_id: &str) -> bool {
-        self.running.contains(&prompt_id.to_owned())
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct UploadResponse {
-    pub name: String,
-    pub subfolder: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct OutputReference {
-    pub node_id: String,
-    pub kind: String,
-    pub filename: String,
-    pub subfolder: String,
-    pub output_type: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct HistorySnapshot {
-    pub prompt_id: String,
-    pub complete: bool,
-    pub success: bool,
-    pub outputs: Vec<OutputReference>,
-    pub raw: Value,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ComfyUiEvent {
-    pub event_type: String,
-    pub prompt_id: Option<String>,
-    pub node_id: Option<String>,
-    pub value: Option<u64>,
-    pub maximum: Option<u64>,
-    pub message: Option<String>,
-    pub raw: Value,
-}
-
-pub struct EventMonitor {
-    pub receiver: mpsc::Receiver<ComfyUiEvent>,
-    task: JoinHandle<()>,
-}
-
-impl EventMonitor {
-    pub fn abort(&self) {
-        self.task.abort();
-    }
-}
-
-impl Drop for EventMonitor {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 impl ComfyUiClient {
     pub fn new(profile: &ComfyUiProfile) -> Result<Self> {
-        let base_url = Url::parse(&profile.base_url)?;
-        if !matches!(base_url.scheme(), "http" | "https") {
-            return Err(HarnessError::Configuration(format!(
-                "ComfyUI profile URL must use http or https, got '{}'",
-                base_url.scheme()
-            )));
-        }
-        if base_url.host_str().is_none() {
-            return Err(HarnessError::Configuration(
-                "ComfyUI profile URL is missing a host".to_owned(),
-            ));
-        }
-        if !is_loopback_host(base_url.host_str().unwrap_or_default()) {
-            return Err(HarnessError::Configuration(format!(
-                "this release supports one local ComfyUI host only; '{}' is not loopback",
-                base_url.host_str().unwrap_or_default()
-            )));
-        }
-        let mut base_url = base_url;
+        let mut base_url = profile.validate_base_url()?;
         if !base_url.path().ends_with('/') {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
@@ -142,69 +45,23 @@ impl ComfyUiClient {
             websocket_reconnect: Duration::from_secs(profile.websocket_reconnect_seconds),
         })
     }
+}
 
-    pub fn base_url(&self) -> &Url {
-        &self.base_url
+impl ComfyUiTransport for ComfyUiClient {
+    fn base_url(&self) -> &str {
+        self.base_url.as_str()
     }
 
-    pub async fn health(&self) -> Result<ComfyUiHealth> {
+    async fn health(&self) -> Result<ComfyUiHealth> {
         let value = self.get_json("system_stats").await?;
         Ok(ComfyUiHealth { system: value })
     }
 
-    pub async fn object_info(&self, class_type: Option<&str>) -> Result<Value> {
-        let path = class_type.map_or_else(
-            || "object_info".to_owned(),
-            |value| format!("object_info/{value}"),
-        );
-        self.get_json(&path).await
+    async fn object_info(&self) -> Result<Value> {
+        self.get_json("object_info").await
     }
 
-    pub async fn validate_workflow_nodes(&self, workflow: &Value) -> Result<()> {
-        let nodes = workflow.as_object().ok_or_else(|| {
-            HarnessError::Workflow("API workflow root must be an object".to_owned())
-        })?;
-        let class_types: BTreeSet<String> = nodes
-            .values()
-            .filter_map(|node| node.get("class_type").and_then(Value::as_str))
-            .map(str::to_owned)
-            .collect();
-        let missing_class_types: Vec<&str> = nodes
-            .iter()
-            .filter_map(|(node_id, node)| {
-                node.get("class_type")
-                    .and_then(Value::as_str)
-                    .is_none()
-                    .then_some(node_id.as_str())
-            })
-            .collect();
-        if !missing_class_types.is_empty() {
-            return Err(HarnessError::Workflow(format!(
-                "nodes {} are missing class_type",
-                missing_class_types.join(", ")
-            )));
-        }
-        let available = self.object_info(None).await?;
-        let available = available.as_object().ok_or_else(|| {
-            HarnessError::ComfyUi(
-                "ComfyUI /object_info did not return an object; cannot validate nodes".to_owned(),
-            )
-        })?;
-        let unavailable: Vec<&str> = class_types
-            .iter()
-            .filter(|class_type| !available.contains_key(class_type.as_str()))
-            .map(String::as_str)
-            .collect();
-        if !unavailable.is_empty() {
-            return Err(HarnessError::Workflow(format!(
-                "ComfyUI does not provide required node types: {}",
-                unavailable.join(", ")
-            )));
-        }
-        Ok(())
-    }
-
-    pub async fn queue(&self) -> Result<QueueSnapshot> {
+    async fn queue(&self) -> Result<QueueSnapshot> {
         let raw = self.get_json("queue").await?;
         Ok(QueueSnapshot {
             running: extract_queue_ids(raw.get("queue_running")),
@@ -213,7 +70,7 @@ impl ComfyUiClient {
         })
     }
 
-    pub async fn submit(
+    async fn submit(
         &self,
         workflow: &Value,
         client_id: &str,
@@ -238,7 +95,7 @@ impl ComfyUiClient {
         parse_response::<PromptResponse>(response, "submit prompt").await
     }
 
-    pub async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot> {
+    async fn history(&self, prompt_id: &str) -> Result<HistorySnapshot> {
         let raw = self.get_json(&format!("history/{prompt_id}")).await?;
         let entry = raw.get(prompt_id).cloned();
         let Some(entry) = entry else {
@@ -282,16 +139,16 @@ impl ComfyUiClient {
         })
     }
 
-    pub async fn delete_queued(&self, prompt_id: &str) -> Result<Value> {
+    async fn delete_queued(&self, prompt_id: &str) -> Result<Value> {
         self.post_json("queue", &json!({ "delete": [prompt_id] }))
             .await
     }
 
-    pub async fn interrupt(&self) -> Result<Value> {
+    async fn interrupt(&self) -> Result<Value> {
         self.post_json("interrupt", &json!({})).await
     }
 
-    pub async fn upload_image(&self, path: &Path) -> Result<UploadResponse> {
+    async fn upload_image(&self, path: &Path) -> Result<UploadResponse> {
         let bytes = tokio::fs::read(path).await?;
         let file_name = path
             .file_name()
@@ -342,7 +199,7 @@ impl ComfyUiClient {
         })
     }
 
-    pub async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>> {
+    async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>> {
         let mut url = self.endpoint("view")?;
         {
             let mut query = url.query_pairs_mut();
@@ -355,7 +212,7 @@ impl ComfyUiClient {
         self.get_bytes(url).await
     }
 
-    pub fn monitor_events(&self, client_id: &str) -> Result<EventMonitor> {
+    fn monitor_events(&self, client_id: &str) -> Result<EventMonitor> {
         let mut websocket_url = self.endpoint("ws")?;
         websocket_url
             .set_scheme(match websocket_url.scheme() {
@@ -420,9 +277,11 @@ impl ComfyUiClient {
                 sleep(reconnect_delay).await;
             }
         });
-        Ok(EventMonitor { receiver, task })
+        Ok(EventMonitor::new(receiver, task))
     }
+}
 
+impl ComfyUiClient {
     async fn get_json(&self, path: &str) -> Result<Value> {
         let url = self.endpoint(path)?;
         let mut last_error = String::new();
@@ -504,7 +363,6 @@ impl ComfyUiClient {
             })?;
         parse_response(response, &format!("POST {path}")).await
     }
-
     fn endpoint(&self, path: &str) -> Result<Url> {
         self.base_url.join(path).map_err(HarnessError::Url)
     }
@@ -623,22 +481,9 @@ fn parse_event(text: &str) -> ComfyUiEvent {
     }
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "::1")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{is_loopback_host, parse_event};
-
-    #[test]
-    fn accepts_only_supported_local_hosts() {
-        assert!(is_loopback_host("127.0.0.1"));
-        assert!(is_loopback_host("localhost"));
-        assert!(is_loopback_host("::1"));
-        assert!(!is_loopback_host("192.168.1.10"));
-        assert!(!is_loopback_host("example.com"));
-    }
+    use super::parse_event;
 
     #[test]
     fn parses_comfyui_progress_event() {

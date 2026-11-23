@@ -11,29 +11,42 @@ and ComfyUI. ComfyUI generates images; GenAImage owns the workflow manifests,
 explicit parameter binding, run queue, reconciliation, provenance and, in the
 planned architecture, the assistant tool runtime and self-hosted web portal.
 
+## Workspace crates
+
+Current dependencies (arrows point to dependencies):
+
 ```text
-CLI (thin client, planned) ──┐
-                             ├── loopback Rust server + embedded Svelte portal
-Browser (local portal) ──────┘                     (planned)
-                                      │
-                              genaimage-core
-                         ┌────────────┼─────────────┐
-                    workflows,     assistant      run state,
-                    bindings and   tool runtime   reconciliation,
-                    ComfyUI client (planned)      provenance
-                         │             │
-                   local ComfyUI   local LLM endpoint
+          genaimage (CLI binary)
+             /              \
+            v                |
+    genaimage-comfyui        |
+            |                |
+            v                v
+          genaimage-core
+
+    genaimage-api       (skeleton, no dependencies)
+    genaimage-server    (skeleton, no dependencies)
 ```
 
-- `crates/genaimage-core` is the domain and generation source of truth. It
-  currently owns configuration, workflow binding, ComfyUI transport, SQLite
-  run state, cancellation/reconnect and provenance. The assistant runtime and
-  provider abstractions are planned here, not in the frontend or CLI.
-- `crates/genaimage-cli` currently calls the core directly. Its target is a
-  thin scripted client of the same local server API used by the portal.
-- A Rust server component, embedded Svelte portal and local API are planned;
-  their exact crate and asset paths are not yet established. One server binary
-  will serve both API and portal, bound to loopback only.
+- `genaimage-core` owns configuration, workflow manifests and explicit
+  binding, run orchestration, SQLite run state and provenance. Core decides
+  when to submit, reconcile, cancel and finalise runs. It calls a narrow
+  transport port, to be formalised as `ImageBackend` in
+  [#19](https://github.com/eemaldi/genaimage/issues/19), and has no HTTP or
+  WebSocket client dependencies.
+- `genaimage-comfyui` implements that port over HTTP and WebSocket, mapping
+  ComfyUI responses and progress events into core-owned types.
+- `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
+  adapter to the core harness until the local API is available.
+- `genaimage-api` is reserved for shared API types and the client.
+- `genaimage-server` is reserved for the Axum server. It will serve the API and
+  the embedded Svelte portal on loopback only; neither is implemented yet.
+- `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
+  and is not a workspace member today.
+
+The target is for the CLI and browser portal to use the same loopback API.
+The server will use the core and local adapters rather than reimplementing
+run orchestration or assistant logic.
 
 ## Providers, extensions and deployment
 
