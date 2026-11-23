@@ -130,6 +130,15 @@ pub struct NewRun {
 #[derive(Clone)]
 pub struct RunRepository {
     connection: Arc<Mutex<Connection>>,
+    identity: Option<DatabaseIdentity>,
+}
+
+#[derive(Clone)]
+struct DatabaseIdentity {
+    workspace: String,
+    backend: String,
+    endpoint: String,
+    claim_legacy: bool,
 }
 
 impl RunRepository {
@@ -145,10 +154,40 @@ impl RunRepository {
         migrate(&mut connection, path)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            identity: None,
         })
     }
 
-    /// Atomically bind a database to the workspace and backend that own its runs.
+    pub fn with_identity(
+        mut self,
+        workspace: &Path,
+        backend: &str,
+        endpoint: &str,
+        claim_legacy: bool,
+    ) -> Result<Self> {
+        let workspace = workspace.to_str().ok_or_else(|| {
+            HarnessError::Configuration(format!(
+                "workspace '{}': use a UTF-8 path to protect run ownership",
+                workspace.display()
+            ))
+        })?;
+        let identity = DatabaseIdentity {
+            workspace: workspace.to_owned(),
+            backend: backend.to_owned(),
+            endpoint: endpoint.to_owned(),
+            claim_legacy,
+        };
+        {
+            let mut connection = self.connection()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            bind_identity_in_transaction(&transaction, &identity)?;
+            transaction.commit()?;
+        }
+        self.identity = Some(identity);
+        Ok(self)
+    }
+
     pub fn bind_identity(
         &self,
         workspace: &Path,
@@ -156,97 +195,89 @@ impl RunRepository {
         endpoint: &str,
         claim_legacy: bool,
     ) -> Result<()> {
-        let workspace = workspace.to_str().ok_or_else(|| {
-            HarnessError::Configuration(format!(
-                "workspace '{}': use a UTF-8 path to protect run ownership",
-                workspace.display()
-            ))
-        })?;
+        self.clone()
+            .with_identity(workspace, backend, endpoint, claim_legacy)
+            .map(|_| ())
+    }
+
+    // The ownership check and each write share a transaction, including the first run.
+    fn guarded<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut connection = self.connection()?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let existing: Option<(String, String, String)> = transaction.query_row(
-            "SELECT workspace, backend, endpoint FROM genaimage_database_identity WHERE singleton = 1", [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        ).optional()?;
-        match existing {
-            Some((stored_workspace, stored_backend, stored_endpoint)) => {
-                if (
-                    stored_workspace.as_str(),
-                    stored_backend.as_str(),
-                    stored_endpoint.as_str(),
-                ) != (workspace, backend, endpoint)
-                {
-                    return Err(HarnessError::Configuration(format!("paths.state_database belongs to workspace '{stored_workspace}', backend '{stored_backend}', endpoint '{stored_endpoint}', not workspace '{workspace}', backend '{backend}', endpoint '{endpoint}'; select the original workspace and endpoint or a separate state database")));
-                }
-            }
-            None => {
-                let has_runs: bool =
-                    transaction
-                        .query_row("SELECT EXISTS(SELECT 1 FROM runs)", [], |row| row.get(0))?;
-                if has_runs && !claim_legacy {
-                    return Err(HarnessError::Configuration(format!("paths.state_database contains legacy runs with unknown workspace and endpoint; verify every record belongs to workspace '{workspace}' and endpoint '{endpoint}', then set GENAIMAGE_CLAIM_LEGACY_STATE=1 once; otherwise use a separate database")));
-                }
-                transaction.execute("INSERT INTO genaimage_database_identity (singleton, workspace, backend, endpoint) VALUES (1, ?1, ?2, ?3)", params![workspace, backend, endpoint])?;
-            }
+        if let Some(identity) = &self.identity {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            bind_identity_in_transaction(&transaction, identity)?;
+            let result = operation(&transaction)?;
+            transaction.commit()?;
+            Ok(result)
+        } else {
+            operation(&connection)
         }
-        transaction.commit()?;
-        Ok(())
+    }
+
+    // A read snapshot keeps the ownership check and results consistent without blocking writers.
+    fn guarded_read<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let mut connection = self.connection()?;
+        if let Some(identity) = &self.identity {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            check_identity_for_read(&transaction, identity)?;
+            let result = operation(&transaction)?;
+            transaction.commit()?;
+            Ok(result)
+        } else {
+            operation(&connection)
+        }
     }
 
     pub fn insert(&self, run: &NewRun) -> Result<RunRecord> {
-        let now = Utc::now().to_rfc3339();
-        let connection = self.connection()?;
-        connection.execute(
-            r#"
+        self.guarded(|connection| {
+            let now = Utc::now().to_rfc3339();
+            connection.execute(
+                r#"
             INSERT INTO runs (
                 id, prompt_id, client_id, workflow_id, workflow_version,
                 workflow_sha256, generation_mode, status, parameters_json,
                 output_dir, created_at, updated_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             "#,
-            params![
-                run.id,
-                run.prompt_id,
-                run.client_id,
-                run.workflow_id,
-                run.workflow_version,
-                run.workflow_sha256,
-                generation_mode_name(run.generation_mode),
-                run.status.as_str(),
-                serde_json::to_string(&run.parameters)?,
-                run.output_dir,
-                now,
-            ],
-        )?;
-        drop(connection);
-        self.get(&run.id)
+                params![
+                    run.id,
+                    run.prompt_id,
+                    run.client_id,
+                    run.workflow_id,
+                    run.workflow_version,
+                    run.workflow_sha256,
+                    generation_mode_name(run.generation_mode),
+                    run.status.as_str(),
+                    serde_json::to_string(&run.parameters)?,
+                    run.output_dir,
+                    now,
+                ],
+            )?;
+            load_run(connection, &run.id)
+        })
     }
 
     pub fn get(&self, run_id: &str) -> Result<RunRecord> {
-        let connection = self.connection()?;
-        connection
-            .query_row("SELECT * FROM runs WHERE id = ?1", [run_id], map_run)
-            .optional()?
-            .ok_or_else(|| HarnessError::RunNotFound {
-                run_id: run_id.to_owned(),
-            })
+        self.guarded_read(|connection| load_run(connection, run_id))
     }
 
     pub fn list(&self, limit: usize) -> Result<Vec<RunRecord>> {
-        let connection = self.connection()?;
-        let mut statement =
-            connection.prepare("SELECT * FROM runs ORDER BY created_at DESC, id DESC LIMIT ?1")?;
-        let rows = statement
-            .query_map([limit as i64], map_run)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+        self.guarded_read(|connection| {
+            let mut statement = connection
+                .prepare("SELECT * FROM runs ORDER BY created_at DESC, id DESC LIMIT ?1")?;
+            let rows = statement
+                .query_map([limit as i64], map_run)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
     }
 
     pub fn active(&self) -> Result<Vec<RunRecord>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            r#"
+        self.guarded_read(|connection| {
+            let mut statement = connection.prepare(
+                r#"
             SELECT * FROM runs
             WHERE status IN (
                 'created', 'submitting', 'unknown_submission',
@@ -254,11 +285,12 @@ impl RunRepository {
             )
             ORDER BY created_at
             "#,
-        )?;
-        let rows = statement
-            .query_map([], map_run)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+            )?;
+            let rows = statement
+                .query_map([], map_run)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
     }
 
     pub fn update_status(
@@ -268,11 +300,11 @@ impl RunRepository {
         error: Option<&str>,
         manifest_path: Option<&str>,
     ) -> Result<RunRecord> {
-        let now = Utc::now();
-        let completed_at = status.is_terminal().then(|| now.to_rfc3339());
-        let connection = self.connection()?;
-        let affected = connection.execute(
-            r#"
+        self.guarded(|connection| {
+            let now = Utc::now();
+            let completed_at = status.is_terminal().then(|| now.to_rfc3339());
+            let affected = connection.execute(
+                r#"
             UPDATE runs
             SET status = ?2,
                 error = ?3,
@@ -281,38 +313,38 @@ impl RunRepository {
                 completed_at = COALESCE(?6, completed_at)
             WHERE id = ?1
             "#,
-            params![
-                run_id,
-                status.as_str(),
-                error,
-                manifest_path,
-                now.to_rfc3339(),
-                completed_at
-            ],
-        )?;
-        drop(connection);
-        if affected == 0 {
-            return Err(HarnessError::RunNotFound {
-                run_id: run_id.to_owned(),
-            });
-        }
-        self.get(run_id)
+                params![
+                    run_id,
+                    status.as_str(),
+                    error,
+                    manifest_path,
+                    now.to_rfc3339(),
+                    completed_at
+                ],
+            )?;
+            if affected == 0 {
+                return Err(HarnessError::RunNotFound {
+                    run_id: run_id.to_owned(),
+                });
+            }
+            load_run(connection, run_id)
+        })
     }
 
     pub fn update_prompt_id(&self, run_id: &str, prompt_id: &str) -> Result<RunRecord> {
-        let now = Utc::now().to_rfc3339();
-        let connection = self.connection()?;
-        let affected = connection.execute(
-            "UPDATE runs SET prompt_id = ?2, updated_at = ?3 WHERE id = ?1",
-            params![run_id, prompt_id, now],
-        )?;
-        drop(connection);
-        if affected == 0 {
-            return Err(HarnessError::RunNotFound {
-                run_id: run_id.to_owned(),
-            });
-        }
-        self.get(run_id)
+        self.guarded(|connection| {
+            let now = Utc::now().to_rfc3339();
+            let affected = connection.execute(
+                "UPDATE runs SET prompt_id = ?2, updated_at = ?3 WHERE id = ?1",
+                params![run_id, prompt_id, now],
+            )?;
+            if affected == 0 {
+                return Err(HarnessError::RunNotFound {
+                    run_id: run_id.to_owned(),
+                });
+            }
+            load_run(connection, run_id)
+        })
     }
 
     pub fn record_event(
@@ -322,55 +354,59 @@ impl RunRepository {
         message: Option<&str>,
         payload: &Value,
     ) -> Result<()> {
-        self.connection()?.execute(
-            r#"
+        self.guarded(|connection| {
+            connection.execute(
+                r#"
             INSERT INTO run_events (run_id, event_type, message, payload_json, created_at)
             VALUES (?1, ?2, ?3, ?4, ?5)
             "#,
-            params![
-                run_id,
-                event_type,
-                message,
-                serde_json::to_string(payload)?,
-                Utc::now().to_rfc3339()
-            ],
-        )?;
-        Ok(())
+                params![
+                    run_id,
+                    event_type,
+                    message,
+                    serde_json::to_string(payload)?,
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn events(&self, run_id: &str, limit: usize) -> Result<Vec<RunEvent>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            r#"
+        self.guarded_read(|connection| {
+            let mut statement = connection.prepare(
+                r#"
             SELECT id, run_id, event_type, message, payload_json, created_at
             FROM run_events
             WHERE run_id = ?1
             ORDER BY id DESC
             LIMIT ?2
             "#,
-        )?;
-        let rows = statement
-            .query_map(params![run_id, limit as i64], |row| {
-                Ok(RunEvent {
-                    id: row.get(0)?,
-                    run_id: row.get(1)?,
-                    event_type: row.get(2)?,
-                    message: row.get(3)?,
-                    payload: serde_json::from_str(&row.get::<_, String>(4)?).map_err(|error| {
-                        rusqlite::Error::ToSqlConversionFailure(Box::new(error))
-                    })?,
-                    created_at: parse_sqlite_time(row, 5)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut rows = rows;
-        rows.reverse();
-        Ok(rows)
+            )?;
+            let rows = statement
+                .query_map(params![run_id, limit as i64], |row| {
+                    Ok(RunEvent {
+                        id: row.get(0)?,
+                        run_id: row.get(1)?,
+                        event_type: row.get(2)?,
+                        message: row.get(3)?,
+                        payload: serde_json::from_str(&row.get::<_, String>(4)?).map_err(
+                            |error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)),
+                        )?,
+                        created_at: parse_sqlite_time(row, 5)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut rows = rows;
+            rows.reverse();
+            Ok(rows)
+        })
     }
 
     pub fn record_output(&self, output: &OutputRecord) -> Result<()> {
-        self.connection()?.execute(
-            r#"
+        self.guarded(|connection| {
+            connection.execute(
+                r#"
             INSERT INTO outputs (
                 run_id, node_id, kind, source_filename, source_subfolder, source_type,
                 local_path, sha256, byte_size, created_at
@@ -384,48 +420,50 @@ impl RunRepository {
                 byte_size = excluded.byte_size,
                 created_at = excluded.created_at
             "#,
-            params![
-                output.run_id,
-                output.node_id,
-                output.kind,
-                output.source_filename,
-                output.source_subfolder,
-                output.source_type,
-                output.local_path,
-                output.sha256,
-                output.byte_size as i64,
-                output.created_at.to_rfc3339(),
-            ],
-        )?;
-        Ok(())
+                params![
+                    output.run_id,
+                    output.node_id,
+                    output.kind,
+                    output.source_filename,
+                    output.source_subfolder,
+                    output.source_type,
+                    output.local_path,
+                    output.sha256,
+                    output.byte_size as i64,
+                    output.created_at.to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn outputs(&self, run_id: &str) -> Result<Vec<OutputRecord>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            r#"
+        self.guarded_read(|connection| {
+            let mut statement = connection.prepare(
+                r#"
             SELECT run_id, node_id, kind, source_filename, source_subfolder,
                    source_type, local_path, sha256, byte_size, created_at
             FROM outputs WHERE run_id = ?1 ORDER BY id
             "#,
-        )?;
-        let rows = statement
-            .query_map([run_id], |row| {
-                Ok(OutputRecord {
-                    run_id: row.get(0)?,
-                    node_id: row.get(1)?,
-                    kind: row.get(2)?,
-                    source_filename: row.get(3)?,
-                    source_subfolder: row.get(4)?,
-                    source_type: row.get(5)?,
-                    local_path: row.get(6)?,
-                    sha256: row.get(7)?,
-                    byte_size: row.get::<_, i64>(8)? as u64,
-                    created_at: parse_sqlite_time(row, 9)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+            )?;
+            let rows = statement
+                .query_map([run_id], |row| {
+                    Ok(OutputRecord {
+                        run_id: row.get(0)?,
+                        node_id: row.get(1)?,
+                        kind: row.get(2)?,
+                        source_filename: row.get(3)?,
+                        source_subfolder: row.get(4)?,
+                        source_type: row.get(5)?,
+                        local_path: row.get(6)?,
+                        sha256: row.get(7)?,
+                        byte_size: row.get::<_, i64>(8)? as u64,
+                        created_at: parse_sqlite_time(row, 9)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
     }
 
     fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
@@ -433,6 +471,82 @@ impl RunRepository {
             HarnessError::Database(format!("state database lock was poisoned: {error}"))
         })
     }
+}
+
+fn check_identity_for_read(
+    transaction: &rusqlite::Transaction<'_>,
+    identity: &DatabaseIdentity,
+) -> Result<()> {
+    let existing: Option<(String, String, String)> = transaction.query_row(
+        "SELECT workspace, backend, endpoint FROM genaimage_database_identity WHERE singleton = 1", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    ).optional()?;
+    if existing
+        .as_ref()
+        .is_some_and(|(workspace, backend, endpoint)| {
+            (workspace.as_str(), backend.as_str(), endpoint.as_str())
+                == (
+                    identity.workspace.as_str(),
+                    identity.backend.as_str(),
+                    identity.endpoint.as_str(),
+                )
+        })
+    {
+        return Ok(());
+    }
+    let has_runs: bool =
+        transaction.query_row("SELECT EXISTS(SELECT 1 FROM runs)", [], |row| row.get(0))?;
+    if !has_runs {
+        return Ok(());
+    }
+    if let Some((workspace, backend, endpoint)) = existing {
+        return Err(HarnessError::Configuration(format!("paths.state_database belongs to workspace '{workspace}', backend '{backend}', endpoint '{endpoint}', not workspace '{}', backend '{}', endpoint '{}'; select the original workspace and endpoint or a separate state database", identity.workspace, identity.backend, identity.endpoint)));
+    }
+    Err(HarnessError::Configuration(format!("paths.state_database contains legacy runs with unknown workspace and endpoint; verify every record belongs to workspace '{}' and endpoint '{}', then set GENAIMAGE_CLAIM_LEGACY_STATE=1 once and reopen the database; otherwise use a separate database", identity.workspace, identity.endpoint)))
+}
+
+fn bind_identity_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    identity: &DatabaseIdentity,
+) -> Result<()> {
+    let existing: Option<(String, String, String)> = transaction.query_row(
+        "SELECT workspace, backend, endpoint FROM genaimage_database_identity WHERE singleton = 1", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    ).optional()?;
+    if existing
+        .as_ref()
+        .is_some_and(|(workspace, backend, endpoint)| {
+            (workspace.as_str(), backend.as_str(), endpoint.as_str())
+                == (
+                    identity.workspace.as_str(),
+                    identity.backend.as_str(),
+                    identity.endpoint.as_str(),
+                )
+        })
+    {
+        return Ok(());
+    }
+    let has_runs: bool =
+        transaction.query_row("SELECT EXISTS(SELECT 1 FROM runs)", [], |row| row.get(0))?;
+    if has_runs {
+        if let Some((workspace, backend, endpoint)) = existing {
+            return Err(HarnessError::Configuration(format!("paths.state_database belongs to workspace '{workspace}', backend '{backend}', endpoint '{endpoint}', not workspace '{}', backend '{}', endpoint '{}'; select the original workspace and endpoint or a separate state database", identity.workspace, identity.backend, identity.endpoint)));
+        }
+        if !identity.claim_legacy {
+            return Err(HarnessError::Configuration(format!("paths.state_database contains legacy runs with unknown workspace and endpoint; verify every record belongs to workspace '{}' and endpoint '{}', then set GENAIMAGE_CLAIM_LEGACY_STATE=1 once; otherwise use a separate database", identity.workspace, identity.endpoint)));
+        }
+    }
+    transaction.execute("INSERT INTO genaimage_database_identity (singleton, workspace, backend, endpoint) VALUES (1, ?1, ?2, ?3) ON CONFLICT(singleton) DO UPDATE SET workspace=excluded.workspace, backend=excluded.backend, endpoint=excluded.endpoint", params![identity.workspace, identity.backend, identity.endpoint])?;
+    Ok(())
+}
+
+fn load_run(connection: &Connection, run_id: &str) -> Result<RunRecord> {
+    connection
+        .query_row("SELECT * FROM runs WHERE id = ?1", [run_id], map_run)
+        .optional()?
+        .ok_or_else(|| HarnessError::RunNotFound {
+            run_id: run_id.to_owned(),
+        })
 }
 
 // Version 1 is the original run schema. Version 2 also repairs databases from

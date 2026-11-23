@@ -66,8 +66,7 @@ pub struct Harness {
 
 impl Harness {
     pub fn new(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
-        let repository = RunRepository::open(&config.state_database)?;
-        repository.bind_identity(
+        let repository = RunRepository::open(&config.state_database)?.with_identity(
             &config.workspace,
             backend.name(),
             backend.base_url(),

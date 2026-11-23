@@ -307,3 +307,49 @@ fn offline_commands_do_not_resolve_comfyui() {
         "{error}"
     );
 }
+
+#[test]
+fn workspace_legacy_config_is_not_ignored_from_another_directory() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("project");
+    fs::create_dir_all(&workspace).unwrap();
+    write(
+        &workspace.join("genaimage.toml"),
+        "active_profile = 'local'\n[profiles.local]\nbase_url = 'http://localhost:9000'\n",
+    );
+    let output = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .arg("--workspace")
+        .arg(&workspace)
+        .args(["--json", "config", "show"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("genaimage.toml") && error.contains("migrate") && error.contains("--config"),
+        "{error}"
+    );
+}
+
+#[test]
+fn offline_commands_can_change_endpoint_before_any_runs() {
+    let temp = TempDir::new().unwrap();
+    for endpoint in ["http://127.0.0.1:8188", "http://127.0.0.1:9999"] {
+        let output = cli()
+            .current_dir(temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("GENAIMAGE_COMFYUI_URL", endpoint)
+            .args(["--json", "workflow", "list"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{endpoint}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

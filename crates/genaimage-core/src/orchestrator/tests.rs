@@ -530,3 +530,42 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     assert!(Path::new(&result.outputs[0].local_path).starts_with(original_dir));
     assert!(Path::new(result.run.manifest_path.as_ref().unwrap()).is_file());
 }
+
+#[tokio::test]
+async fn workspaces_can_use_the_same_explicit_run_version() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let mut harnesses = Vec::new();
+    for name in ["first", "second"] {
+        let workspace = root.path().join(name);
+        fs::create_dir_all(&workspace).unwrap();
+        let config = HarnessConfig::load_with(&workspace, None, root.path(), |key| match key {
+            "HOME" | "XDG_CONFIG_HOME" => Some(root.path().display().to_string()),
+            "XDG_DATA_HOME" => Some(data.display().to_string()),
+            _ => None,
+        })
+        .unwrap();
+        fs::create_dir_all(&config.workflows).unwrap();
+        fs::write(
+            config.workflows.join("workflow.api.json"),
+            include_str!("../../tests/fixtures/contract-workflow.api.json"),
+        )
+        .unwrap();
+        fs::write(
+            config.workflows.join("contract.genaimage.json"),
+            include_str!("../../tests/fixtures/contract-workflow.genaimage.json"),
+        )
+        .unwrap();
+        harnesses.push(Harness::new(config, Arc::new(FakeImageBackend::default())).unwrap());
+    }
+    let request = RunRequest {
+        workflow: "contract-workflow".into(),
+        preset: Some("fast".into()),
+        parameters: BTreeMap::new(),
+        version: Some("v1".into()),
+    };
+    let first = harnesses[0].submit(request.clone()).await.unwrap();
+    let second = harnesses[1].submit(request).await.unwrap();
+    assert_ne!(first.output_dir, second.output_dir);
+    assert!(Path::new(&first.output_dir).is_dir() && Path::new(&second.output_dir).is_dir());
+}

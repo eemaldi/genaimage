@@ -15,7 +15,8 @@ allowed_hosts = []
 
 [paths]
 # Omitted data paths default under $XDG_DATA_HOME/genaimage (or ~/.local/share/genaimage).
-# State is scoped to the canonical workspace and bound to the backend endpoint.
+# State and runs are scoped to the canonical workspace. Databases with runs
+# are bound to their workspace and backend endpoint.
 # state_database = "/absolute/path/state.sqlite3"
 # runs = "/absolute/path/runs"
 # uploads = "/absolute/path/uploads"

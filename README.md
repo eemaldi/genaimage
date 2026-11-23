@@ -92,7 +92,7 @@ When `XDG_DATA_HOME` is unset, it defaults to `~/.local/share`. See the
 
 - `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3` contains rebuildable operational state: run status,
   ComfyUI IDs, events, cancellation, and outputs.
-- `$XDG_DATA_HOME/genaimage/runs/` contains resolved workflows, preflight records, checksummed outputs,
+- `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/runs/` contains resolved workflows, preflight records, checksummed outputs,
   and `run-manifest.json`.
 
 An ambiguous prompt submission is never automatically replayed. Reconcile the

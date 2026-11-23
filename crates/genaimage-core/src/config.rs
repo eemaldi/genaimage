@@ -166,7 +166,47 @@ impl HarnessConfig {
                 .join(PROJECT_CONFIG);
             path.exists().then_some(path)
         };
+        let workspace_config = workspace.join(PROJECT_CONFIG);
+        if workspace_config.is_file() {
+            let selected = chosen.as_ref().and_then(|path| {
+                let absolute = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    cwd.join(path)
+                };
+                absolute.canonicalize().ok()
+            });
+            let canonical_workspace_config = workspace_config.canonicalize().map_err(|error| {
+                invalid(
+                    "workspace config",
+                    &workspace_config.display().to_string(),
+                    &format!(
+                        "make the file accessible or move it aside after reviewing it ({error})"
+                    ),
+                )
+            })?;
+            if selected.as_deref() != Some(canonical_workspace_config.as_path()) {
+                let source = fs::read_to_string(&workspace_config).map_err(|error| {
+                    invalid(
+                        "workspace config",
+                        &workspace_config.display().to_string(),
+                        &format!(
+                            "make the file readable or move it aside after reviewing it ({error})"
+                        ),
+                    )
+                })?;
+                let value: toml::Value = toml::from_str(&source).map_err(|error| invalid("workspace config", &workspace_config.display().to_string(), &format!("repair or move aside the unselected file before proceeding ({error}); see docs/setup.md")))?;
+                if value.get("active_profile").is_some() || value.get("profiles").is_some() {
+                    return Err(invalid("workspace config", &workspace_config.display().to_string(), "legacy active_profile/profiles are not selected; migrate this file to [comfyui] and select it with --config, or move it aside only after preserving its settings and data; see docs/setup.md"));
+                }
+            }
+        }
         let mut config: Self = if let Some(path) = chosen {
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
             let source = fs::read_to_string(&path).map_err(|e| {
                 invalid(
                     "config",
@@ -295,21 +335,20 @@ impl HarnessConfig {
             }
         };
         let workspace_id = hex::encode(Sha256::digest(workspace.as_os_str().as_encoded_bytes()));
+        let workspace_data = data.join("workspaces").join(workspace_id);
         Ok(ResolvedConfig {
             claim_legacy_state,
             state_database: resolve(
                 "paths.state_database",
                 config.paths.state_database,
-                data.join("workspaces")
-                    .join(workspace_id)
-                    .join("state.sqlite3"),
+                workspace_data.join("state.sqlite3"),
             )?,
             workflows: resolve(
                 "paths.workflows",
                 config.paths.workflows,
                 PathBuf::from("workflows/comfyui"),
             )?,
-            runs: resolve("paths.runs", config.paths.runs, data.join("runs"))?,
+            runs: resolve("paths.runs", config.paths.runs, workspace_data.join("runs"))?,
             uploads: resolve("paths.uploads", config.paths.uploads, data.join("uploads"))?,
             workspace,
             server: config.server,
@@ -501,6 +540,53 @@ mod tests {
     }
 
     #[test]
+    fn unselected_legacy_workspace_config_requires_migration() {
+        let parent = TempDir::new().unwrap();
+        let workspace = parent.path().join("project");
+        fs::create_dir_all(&workspace).unwrap();
+        let workspace_config = workspace.join(PROJECT_CONFIG);
+        fs::write(
+            &workspace_config,
+            "active_profile = 'old'\n[profiles.old]\nbase_url = 'http://localhost:9000'\n",
+        )
+        .unwrap();
+        let mut env: HashMap<_, _> = values(&parent).into_iter().collect();
+        let load = |env: &HashMap<&str, String>, explicit: Option<&Path>| {
+            HarnessConfig::load_with(&workspace, explicit, parent.path(), |key| {
+                env.get(key).cloned()
+            })
+        };
+        let error = load(&env, None).unwrap_err().to_string();
+        assert!(
+            error.contains("project/genaimage.toml")
+                && error.contains("migrate")
+                && error.contains("--config"),
+            "{error}"
+        );
+        let selected = parent.path().join("other.toml");
+        fs::write(&selected, "[server]\nport = 4444\n").unwrap();
+        env.insert("GENAIMAGE_CONFIG", selected.display().to_string());
+        assert!(load(&env, None).unwrap_err().to_string().contains("legacy"));
+        assert!(load(&env, Some(&workspace_config))
+            .unwrap_err()
+            .to_string()
+            .contains("active_profile"));
+        fs::write(
+            &workspace_config,
+            "[comfyui]\nbase_url = 'http://localhost:9000'\n",
+        )
+        .unwrap();
+        assert_eq!(load(&env, None).unwrap().server.port, 4444);
+        assert_eq!(
+            load(&env, Some(Path::new("project/genaimage.toml")))
+                .unwrap()
+                .comfyui
+                .base_url,
+            "http://localhost:9000"
+        );
+    }
+
+    #[test]
     fn defaults_and_every_environment_override() {
         let temp = TempDir::new().unwrap();
         let mut vars = values(&temp);
@@ -518,7 +604,10 @@ mod tests {
                 )))
                 .join("state.sqlite3")
         );
-        assert_eq!(defaults.runs, temp.path().join("data/genaimage/runs"));
+        assert_eq!(
+            defaults.runs,
+            defaults.state_database.parent().unwrap().join("runs")
+        );
         assert_eq!(defaults.uploads, temp.path().join("data/genaimage/uploads"));
         assert_eq!(defaults.workflows, temp.path().join("workflows/comfyui"));
         fs::write(
@@ -590,7 +679,8 @@ mod tests {
         assert!(a
             .state_database
             .starts_with(parent.path().join("data/genaimage/workspaces")));
-        assert_eq!(a.runs, b.runs);
+        assert_ne!(a.runs, b.runs);
+        assert_eq!(a.runs, a.state_database.parent().unwrap().join("runs"));
     }
 
     #[test]
@@ -598,7 +688,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let home = temp.path().display().to_string();
         let config = load(&temp, None, &[("HOME", home.clone())]).unwrap();
-        assert_eq!(config.runs, temp.path().join(".local/share/genaimage/runs"));
+        assert!(config
+            .runs
+            .starts_with(temp.path().join(".local/share/genaimage/workspaces")));
+        assert_eq!(
+            config.runs,
+            config.state_database.parent().unwrap().join("runs")
+        );
         let error = load(
             &temp,
             None,

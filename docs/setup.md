@@ -23,7 +23,9 @@ this order:
 An explicitly selected file must exist. `--workspace` selects the workspace,
 not the configuration search directory. Relative data and workflow paths are
 resolved against the workspace; relative configuration paths use the current
-directory. `genaimage config show` displays the resolved configuration.
+directory. `genaimage config show` displays the resolved configuration. An unselected
+legacy `genaimage.toml` in the workspace is not silently ignored: migrate it
+or deliberately move it aside after preserving its settings and data.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
 see `genaimage.example.toml`. The server and LLM are planned components, so
@@ -31,13 +33,14 @@ their validated settings do not start either service. Set `llm.model` explicitly
 when an LLM integration becomes available: no model is selected automatically.
 The server bind host is restricted to loopback regardless of outbound settings.
 
-State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`, runs to
-`$XDG_DATA_HOME/genaimage/runs`, and uploads to
+State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`,
+runs to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/runs`, and uploads to
 `$XDG_DATA_HOME/genaimage/uploads`. If unset, `XDG_DATA_HOME` defaults to
 `~/.local/share`. Workflows remain under `workflows/comfyui` in the workspace.
-Each canonical workspace gets its own database. A database is bound atomically to
-its workspace and backend endpoint, including when a custom path is used.
-Changing either requires its original settings or a separate database.
+Each canonical workspace gets its own database and runs directory. An empty
+database may be rebound; once it contains runs, it is bound atomically to its
+workspace and backend endpoint, including when a custom path is used. Changing
+either then requires its original settings or a separate database.
 Uploads is reserved for future use; the current adapter uploads explicit input
 files directly. XDG directories must be absolute.
 
