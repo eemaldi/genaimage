@@ -29,15 +29,15 @@ Current dependencies (arrows point to dependencies):
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
-  binding, SQLite run state, and provenance. It has no HTTP or WebSocket
-  client dependencies.
-- `genaimage-comfyui` implements the ComfyUI HTTP and WebSocket transport. For
-  now, the existing run orchestration lives alongside its concrete client so
-  submission, cancellation and reconciliation can stay intact. Core still
-  writes the run artefacts; the adapter passes it an output download function.
-  The shared extension traits are deferred to [#19](https://github.com/eemaldi/genaimage/issues/19).
-- `genaimage` provides the existing scripted CLI. It calls the core and the
-  adapter directly until the local API is available.
+  binding, run orchestration, SQLite run state and provenance. Core decides
+  when to submit, reconcile, cancel and finalise runs. It calls a narrow
+  transport port, to be formalised as `ImageBackend` in
+  [#19](https://github.com/eemaldi/genaimage/issues/19), and has no HTTP or
+  WebSocket client dependencies.
+- `genaimage-comfyui` implements that port over HTTP and WebSocket, mapping
+  ComfyUI responses and progress events into core-owned types.
+- `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
+  adapter to the core harness until the local API is available.
 - `genaimage-api` is reserved for shared API types and the client.
 - `genaimage-server` is reserved for the Axum server. It will serve the API and
   the embedded Svelte portal on loopback only; neither is implemented yet.

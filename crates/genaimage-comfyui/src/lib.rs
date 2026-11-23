@@ -1,6 +1,5 @@
-//! ComfyUI transport and the harness that drives it.
+//! HTTP and WebSocket transport for ComfyUI.
 
 pub mod comfyui;
-pub mod orchestrator;
 
-pub use orchestrator::{Harness, RunProgress, RunRequest};
+pub use comfyui::ComfyUiClient;

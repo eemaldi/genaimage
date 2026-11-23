@@ -476,7 +476,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
- "uuid",
 ]
 
 [[package]]
@@ -491,8 +490,10 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "tokio",
  "toml",
  "url",
+ "uuid",
 ]
 
 [[package]]

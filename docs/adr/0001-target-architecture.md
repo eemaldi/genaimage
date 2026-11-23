@@ -3,6 +3,11 @@
 - **Status:** Accepted
 - **Scope:** GenAImage's target architecture; implementation is incremental.
 
+> Implementation note ([#18](https://github.com/eemaldi/genaimage/issues/18)):
+> [The workspace split](../architecture.md#workspace-crates) puts HTTP and
+> WebSocket transport in `genaimage-comfyui` and keeps run lifecycle policy
+> in `genaimage-core`.
+
 ## Context
 
 GenAImage is a thin, fast, local glue layer and harness. ComfyUI generates

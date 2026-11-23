@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -12,15 +12,14 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use genaimage_core::{
+use crate::{
     artifacts::{self, InputFileRecord},
     config::ResolvedConfig,
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
+    transport::{ComfyUiEvent, ComfyUiHealth, ComfyUiTransport},
     workflow::{LoadedWorkflow, WorkflowManifest},
     HarnessConfig, HarnessError, Result,
 };
-
-use crate::comfyui::{ComfyUiClient, ComfyUiEvent, ComfyUiHealth};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunRequest {
@@ -58,17 +57,20 @@ pub struct WorkflowDiagnostic {
 }
 
 #[derive(Clone)]
-pub struct Harness {
+pub struct Harness<T> {
     config: ResolvedConfig,
     repository: RunRepository,
-    client: ComfyUiClient,
+    client: T,
 }
 
-impl Harness {
-    pub fn open(workspace: &Path) -> Result<Self> {
+impl<T: ComfyUiTransport> Harness<T> {
+    pub fn open(
+        workspace: &Path,
+        connect: impl FnOnce(&crate::config::ComfyUiProfile) -> Result<T>,
+    ) -> Result<Self> {
         let config = HarnessConfig::load(workspace)?;
         let repository = RunRepository::open(&config.state_database)?;
-        let client = ComfyUiClient::new(&config.comfyui)?;
+        let client = connect(&config.comfyui)?;
         Ok(Self {
             config,
             repository,
@@ -171,10 +173,54 @@ impl Harness {
         }
     }
 
+    async fn validate_workflow_nodes(&self, workflow: &Value) -> Result<()> {
+        let nodes = workflow.as_object().ok_or_else(|| {
+            HarnessError::Workflow("API workflow root must be an object".to_owned())
+        })?;
+        let class_types: BTreeSet<String> = nodes
+            .values()
+            .filter_map(|node| node.get("class_type").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+        let missing_class_types: Vec<&str> = nodes
+            .iter()
+            .filter_map(|(node_id, node)| {
+                node.get("class_type")
+                    .and_then(Value::as_str)
+                    .is_none()
+                    .then_some(node_id.as_str())
+            })
+            .collect();
+        if !missing_class_types.is_empty() {
+            return Err(HarnessError::Workflow(format!(
+                "nodes {} are missing class_type",
+                missing_class_types.join(", ")
+            )));
+        }
+        let available = self.client.object_info().await?;
+        let available = available.as_object().ok_or_else(|| {
+            HarnessError::ComfyUi(
+                "ComfyUI /object_info did not return an object; cannot validate nodes".to_owned(),
+            )
+        })?;
+        let unavailable: Vec<&str> = class_types
+            .iter()
+            .filter(|class_type| !available.contains_key(class_type.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !unavailable.is_empty() {
+            return Err(HarnessError::Workflow(format!(
+                "ComfyUI does not provide required node types: {}",
+                unavailable.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
         let loaded = self.load_workflow(&request.workflow)?;
         let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;
-        self.client.validate_workflow_nodes(&bound.workflow).await?;
+        self.validate_workflow_nodes(&bound.workflow).await?;
         let mut source_inputs = Vec::new();
         let mut uploaded_names = BTreeMap::new();
         for (parameter, relative_path) in &bound.image_uploads {
@@ -360,13 +406,12 @@ impl Harness {
                 let source_inputs = read_source_inputs(&PathBuf::from(&run.output_dir))?;
                 let workflow_manifest_path = read_manifest_path(&PathBuf::from(&run.output_dir))?;
                 let manifest_path = artifacts::materialise_history(
-                    self.client.base_url().as_str(),
+                    &self.client,
                     &self.repository,
                     &run,
                     &workflow_manifest_path,
                     source_inputs,
                     &history,
-                    |output| self.client.download_output(output),
                 )
                 .await?;
                 run = self.repository.update_status(

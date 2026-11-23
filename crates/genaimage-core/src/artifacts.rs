@@ -1,6 +1,5 @@
 use std::{
     fs,
-    future::Future,
     path::{Path, PathBuf},
 };
 
@@ -11,29 +10,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     persistence::{OutputRecord, RunRecord, RunRepository},
+    transport::{ComfyUiTransport, HistorySnapshot},
     workflow::BoundWorkflow,
     HarnessError, Result,
 };
 
 const RUN_MANIFEST_VERSION: u32 = 1;
-
-#[derive(Clone, Debug, Serialize)]
-pub struct OutputReference {
-    pub node_id: String,
-    pub kind: String,
-    pub filename: String,
-    pub subfolder: String,
-    pub output_type: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct HistorySnapshot {
-    pub prompt_id: String,
-    pub complete: bool,
-    pub success: bool,
-    pub outputs: Vec<OutputReference>,
-    pub raw: Value,
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InputFileRecord {
@@ -99,18 +81,14 @@ pub async fn initialise_run_files(
     )
 }
 
-pub async fn materialise_history<'a, F>(
-    comfyui_base_url: &str,
+pub(crate) async fn materialise_history(
+    client: &impl ComfyUiTransport,
     repository: &RunRepository,
     run: &RunRecord,
     workflow_manifest_path: &Path,
     source_inputs: Vec<InputFileRecord>,
-    history: &'a HistorySnapshot,
-    mut download_output: impl FnMut(&'a OutputReference) -> F,
-) -> Result<PathBuf>
-where
-    F: Future<Output = Result<Vec<u8>>>,
-{
+    history: &HistorySnapshot,
+) -> Result<PathBuf> {
     let output_dir = PathBuf::from(&run.output_dir);
     fs::create_dir_all(output_dir.join("outputs"))?;
     let manifest_path = output_dir.join("run-manifest.json");
@@ -119,7 +97,7 @@ where
     }
     let mut output_records = Vec::new();
     for (index, output) in history.outputs.iter().enumerate() {
-        let bytes = download_output(output).await?;
+        let bytes = client.download_output(output).await?;
         let file_name = output_file_name(index, output.kind.as_str(), output.filename.as_str());
         let target = output_dir.join("outputs").join(file_name);
         if target.exists() {
@@ -165,7 +143,7 @@ where
         preset: read_preflight_field(&output_dir, "preset")?
             .and_then(|value| value.as_str().map(str::to_owned)),
         parameters: run.parameters.clone(),
-        comfyui_base_url: comfyui_base_url.to_owned(),
+        comfyui_base_url: client.base_url().to_owned(),
         source_inputs,
         outputs: output_records,
         created_at: run.created_at,

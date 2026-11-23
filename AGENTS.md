@@ -8,11 +8,11 @@ ComfyUI image generation, assisted by local LLMs. Read
 ## Architecture
 
 - `crates/genaimage-core` owns configuration, workflow manifests and explicit
-  binding, persistence and provenance. The assistant tool runtime and provider
-  abstractions are planned in the core; do not duplicate orchestration in
-  operator surfaces.
-- `crates/genaimage-comfyui` owns ComfyUI transport and hosts the existing run
-  orchestration that needs the concrete client until extension points land.
+  binding, run orchestration, persistence and provenance. The assistant tool
+  runtime and provider abstractions are planned in the core; do not duplicate
+  orchestration in operator surfaces.
+- `crates/genaimage-comfyui` implements the core transport port using ComfyUI
+  HTTP and WebSocket connections.
 - `crates/genaimage` is the scripted interface. Today it calls the adapter and
   the core directly; the target is a thin client of the same local API as the
   portal. `crates/genaimage-api` and `crates/genaimage-server` are placeholders.
