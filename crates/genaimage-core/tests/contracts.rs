@@ -565,7 +565,7 @@ fn loaded_json(path: &Path) -> Value {
 }
 
 #[test]
-fn dot_segment_ids_are_rejected_by_schema_and_loader() {
+fn dot_segment_ids_remain_valid_for_schema_and_loader() {
     let schema: Value = serde_json::from_str(include_str!(
         "../../../docs/schemas/workflow-manifest.v2.json"
     ))
@@ -575,12 +575,9 @@ fn dot_segment_ids_are_rejected_by_schema_and_loader() {
     for id in [".", ".."] {
         let mut manifest = valid_manifest("workflow.api.json");
         manifest["id"] = json!(id);
-        assert!(!validator.is_valid(&manifest));
+        assert!(validator.is_valid(&manifest));
         let path = create_workflow(&temp, manifest, valid_workflow());
-        assert!(LoadedWorkflow::load(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("workflow id cannot"));
+        assert_eq!(LoadedWorkflow::load(&path).unwrap().manifest.id, id);
     }
     let mut manifest = valid_manifest("workflow.api.json");
     manifest["id"] = json!("...");

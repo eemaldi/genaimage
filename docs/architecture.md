@@ -148,7 +148,10 @@ The workflows API is read-only apart from validation, which does not submit a ru
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
   tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
-  manifests that cannot be loaded.
+  manifests that cannot be loaded. For IDs `.` and `..`, `thumbnail_url` is
+  null because browsers normalise those URL path segments. The API does not
+  generate a detail URL for any ID; callers using dot-segment IDs need an HTTP
+  client that preserves the literal request path.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
   constraints and UI hints, presets and outputs. IDs are identifiers, not paths;
   URL-encode them as path segments. An unknown ID returns 404 problem details.
@@ -164,12 +167,13 @@ The workflows API is read-only apart from validation, which does not submit a ru
   neither uploads images nor submits generation.
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
-  Missing, unsupported, oversized, absolute, traversal or symlink paths return
-  404 problem details. On Unix, descriptor-relative no-follow opens keep each
-  component inside the opened manifest directory and non-regular files are
-  rejected without blocking on FIFOs. On other platforms thumbnails are
-  unavailable until equivalent safe access is implemented. The catalogue URL
-  indicates a declaration, not a guarantee that the image can be read.
+  Missing, unsupported, oversized, absolute, traversal or escaping symlink
+  paths return 404 problem details. On Unix, descriptor-relative no-follow
+  opens reject symlinks and keep each component inside the configured workflow
+  root; non-regular files are rejected without blocking on FIFOs. On other
+  platforms containment is checked before and after opening on a best-effort
+  basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
+  a declaration, not a guarantee that the image can be read.
 
 Runs, outputs, uploads, settings and OpenAPI endpoints are planned, as is the
 browser portal.

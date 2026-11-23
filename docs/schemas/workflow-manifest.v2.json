@@ -15,10 +15,7 @@
     },
     "id": {
       "type": "string",
-      "pattern": "\\S",
-      "not": {
-        "enum": [".", ".."]
-      }
+      "pattern": "\\S"
     },
     "version": {
       "type": "string",

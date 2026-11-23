@@ -1,10 +1,7 @@
-use std::time::Duration;
-
-#[cfg(unix)]
 use std::{
     io::Read,
-    os::unix::fs::MetadataExt,
     path::{Component, Path},
+    time::Duration,
 };
 
 use axum::{
@@ -25,7 +22,6 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use crate::{AppState, Problem};
 
 const NODE_CHECK_DEADLINE: Duration = Duration::from_secs(2);
-#[cfg(unix)]
 const MAX_THUMBNAIL_BYTES: u64 = 10 * 1024 * 1024;
 
 pub(super) fn routes() -> Router<AppState> {
@@ -73,12 +69,16 @@ async fn list(State(state): State<AppState>) -> Result<Json<WorkflowListResponse
             .manifests
             .into_iter()
             .map(|manifest| {
-                let thumbnail_url = manifest.thumbnail.as_ref().map(|_| {
-                    format!(
-                        "/api/v1/workflows/{}/thumbnail",
-                        utf8_percent_encode(&manifest.id, NON_ALPHANUMERIC)
-                    )
-                });
+                let thumbnail_url = manifest
+                    .thumbnail
+                    .as_ref()
+                    .filter(|_| !matches!(manifest.id.as_str(), "." | ".."))
+                    .map(|_| {
+                        format!(
+                            "/api/v1/workflows/{}/thumbnail",
+                            utf8_percent_encode(&manifest.id, NON_ALPHANUMERIC)
+                        )
+                    });
                 WorkflowSummary {
                     id: manifest.id,
                     name: manifest.title,
@@ -178,7 +178,8 @@ async fn thumbnail(
     AxumPath(id): AxumPath<String>,
 ) -> Result<impl IntoResponse, Problem> {
     let workflow = load(&state, id.clone()).await?;
-    let image = tokio::task::spawn_blocking(move || read_thumbnail(&workflow))
+    let root = state.harness.config().workflows.clone();
+    let image = tokio::task::spawn_blocking(move || read_thumbnail(&workflow, &root))
         .await
         .map_err(internal_error)?;
     let (content_type, bytes) = image.ok_or_else(|| {
@@ -191,8 +192,7 @@ async fn thumbnail(
     Ok(([(header::CONTENT_TYPE, content_type)], bytes))
 }
 
-#[cfg(unix)]
-fn read_thumbnail(workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> {
+fn read_thumbnail(workflow: &LoadedWorkflow, root: &Path) -> Option<(&'static str, Vec<u8>)> {
     let relative = Path::new(workflow.manifest.thumbnail.as_deref()?);
     if relative.as_os_str().is_empty()
         || !relative
@@ -210,14 +210,16 @@ fn read_thumbnail(workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> 
         "image/avif" => "image/avif",
         _ => return None,
     };
-    let directory = workflow.manifest_path.parent()?.canonicalize().ok()?;
-    let expected = std::fs::metadata(&directory).ok()?;
-    let directory = open_directory(&directory)?;
-    let actual = directory.metadata().ok()?;
-    if expected.dev() != actual.dev() || expected.ino() != actual.ino() {
-        return None;
-    }
-    let file = open_beneath(directory, relative)?;
+    let manifest_dir = workflow.manifest_path.parent()?;
+    #[cfg(unix)]
+    let file = {
+        let relative_dir = manifest_dir.strip_prefix(root).ok()?;
+        let directory = open_directory(root)?;
+        let directory = open_beneath(directory, relative_dir, true)?;
+        open_beneath(directory, relative, false)?
+    };
+    #[cfg(not(unix))]
+    let file = open_fallback(root, manifest_dir, relative)?;
     if !file.metadata().ok()?.is_file() {
         return None;
     }
@@ -253,7 +255,11 @@ fn open_directory(path: &Path) -> Option<std::fs::File> {
 }
 
 #[cfg(unix)]
-fn open_beneath(mut directory: std::fs::File, relative: &Path) -> Option<std::fs::File> {
+fn open_beneath(
+    mut directory: std::fs::File,
+    relative: &Path,
+    final_directory: bool,
+) -> Option<std::fs::File> {
     use rustix::fs::{openat, Mode, OFlags};
     let mut components = relative.components().peekable();
     while let Some(component) = components.next() {
@@ -264,7 +270,7 @@ fn open_beneath(mut directory: std::fs::File, relative: &Path) -> Option<std::fs
             return None;
         };
         let mut flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
-        if components.peek().is_some() {
+        if components.peek().is_some() || final_directory {
             flags |= OFlags::DIRECTORY;
         }
         directory = openat(&directory, name, flags, Mode::empty()).ok()?.into();
@@ -272,16 +278,33 @@ fn open_beneath(mut directory: std::fs::File, relative: &Path) -> Option<std::fs
     Some(directory)
 }
 
-// Without descriptor-relative, no-follow opens, refusing the image is safer
-// than checking a path and then opening a potentially different file.
-#[cfg(not(unix))]
-fn read_thumbnail(_workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> {
-    None
+// Other platforms lack the Unix descriptor-relative containment guarantee.
+#[cfg(any(not(unix), test))]
+fn open_fallback(root: &Path, manifest_dir: &Path, relative: &Path) -> Option<std::fs::File> {
+    let root_path = root.canonicalize().ok()?;
+    let directory = manifest_dir.canonicalize().ok()?;
+    if !directory.starts_with(&root_path) {
+        return None;
+    }
+    let candidate = manifest_dir.join(relative);
+    let target = candidate.canonicalize().ok()?;
+    if !target.starts_with(&directory) || !std::fs::metadata(&target).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(&target).ok()?;
+    if !file.metadata().ok()?.is_file()
+        || root.canonicalize().ok()? != root_path
+        || manifest_dir.canonicalize().ok()? != directory
+        || candidate.canonicalize().ok()? != target
+    {
+        return None;
+    }
+    Some(file)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{open_beneath, open_directory};
+    use super::{open_beneath, open_directory, read_thumbnail};
     use std::{io::Read, path::Path};
 
     #[test]
@@ -297,7 +320,7 @@ mod tests {
         let directory = open_directory(&root).unwrap();
         std::fs::rename(&root, &original).unwrap();
         std::os::unix::fs::symlink(&outside, &root).unwrap();
-        let mut image = open_beneath(directory, Path::new("image.png")).unwrap();
+        let mut image = open_beneath(directory, Path::new("image.png"), false).unwrap();
         let mut contents = Vec::new();
         image.read_to_end(&mut contents).unwrap();
         assert_eq!(contents, b"inside");
@@ -316,13 +339,63 @@ mod tests {
         assert!(image.canonicalize().unwrap().starts_with(&root));
         std::fs::remove_file(&image).unwrap();
         std::os::unix::fs::symlink(outside.join("image.png"), &image).unwrap();
-        assert!(open_beneath(directory, Path::new("image.png")).is_none());
+        assert!(open_beneath(directory, Path::new("image.png"), false).is_none());
 
         let subdirectory = root.join("subdirectory");
         std::fs::create_dir(&subdirectory).unwrap();
         let directory = open_directory(&root).unwrap();
         std::fs::remove_dir(&subdirectory).unwrap();
         std::os::unix::fs::symlink(&outside, &subdirectory).unwrap();
-        assert!(open_beneath(directory, Path::new("subdirectory/image.png")).is_none());
+        assert!(open_beneath(directory, Path::new("subdirectory/image.png"), false).is_none());
+    }
+    #[test]
+    fn rejects_manifest_directory_swapped_after_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflows");
+        let workflow = root.join("workflow");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&workflow).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(
+            workflow.join("api.json"),
+            br#"{ "1": {"class_type":"SaveImage", "inputs":{}} }"#,
+        )
+        .unwrap();
+        std::fs::write(workflow.join("workflow.genaimage.json"), br#"{ "schema_version":2, "id":"test", "version":"1", "workflow":"api.json", "thumbnail":"image.png" }"#).unwrap();
+        std::fs::write(outside.join("image.png"), b"outside").unwrap();
+        let loaded =
+            genaimage_core::LoadedWorkflow::load(&workflow.join("workflow.genaimage.json"))
+                .unwrap();
+        std::fs::rename(&workflow, root.join("moved")).unwrap();
+        std::os::unix::fs::symlink(&outside, &workflow).unwrap();
+        assert!(read_thumbnail(&loaded, &root).is_none());
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::open_fallback;
+    use std::{io::Read, path::Path};
+
+    #[test]
+    fn portable_fallback_accepts_regular_files_and_rejects_escaping_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflows");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(root.join("image.png"), b"inside").unwrap();
+        std::fs::write(outside.join("image.png"), b"outside").unwrap();
+        let mut file = open_fallback(&root, &root, Path::new("image.png")).unwrap();
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"inside");
+        assert!(open_fallback(&root, &outside, Path::new("image.png")).is_none());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join("image.png"), root.join("link.png")).unwrap();
+            assert!(open_fallback(&root, &root, Path::new("link.png")).is_none());
+        }
+        assert!(open_fallback(&root, &root, Path::new("missing.png")).is_none());
     }
 }

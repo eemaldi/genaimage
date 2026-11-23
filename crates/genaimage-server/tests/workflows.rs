@@ -309,13 +309,8 @@ async fn catalogue_thumbnail_url_encodes_workflow_ids_as_one_path_segment() {
     let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let url = list.workflows[0].thumbnail_url.as_deref().unwrap();
     let response = api.request(Method::GET, url).send().await.unwrap();
-    #[cfg(unix)]
-    {
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
-    }
-    #[cfg(not(unix))]
-    ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
     let details: WorkflowDetails = api.get_json(url.strip_suffix("/thumbnail").unwrap()).await;
     assert_eq!(details.id, "workflow / one");
     api.shutdown().await;
@@ -362,18 +357,48 @@ async fn thumbnail_fifos_and_symlinked_directories_are_rejected_promptly() {
 }
 
 #[tokio::test]
-async fn dot_segment_ids_are_discovery_diagnostics() {
+async fn dot_segment_ids_remain_accessible_without_catalogue_urls() {
+    use axum::{body::Body, http::Request};
+    use genaimage_server::{build_app, AppState};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
     let api = ApiHarness::start().await;
     for id in [".", ".."] {
-        install(&api, None);
+        install(&api, Some("image.png"));
         let path = api.core.config().workflows.join("contract.genaimage.json");
         let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         manifest["id"] = json!(id);
         std::fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(api.core.config().workflows.join("image.png"), b"image").unwrap();
         let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
-        assert!(list.workflows.is_empty());
-        assert_eq!(list.diagnostics.len(), 1);
-        assert!(list.diagnostics[0].error.contains("workflow id cannot"));
+        assert_eq!(list.workflows.len(), 1);
+        assert_eq!(list.workflows[0].id, id);
+        assert!(list.workflows[0].thumbnail_url.is_none());
+        assert!(list.diagnostics.is_empty());
+        let port = api.origin.rsplit(':').next().unwrap().parse().unwrap();
+        let app = build_app(AppState::new(api.core.clone()), port);
+        for suffix in ["", "/thumbnail"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/workflows/{id}{suffix}"))
+                        .header("host", api.origin.trim_start_matches("http://"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            if suffix.is_empty() {
+                let details: WorkflowDetails = serde_json::from_slice(&body).unwrap();
+                assert_eq!(details.id, id);
+            } else {
+                assert_eq!(body, &b"image"[..]);
+            }
+        }
     }
     api.shutdown().await;
 }
