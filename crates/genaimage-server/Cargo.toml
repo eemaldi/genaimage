@@ -34,3 +34,6 @@ genaimage-test-support = { path = "../genaimage-test-support" }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1", features = ["process"] }

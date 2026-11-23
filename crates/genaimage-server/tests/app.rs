@@ -778,3 +778,50 @@ async fn settings_probe_llm_uses_models_route_without_persisting_or_following_re
     api.shutdown().await;
     server.abort();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn settings_reject_unwritable_database_targets_without_saving() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let api = ApiHarness::start().await;
+    let root = api.workspace();
+    let config = root.join("genaimage.toml");
+    let original = fs::read(&config).unwrap();
+    let directory = root.join("locked");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("state.sqlite3"), []).unwrap();
+    fs::write(root.join("readonly.sqlite3"), []).unwrap();
+    fs::set_permissions(
+        root.join("readonly.sqlite3"),
+        fs::Permissions::from_mode(0o444),
+    )
+    .unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).unwrap();
+    let mut responses = Vec::new();
+    for target in [
+        "readonly.sqlite3",
+        "locked/state.sqlite3",
+        "locked/missing/state.sqlite3",
+    ] {
+        responses.push(
+            api.request(Method::PUT, SETTINGS)
+                .json(&json!({"paths.state_database": target}))
+                .send()
+                .await,
+        );
+    }
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+    for response in responses {
+        let problem =
+            ApiHarness::assert_problem(response.unwrap(), StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert_eq!(problem.errors[0].key, "paths.state_database");
+        assert!(problem.errors[0].reason.contains("writable"));
+    }
+    assert_eq!(fs::read(config).unwrap(), original);
+    assert!(!directory.join("missing").exists());
+    api.shutdown().await;
+}

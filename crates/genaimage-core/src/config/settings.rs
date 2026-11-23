@@ -291,13 +291,18 @@ impl SettingsUpdate {
         }
         let ancestors: Vec<_> = target.ancestors().collect();
         let mut exists = false;
+        let mut nearest_directory = None;
         for path in ancestors.into_iter().rev() {
             let database = path == target;
             match fs::metadata(path) {
                 Ok(metadata)
                     if (database && metadata.is_file()) || (!database && metadata.is_dir()) =>
                 {
-                    exists |= database;
+                    if database {
+                        exists = true;
+                    } else {
+                        nearest_directory = Some(path);
+                    }
                 }
                 // A missing component is fine; a dangling link is not.
                 Err(error)
@@ -316,6 +321,26 @@ impl SettingsUpdate {
                 }
             }
         }
+        let directory =
+            nearest_directory.ok_or_else(|| error("choose a path under an existing directory"))?;
+        if exists {
+            check_write_access(target, false)
+                .map_err(|_| error("choose a writable database file"))?;
+            // SQLite may put WAL sidecars next to the resolved target of a symlink.
+            let resolved = target.canonicalize().map_err(|_| error(file_reason))?;
+            if let Some(parent) = resolved.parent().filter(|parent| *parent != directory) {
+                check_write_access(parent, true).map_err(|_| {
+                    error("choose a writable database directory for SQLite sidecar files")
+                })?;
+            }
+        }
+        check_write_access(directory, true).map_err(|_| {
+            error(if exists {
+                "choose a writable database directory for SQLite sidecar files"
+            } else {
+                "choose a new database path under a writable directory"
+            })
+        })?;
         Ok(exists)
     }
 
@@ -381,6 +406,44 @@ impl SettingsUpdate {
         metadata.record_keys(&doc);
         Ok(self.config)
     }
+}
+
+#[cfg(unix)]
+fn check_write_access(path: &Path, directory: bool) -> io::Result<()> {
+    use rustix::fs::{accessat, Access, AtFlags, CWD};
+
+    let access = if directory {
+        Access::WRITE_OK | Access::EXEC_OK
+    } else {
+        Access::WRITE_OK
+    };
+    accessat(CWD, path, access, AtFlags::EACCESS).map_err(io::Error::from)
+}
+
+#[cfg(windows)]
+fn check_write_access(path: &Path, directory: bool) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let mut options = fs::OpenOptions::new();
+    if directory {
+        const FILE_ADD_FILE: u32 = 0x0002;
+        const FILE_ADD_SUBDIRECTORY: u32 = 0x0004;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options
+            .access_mode(FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    } else {
+        options.write(true);
+    }
+    options.open(path).map(drop)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn check_write_access(path: &Path, _directory: bool) -> io::Result<()> {
+    if fs::metadata(path)?.permissions().readonly() {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(())
 }
 
 fn atomic_write(

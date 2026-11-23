@@ -692,6 +692,7 @@ dependencies = [
  "hex",
  "jsonschema",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

@@ -119,8 +119,9 @@ switching endpoints, finish or reconcile outstanding runs and set a separate
 workspace or endpoint (even if empty) returns 409. Choose a new path or a
 compatible database, or use the CLI and follow the migration instructions.
 Existing files are checked read-only and must be empty or have a supported
-GenAImage schema; incompatible files return 422. Saving does not create or
-migrate a database.
+GenAImage schema. The file and its directory must be writable (SQLite needs
+WAL sidecar files); for a new path, the nearest existing directory must be
+writable. Invalid targets return 422. Saving does not create or migrate a database.
 
 `POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
 saved settings). It tests ComfyUI and a configured LLM without saving or
