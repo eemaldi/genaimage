@@ -4,8 +4,11 @@ pub mod error;
 pub mod event;
 pub mod extensions;
 pub mod image_backend;
+pub mod media;
 pub mod orchestrator;
 pub mod persistence;
+#[doc(hidden)]
+pub mod safe_file;
 pub mod workflow;
 
 pub use async_trait::async_trait;

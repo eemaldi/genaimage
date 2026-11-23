@@ -636,7 +636,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
+    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {
@@ -1370,7 +1370,7 @@ async fn legacy_submitting_record_requires_backend_evidence() {
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; PRAGMA user_version=5;").unwrap();
+    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
     drop(db);
     let lock_dir = config.state_database.with_extension("sqlite3.submissions");
     fs::remove_dir_all(&lock_dir).unwrap();

@@ -19,6 +19,7 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/runs/reconcile", post(reconcile_all))
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/events", get(events))
+        .route("/runs/{id}/manifest", get(super::outputs::manifest))
         .route("/runs/{id}/cancel", post(cancel))
         .route("/runs/{id}/reconcile", post(reconcile))
 }

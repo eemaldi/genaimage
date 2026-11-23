@@ -47,6 +47,18 @@ pub enum HarnessError {
     InvalidRunRequest(String),
     #[error("{0}")]
     RunConflict(String),
+    #[error("Output was not found.")]
+    OutputNotFound,
+    #[error("No completed manifest is recorded for this run.")]
+    ManifestNotFound,
+    #[error("{0}")]
+    InvalidMediaRequest(&'static str),
+    #[error("The stored media does not match its provenance.")]
+    MediaIntegrity,
+    #[error(
+        "The output could not be decoded as a supported image within the thumbnail limits: {0}"
+    )]
+    ThumbnailDecode(#[source] image::ImageError),
     #[error("path '{path}' is not valid: {reason}")]
     InvalidPath { path: PathBuf, reason: String },
     #[error(transparent)]

@@ -1,5 +1,6 @@
 mod events;
 mod health;
+mod outputs;
 mod runs;
 mod settings;
 mod workflows;
@@ -11,6 +12,7 @@ use crate::{AppState, Problem};
 pub(crate) fn api() -> Router<AppState> {
     Router::new()
         .merge(health::routes())
+        .merge(outputs::routes())
         .merge(events::routes())
         .merge(runs::routes())
         .merge(settings::routes())
