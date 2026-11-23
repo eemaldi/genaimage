@@ -21,6 +21,8 @@ struct Cli {
     workspace: PathBuf,
     #[arg(long, global = true)]
     json: bool,
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -122,17 +124,12 @@ async fn main() {
     }
 }
 
-async fn open_harness(workspace: &std::path::Path) -> Result<Harness, HarnessError> {
-    let config = HarnessConfig::load(workspace)?;
+async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
+    let config = HarnessConfig::load_with_config(&cli.workspace, cli.config.as_deref())?;
     let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
     let backend = registry
-        .image_backend(&config.active_profile)
-        .ok_or_else(|| {
-            HarnessError::Configuration(format!(
-                "no image backend for profile '{}'",
-                config.active_profile
-            ))
-        })?;
+        .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
+        .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
     Harness::new_async(config, backend).await
 }
 
@@ -140,7 +137,7 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
     match &cli.command {
         Command::Config { command } => return config_command(cli, command).await,
         Command::Doctor => {
-            let harness = open_harness(&cli.workspace).await?;
+            let harness = open_harness(cli).await?;
             let health = harness.health().await?;
             output(
                 cli,
@@ -152,7 +149,7 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
         }
         Command::Workflow { command } => workflow_command(cli, command).await?,
         Command::Presets { workflow } => {
-            let harness = open_harness(&cli.workspace).await?;
+            let harness = open_harness(cli).await?;
             let loaded = harness.load_workflow(workflow)?;
             output(cli, &loaded.manifest.presets)?;
         }
@@ -163,7 +160,10 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
 }
 
 async fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError> {
-    let path = cli.workspace.join("genaimage.toml");
+    let path = cli
+        .config
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("genaimage.toml"));
     match command {
         ConfigCommand::Init { force } => {
             if path.exists() && !force {
@@ -176,15 +176,15 @@ async fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), Harnes
             output(cli, &serde_json::json!({ "path": path, "created": true }))?;
         }
         ConfigCommand::Show => {
-            let harness = open_harness(&cli.workspace).await?;
-            output(cli, harness.config())?;
+            let config = HarnessConfig::load_with_config(&cli.workspace, cli.config.as_deref())?;
+            output(cli, &config)?;
         }
     }
     Ok(())
 }
 
 async fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(&cli.workspace).await?;
+    let harness = open_harness(cli).await?;
     match command {
         WorkflowCommand::List => {
             let discovery = harness.discover_workflows()?;
@@ -225,7 +225,7 @@ async fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), Ha
 }
 
 async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(&cli.workspace).await?;
+    let harness = open_harness(cli).await?;
     let parameters = parse_parameters(&command.parameters)?;
     let run = harness
         .submit(RunRequest {
@@ -262,7 +262,7 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
 }
 
 async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(&cli.workspace).await?;
+    let harness = open_harness(cli).await?;
     match command {
         JobsCommand::List { limit } => {
             output(cli, &harness.repository().as_async().list(*limit).await?)?

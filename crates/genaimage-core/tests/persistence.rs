@@ -72,7 +72,7 @@ fn unversioned_legacy_database_is_migrated_without_losing_runs() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     assert_eq!(
         conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
@@ -189,4 +189,112 @@ async fn waiting_for_a_sqlite_writer_does_not_block_the_runtime() {
     );
     writer.await.unwrap().unwrap();
     lock_thread.join().unwrap();
+}
+
+#[test]
+fn empty_database_can_rebind_but_stale_handles_cannot_use_foreign_runs() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("state.sqlite3");
+    let first = RunRepository::open(&path)
+        .unwrap()
+        .with_identity(dir.path(), "ComfyUI", "http://localhost:8188", false)
+        .unwrap();
+    let second = RunRepository::open(&path)
+        .unwrap()
+        .with_identity(dir.path(), "ComfyUI", "http://localhost:9999", false)
+        .unwrap();
+    assert!(second.list(10).unwrap().is_empty());
+    first.insert(&new_run()).unwrap();
+    for result in [
+        second.get("run").map(|_| ()),
+        second.list(10).map(|_| ()),
+        second
+            .update_status("run", RunStatus::Cancelled, None, None)
+            .map(|_| ()),
+    ] {
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("separate state database"));
+    }
+    let mut second_run = new_run();
+    second_run.id = "another".into();
+    second_run.prompt_id = "other-prompt".into();
+    assert!(second.insert(&second_run).is_err());
+    assert_eq!(first.get("run").unwrap().status, RunStatus::Queued);
+    assert_eq!(first.list(10).unwrap().len(), 1);
+}
+
+#[test]
+fn competing_first_runs_bind_atomically() {
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("state.sqlite3");
+    let first = RunRepository::open(&path)
+        .unwrap()
+        .with_identity(dir.path(), "ComfyUI", "http://localhost:8188", false)
+        .unwrap();
+    let second = RunRepository::open(&path)
+        .unwrap()
+        .with_identity(dir.path(), "ComfyUI", "http://localhost:9999", false)
+        .unwrap();
+    let gate = Arc::new(Barrier::new(3));
+    let start = |repo: RunRepository, id: &str| {
+        let gate = gate.clone();
+        let mut run = new_run();
+        run.id = id.into();
+        run.prompt_id = id.into();
+        thread::spawn(move || {
+            gate.wait();
+            repo.insert(&run)
+        })
+    };
+    let a = start(first, "first");
+    let b = start(second, "second");
+    gate.wait();
+    let a = a.join().unwrap();
+    let b = b.join().unwrap();
+    assert_ne!(
+        a.is_ok(),
+        b.is_ok(),
+        "exactly one endpoint must own the first run"
+    );
+    assert!(a
+        .err()
+        .or_else(|| b.err())
+        .unwrap()
+        .to_string()
+        .contains("separate state database"));
+    assert_eq!(
+        RunRepository::open(&path).unwrap().list(10).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn guarded_reads_remain_available_during_a_wal_write() {
+    use std::{sync::mpsc, thread};
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("state.sqlite3");
+    let repo = RunRepository::open(&path)
+        .unwrap()
+        .with_identity(dir.path(), "ComfyUI", "http://localhost:8188", false)
+        .unwrap();
+    repo.insert(&new_run()).unwrap();
+    let writer = Connection::open(&path).unwrap();
+    writer
+        .execute_batch("BEGIN IMMEDIATE; UPDATE runs SET status = 'running' WHERE id = 'run';")
+        .unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || sender.send(repo.list(10)).unwrap());
+    let result = receiver.recv_timeout(Duration::from_secs(2));
+    writer.execute_batch("ROLLBACK").unwrap();
+    reader.join().unwrap();
+    assert_eq!(
+        result.expect("read should not wait for writer").unwrap()[0].status,
+        RunStatus::Queued
+    );
 }

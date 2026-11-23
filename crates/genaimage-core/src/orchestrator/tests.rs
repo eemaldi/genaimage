@@ -18,6 +18,7 @@ const IMAGE: &[u8] = b"fake image output";
 #[derive(Default)]
 struct FakeImageBackend {
     state: Arc<Mutex<FakeState>>,
+    endpoint: String,
 }
 
 #[derive(Default)]
@@ -44,7 +45,11 @@ impl ImageBackend for FakeImageBackend {
     }
 
     fn base_url(&self) -> &str {
-        "fake://local"
+        if self.endpoint.is_empty() {
+            "fake://local"
+        } else {
+            &self.endpoint
+        }
     }
 
     async fn health(&self) -> Result<BackendHealth> {
@@ -172,11 +177,19 @@ impl ImageBackend for FakeImageBackend {
     }
 }
 
+fn test_config(workspace: &Path) -> crate::ResolvedConfig {
+    HarnessConfig::load_with(workspace, None, workspace, |key| match key {
+        "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(workspace.display().to_string()),
+        _ => None,
+    })
+    .unwrap()
+}
+
 fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>, RunRequest) {
     let workspace = tempfile::tempdir().unwrap();
-    let mut config = HarnessConfig::load(workspace.path()).unwrap();
-    config.active_profile = "test-backend".to_owned();
+    let mut config = test_config(workspace.path());
     config.state_database = workspace.path().join("state.sqlite3");
+    config.runs = workspace.path().join("runs");
     fs::create_dir_all(&config.workflows).unwrap();
     fs::write(
         config.workflows.join("workflow.api.json"),
@@ -195,11 +208,14 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
     let registry = ExtensionRegistry::from_config(&config, |_| {
         Ok(FakeImageBackend {
             state: Arc::clone(&state),
+            ..Default::default()
         })
     })
     .unwrap();
     assert!(registry.image_backend("local").is_none());
-    let backend = registry.image_backend(&config.active_profile).unwrap();
+    let backend = registry
+        .image_backend(crate::extensions::COMFYUI_BACKEND)
+        .unwrap();
     let harness = Harness::new(config, backend).unwrap();
     let request = RunRequest {
         workflow: "contract-workflow".to_owned(),
@@ -406,7 +422,7 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
 #[test]
 fn registry_does_not_replace_an_extension_or_fall_back_on_factory_failure() {
     let workspace = tempfile::tempdir().unwrap();
-    let config = HarnessConfig::load(workspace.path()).unwrap();
+    let config = test_config(workspace.path());
     let error = ExtensionRegistry::from_config::<FakeImageBackend>(&config, |profile| {
         assert_eq!(profile.base_url, config.comfyui.base_url);
         Err(HarnessError::Configuration(
@@ -419,15 +435,137 @@ fn registry_does_not_replace_an_extension_or_fall_back_on_factory_failure() {
 
     let mut registry =
         ExtensionRegistry::from_config(&config, |_| Ok(FakeImageBackend::default())).unwrap();
-    let original = registry.image_backend(&config.active_profile).unwrap();
+    let original = registry
+        .image_backend(crate::extensions::COMFYUI_BACKEND)
+        .unwrap();
     assert!(registry
         .register_image_backend(
-            &config.active_profile,
+            crate::extensions::COMFYUI_BACKEND,
             Arc::new(FakeImageBackend::default())
         )
         .is_err());
     assert!(Arc::ptr_eq(
         &original,
-        &registry.image_backend(&config.active_profile).unwrap()
+        &registry
+            .image_backend(crate::extensions::COMFYUI_BACKEND)
+            .unwrap()
     ));
+}
+
+#[tokio::test]
+async fn shared_database_refuses_cross_workspace_reconciliation() {
+    let (_workspace, harness, _state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    harness
+        .repository
+        .update_status(&run.id, RunStatus::Cancelling, None, None)
+        .unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let mut config = harness.config().clone();
+    config.workspace = second.path().canonicalize().unwrap();
+    config.claim_legacy_state = true;
+    let async_error =
+        match Harness::new_async(config.clone(), Arc::new(FakeImageBackend::default())).await {
+            Ok(_) => panic!("a foreign workspace must not open the database asynchronously"),
+            Err(error) => error.to_string(),
+        };
+    assert!(
+        async_error.contains("separate state database"),
+        "{async_error}"
+    );
+    let error = match Harness::new(config, Arc::new(FakeImageBackend::default())) {
+        Ok(_) => panic!("a foreign workspace must not open the database"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("workspace") && error.contains("separate state database"),
+        "{error}"
+    );
+    let wrong_endpoint = FakeImageBackend {
+        endpoint: "fake://other".into(),
+        ..Default::default()
+    };
+    let error = match Harness::new(harness.config().clone(), Arc::new(wrong_endpoint)) {
+        Ok(_) => panic!("a foreign endpoint must not open the database"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("fake://local") && error.contains("fake://other"),
+        "{error}"
+    );
+    assert_eq!(
+        harness.get_run(&run.id).unwrap().status,
+        RunStatus::Cancelling
+    );
+}
+
+#[tokio::test]
+async fn verified_legacy_state_reconciles_using_original_paths() {
+    let (_workspace, harness, state, request) = setup(false);
+    let run = harness.submit(request).await.unwrap();
+    let mut config = harness.config().clone();
+    let original_dir = run.output_dir.clone();
+    drop(harness);
+    let db = rusqlite::Connection::open(&config.state_database).unwrap();
+    db.execute_batch("DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
+        .unwrap();
+    drop(db);
+    let make_backend = || {
+        Arc::new(FakeImageBackend {
+            state: Arc::clone(&state),
+            ..Default::default()
+        })
+    };
+    assert!(Harness::new(config.clone(), make_backend()).is_err());
+    config.claim_legacy_state = true;
+    let restored = Harness::new(config, make_backend()).unwrap();
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Completed;
+    }
+    let result = restored.reconcile(&run.id).await.unwrap();
+    assert_eq!(result.run.status, RunStatus::Completed);
+    assert_eq!(result.run.output_dir, original_dir);
+    assert!(Path::new(&result.outputs[0].local_path).starts_with(original_dir));
+    assert!(Path::new(result.run.manifest_path.as_ref().unwrap()).is_file());
+}
+
+#[tokio::test]
+async fn workspaces_can_use_the_same_explicit_run_version() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let mut harnesses = Vec::new();
+    for name in ["first", "second"] {
+        let workspace = root.path().join(name);
+        fs::create_dir_all(&workspace).unwrap();
+        let config = HarnessConfig::load_with(&workspace, None, root.path(), |key| match key {
+            "HOME" | "XDG_CONFIG_HOME" => Some(root.path().display().to_string()),
+            "XDG_DATA_HOME" => Some(data.display().to_string()),
+            _ => None,
+        })
+        .unwrap();
+        fs::create_dir_all(&config.workflows).unwrap();
+        fs::write(
+            config.workflows.join("workflow.api.json"),
+            include_str!("../../tests/fixtures/contract-workflow.api.json"),
+        )
+        .unwrap();
+        fs::write(
+            config.workflows.join("contract.genaimage.json"),
+            include_str!("../../tests/fixtures/contract-workflow.genaimage.json"),
+        )
+        .unwrap();
+        harnesses.push(Harness::new(config, Arc::new(FakeImageBackend::default())).unwrap());
+    }
+    let request = RunRequest {
+        workflow: "contract-workflow".into(),
+        preset: Some("fast".into()),
+        parameters: BTreeMap::new(),
+        version: Some("v1".into()),
+    };
+    let first = harnesses[0].submit(request.clone()).await.unwrap();
+    let second = harnesses[1].submit(request).await.unwrap();
+    assert_ne!(first.output_dir, second.output_dir);
+    assert!(Path::new(&first.output_dir).is_dir() && Path::new(&second.output_dir).is_dir());
 }

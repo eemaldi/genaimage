@@ -18,7 +18,9 @@ use axum::{
     Json, Router,
 };
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{Harness, HarnessConfig, RunRequest, RunStatus};
+use genaimage_core::{
+    config::ComfyUiProfile, Harness, HarnessConfig, ImageBackend, RunRequest, RunStatus,
+};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -452,7 +454,12 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
 }
 
 async fn open_harness(workspace: &Path) -> genaimage_core::Result<Harness> {
-    let config = HarnessConfig::load(workspace)?;
+    let config_path = workspace.join("genaimage.toml");
+    let config =
+        HarnessConfig::load_with(workspace, Some(&config_path), workspace, |key| match key {
+            "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(workspace.display().to_string()),
+            _ => None,
+        })?;
     let backend = Arc::new(ComfyUiClient::new(&config.comfyui)?);
     Harness::new_async(config, backend).await
 }
@@ -461,7 +468,7 @@ fn configure_harness(temp: &TempDir, address: SocketAddr) {
     write_file(
         &temp.path().join("genaimage.toml"),
         &format!(
-            "[profiles.local]\nbase_url = \"http://{address}\"\nrequest_timeout_seconds = 5\nwebsocket_reconnect_seconds = 1\n"
+            "[comfyui]\nbase_url = \"http://{address}\"\nrequest_timeout_seconds = 5\nwebsocket_reconnect_seconds = 1\n[paths]\nstate_database = \"state.sqlite3\"\nruns = \"runs\"\n"
         ),
     );
 }
@@ -485,4 +492,56 @@ fn test_run_request(workflow: &str) -> RunRequest {
         parameters: BTreeMap::new(),
         version: Some("v0.1".to_owned()),
     }
+}
+
+#[tokio::test]
+async fn http_redirects_are_not_followed() {
+    let target_hits = Arc::new(AtomicUsize::new(0));
+    let hits = target_hits.clone();
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_addr = target.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            target,
+            Router::new().route(
+                "/system_stats",
+                get(move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({}))
+                    }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let source = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let source_addr = source.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            source,
+            Router::new().route(
+                "/system_stats",
+                get(move || async move {
+                    axum::response::Redirect::temporary(&format!(
+                        "http://{target_addr}/system_stats"
+                    ))
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let profile = ComfyUiProfile {
+        base_url: format!("http://{source_addr}"),
+        ..Default::default()
+    };
+    assert!(ComfyUiClient::new(&profile)
+        .unwrap()
+        .health()
+        .await
+        .is_err());
+    assert_eq!(target_hits.load(Ordering::SeqCst), 0);
 }

@@ -87,9 +87,12 @@ cargo install --locked --path crates/genaimage
 
 ## Persistent records
 
-- `.genaimage/state.sqlite3` contains rebuildable operational state: run status,
+When `XDG_DATA_HOME` is unset, it defaults to `~/.local/share`. See the
+[setup guide](docs/setup.md) for overrides and migration of existing data.
+
+- `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3` contains rebuildable operational state: run status,
   ComfyUI IDs, events, cancellation, and outputs.
-- `runs/` contains resolved workflows, preflight records, checksummed outputs,
+- `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/runs/` contains resolved workflows, preflight records, checksummed outputs,
   and `run-manifest.json`.
 
 An ambiguous prompt submission is never automatically replayed. Reconcile the

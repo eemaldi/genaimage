@@ -1,11 +1,23 @@
-active_profile = "local"
+[server]
+host = "127.0.0.1"
+port = 3000
 
-[profiles.local]
+[comfyui]
 base_url = "http://127.0.0.1:8188"
 request_timeout_seconds = 60
 websocket_reconnect_seconds = 2
+allowed_hosts = []
+
+[llm]
+base_url = "http://127.0.0.1:11434/v1"
+model = ""
+allowed_hosts = []
 
 [paths]
-state_database = ".genaimage/state.sqlite3"
+# Omitted data paths default under $XDG_DATA_HOME/genaimage (or ~/.local/share/genaimage).
+# State and runs are scoped to the canonical workspace. Databases with runs
+# are bound to their workspace and backend endpoint.
+# state_database = "/absolute/path/state.sqlite3"
+# runs = "/absolute/path/runs"
+# uploads = "/absolute/path/uploads"
 workflows = "workflows/comfyui"
-runs = "runs"

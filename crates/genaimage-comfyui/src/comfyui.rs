@@ -1,15 +1,22 @@
-use std::{path::Path, time::Duration};
+use std::{
+    net::{SocketAddr, ToSocketAddrs},
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures_util::StreamExt;
 use reqwest::{
     multipart::{Form, Part},
-    redirect::Policy,
     Client, Url,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tokio::{sync::mpsc, time::sleep};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::{
+    sync::{mpsc, watch, OnceCell},
+    time::{sleep, timeout},
+};
+use tokio_tungstenite::{client_async_tls_with_config, tungstenite::Message};
 
 use genaimage_core::{
     async_trait,
@@ -22,12 +29,23 @@ use genaimage_core::{
 };
 
 const MAX_SAFE_READ_ATTEMPTS: usize = 3;
+type DnsAnswer = std::result::Result<Vec<SocketAddr>, String>;
+type DnsReceiver = watch::Receiver<Option<DnsAnswer>>;
 
 #[derive(Clone, Debug)]
 pub struct ComfyUiClient {
-    http: Client,
     base_url: Url,
-    websocket_reconnect: Duration,
+    profile: ComfyUiProfile,
+    connection: Arc<OnceCell<PinnedConnection>>,
+    dns: Arc<Mutex<Option<DnsReceiver>>>,
+    #[cfg(test)]
+    test_addresses: Option<Arc<std::sync::Mutex<Vec<SocketAddr>>>>,
+}
+
+#[derive(Debug)]
+struct PinnedConnection {
+    http: Client,
+    addresses: Vec<SocketAddr>,
 }
 
 impl ComfyUiClient {
@@ -37,27 +55,82 @@ impl ComfyUiClient {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
         }
-        let submit_url = base_url.join("prompt")?;
-        let default_redirects = Policy::default();
-        let http = Client::builder()
-            // Only explicit safe reads may retry. Never replay a prompt POST,
-            // including when a redirect preserves the request method and body.
-            .retry(reqwest::retry::never())
-            .redirect(Policy::custom(move |attempt| {
-                if attempt.previous().first() == Some(&submit_url) {
-                    attempt.stop()
-                } else {
-                    default_redirects.redirect(attempt)
+        Ok(Self {
+            base_url,
+            profile: profile.clone(),
+            connection: Arc::new(OnceCell::new()),
+            dns: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            test_addresses: None,
+        })
+    }
+
+    async fn connection(&self) -> Result<&PinnedConnection> {
+        self.connection.get_or_try_init(|| async {
+            #[cfg(test)]
+            if let Some(addresses) = &self.test_addresses {
+                return self.pinned_connection(addresses.lock().unwrap().clone());
+            }
+            let host = self.base_url.host_str().expect("validated host").trim_matches(['[', ']']);
+            let port = self.base_url.port_or_known_default().expect("validated scheme");
+            let deadline = Duration::from_secs(self.profile.request_timeout_seconds.min(3));
+            let mut receiver = self.dns_receiver(host, port)?;
+            let answer = timeout(deadline, async {
+                loop {
+                    if let Some(answer) = receiver.borrow_and_update().clone() {
+                        return answer;
+                    }
+                    receiver.changed().await.map_err(|_| "DNS resolver stopped".to_owned())?;
                 }
-            }))
-            .timeout(Duration::from_secs(profile.request_timeout_seconds))
+            }).await.map_err(|_| HarnessError::Configuration(format!("comfyui.base_url='{}': DNS resolution timed out; ensure the local service name resolves", self.profile.base_url)))?;
+            let addresses = answer.map_err(|error| HarnessError::Configuration(format!("comfyui.base_url='{}': cannot resolve local host ({error}); check service name and network", self.profile.base_url)))?;
+            self.pinned_connection(addresses)
+        }).await
+    }
+
+    fn dns_receiver(&self, host: &str, port: u16) -> Result<DnsReceiver> {
+        let mut current = self
+            .dns
+            .lock()
+            .map_err(|_| HarnessError::ComfyUi("DNS resolver lock poisoned".into()))?;
+        if let Some(receiver) = current.as_ref() {
+            let answer = receiver.borrow();
+            if answer.as_ref().is_some_and(|result| result.is_ok())
+                || (answer.is_none() && receiver.has_changed().is_ok())
+            {
+                return Ok(receiver.clone());
+            }
+        }
+        let (sender, receiver) = watch::channel(None);
+        let host = host.to_owned();
+        std::thread::Builder::new()
+            .name("genaimage-dns".into())
+            .spawn(move || {
+                let answer = (host.as_str(), port)
+                    .to_socket_addrs()
+                    .map(|addresses| addresses.collect())
+                    .map_err(|error| error.to_string());
+                sender.send_replace(Some(answer));
+            })
+            .map_err(|error| {
+                HarnessError::ComfyUi(format!("cannot start DNS resolver: {error}"))
+            })?;
+        *current = Some(receiver.clone());
+        Ok(receiver)
+    }
+
+    fn pinned_connection(&self, addresses: Vec<SocketAddr>) -> Result<PinnedConnection> {
+        self.profile.validate_addresses(&addresses)?;
+        let host = self.base_url.host_str().expect("validated host");
+        let http = Client::builder()
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(host, &addresses)
+            .timeout(Duration::from_secs(self.profile.request_timeout_seconds))
             .build()
             .map_err(|error| HarnessError::ComfyUi(format!("cannot build HTTP client: {error}")))?;
-        Ok(Self {
-            http,
-            base_url,
-            websocket_reconnect: Duration::from_secs(profile.websocket_reconnect_seconds),
-        })
+        Ok(PinnedConnection { http, addresses })
     }
 }
 
@@ -96,6 +169,8 @@ impl ImageBackend for ComfyUiClient {
         prompt_id: &str,
     ) -> Result<PromptResponse> {
         let response = self
+            .connection()
+            .await?
             .http
             .post(self.endpoint("prompt")?)
             .json(&json!({
@@ -155,6 +230,8 @@ impl ImageBackend for ComfyUiClient {
             .text("overwrite", "false")
             .text("type", "input");
         let response = self
+            .connection()
+            .await?
             .http
             .post(self.endpoint("upload/image")?)
             .multipart(form)
@@ -205,11 +282,19 @@ impl ImageBackend for ComfyUiClient {
         websocket_url
             .query_pairs_mut()
             .append_pair("clientId", client_id);
-        let reconnect_delay = self.websocket_reconnect;
+        let reconnect_delay = Duration::from_secs(self.profile.websocket_reconnect_seconds);
+        let addresses = self.connection().await?.addresses.clone();
         let (sender, receiver) = mpsc::channel(128);
         let task = tokio::spawn(async move {
             loop {
-                match connect_async(websocket_url.as_str()).await {
+                let connection = match tokio::net::TcpStream::connect(addresses.as_slice()).await {
+                    Ok(stream) => {
+                        client_async_tls_with_config(websocket_url.as_str(), stream, None, None)
+                            .await
+                    }
+                    Err(error) => Err(error.into()),
+                };
+                match connection {
                     Ok((mut stream, _)) => {
                         while let Some(message) = stream.next().await {
                             let event = match message {
@@ -266,7 +351,7 @@ impl ComfyUiClient {
         let url = self.endpoint(path)?;
         let mut last_error = String::new();
         for attempt in 1..=MAX_SAFE_READ_ATTEMPTS {
-            let response = self.http.get(url.clone()).send().await;
+            let response = self.connection().await?.http.get(url.clone()).send().await;
             match response {
                 Ok(response) if response.status().is_success() => {
                     return response.json::<Value>().await.map_err(|error| {
@@ -298,7 +383,7 @@ impl ComfyUiClient {
     async fn get_bytes(&self, url: Url) -> Result<Vec<u8>> {
         let mut last_error = String::new();
         for attempt in 1..=MAX_SAFE_READ_ATTEMPTS {
-            let response = self.http.get(url.clone()).send().await;
+            let response = self.connection().await?.http.get(url.clone()).send().await;
             match response {
                 Ok(response) if response.status().is_success() => {
                     return response
@@ -333,6 +418,8 @@ impl ComfyUiClient {
     async fn post_json(&self, path: &str, body: &Value) -> Result<Value> {
         let url = self.endpoint(path)?;
         let response = self
+            .connection()
+            .await?
             .http
             .post(url)
             .json(body)
@@ -543,5 +630,92 @@ mod tests {
         assert_eq!(event.node_id.as_deref(), Some("3"));
         assert_eq!(event.value, Some(4));
         assert_eq!(event.maximum, Some(20));
+    }
+    #[tokio::test]
+    async fn http_and_websocket_use_the_same_validated_dns_answers() {
+        use super::{ComfyUiClient, ComfyUiProfile, ImageBackend};
+        use futures_util::SinkExt;
+        use std::{
+            net::SocketAddr,
+            sync::{Arc, Mutex},
+        };
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+            time::{timeout, Duration},
+        };
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = [0; 4096];
+                    let n = stream.peek(&mut buf).await.unwrap();
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    if request.starts_with("GET /ws?") {
+                        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                        ws.send(Message::Text(
+                            r#"{"type":"progress","data":{"prompt_id":"p","value":1}}"#.into(),
+                        ))
+                        .await
+                        .unwrap();
+                    } else {
+                        assert!(request.starts_with("GET /system_stats"));
+                        let _ = stream.read(&mut buf).await.unwrap();
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+                    }
+                });
+            }
+        });
+        let public: SocketAddr = format!("8.8.8.8:{}", address.port()).parse().unwrap();
+        let answers = Arc::new(Mutex::new(vec![address, public]));
+        let profile = ComfyUiProfile {
+            base_url: format!("http://pinned.invalid:{}", address.port()),
+            allowed_hosts: vec!["pinned.invalid".into()],
+            ..Default::default()
+        };
+        let mut client = ComfyUiClient::new(&profile).unwrap();
+        client.test_addresses = Some(answers.clone());
+        assert!(client
+            .health()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("public"));
+        *answers.lock().unwrap() = vec![address];
+        client.health().await.unwrap();
+        *answers.lock().unwrap() = vec![public];
+        client.health().await.unwrap();
+        let mut events = client.monitor_events("client").await.unwrap();
+        let event = timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.event_type, "progress");
+        assert_eq!(event.prompt_id.as_deref(), Some("p"));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn stalled_dns_times_out_without_spawning_duplicate_resolvers() {
+        use super::{ComfyUiClient, ComfyUiProfile, ImageBackend};
+        use tokio::sync::watch;
+        let profile = ComfyUiProfile {
+            base_url: "http://waiting.invalid:8188".into(),
+            allowed_hosts: vec!["waiting.invalid".into()],
+            request_timeout_seconds: 1,
+            ..Default::default()
+        };
+        let client = ComfyUiClient::new(&profile).unwrap();
+        let (sender, receiver) = watch::channel(None);
+        *client.dns.lock().unwrap() = Some(receiver);
+        let error = client.health().await.unwrap_err().to_string();
+        assert!(error.contains("DNS resolution timed out"), "{error}");
+        assert_eq!(sender.receiver_count(), 1);
+        let error = client.health().await.unwrap_err().to_string();
+        assert!(error.contains("DNS resolution timed out"), "{error}");
+        assert_eq!(sender.receiver_count(), 1);
     }
 }
