@@ -43,5 +43,20 @@ pub struct OutputListResponse {
 #[derive(Debug, Deserialize, Serialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ThumbnailQuery {
+    #[param(value_type = ThumbnailSizeSchema)]
+    #[schema(value_type = ThumbnailSizeSchema)]
     pub size: u32,
 }
+
+/// The supported longest-edge sizes for generated thumbnails.
+pub struct ThumbnailSizeSchema;
+
+impl utoipa::PartialSchema for ThumbnailSizeSchema {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Integer)
+            .enum_values(Some([128_u32, 256, 512, 1024]))
+            .into()
+    }
+}
+impl ToSchema for ThumbnailSizeSchema {}

@@ -3,8 +3,7 @@ use std::time::Duration;
 use axum::{
     extract::{rejection::JsonRejection, State},
     http::{header, HeaderName},
-    routing::{get, post},
-    Json, Router,
+    Json,
 };
 use genaimage_api::{
     HealthStatus, ImageBackendHealthReason, SettingsPatch, SettingsResponse, SettingsTestResponse,
@@ -22,15 +21,10 @@ const PROBE_DEADLINE: Duration = Duration::from_secs(2);
 const NO_STORE: [(HeaderName, &str); 1] = [(header::CACHE_CONTROL, "no-store")];
 type SettingsReply = ([(HeaderName, &'static str); 1], Json<SettingsResponse>);
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/settings", get(read).put(save))
-        .route("/settings/test", post(probe))
-}
-
 #[utoipa::path(
-    get, path = "/api/v1/settings",
+    get, path = "/settings",
     operation_id = "settings_read",
+    tag = "settings",
     description = "Read effective settings.",
     responses(
         (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String))),
@@ -48,8 +42,9 @@ pub(super) async fn read(State(state): State<AppState>) -> SettingsReply {
 }
 
 #[utoipa::path(
-    put, path = "/api/v1/settings",
+    put, path = "/settings",
     operation_id = "settings_save",
+    tag = "settings",
     description = "Save sparse settings.",
     request_body = genaimage_api::SettingsPatch,
     responses(
@@ -78,8 +73,9 @@ pub(super) async fn save(
 }
 
 #[utoipa::path(
-    post, path = "/api/v1/settings/test",
+    post, path = "/settings/test",
     operation_id = "settings_probe",
+    tag = "settings",
     description = "Test proposed settings without saving them.",
     request_body = genaimage_api::SettingsPatch,
     responses(

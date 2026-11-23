@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::State, Json};
 use genaimage_api::{HealthResponse, HealthStatus, ImageBackendHealthReason};
 use tokio::time::timeout;
 
@@ -8,13 +8,10 @@ use crate::AppState;
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(2);
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/health", get(health))
-}
-
 #[utoipa::path(
-    get, path = "/api/v1/health",
+    get, path = "/health",
     operation_id = "health_health",
+    tag = "health",
     description = "Health of the local server and configured backends.",
     responses(
         (status = 200, body = genaimage_api::HealthResponse),

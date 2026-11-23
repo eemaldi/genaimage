@@ -190,7 +190,7 @@ def main():
         ("Relative links", check_relative_links),
         ("Skill mirrors", check_skill_mirrors),
         ("Skill lock", check_skill_lock),
-        ("OpenAPI structure and route coverage", check_openapi.check),
+        ("OpenAPI structure", check_openapi.check),
         ("Portal lockfile", lambda: check_portal_lockfile(portal) if portal_present else []),
         ("Prerequisites", lambda: check_runtime_tooling(portal_present)),
     ]

@@ -106,7 +106,8 @@ The local API publishes its [OpenAPI 3.1 contract](docs/api/openapi.json) at
 cargo run -p genaimage-server --example openapi
 ```
 
-The CI checks compare the generated contract and registered routes. Once the
+The routes and contract are registered together; CI checks the generated
+contract, its structure and its operations against the real router. Once the
 portal exists and has a pinned `openapi-typescript` development dependency,
 run `npm ci` in `apps/portal` and `python3 scripts/generate_portal_types.py`
 to regenerate `apps/portal/src/lib/api/schema.d.ts`. CI checks the generated

@@ -7,8 +7,6 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::get,
-    Router,
 };
 use futures_util::{stream, StreamExt};
 use genaimage_core::{Event as CoreEvent, ReceiveError, ResyncReason};
@@ -18,10 +16,6 @@ use serde_json::json;
 use crate::{AppState, Problem};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/events", get(events))
-}
 
 #[derive(Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -39,8 +33,9 @@ fn invalid_cursor() -> Problem {
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/events",
+    get, path = "/events",
     operation_id = "events_events",
+    tag = "events",
     description = "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
     params(EventQuery, ("Last-Event-ID" = Option<String>, Header, description = "Unsigned decimal replay cursor")),
     responses(

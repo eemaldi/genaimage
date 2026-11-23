@@ -188,9 +188,10 @@ The workflows API is read-only apart from validation, which does not submit a ru
   a declaration, not a guarantee that the image can be read.
 
 The versioned [OpenAPI 3.1 contract](api/openapi.json) is served at
-`GET /api/v1/openapi.json`. It is generated from the server routes and shared
-wire schemas with `cargo run -p genaimage-server --example openapi`; CI checks
-for drift and route coverage. The SSE response describes event names and links
+`GET /api/v1/openapi.json`. Server routes and the contract are registered
+together with `utoipa-axum`; regenerate it with
+`cargo run -p genaimage-server --example openapi`. CI checks for drift,
+structural errors and coverage through the actual router. The SSE response describes event names and links
 to the `EventEnvelope` and `ResyncEvent` schemas. The browser portal is planned.
 
 ### Uploads API

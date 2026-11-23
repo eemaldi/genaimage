@@ -5,28 +5,17 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
+    Json,
 };
 use genaimage_api as api;
 use genaimage_core::{HarnessError, RunRecord, RunRequest, RunStatus};
 
 use crate::{AppState, Problem};
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/runs", get(list).post(submit))
-        .route("/runs/reconcile", post(reconcile_all))
-        .route("/runs/{id}", get(get_run))
-        .route("/runs/{id}/events", get(events))
-        .route("/runs/{id}/manifest", get(super::outputs::manifest))
-        .route("/runs/{id}/cancel", post(cancel))
-        .route("/runs/{id}/reconcile", post(reconcile))
-}
-
 #[utoipa::path(
-    post, path = "/api/v1/runs",
+    post, path = "/runs",
     operation_id = "runs_submit",
+    tag = "runs",
     description = "Submit explicit bindings; use the same key for retries.",
     params(("Idempotency-Key" = String, Header, description = "Required unique key, 1–128 visible ASCII characters excluding commas")),
     request_body = api::SubmitRunRequest,
@@ -107,8 +96,9 @@ pub(super) async fn submit(
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/runs",
+    get, path = "/runs",
     operation_id = "runs_list",
+    tag = "runs",
     description = "List runs.",
     params(api::RunListQuery),
     responses(
@@ -148,8 +138,9 @@ pub(super) async fn list(
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/runs/{id}",
+    get, path = "/runs/{id}",
     operation_id = "runs_get_run",
+    tag = "runs",
     description = "Read a run.",
     params(("id" = String, Path, description = "Run ID")),
     responses(
@@ -179,8 +170,9 @@ pub(super) async fn get_run(
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/runs/{id}/events",
+    get, path = "/runs/{id}/events",
     operation_id = "runs_events",
+    tag = "runs",
     description = "Read persisted run events.",
     params(("id" = String, Path, description = "Run ID"), api::RunEventsQuery),
     responses(
@@ -223,8 +215,9 @@ pub(super) async fn events(
 }
 
 #[utoipa::path(
-    post, path = "/api/v1/runs/{id}/cancel",
+    post, path = "/runs/{id}/cancel",
     operation_id = "runs_cancel",
+    tag = "runs",
     description = "Cancel a run.",
     params(("id" = String, Path, description = "Run ID")),
     responses(
@@ -257,8 +250,9 @@ pub(super) async fn cancel(
 }
 
 #[utoipa::path(
-    post, path = "/api/v1/runs/{id}/reconcile",
+    post, path = "/runs/{id}/reconcile",
     operation_id = "runs_reconcile",
+    tag = "runs",
     description = "Reconcile a run against ComfyUI.",
     params(("id" = String, Path, description = "Run ID")),
     responses(
@@ -290,8 +284,9 @@ pub(super) async fn reconcile(
 }
 
 #[utoipa::path(
-    post, path = "/api/v1/runs/reconcile",
+    post, path = "/runs/reconcile",
     operation_id = "runs_reconcile_all",
+    tag = "runs",
     description = "Reconcile runs against ComfyUI.",
     responses(
         (status = 200, body = api::ReconcileRunsResponse),
@@ -349,13 +344,8 @@ fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem>
 }
 
 fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
-    id.map(|Path(id)| id).map_err(|error| {
-        Problem::new(
-            error.status(),
-            error.body_text(),
-            "Use a run ID returned by the runs API.",
-        )
-    })
+    id.map(|Path(id)| id)
+        .map_err(|error| Problem::invalid_path(error, "Use a run ID returned by the runs API."))
 }
 
 fn problem(error: HarnessError) -> Problem {

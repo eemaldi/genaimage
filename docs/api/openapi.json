@@ -1050,6 +1050,15 @@
         ],
         "type": "object"
       },
+      "ThumbnailSizeSchema": {
+        "enum": [
+          128,
+          256,
+          512,
+          1024
+        ],
+        "type": "integer"
+      },
       "UploadBody": {
         "properties": {
           "file": {
@@ -1859,8 +1868,7 @@
             },
             "description": "Problem details"
           }
-        },
-        "tags": []
+        }
       },
       "head": {
         "operationId": "mod_openapi_endpoint_head",
@@ -1886,8 +1894,7 @@
           "503": {
             "description": "Problem details"
           }
-        },
-        "tags": []
+        }
       }
     },
     "/api/v1/outputs": {
@@ -2617,9 +2624,7 @@
             "name": "size",
             "required": true,
             "schema": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/components/schemas/ThumbnailSizeSchema"
             }
           },
           {
@@ -2790,9 +2795,7 @@
             "name": "size",
             "required": true,
             "schema": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
+              "$ref": "#/components/schemas/ThumbnailSizeSchema"
             }
           },
           {

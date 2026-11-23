@@ -7,8 +7,7 @@ use axum::{
     },
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
-    Json, Router,
+    Json,
 };
 use genaimage_api as api;
 use genaimage_core::{
@@ -23,16 +22,10 @@ use crate::{AppState, Problem};
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "private, no-cache";
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/outputs", get(list))
-        .route("/outputs/{id}", get(original))
-        .route("/outputs/{id}/thumbnail", get(thumbnail))
-}
-
 #[utoipa::path(
-    get, path = "/api/v1/outputs",
+    get, path = "/outputs",
     operation_id = "outputs_list",
+    tag = "outputs",
     description = "List indexed outputs.",
     params(api::OutputListQuery),
     responses(
@@ -92,8 +85,9 @@ pub(super) async fn list(
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/outputs/{id}",
+    get, path = "/outputs/{id}",
     operation_id = "outputs_original",
+    tag = "outputs",
     description = "Fetch an original output with conditional and range requests.",
     params(("id" = String, Path, description = "Output ID"), ("If-None-Match" = Option<String>, Header), ("Range" = Option<String>, Header, description = "Single bytes range"), ("If-Range" = Option<String>, Header)),
     responses(
@@ -137,8 +131,9 @@ pub(super) async fn original(
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/outputs/{id}/thumbnail",
+    get, path = "/outputs/{id}/thumbnail",
     operation_id = "outputs_thumbnail",
+    tag = "outputs",
     description = "Fetch a WebP thumbnail.",
     params(("id" = String, Path, description = "Output ID"), api::ThumbnailQuery, ("If-None-Match" = Option<String>, Header)),
     responses(
@@ -171,8 +166,9 @@ pub(super) async fn thumbnail(
 }
 
 #[utoipa::path(
-    get, path = "/api/v1/runs/{id}/manifest",
+    get, path = "/runs/{id}/manifest",
     operation_id = "outputs_manifest",
+    tag = "outputs",
     description = "Fetch the preserved run manifest.",
     params(("id" = String, Path, description = "Run ID"), ("If-None-Match" = Option<String>, Header)),
     responses(
@@ -405,13 +401,8 @@ fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem>
 }
 
 fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
-    id.map(|Path(id)| id).map_err(|error| {
-        Problem::new(
-            error.status(),
-            error.body_text(),
-            "Use an ID returned by the API.",
-        )
-    })
+    id.map(|Path(id)| id)
+        .map_err(|error| Problem::invalid_path(error, "Use an ID returned by the API."))
 }
 
 fn problem(error: HarnessError) -> Problem {
