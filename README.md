@@ -15,17 +15,10 @@ or replace ComfyUI, models, weights, or custom nodes.
 
 ## Current interfaces
 
-The Tauri desktop and character gate pilot are being retired in favour of the
-planned portal and general-purpose harness; the following describes the
-current release.
-
-- `genaimage` — the Rust command-line application for scripts and reproducible
-  operation.
-- **GenAImage desktop** — a Tauri 2 application with a React/TypeScript WebView
-  for workflow launch, jobs, outputs, gates, and local configuration.
-
-Both interfaces call the same `genaimage-core` crate. Workflow, queue, retry,
-gate, SQLite, and provenance logic is not duplicated in the frontend.
+The current interface is `genaimage`, the Rust command-line application for
+scripts and reproducible operation. It calls the shared `genaimage-core` crate.
+The character gate pilot is being retired in favour of the planned
+general-purpose harness.
 
 ## Current scope
 
@@ -48,10 +41,7 @@ bind to loopback only.
 - A working local ComfyUI installation and server, normally at
   `http://127.0.0.1:8188`.
 - Rust 1.80 or newer with `cargo`.
-- Node.js 20 or newer and npm for the Tauri WebView.
 - Python 3.11 or newer for repository checks.
-- Tauri 2 Linux system libraries on Linux; see
-  [setup](docs/setup.md).
 
 ## Quick start
 
@@ -122,27 +112,6 @@ Read [the complete workflow](workflows/character-concept-art/WORKFLOW.md).
 Character templates remain in
 [templates/character-concept-art/](templates/character-concept-art/).
 
-## Desktop application (current, being retired)
-
-Install and run the Tauri desktop development build:
-
-```bash
-cd apps/desktop
-npm ci
-npm run desktop:dev
-```
-
-Point **Settings → Workspace** at this repository or another GenAImage project.
-The desktop uses a loopback ComfyUI profile and calls the Rust core directly; it
-does not run an additional HTTP backend.
-
-Create a platform package with:
-
-```bash
-cd apps/desktop
-npm run desktop:build
-```
-
 ## Persistent records
 
 - `.genaimage/state.sqlite3` contains rebuildable operational state: run status,
@@ -177,8 +146,7 @@ python3 scripts/ci_check.py
 ```
 
 The command verifies repository links and skill mirrors, formats and lints the
-Rust workspace, runs Rust tests, audits/tests/builds the frontend, and checks the
-Tauri backend.
+Rust workspace, runs Rust tests, and checks the Python skill helpers.
 
 ## Project agent and skills
 

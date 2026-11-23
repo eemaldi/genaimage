@@ -53,38 +53,7 @@ Check the actual local ComfyUI connection:
 cargo run -p genaimage-cli -- doctor
 ```
 
-## 4. Desktop on Linux
-
-Tauri 2 needs the current WebKit 4.1 and GTK development libraries. On
-Ubuntu 22.04 or newer:
-
-```bash
-sudo apt update
-sudo apt install \
-  build-essential \
-  pkg-config \
-  libdbus-1-dev \
-  libssl-dev \
-  libwebkit2gtk-4.1-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev
-```
-
-Ubuntu 20.04's WebKit 4.0 ABI is not sufficient for this Tauri 2 target. Use a
-newer operating system, the CI container, or a supported Linux distribution.
-
-Install frontend dependencies and launch:
-
-```bash
-cd apps/desktop
-npm ci
-npm run desktop:dev
-```
-
-On first launch, select the repository/project root in **Settings**. ComfyUI
-still runs separately.
-
-## 5. Verification
+## 4. Verification
 
 The repository's canonical validation command is:
 
@@ -92,4 +61,4 @@ The repository's canonical validation command is:
 python3 scripts/ci_check.py
 ```
 
-It expects the Rust, Node, Python, and Tauri system prerequisites above.
+It expects Python 3.11 or newer and the Rust toolchain with rustfmt and clippy.

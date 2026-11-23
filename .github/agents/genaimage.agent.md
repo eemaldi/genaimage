@@ -33,5 +33,5 @@ For character concept art, follow the workflow's approval gates exactly. In
 particular, do not generate or edit an image before explicit Gate 3 approval,
 and do not create additional views before explicit Gate 5 approval. The user
 retains final approval; never infer it from silence or an agent's assessment.
-The implemented CLI and desktop enforce required gates, but a technical run
+The implemented CLI enforces required gates, but a technical run
 does not pass a gate by itself. Verify and record the user's explicit decision.
