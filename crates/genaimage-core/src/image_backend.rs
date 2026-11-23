@@ -52,9 +52,8 @@ pub trait ImageBackend: Send + Sync {
     /// Request deletion. Acknowledgement alone does not confirm cancellation.
     async fn delete_queued(&self, prompt_id: &str) -> Result<Value>;
 
-    /// Interrupt the currently executing prompt. The caller checks the queue
-    /// first; backends with an unscoped interrupt cannot make that check atomic.
-    async fn interrupt(&self) -> Result<Value>;
+    /// Request interruption of only the named prompt; never fall back to an unscoped interrupt.
+    async fn interrupt(&self, prompt_id: &str) -> Result<Value>;
     async fn upload_image(&self, path: &Path) -> Result<UploadResponse>;
     async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>>;
 

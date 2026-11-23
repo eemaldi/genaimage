@@ -300,7 +300,7 @@ mod tests {
             .unwrap();
         let response = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
         polled.notified().await;
-        state.shutdown.send_replace(true);
+        state.begin_shutdown();
         let response = tokio::time::timeout(Duration::from_secs(2), response)
             .await
             .unwrap()
@@ -349,7 +349,7 @@ mod tests {
         )
         .await
         .is_err());
-        state.shutdown.send_replace(true);
+        state.begin_shutdown();
         tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
             .await
             .unwrap()

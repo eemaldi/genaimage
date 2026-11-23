@@ -46,6 +46,9 @@ pub struct RunResponse {
     pub status: RunStatus,
     pub parameters: Value,
     pub error: Option<String>,
+    /// Node diagnostics from an accepted submission, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_warnings: Option<Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

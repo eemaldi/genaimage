@@ -211,8 +211,19 @@ impl ImageBackend for ComfyUiClient {
             .await
     }
 
-    async fn interrupt(&self) -> Result<Value> {
-        self.post_json("interrupt", &json!({})).await
+    async fn interrupt(&self, prompt_id: &str) -> Result<Value> {
+        // Older ComfyUI versions ignore the JSON and interrupt the queue head.
+        let stats = self.get_json_with_attempts("system_stats", 1).await?;
+        let version = stats
+            .pointer("/system/comfyui_version")
+            .and_then(Value::as_str);
+        if !version.is_some_and(supports_targeted_interrupt) || prompt_id.is_empty() {
+            return Err(HarnessError::UnsupportedOperation(
+                "Targeted interruption requires a prompt ID and ComfyUI 0.3.57 or later with a recognised release version. Upgrade ComfyUI or manage the run in ComfyUI itself; no global interrupt was sent.".into(),
+            ));
+        }
+        self.post_json("interrupt", &json!({"prompt_id": prompt_id}))
+            .await
     }
 
     async fn upload_image(&self, path: &Path) -> Result<UploadResponse> {
@@ -461,7 +472,11 @@ impl ComfyUiClient {
             .map_err(|error| {
                 HarnessError::ComfyUi(format!("ComfyUI POST {path} failed: {error}"))
             })?;
-        parse_response(response, &format!("POST {path}")).await
+        let body = response_body(response, &format!("POST {path}")).await?;
+        if body.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        parse_response_json(&body, &format!("POST {path}"))
     }
     fn endpoint(&self, path: &str) -> Result<Url> {
         self.base_url.join(path).map_err(HarnessError::Url)
@@ -472,6 +487,31 @@ async fn parse_response<T>(response: reqwest::Response, operation: &str) -> Resu
 where
     T: for<'de> Deserialize<'de>,
 {
+    let body = response_body(response, operation).await?;
+    parse_response_json(&body, operation)
+}
+
+fn parse_response_json<T: for<'de> Deserialize<'de>>(body: &str, operation: &str) -> Result<T> {
+    serde_json::from_str(body).map_err(|error| {
+        HarnessError::ComfyUi(format!(
+            "{operation} returned invalid JSON: {error}; body={body}"
+        ))
+    })
+}
+
+fn supports_targeted_interrupt(version: &str) -> bool {
+    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
+    let parsed = (|| {
+        Some((
+            parts.next()?.parse::<u64>().ok()?,
+            parts.next()?.parse::<u64>().ok()?,
+            parts.next()?.parse::<u64>().ok()?,
+        ))
+    })();
+    parts.next().is_none() && parsed.is_some_and(|version| version >= (0, 3, 57))
+}
+
+async fn response_body(response: reqwest::Response, operation: &str) -> Result<String> {
     let status = response.status();
     let url = response.url().clone();
     let body = response.text().await.map_err(|error| {
@@ -484,11 +524,7 @@ where
             "{operation} at {url} returned {status}: {body}"
         )));
     }
-    serde_json::from_str(&body).map_err(|error| {
-        HarnessError::ComfyUi(format!(
-            "{operation} at {url} returned invalid JSON: {error}; body={body}"
-        ))
-    })
+    Ok(body)
 }
 
 fn default_input_type() -> String {

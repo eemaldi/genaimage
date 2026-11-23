@@ -50,28 +50,27 @@ async fn submit(
         )
     })?;
     let key = key.to_owned();
-    let result = tokio::spawn(async move {
-        let result = state.harness.submit_keyed(key, RunRequest {
+    let task_state = state.clone();
+    let result = state.spawn_run_task(async move {
+        let result = task_state.harness.submit_keyed_until(key, RunRequest {
             workflow: body.workflow,
             preset: body.preset,
             parameters: body.parameters,
             version: body.version,
-        }).await?;
+        }, &task_state.lifecycle.deadline).await?;
         if !result.replayed && result.run.status == RunStatus::Queued {
             let id = result.run.id.clone();
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = state.wait_for_shutdown() => {},
-                    result = state.harness.wait_for_run(&id) => {
-                        if let Err(error) = result {
-                            tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
-                        }
-                    }
+            let monitor_state = task_state.clone();
+            task_state.spawn_run_task(async move {
+                let lifecycle = &monitor_state.lifecycle;
+                if let Err(error) = monitor_state.harness.monitor_run(&id, &lifecycle.shutdown, &lifecycle.deadline).await {
+                    tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
                 }
             });
         }
         Ok::<_, HarnessError>(result)
-    }).await.map_err(|error| problem(HarnessError::Database(format!("run submission task failed: {error}"))))?
+    }).ok_or_else(|| problem(HarnessError::ShuttingDown))?
+        .await.map_err(|error| problem(HarnessError::Database(format!("run submission task failed: {error}"))))?
         .map_err(problem)?;
     let status = if result.replayed {
         StatusCode::OK
@@ -210,6 +209,14 @@ fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> 
 
 fn problem(error: HarnessError) -> Problem {
     let (status, recovery) = match &error {
+        HarnessError::ShuttingDown => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Try again after the server restarts, using the same idempotency key.",
+        ),
+        HarnessError::UnsupportedOperation(_) => (
+            StatusCode::BAD_GATEWAY,
+            "Upgrade the configured ComfyUI or manage the run in ComfyUI itself, then reconcile.",
+        ),
         HarnessError::RunNotFound { .. } => (
             StatusCode::NOT_FOUND,
             "Use a run ID returned by the runs API.",
@@ -253,6 +260,7 @@ fn run_response(run: RunRecord) -> api::RunResponse {
         status: api_status(run.status),
         parameters: run.parameters,
         error: run.error,
+        node_warnings: run.node_warnings,
         created_at: run.created_at,
         updated_at: run.updated_at,
         completed_at: run.completed_at,

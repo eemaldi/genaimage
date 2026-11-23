@@ -6,7 +6,11 @@ mod routes;
 mod security;
 mod settings;
 
-use std::sync::Arc;
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -14,14 +18,15 @@ use axum::{
     middleware, Router,
 };
 use genaimage_core::Harness;
-use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::{DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
 
-pub use listener::serve;
+pub use listener::{serve, serve_on_listener};
 pub use problem::Problem;
 
 const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
@@ -29,14 +34,22 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 #[derive(Clone)]
 pub struct AppState {
     settings: Arc<settings::SettingsState>,
-    shutdown: watch::Sender<bool>,
+    lifecycle: Arc<Lifecycle>,
+}
+
+#[derive(Default)]
+struct Lifecycle {
+    admission: Mutex<()>,
+    shutdown: CancellationToken,
+    deadline: CancellationToken,
+    tasks: TaskTracker,
 }
 
 impl AppState {
     pub fn new(harness: Arc<Harness>) -> Self {
         Self {
             settings: Arc::new(settings::SettingsState::new(harness)),
-            shutdown: watch::Sender::new(false),
+            lifecycle: Arc::default(),
         }
     }
 
@@ -47,18 +60,48 @@ impl AppState {
 
     /// Starts graceful draining and notifies long-lived handlers. Idempotent.
     pub fn begin_shutdown(&self) {
-        self.shutdown.send_replace(true);
+        let _admission = self
+            .lifecycle
+            .admission
+            .lock()
+            .expect("task admission lock");
+        self.lifecycle.shutdown.cancel();
+        self.lifecycle.tasks.close();
     }
 
     /// Resolves when graceful draining starts, even if it has already started.
     /// Long-lived response streams (such as SSE) should await this to close
     /// without holding up server shutdown.
     pub async fn wait_for_shutdown(&self) {
-        let _ = self
-            .shutdown
-            .subscribe()
-            .wait_for(|draining| *draining)
-            .await;
+        self.lifecycle.shutdown.cancelled().await;
+    }
+
+    fn spawn_run_task<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> Option<JoinHandle<T>> {
+        let _admission = self
+            .lifecycle
+            .admission
+            .lock()
+            .expect("task admission lock");
+        if self.lifecycle.shutdown.is_cancelled() {
+            return None;
+        }
+        Some(self.lifecycle.tasks.spawn(future))
+    }
+
+    async fn drain_run_tasks(&self, timeout: Duration) {
+        if tokio::time::timeout(timeout, self.lifecycle.tasks.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!("Run task drain timed out; recording unconfirmed submissions");
+            self.lifecycle.deadline.cancel();
+            // Do not abort the SQLite finalisation: the reservation must reflect
+            // the unknown outcome before the server returns.
+            self.lifecycle.tasks.wait().await;
+        }
     }
 }
 

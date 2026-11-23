@@ -141,6 +141,7 @@ async fn cancels_pending_and_executing_prompts_with_the_appropriate_backend_acti
         let api = ApiHarness::start().await;
         install_workflow(&api);
         api.fake.running.store(running, Ordering::SeqCst);
+        api.fake.cancellation_history.store(false, Ordering::SeqCst);
         let submitted = run(
             submit(&api, "cancel", &request()).await,
             StatusCode::ACCEPTED,
@@ -167,6 +168,7 @@ async fn cancels_pending_and_executing_prompts_with_the_appropriate_backend_acti
                 "delete_requested"
             }));
         if running {
+            api.fake.cancellation_history.store(true, Ordering::SeqCst);
             let response = api
                 .request(Method::POST, &format!("{path}/reconcile"))
                 .send()
@@ -251,5 +253,126 @@ async fn lists_with_stable_pages_and_filters_and_reports_problem_details() {
         )
         .await;
     }
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn shutdown_drains_disconnected_submission_and_persists_unknown_at_the_deadline() {
+    use tokio::{
+        io::AsyncWriteExt,
+        net::TcpStream,
+        time::{timeout, Instant},
+    };
+
+    let drain = Duration::from_millis(150);
+    let mut api = ApiHarness::start_with_deadlines(30, drain).await;
+    install_workflow(&api);
+    api.fake.hang_submit_response.store(true, Ordering::SeqCst);
+    let address = api.origin.strip_prefix("http://").unwrap();
+    let mut conn = TcpStream::connect(address).await.unwrap();
+    let body = request().to_string();
+    conn.write_all(format!(
+        "POST {RUNS} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nIdempotency-Key: drain\r\nContent-Length: {}\r\n\r\n{body}", body.len(),
+    ).as_bytes()).await.unwrap();
+    timeout(DEADLINE, async {
+        while api.fake.prompt_id.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("ComfyUI received prompt");
+    drop(conn);
+    assert_eq!(
+        api.core.list_runs(1).unwrap()[0].status,
+        genaimage_core::RunStatus::Submitting
+    );
+    let start = Instant::now();
+    api.drain().await;
+    assert!(
+        start.elapsed() >= drain,
+        "the drain must allow time for acknowledgement"
+    );
+    let replay = api
+        .core
+        .submit_keyed("drain".into(), serde_json::from_value(request()).unwrap())
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(
+        replay.run.status,
+        genaimage_core::RunStatus::UnknownSubmission
+    );
+    assert!(replay
+        .run
+        .error
+        .unwrap()
+        .contains("Shutdown deadline expired"));
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn targeted_interrupt_does_not_interrupt_a_replacement_and_refuses_older_comfyui() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    api.fake.running.store(true, Ordering::SeqCst);
+    let submitted = run(
+        submit(&api, "cancel-target", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let path = format!("{RUNS}/{}/cancel", submitted.id);
+    for unsupported in [Some("0.3.56".into()), None] {
+        *api.fake.comfyui_version.lock().unwrap() = unsupported;
+        let response = api.request(Method::POST, &path).send().await.unwrap();
+        let problem = ApiHarness::assert_problem(response, StatusCode::BAD_GATEWAY).await;
+        assert!(problem.recovery.contains("Upgrade"));
+        assert_eq!(api.fake.interrupt_calls.load(Ordering::SeqCst), 0);
+    }
+    *api.fake.comfyui_version.lock().unwrap() = Some("0.3.57".into());
+    *api.fake.interrupt_queue_head.lock().unwrap() = Some("different-prompt".into());
+    let response = api.request(Method::POST, &path).send().await.unwrap();
+    assert_eq!(
+        run(response, StatusCode::OK).await.status,
+        RunStatus::Cancelling
+    );
+    assert_eq!(
+        api.fake.interrupt_target.lock().unwrap().as_deref(),
+        Some(submitted.prompt_id.as_str())
+    );
+    assert_eq!(api.fake.interrupt_calls.load(Ordering::SeqCst), 1);
+    assert!(api.fake.interrupted_prompt_id.lock().unwrap().is_none());
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn accepted_partial_prompt_persists_warnings_and_monitors_to_completion() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let warnings = json!({"9": {"errors": [{"message": "one output failed validation"}]}});
+    *api.fake.node_errors.lock().unwrap() = warnings.clone();
+    let mut subscription = api.subscribe();
+    let submitted = run(
+        submit(&api, "partial", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    assert_eq!(submitted.status, RunStatus::Queued);
+    assert_eq!(submitted.node_warnings.as_ref(), Some(&warnings));
+    let path = format!("{RUNS}/{}", submitted.id);
+    let persisted: RunEventsResponse = api.get_json(&format!("{path}/events")).await;
+    assert!(persisted.events.iter().any(
+        |event| event.event_type == "prompt_queued" && event.payload["node_errors"] == warnings
+    ));
+    api.fake.complete.store(true, Ordering::SeqCst);
+    ApiHarness::await_event(
+        &mut subscription,
+        DEADLINE,
+        |e| matches!(&e.event, Event::RunCompleted { run } if run.id == submitted.id),
+    )
+    .await;
+    let persisted: RunResponse = api.get_json(&path).await;
+    assert_eq!(persisted.status, RunStatus::Completed);
+    assert_eq!(persisted.node_warnings, Some(warnings));
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
     api.shutdown().await;
 }

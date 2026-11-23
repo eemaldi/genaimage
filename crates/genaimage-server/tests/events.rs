@@ -153,6 +153,7 @@ async fn filters_replay_and_live_events_by_run_id() {
             output_dir: "outputs".into(),
             manifest_path: None,
             error: None,
+            node_warnings: None,
             created_at: now,
             updated_at: now,
             completed_at: None,

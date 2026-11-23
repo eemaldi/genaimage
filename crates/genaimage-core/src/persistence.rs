@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +84,8 @@ pub struct RunRecord {
     pub output_dir: String,
     pub manifest_path: Option<String>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_warnings: Option<Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -458,6 +460,22 @@ impl RunRepository {
         })
     }
 
+    fn acknowledge_submission(
+        &self,
+        id: &str,
+        prompt_id: &str,
+        warnings: Option<&Value>,
+    ) -> Result<Option<RunRecord>> {
+        let warnings = warnings.map(serde_json::to_string).transpose()?;
+        self.guarded(|connection| {
+            Ok(connection.query_row(
+                "UPDATE runs SET status = 'queued', prompt_id = ?2, updated_at = ?3, node_warnings_json = ?4
+                 WHERE id = ?1 AND status = 'submitting' RETURNING *",
+                params![id, prompt_id, Utc::now().to_rfc3339(), warnings], map_run,
+            ).optional()?)
+        })
+    }
+
     pub fn update_prompt_id(&self, run_id: &str, prompt_id: &str) -> Result<RunRecord> {
         self.guarded(|connection| {
             let now = Utc::now().to_rfc3339();
@@ -789,7 +807,14 @@ const MIGRATION_4: &str = r#"
     );
     CREATE INDEX runs_created_id_idx ON runs(created_at, id);
 "#;
-const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_1, MIGRATION_3, MIGRATION_4];
+const MIGRATION_5: &str = "ALTER TABLE runs ADD COLUMN node_warnings_json TEXT;";
+const MIGRATIONS: &[&str] = &[
+    MIGRATION_1,
+    MIGRATION_1,
+    MIGRATION_3,
+    MIGRATION_4,
+    MIGRATION_5,
+];
 
 // The first version that must already contain each table before migration.
 const EXPECTED_TABLES: [(&str, i64, &str); 5] = [
@@ -1048,6 +1073,17 @@ impl AsyncRunRepository {
         .await
     }
 
+    pub(crate) async fn acknowledge_submission(
+        &self,
+        id: &str,
+        prompt_id: String,
+        warnings: Option<Value>,
+    ) -> Result<Option<RunRecord>> {
+        let id = id.to_owned();
+        self.call(move |repo| repo.acknowledge_submission(&id, &prompt_id, warnings.as_ref()))
+            .await
+    }
+
     pub async fn update_prompt_id(&self, run_id: &str, prompt_id: &str) -> Result<RunRecord> {
         let run_id = run_id.to_owned();
         let prompt_id = prompt_id.to_owned();
@@ -1107,6 +1143,13 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         output_dir: row.get("output_dir")?,
         manifest_path: row.get("manifest_path")?,
         error: row.get("error")?,
+        node_warnings: row
+            .get::<_, Option<String>>("node_warnings_json")?
+            .map(|value| {
+                serde_json::from_str(&value)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+            })
+            .transpose()?,
         created_at: parse_sqlite_time(row, row.as_ref().column_index("created_at")?)?,
         updated_at: parse_sqlite_time(row, row.as_ref().column_index("updated_at")?)?,
         completed_at: row
@@ -1215,15 +1258,12 @@ mod submission_tests {
         };
         assert_eq!(new.id, existing.id);
         let reopened = RunRepository::open(&path).unwrap();
-        reopened
-            .update_status(&new.id, RunStatus::UnknownSubmission, None, None)
-            .unwrap();
         let replay = reopened
             .find_submission("key", "fingerprint")
             .unwrap()
             .unwrap();
         assert_eq!(replay.id, new.id);
-        assert_eq!(replay.status, RunStatus::UnknownSubmission);
+        assert_eq!(replay.status, RunStatus::Submitting);
         assert!(matches!(
             reopened.find_submission("key", "different"),
             Err(HarnessError::IdempotencyConflict)

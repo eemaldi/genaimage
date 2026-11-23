@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::time::{interval, Duration};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -393,7 +394,10 @@ impl Harness {
     }
 
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
-        Ok(self.submit_inner(request, None).await?.run)
+        Ok(self
+            .submit_inner(request, None, &CancellationToken::new())
+            .await?
+            .run)
     }
 
     /// Submits a configured workflow by ID with a key scoped to the state database.
@@ -401,35 +405,87 @@ impl Harness {
     pub async fn submit_keyed(&self, key: String, request: RunRequest) -> Result<KeyedSubmission> {
         let harness = self.clone();
         tokio::spawn(async move {
-            let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&request)?));
-            let _key_guard = harness
-                .events
-                .run_lock(&harness.database_identity, &key, RunLockKind::SubmitKey)
-                .lock_owned()
-                .await;
-            if let Some(run) = harness
-                .repository
-                .as_async()
-                .find_submission(key.clone(), fingerprint.clone())
-                .await?
-            {
-                return Ok(KeyedSubmission {
-                    run,
-                    replayed: true,
-                });
-            }
             harness
-                .submit_inner(request, Some((key, fingerprint)))
+                .submit_keyed_until(key, request, &CancellationToken::new())
                 .await
         })
         .await
         .map_err(transition_task_error)?
     }
 
+    /// Like `submit_keyed`, but the caller owns the task and can end network
+    /// acknowledgement waits via `deadline`. Await it through durable finalisation.
+    pub async fn submit_keyed_until(
+        &self,
+        key: String,
+        request: RunRequest,
+        deadline: &CancellationToken,
+    ) -> Result<KeyedSubmission> {
+        let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&request)?));
+        let lock = self
+            .events
+            .run_lock(&self.database_identity, &key, RunLockKind::SubmitKey);
+        let _key_guard = tokio::select! {
+            biased;
+            _ = deadline.cancelled() => return Err(HarnessError::ShuttingDown),
+            guard = lock.lock() => guard,
+        };
+        let repository = self.repository.as_async();
+        if let Some(run) = repository
+            .find_submission(key.clone(), fingerprint.clone())
+            .await?
+        {
+            return Ok(KeyedSubmission {
+                run: self.recover_submission(run).await?,
+                replayed: true,
+            });
+        }
+        self.submit_inner(request, Some((key, fingerprint)), deadline)
+            .await
+    }
+
+    // Acquire before publishing the run in SQLite. The OS releases ownership
+    // on process death, even if a different Harness is serving this database.
+    fn try_claim_submission(&self, run_id: &str) -> Result<Option<File>> {
+        let mut directory = self.database_identity.as_os_str().to_os_string();
+        directory.push(".submissions");
+        let directory = PathBuf::from(directory);
+        fs::create_dir_all(&directory)?;
+        let name = hex::encode(Sha256::digest(run_id.as_bytes()));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join(name))?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(file)),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn recover_submission(&self, run: RunRecord) -> Result<RunRecord> {
+        if run.status != RunStatus::Submitting {
+            return Ok(run);
+        }
+        let Some(_owner) = self.try_claim_submission(&run.id)? else {
+            return Ok(run);
+        };
+        self.mark_submission_unknown(
+            &run.id,
+            "The submission owner exited before the prompt acknowledgement was recorded.",
+        )
+        .await
+    }
+
     async fn submit_inner(
         &self,
         request: RunRequest,
         keyed: Option<(String, String)>,
+        deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
         let repository = self.repository.as_async();
         let loaded = if keyed.is_some() {
@@ -456,7 +512,11 @@ impl Harness {
                 "Server-side image file paths are not supported by the runs API.".into(),
             ));
         }
-        self.validate_workflow_nodes(&bound.workflow).await?;
+        tokio::select! {
+            biased;
+            _ = deadline.cancelled() => return Err(HarnessError::ShuttingDown),
+            result = self.validate_workflow_nodes(&bound.workflow) => result?,
+        }
         let mut source_inputs = Vec::new();
         let mut uploaded_names = BTreeMap::new();
         for (parameter, relative_path) in &bound.image_uploads {
@@ -480,6 +540,9 @@ impl Harness {
             .run_lock(&self.database_identity, &run_id, RunLockKind::Reconcile)
             .lock_owned()
             .await;
+        let owner = self.try_claim_submission(&run_id)?.ok_or_else(|| {
+            HarnessError::Database("new run already has a submission owner".into())
+        })?;
         let new_run = NewRun {
             id: run_id.clone(),
             prompt_id: prompt_id.clone(),
@@ -517,7 +580,7 @@ impl Harness {
             {
                 SubmissionReservation::Existing(run) => {
                     return Ok(KeyedSubmission {
-                        run,
+                        run: self.recover_submission(run).await?,
                         replayed: true,
                     })
                 }
@@ -561,14 +624,15 @@ impl Harness {
             )
             .await?;
 
-        let response = self
-            .backend
-            .submit(&bound.workflow, &client_id, &prompt_id)
-            .await;
+        let response = tokio::select! {
+            biased;
+            _ = deadline.cancelled() => Err(HarnessError::ShuttingDown),
+            response = self.backend.submit(&bound.workflow, &client_id, &prompt_id) => response,
+        };
         let harness = self.clone();
         let run = tokio::spawn(async move {
-            let _guard = run_guard;
-            harness.finish_submission(run, &prompt_id, response).await
+            let (_guard, _owner) = (run_guard, owner);
+            harness.finish_submission(run, response).await
         })
         .await
         .map_err(transition_task_error)??;
@@ -580,103 +644,95 @@ impl Harness {
 
     async fn finish_submission(
         &self,
-        mut run: RunRecord,
-        prompt_id: &str,
+        run: RunRecord,
         response: Result<PromptResponse>,
     ) -> Result<RunRecord> {
-        let repository = self.repository.as_async();
-        match response {
-            Ok(response) => {
-                let validation_failed = response
-                    .node_errors
-                    .as_object()
-                    .is_some_and(|errors| !errors.is_empty())
-                    || response
-                        .node_errors
-                        .as_array()
-                        .is_some_and(|errors| !errors.is_empty());
-                if validation_failed {
-                    let error = format!(
-                        "{} rejected one or more workflow nodes: {}",
-                        self.backend.name(),
-                        response.node_errors
-                    );
-                    let Some((updated, transition)) = self
-                        .transition_to_terminal(&run.id, RunStatus::Failed, Some(&error), None)
-                        .await?
-                    else {
-                        return repository.get(&run.id).await;
-                    };
-                    run = updated;
-                    repository
-                        .record_event(
+        let response =
+            match response {
+                Ok(response) if !response.prompt_id.trim().is_empty() => response,
+                Ok(_) => {
+                    return self
+                        .mark_submission_unknown(
                             &run.id,
-                            "validation_failed",
-                            Some(&error),
-                            &response.node_errors,
+                            "The backend response did not contain a prompt ID.",
                         )
-                        .await?;
-                    transition.publish(Event::RunFailed { run: run.clone() });
-                    return Ok(run);
+                        .await
                 }
-                let transition = TransitionGuard::new(&self.events);
-                if response.prompt_id != prompt_id {
-                    run = repository
-                        .update_prompt_id(&run.id, &response.prompt_id)
-                        .await?;
+                Err(HarnessError::ShuttingDown) => return self
+                    .mark_submission_unknown(
+                        &run.id,
+                        "Shutdown deadline expired before the prompt acknowledgement was recorded.",
+                    )
+                    .await,
+                Err(error) => {
+                    return self
+                        .mark_submission_unknown(&run.id, &error.to_string())
+                        .await
                 }
-                let Some(updated) = repository
-                    .compare_and_set_status(
-                        &run.id,
-                        RunStatus::Submitting,
-                        RunStatus::Queued,
-                        None,
-                        None,
-                    )
-                    .await?
-                else {
-                    transition.disarm();
-                    return repository.get(&run.id).await;
-                };
-                run = updated;
-                repository
-                    .record_event(
-                        &run.id,
-                        "prompt_queued",
-                        Some(&format!("{} accepted the prompt", self.backend.name())),
-                        &serde_json::to_value(response)?,
-                    )
-                    .await?;
-                transition.publish(Event::RunQueued { run: run.clone() });
-            }
-            Err(error) => {
-                let message = error.to_string();
-                let transition = TransitionGuard::new(&self.events);
-                let Some(updated) = repository
-                    .compare_and_set_status(
-                        &run.id,
-                        RunStatus::Submitting,
-                        RunStatus::UnknownSubmission,
-                        Some(&message),
-                        None,
-                    )
-                    .await?
-                else {
-                    transition.disarm();
-                    return repository.get(&run.id).await;
-                };
-                run = updated;
-                repository
-                    .record_event(
-                        &run.id,
-                        "submission_unknown",
-                        Some("Submission was not automatically retried"),
-                        &json!({ "error": message }),
-                    )
-                    .await?;
-                transition.publish(Event::RunUnknownSubmission { run: run.clone() });
-            }
-        }
+            };
+        let warnings = response
+            .node_errors
+            .as_object()
+            .is_some_and(|errors| !errors.is_empty())
+            || response
+                .node_errors
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty());
+        let repository = self.repository.as_async();
+        let transition = TransitionGuard::new(&self.events);
+        let Some(run) = repository
+            .acknowledge_submission(
+                &run.id,
+                response.prompt_id.clone(),
+                warnings.then(|| response.node_errors.clone()),
+            )
+            .await?
+        else {
+            transition.disarm();
+            return repository.get(&run.id).await;
+        };
+        let message = if warnings {
+            " accepted the prompt with node warnings"
+        } else {
+            " accepted the prompt"
+        };
+        repository
+            .record_event(
+                &run.id,
+                "prompt_queued",
+                Some(&format!("{}{message}", self.backend.name())),
+                &serde_json::to_value(response)?,
+            )
+            .await?;
+        transition.publish(Event::RunQueued { run: run.clone() });
+        Ok(run)
+    }
+
+    async fn mark_submission_unknown(&self, id: &str, message: &str) -> Result<RunRecord> {
+        let repository = self.repository.as_async();
+        let transition = TransitionGuard::new(&self.events);
+        let Some(run) = repository
+            .compare_and_set_status(
+                id,
+                RunStatus::Submitting,
+                RunStatus::UnknownSubmission,
+                Some(message),
+                None,
+            )
+            .await?
+        else {
+            transition.disarm();
+            return repository.get(id).await;
+        };
+        repository
+            .record_event(
+                id,
+                "submission_unknown",
+                Some("Submission was not automatically retried"),
+                &json!({"error": message}),
+            )
+            .await?;
+        transition.publish(Event::RunUnknownSubmission { run: run.clone() });
         Ok(run)
     }
 
@@ -706,8 +762,10 @@ impl Harness {
             .run_lock(&self.database_identity, run_id, RunLockKind::Reconcile);
         let _guard = lock.lock().await;
         let repository = self.repository.as_async();
-        let mut run = repository.get(run_id).await?;
-        if run.status.is_terminal() {
+        let mut run = self
+            .recover_submission(repository.get(run_id).await?)
+            .await?;
+        if run.status.is_terminal() || run.status == RunStatus::Submitting {
             return Ok(ReconcileResult {
                 outputs: repository.outputs(run_id).await?,
                 run,
@@ -885,14 +943,48 @@ impl Harness {
     }
 
     pub async fn wait_for_run(&self, run_id: &str) -> Result<RunRecord> {
+        self.wait_for_run_inner(run_id, None).await
+    }
+
+    /// Stop observing when draining starts, and stop an in-flight poll at the deadline.
+    pub async fn monitor_run(
+        &self,
+        run_id: &str,
+        stop: &CancellationToken,
+        deadline: &CancellationToken,
+    ) -> Result<()> {
+        tokio::select! {
+            biased;
+            _ = deadline.cancelled() => Ok(()),
+            result = self.wait_for_run_inner(run_id, Some(stop)) => result.map(|_| ()),
+        }
+    }
+
+    async fn wait_for_run_inner(
+        &self,
+        run_id: &str,
+        stop: Option<&CancellationToken>,
+    ) -> Result<RunRecord> {
         let repository = self.repository.as_async();
         let initial = repository.get(run_id).await?;
-        let mut monitor = self.backend.monitor_events(&initial.client_id).await?;
+        let stopped = async {
+            match stop {
+                Some(stop) => stop.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(stopped);
+        let mut monitor = tokio::select! {
+            biased;
+            _ = &mut stopped => return Ok(initial),
+            result = self.backend.monitor_events(&initial.client_id) => result?,
+        };
         let mut poll = interval(Duration::from_secs(1));
         poll.tick().await;
         let mut events_open = true;
         loop {
             tokio::select! {
+                _ = &mut stopped => return repository.get(run_id).await,
                 event = monitor.recv(), if events_open => {
                     if let Some(event) = event {
                         let relevant = event.prompt_id.as_deref().is_none()
@@ -912,7 +1004,11 @@ impl Harness {
                     }
                 }
                 _ = poll.tick() => {
-                    let result = self.reconcile(run_id).await?;
+                    let result = if stop.is_some() {
+                        self.reconcile_inner(run_id).await?
+                    } else {
+                        self.reconcile(run_id).await?
+                    };
                     self.events.publish(Event::RunProgress { run: result.run.clone(), backend_event: None });
                     if result.run.status.is_terminal() {
                         return Ok(result.run);
@@ -969,7 +1065,7 @@ impl Harness {
             }
         };
         let response = if running {
-            self.backend.interrupt().await
+            self.backend.interrupt(&run.prompt_id).await
         } else {
             self.backend.delete_queued(&run.prompt_id).await
         };

@@ -71,11 +71,11 @@ callers must provide the intended port.
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
-  hint. On SIGINT or SIGTERM, the listener stops accepting requests and drains
-  in-flight requests without changing stored run statuses. Long-lived handlers
-  can await `AppState::wait_for_shutdown` to close their streams as draining starts.
-  The server closes any connections still open after five seconds, including
-  clients that have stopped reading.
+  hint. On SIGINT or SIGTERM, the listener stops accepting requests and new
+  submissions, signals monitors and SSE streams to stop, and drains connections
+  and run tasks concurrently. After five seconds it closes remaining
+  connections and ends pending acknowledgement waits, recording unconfirmed
+  submissions as `unknown_submission` before exiting.
 
 The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
 Host headers for its actual port, plus the configured bind IP when it is a
@@ -210,7 +210,8 @@ configured manifest ID, not a local path. `preset`, `parameters` (default `{}`)
 and `version` (an optional new output directory name) are optional. Server-side
 image file paths are not accepted; the uploads API is planned. The response
 includes the run and prompt IDs, workflow ID/version/hash, effective parameters,
-status, timestamps and any recorded error.
+status, timestamps and any recorded error. An acknowledged partial submission
+is accepted, and its `node_warnings` appear in the run and its queued event.
 
 Every submission requires one `Idempotency-Key` of 1–128 visible ASCII
 characters, excluding commas. Use a fresh key for each distinct run. The server
@@ -221,8 +222,9 @@ bound to their runs across restarts. A replay returns HTTP 200 and the original
 run's **current** state; a different request for a reserved key returns 409.
 Validation rejected before reservation does not consume the key. If artefact
 preparation fails after reservation, the run is recorded as `failed` and is not
-sent. A crash during submission can leave a `submitting` record; reconcile it
-rather than creating a new run to replace it blindly.
+sent. A process crash can leave a `submitting` record. Replaying its key or
+reconciling it recovers it as `unknown_submission` when no process holds its
+submission lock. This does not release the key or resend the prompt.
 
 A timeout or other unconfirmed `/prompt` response produces
 `unknown_submission`. Neither a retry with the same key nor reconciliation
@@ -309,8 +311,10 @@ Cancellation is confirmed only by evidence for the target prompt, such as
 history recording an interruption. A queue/history gap or deletion request
 acknowledgement alone leaves the run in `cancelling`; a later success or error
 still resolves it. ComfyUI may provide no history for deletion of a queued
-prompt, and its global interrupt can affect a different prompt if the target
-finishes after the queue check.
+prompt. For running prompts, GenAImage sends a targeted interrupt only to
+recognised ComfyUI releases from 0.3.57 onward. For versions without confirmed
+support, upgrade or manage cancellation in ComfyUI itself; GenAImage never
+falls back to a global interrupt.
 
 Preserve source workflows and existing run records; write new
 versions instead of overwriting them. A successful technical run is not creative

@@ -27,7 +27,7 @@ struct FakeImageBackend {
 #[derive(Default)]
 struct FakeState {
     lose_submit_response: bool,
-    reject_submission: bool,
+    submission_warnings: bool,
     submission: Option<(Value, String, String)>,
     queue_position: Option<QueuePosition>,
     history_outcome: HistoryOutcome,
@@ -119,7 +119,7 @@ impl ImageBackend for FakeImageBackend {
             let response = PromptResponse {
                 prompt_id: prompt_id.to_owned(),
                 number: None,
-                node_errors: if state.reject_submission {
+                node_errors: if state.submission_warnings {
                     json!({"node": "invalid"})
                 } else {
                     Value::Null
@@ -194,12 +194,13 @@ impl ImageBackend for FakeImageBackend {
         Ok(Value::Null)
     }
 
-    async fn interrupt(&self) -> Result<Value> {
+    async fn interrupt(&self, prompt_id: &str) -> Result<Value> {
         let gate = self.state.lock().unwrap().interrupt_gate.clone();
         if let Some(gate) = gate {
             gate.wait().await;
         }
         let mut state = self.state.lock().unwrap();
+        assert_eq!(prompt_id, state.submission.as_ref().unwrap().2);
         assert!(matches!(state.queue_position, Some(QueuePosition::Running)));
         state.interrupt_requested = true;
         if state.fail_interrupt {
@@ -633,7 +634,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
+    db.execute_batch("ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {
@@ -844,15 +845,15 @@ async fn failed_terminal_record_forces_live_and_replay_resync() {
 }
 
 #[tokio::test]
-async fn rejected_submission_record_failure_invalidates_the_stream() {
+async fn acknowledged_submission_record_failure_invalidates_the_stream() {
     let (_workspace, harness, state, request) = setup(false);
-    state.lock().unwrap().reject_submission = true;
+    state.lock().unwrap().submission_warnings = true;
     let mut events = harness.events().subscribe();
     let db = rusqlite::Connection::open(&harness.config().state_database).unwrap();
-    db.execute_batch("CREATE TRIGGER reject_validation BEFORE INSERT ON run_events WHEN NEW.event_type = 'validation_failed' BEGIN SELECT RAISE(FAIL, 'test failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER reject_acknowledgement BEFORE INSERT ON run_events WHEN NEW.event_type = 'prompt_queued' BEGIN SELECT RAISE(FAIL, 'test failure'); END;").unwrap();
     assert!(harness.submit(request).await.is_err());
     let runs = harness.list_runs(1).unwrap();
-    assert_eq!(runs[0].status, RunStatus::Failed);
+    assert_eq!(runs[0].status, RunStatus::Queued);
     assert!(matches!(
         events.recv().await,
         Err(crate::ReceiveError::ResyncRequired(
@@ -1207,4 +1208,82 @@ async fn persisted_compare_and_set_deduplicates_across_separate_buses() {
         }
     }
     assert_eq!(starts, 1);
+}
+
+#[tokio::test]
+async fn abandoned_reservation_is_recovered_without_resending() {
+    for replay_first in [true, false] {
+        let (_workspace, harness, state, request) = setup(false);
+        let (gate, mut entered) = new_gate();
+        state.lock().unwrap().submit_gate = Some(gate);
+        let live = {
+            let harness = harness.clone();
+            let request = request.clone();
+            tokio::spawn(async move {
+                harness
+                    .submit_keyed_until("durable-key".into(), request, &CancellationToken::new())
+                    .await
+            })
+        };
+        timeout(Duration::from_secs(2), entered.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let run = harness.list_runs(1).unwrap().remove(0);
+        let config = harness.config().clone();
+        let reopen = || {
+            Harness::new(
+                config.clone(),
+                Arc::new(FakeImageBackend {
+                    state: Arc::clone(&state),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+        };
+        // Opening a second harness must not confuse a live owner with a crash.
+        let observer = reopen();
+        let replay = observer
+            .submit_keyed("durable-key".into(), request.clone())
+            .await
+            .unwrap();
+        assert_eq!(replay.run.status, RunStatus::Submitting);
+        drop(observer);
+        live.abort();
+        assert!(matches!(live.await, Err(error) if error.is_cancelled()));
+        drop(harness);
+        state.lock().unwrap().queue_position = None;
+        let reopened = reopen();
+        if !replay_first {
+            assert_eq!(
+                reopened.reconcile(&run.id).await.unwrap().run.status,
+                RunStatus::UnknownSubmission
+            );
+        }
+        let replay = reopened
+            .submit_keyed("durable-key".into(), request)
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.run.id, run.id);
+        assert_eq!(replay.run.status, RunStatus::UnknownSubmission);
+        assert_eq!(
+            reopened.reconcile(&run.id).await.unwrap().run.status,
+            RunStatus::UnknownSubmission
+        );
+        // The fake rejects any additional submission; the original is intact.
+        assert_eq!(
+            state.lock().unwrap().submission.as_ref().unwrap().2,
+            run.prompt_id
+        );
+        assert_eq!(
+            reopened
+                .run_events(&run.id, 10)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "submission_unknown")
+                .count(),
+            1
+        );
+    }
 }

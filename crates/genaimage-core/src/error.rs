@@ -33,6 +33,10 @@ pub enum HarnessError {
     RunNotFound { run_id: String },
     #[error("this idempotency key already belongs to a different request")]
     IdempotencyConflict,
+    #[error("the server is shutting down")]
+    ShuttingDown,
+    #[error("{0}")]
+    UnsupportedOperation(String),
     #[error("{0}")]
     InvalidRunRequest(String),
     #[error("{0}")]
