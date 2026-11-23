@@ -566,7 +566,7 @@ fn run_wait_preserves_json_and_human_progress() {
     );
     write(
         &workflows.join("test.genaimage.json"),
-        r#"{"schema_version":1,"id":"test","version":"1.0.0","workflow":"api.json"}"#,
+        r#"{"schema_version":2,"id":"test","version":"1.0.0","workflow":"api.json"}"#,
     );
 
     for json_mode in [true, false] {
