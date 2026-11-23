@@ -142,6 +142,8 @@ processing live events. If the replacement stream also signals `resync`, start
 again with a fresh stream and snapshot. Resync frames are not subject to
 `run_id` filtering. Slow readers do not block event publishers.
 
+### Workflows API
+
 The workflows API is read-only apart from validation, which does not submit a run:
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
