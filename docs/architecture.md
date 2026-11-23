@@ -57,12 +57,14 @@ loopback listener without installing process signal handlers.
 - `GET /api/v1/health` returns HTTP 200 while the server is running, with `self`
   set to `ok`, `image_backend` set to `ok` or `unavailable`, and `llm` set to
   `not_configured`. It checks the image backend through `Harness::health` on
-  each request; an unavailable backend does not prevent server startup.
+  each request with a two-second deadline. If unavailable, `image_backend_reason`
+  is `timeout` or `probe_failed`; neither prevents server startup.
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
   hint. On SIGINT or SIGTERM, the listener stops accepting requests and drains
-  in-flight requests without changing stored run statuses.
+  in-flight requests without changing stored run statuses. Long-lived handlers
+  can await `AppState::wait_for_shutdown` to close their streams as draining starts.
 
 Workflows, runs, events (SSE), outputs, uploads, settings and OpenAPI endpoints
 are planned, as are the browser portal and its additional request hardening.

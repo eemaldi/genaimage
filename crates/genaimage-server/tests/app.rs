@@ -1,3 +1,12 @@
+use std::{
+    future::pending,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
 use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
@@ -11,7 +20,10 @@ use genaimage_core::{Harness, HarnessConfig};
 use genaimage_server::{build_app, AppState};
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use tokio::net::{TcpListener, TcpSocket};
+use tokio::{
+    net::{TcpListener, TcpSocket},
+    time::timeout,
+};
 use tower::ServiceExt;
 
 async fn app(workspace: &TempDir, backend_url: String) -> Router {
@@ -23,9 +35,7 @@ async fn app(workspace: &TempDir, backend_url: String) -> Router {
         })
         .unwrap();
     let backend = ComfyUiClient::new(&config.comfyui).unwrap();
-    let harness = Harness::new_async(config, std::sync::Arc::new(backend))
-        .await
-        .unwrap();
+    let harness = Harness::new_async(config, Arc::new(backend)).await.unwrap();
     build_app(AppState::new(harness.into()))
 }
 
@@ -85,12 +95,45 @@ async fn health_reports_an_unreachable_backend_and_generates_request_ids() {
         ids.push(response.headers()["x-request-id"].clone());
         assert_eq!(
             health_json(response).await,
-            json!({"self": "ok", "image_backend": "unavailable", "llm": "not_configured"})
+            json!({"self": "ok", "image_backend": "unavailable", "image_backend_reason": "probe_failed", "llm": "not_configured"})
         );
     }
     assert!(!ids[0].is_empty());
     assert!(!ids[1].is_empty());
     assert_ne!(ids[0], ids[1]);
+}
+
+#[tokio::test]
+async fn health_times_out_when_the_backend_accepts_but_does_not_respond() {
+    let received = Arc::new(AtomicBool::new(false));
+    let fake = Router::new().route(
+        "/system_stats",
+        get({
+            let received = Arc::clone(&received);
+            move || async move {
+                received.store(true, Ordering::Relaxed);
+                pending::<StatusCode>().await
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let backend = tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
+    let workspace = TempDir::new().unwrap();
+    let router = app(&workspace, url).await;
+    let response = timeout(
+        Duration::from_secs(5),
+        router.oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap()),
+    )
+    .await
+    .expect("health should return before the general backend timeout")
+    .unwrap();
+    assert!(received.load(Ordering::Relaxed));
+    assert_eq!(
+        health_json(response).await,
+        json!({"self": "ok", "image_backend": "unavailable", "image_backend_reason": "timeout", "llm": "not_configured"})
+    );
+    backend.abort();
 }
 
 #[tokio::test]

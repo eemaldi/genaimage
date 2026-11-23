@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use genaimage_core::Harness;
+use tokio::sync::watch;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::{DefaultOnResponse, TraceLayer},
@@ -25,11 +26,26 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 #[derive(Clone)]
 pub struct AppState {
     harness: Arc<Harness>,
+    shutdown: watch::Sender<bool>,
 }
 
 impl AppState {
     pub fn new(harness: Arc<Harness>) -> Self {
-        Self { harness }
+        Self {
+            harness,
+            shutdown: watch::Sender::new(false),
+        }
+    }
+
+    /// Resolves when graceful draining starts, even if it has already started.
+    /// Long-lived response streams (such as SSE) should await this to close
+    /// without holding up server shutdown.
+    pub async fn wait_for_shutdown(&self) {
+        let _ = self
+            .shutdown
+            .subscribe()
+            .wait_for(|draining| *draining)
+            .await;
     }
 }
 

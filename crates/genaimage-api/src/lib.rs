@@ -7,6 +7,8 @@ pub struct HealthResponse {
     #[serde(rename = "self")]
     pub server: HealthStatus,
     pub image_backend: HealthStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_backend_reason: Option<ImageBackendHealthReason>,
     pub llm: HealthStatus,
 }
 
@@ -16,6 +18,13 @@ pub enum HealthStatus {
     Ok,
     Unavailable,
     NotConfigured,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageBackendHealthReason {
+    ProbeFailed,
+    Timeout,
 }
 
 /// RFC 9457 problem details with a GenAImage recovery hint.

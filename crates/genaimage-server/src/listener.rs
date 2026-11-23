@@ -9,11 +9,13 @@ use crate::{build_app, AppState};
 pub async fn serve(state: AppState) -> io::Result<()> {
     let config = &state.harness.config().server;
     let listener = bind_loopback(&config.host, config.port).await?;
-    let shutdown = shutdown_signal()?;
+    let signal = shutdown_signal()?;
+    let shutdown = state.shutdown.clone();
     tracing::info!(address = %listener.local_addr()?, "GenAImage server listening");
     axum::serve(listener, build_app(state))
-        .with_graceful_shutdown(async {
-            shutdown.await;
+        .with_graceful_shutdown(async move {
+            signal.await;
+            shutdown.send_replace(true);
             tracing::info!("Shutdown requested; draining in-flight requests");
         })
         .await
