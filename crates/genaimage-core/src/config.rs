@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -328,32 +329,52 @@ impl HarnessConfig {
     }
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LegacyConfig {
+    #[serde(rename = "active_profile")]
+    _active_profile: String,
+    #[serde(rename = "profiles")]
+    _profiles: BTreeMap<String, LegacyComfyUiProfile>,
+    #[serde(rename = "paths")]
+    _paths: LegacyPaths,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LegacyComfyUiProfile {
+    #[serde(rename = "base_url")]
+    _base_url: String,
+    #[serde(rename = "request_timeout_seconds")]
+    _request_timeout_seconds: u64,
+    #[serde(rename = "websocket_reconnect_seconds")]
+    _websocket_reconnect_seconds: u64,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LegacyPaths {
+    #[serde(rename = "state_database")]
+    _state_database: PathBuf,
+    #[serde(rename = "workflows")]
+    _workflows: PathBuf,
+    #[serde(rename = "runs")]
+    _runs: PathBuf,
+    #[serde(rename = "characters")]
+    _characters: Option<serde::de::IgnoredAny>,
+}
+
 fn check_legacy_workspace_config(workspace: &Path) -> Result<()> {
     let path = workspace.join(PROJECT_CONFIG);
-    let Some(value) = fs::read_to_string(&path)
-        .ok()
-        .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
-    else {
+    let Ok(source) = fs::read_to_string(&path) else {
         return Ok(());
     };
-    let paths = value.get("paths").and_then(toml::Value::as_table);
-    let legacy_paths = paths.is_some_and(|paths| {
-        paths.contains_key("characters")
-            || ((paths.contains_key("state_database") || paths.contains_key("runs"))
-                && !["server", "comfyui", "llm"]
-                    .iter()
-                    .any(|key| value.get(key).and_then(toml::Value::as_table).is_some()))
-    });
-    if value.get("active_profile").is_some()
-        || value
-            .get("profiles")
-            .and_then(toml::Value::as_table)
-            .is_some()
-        || legacy_paths
+    if toml::from_str::<HarnessConfig>(&source).is_ok()
+        || toml::from_str::<LegacyConfig>(&source).is_err()
     {
-        return Err(invalid("workspace config", &path.display().to_string(), &format!("legacy workspace configuration is no longer discovered automatically; migrate it to the new format and pass --config '{}', or copy the old state_database and runs paths into the new [paths] section and move the legacy file aside; see docs/setup.md", path.display())));
+        return Ok(());
     }
-    Ok(())
+    Err(invalid("workspace config", &path.display().to_string(), &format!("legacy workspace configuration is no longer discovered automatically; migrate it to the new format and pass --config '{}', or copy the old state_database and runs paths into the new [paths] section and move the legacy file aside; see docs/setup.md", path.display())))
 }
 
 fn invalid(key: &str, value: &str, fix: &str) -> HarnessError {
@@ -552,9 +573,7 @@ mod tests {
             "active_profile = 'old'\n",
             "[profiles.old]\nbase_url = 'http://localhost:9000'\n",
             "[paths]\ncharacters = 'characters'\n",
-            "[paths]\nstate_database = 'old.sqlite3'\n",
-            "[paths]\nruns = 'old-runs'\n",
-            "[comfyui]\n[paths]\ncharacters = 'characters'\n",
+            "[profiles.local]\nbase_url = 'http://localhost:9000'\n[paths]\ncharacters = 'characters'\n",
         ] {
             fs::write(&workspace_config, source).unwrap();
             let error = load(&env, None).unwrap_err().to_string();
@@ -569,7 +588,13 @@ mod tests {
         for source in [
             "[server\n",
             "[paths]\nworkflows = 'workflows'\n",
+            "[paths]\nruns = 'custom-runs'\n",
+            "[paths]\nstate_database = 'state.sqlite3'\nruns = 'custom-runs'\n",
+            "[comfyui]\n[paths]\ncharacters = 'characters'\n",
             "[comfyui]\n[paths]\nruns = 'runs'\n",
+            "active_profile = 123\n",
+            "[profiles.local]\nrequest_timeout_seconds = -1\n",
+            "[profiles.local]\nunknown = 'value'\n",
         ] {
             fs::write(&workspace_config, source).unwrap();
             assert_eq!(load(&env, None).unwrap().server.port, 1001, "{source}");

@@ -27,8 +27,11 @@ directory. `genaimage config show` displays the resolved configuration.
 If no `--config`, `GENAIMAGE_CONFIG` or current-directory file is selected,
 GenAImage checks for a clearly legacy workspace file before XDG discovery. It
 asks you to migrate or move that file aside after preserving its settings and
-data. This check tolerates unreadable or malformed files; explicit and
-current-directory selections do not inspect an unselected workspace file.
+data. It detects only files accepted by the old schema and rejected by the new
+schema. An ambiguous paths-only file is not selected automatically: use
+`--config <path>` to select it. The check tolerates unreadable or malformed
+files; explicit and current-directory selections do not inspect an unselected
+workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
 see `genaimage.example.toml`. The server and LLM are planned components, so

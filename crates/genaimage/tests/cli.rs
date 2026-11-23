@@ -411,3 +411,54 @@ fn explicit_config_ignores_malformed_workspace_file() {
     let config: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(config["server"]["port"], 8765);
 }
+
+#[test]
+fn unselected_new_paths_only_config_does_not_block_xdg() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("project");
+    fs::create_dir_all(&workspace).unwrap();
+    write(
+        &workspace.join("genaimage.toml"),
+        "[paths]\nruns = 'custom-runs'\n",
+    );
+    write(
+        &temp.path().join("config/genaimage/genaimage.toml"),
+        "[server]\nport = 8765\n",
+    );
+    let run = |args: &[&str]| {
+        cli()
+            .current_dir(temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .arg("--workspace")
+            .arg(&workspace)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let output = run(&["--json", "config", "show"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(config["server"]["port"], 8765);
+    let output = run(&[
+        "--config",
+        "project/genaimage.toml",
+        "--json",
+        "config",
+        "show",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        config["runs"],
+        workspace.join("custom-runs").display().to_string()
+    );
+}
