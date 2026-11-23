@@ -99,12 +99,27 @@ impl Harness {
         Self::with_event_bus(config, backend, EventBus::default())
     }
 
-    pub fn with_event_bus(config: ResolvedConfig, backend: Arc<dyn ImageBackend>, events: EventBus) -> Result<Self> {
+    pub fn with_event_bus(
+        config: ResolvedConfig,
+        backend: Arc<dyn ImageBackend>,
+        events: EventBus,
+    ) -> Result<Self> {
         let repository = RunRepository::open(&config.state_database)?.with_identity(
-            &config.workspace, backend.name(), backend.base_url(), config.claim_legacy_state,
+            &config.workspace,
+            backend.name(),
+            backend.base_url(),
+            config.claim_legacy_state,
         )?;
-        let database_identity = fs::canonicalize(&config.state_database).unwrap_or_else(|_| config.state_database.clone());
-        Ok(Self { config, repository, backend, events, last_health: Arc::new(Mutex::new(None)), database_identity })
+        let database_identity = fs::canonicalize(&config.state_database)
+            .unwrap_or_else(|_| config.state_database.clone());
+        Ok(Self {
+            config,
+            repository,
+            backend,
+            events,
+            last_health: Arc::new(Mutex::new(None)),
+            database_identity,
+        })
     }
 
     /// Opens the state database on the blocking pool, using the supplied backend.
@@ -112,9 +127,16 @@ impl Harness {
         Self::with_event_bus_async(config, backend, EventBus::default()).await
     }
 
-    pub async fn with_event_bus_async(config: ResolvedConfig, backend: Arc<dyn ImageBackend>, events: EventBus) -> Result<Self> {
-        tokio::task::spawn_blocking(move || Self::with_event_bus(config, backend, events)).await
-            .map_err(|error| HarnessError::Database(format!("state database task failed: {error}")))?
+    pub async fn with_event_bus_async(
+        config: ResolvedConfig,
+        backend: Arc<dyn ImageBackend>,
+        events: EventBus,
+    ) -> Result<Self> {
+        tokio::task::spawn_blocking(move || Self::with_event_bus(config, backend, events))
+            .await
+            .map_err(|error| {
+                HarnessError::Database(format!("state database task failed: {error}"))
+            })?
     }
 
     fn backend_error(&self, message: String) -> HarnessError {

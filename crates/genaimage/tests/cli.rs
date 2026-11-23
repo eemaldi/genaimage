@@ -558,7 +558,7 @@ fn run_wait_preserves_json_and_human_progress() {
     let temp = TempDir::new().unwrap();
     write(
         &temp.path().join("genaimage.toml"),
-        &format!("[profiles.local]\nbase_url = \"http://{address}\"\n"),
+        &format!("[comfyui]\nbase_url = \"http://{address}\"\n"),
     );
     let workflows = temp.path().join("workflows/comfyui");
     write(
@@ -570,8 +570,18 @@ fn run_wait_preserves_json_and_human_progress() {
         r#"{"schema_version":2,"id":"test","version":"1.0.0","workflow":"api.json"}"#,
     );
 
-    for json_mode in [true, false] {
+    let test_cli = || {
         let mut command = cli();
+        command
+            .current_dir(temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .arg("--config")
+            .arg(temp.path().join("genaimage.toml"));
+        command
+    };
+    for json_mode in [true, false] {
+        let mut command = test_cli();
         command.arg("--workspace").arg(temp.path());
         if json_mode {
             command.arg("--json");
@@ -601,7 +611,7 @@ fn run_wait_preserves_json_and_human_progress() {
         }
     }
     // Reconcile from a separate CLI process before the waiter's first poll.
-    let mut waiter = cli()
+    let mut waiter = test_cli()
         .arg("--workspace")
         .arg(temp.path())
         .args(["run", "test", "--wait"])
@@ -622,7 +632,7 @@ fn run_wait_preserves_json_and_human_progress() {
     let queued: Value = serde_json::from_str(&queued_json).unwrap();
     assert_eq!(queued["status"], "queued");
     let run_id = queued["id"].as_str().unwrap();
-    let other = cli()
+    let other = test_cli()
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")

@@ -110,8 +110,9 @@ approval.
 The in-process `EventBus` publishes typed run lifecycle, progress, output,
 backend health and settings-change events. Each JSON event is an envelope with
 `bus_id`, `id`, `timestamp` (UTC RFC 3339) and a snake-case `type`
-discriminator plus variant-specific fields. The bus assigns increasing IDs and timestamps; IDs
-are ordered by publication, but wall-clock timestamps need not be monotonic.
+discriminator plus variant-specific fields. The bus assigns increasing IDs and
+timestamps; IDs are ordered by publication, but wall-clock timestamps need not
+be monotonic.
 Each bus has a random lifetime identifier. An `EventCursor` combines it with an
 ID; `subscribe_from_cursor` rejects cursors from an earlier bus, even when the
 numeric ID happens to fit.
@@ -128,10 +129,11 @@ partial stream as complete. If a state update may have committed but recording
 or publishing its event fails, the bus invalidates existing subscribers and
 rejects replay across that boundary. Invalidation reserves an ID and clears the
 replay window; no event is silently presented as a complete stream. IDs and
-replay are local to one bus lifetime and are not durable across restarts: reconnecting to a new bus requires a full
-resync. The numeric-only `subscribe_since` is for the originating bus lifetime;
+replay are local to one bus lifetime and are not durable across restarts:
+reconnecting to a new bus requires a full resync. The numeric-only `subscribe_since` is for the originating bus lifetime;
 transport consumers should retain and check the full cursor. Broadcast
-buffering can be rounded up by Tokio; neither it nor the replay buffer grows with slow readers.
+buffering can be rounded up by Tokio; neither it nor the replay buffer grows
+with slow readers.
 
 Reconciliations for a run are serialised across harnesses sharing a bus and
 state database, including output materialisation. Cancellation has separate
@@ -147,8 +149,8 @@ Applications start one independent forwarding task per registered `EventSink`
 using `ExtensionRegistry::forward_event_sinks` and should observe the returned
 handles for failures. Each sink receives an explicit resync notification and
 its task stops on lag or invalidation. Slow sinks and subscribers do not block
-publishers. The CLI uses a run-filtered, non-replaying progress subscription with an unbounded
-queue, matching its previous progress channel and preserving output even when
+publishers. The CLI uses a run-filtered, non-replaying progress subscription
+with an unbounded queue, matching its previous progress channel and preserving output even when
 printing is slow. It holds no lifecycle state to resynchronise; the final poll
 reports the current run. Other bus subscribers and sinks remain bounded. SSE
 transport remains planned for [#30](https://github.com/eemaldi/genaimage/issues/30).

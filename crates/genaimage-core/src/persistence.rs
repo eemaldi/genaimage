@@ -330,29 +330,29 @@ impl RunRepository {
         manifest_path: Option<&str>,
     ) -> Result<Option<RunRecord>> {
         self.guarded(|connection| {
-        let now = Utc::now();
-        let completed_at = status.is_terminal().then(|| now.to_rfc3339());
-        Ok(connection
-            .query_row(
-                r#"
+            let now = Utc::now();
+            let completed_at = status.is_terminal().then(|| now.to_rfc3339());
+            Ok(connection
+                .query_row(
+                    r#"
             UPDATE runs
             SET status = ?3, error = ?4, manifest_path = COALESCE(?5, manifest_path),
                 updated_at = ?6, completed_at = COALESCE(?7, completed_at)
             WHERE id = ?1 AND status = ?2
             RETURNING *
             "#,
-                params![
-                    run_id,
-                    expected.as_str(),
-                    status.as_str(),
-                    error,
-                    manifest_path,
-                    now.to_rfc3339(),
-                    completed_at
-                ],
-                map_run,
-            )
-            .optional()?)
+                    params![
+                        run_id,
+                        expected.as_str(),
+                        status.as_str(),
+                        error,
+                        manifest_path,
+                        now.to_rfc3339(),
+                        completed_at
+                    ],
+                    map_run,
+                )
+                .optional()?)
         })
     }
 

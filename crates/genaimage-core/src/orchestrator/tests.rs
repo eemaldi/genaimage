@@ -34,6 +34,7 @@ struct FakeState {
     delete_requested: bool,
     interrupt_requested: bool,
     downloads: usize,
+    submit_gate: Option<Arc<Gate>>,
     queue_gate: Option<Arc<Gate>>,
     history_gate: Option<Arc<Gate>>,
     download_gate: Option<Arc<Gate>>,
@@ -101,28 +102,35 @@ impl ImageBackend for FakeImageBackend {
         client_id: &str,
         prompt_id: &str,
     ) -> Result<PromptResponse> {
-        let mut state = self.state.lock().unwrap();
-        assert!(
-            state.submission.is_none(),
-            "must not submit the same run twice"
-        );
-        state.submission = Some((workflow.clone(), client_id.to_owned(), prompt_id.to_owned()));
-        if state.lose_submit_response {
-            return Err(HarnessError::Backend {
-                backend: self.name().to_owned(),
-                message: "submit response lost".to_owned(),
-            });
+        let (gate, response) = {
+            let mut state = self.state.lock().unwrap();
+            assert!(
+                state.submission.is_none(),
+                "must not submit the same run twice"
+            );
+            state.submission = Some((workflow.clone(), client_id.to_owned(), prompt_id.to_owned()));
+            if state.lose_submit_response {
+                return Err(HarnessError::Backend {
+                    backend: self.name().to_owned(),
+                    message: "submit response lost".to_owned(),
+                });
+            }
+            state.queue_position = Some(QueuePosition::Pending);
+            let response = PromptResponse {
+                prompt_id: prompt_id.to_owned(),
+                number: None,
+                node_errors: if state.reject_submission {
+                    json!({"node": "invalid"})
+                } else {
+                    Value::Null
+                },
+            };
+            (state.submit_gate.clone(), response)
+        };
+        if let Some(gate) = gate {
+            gate.wait().await;
         }
-        state.queue_position = Some(QueuePosition::Pending);
-        Ok(PromptResponse {
-            prompt_id: prompt_id.to_owned(),
-            number: None,
-            node_errors: if state.reject_submission {
-                json!({"node": "invalid"})
-            } else {
-                Value::Null
-            },
-        })
+        Ok(response)
     }
 
     async fn queue(&self) -> Result<QueueSnapshot> {
@@ -958,6 +966,40 @@ async fn cli_progress_subscription_keeps_every_update_even_when_broadcast_lags()
     ));
     assert!(
         matches!(progress.recv().await.unwrap().event, Event::RunProgress { run: seen, .. } if seen.id == run.id)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_submission_response_cannot_undo_cancellation() {
+    let (_workspace, harness, state, request) = setup(false);
+    let mut events = harness.events().subscribe();
+    let (gate, mut entered) = new_gate();
+    state.lock().unwrap().submit_gate = Some(gate.clone());
+    let submit = {
+        let harness = harness.clone();
+        tokio::spawn(async move { harness.submit(request).await })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let run = harness.list_runs(1).unwrap().remove(0);
+    state.lock().unwrap().queue_position = Some(QueuePosition::Running);
+    assert_eq!(
+        timeout(Duration::from_secs(2), harness.cancel(&run.id))
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        RunStatus::Cancelling
+    );
+    gate.release.add_permits(1);
+    assert_eq!(submit.await.unwrap().unwrap().status, RunStatus::Cancelling);
+    assert!(
+        timeout(Duration::from_millis(100), events.recv())
+            .await
+            .is_err(),
+        "late acceptance must not publish queued"
     );
 }
 
