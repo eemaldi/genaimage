@@ -133,12 +133,15 @@ resync. The numeric-only `subscribe_since` is for the originating bus lifetime;
 transport consumers should retain and check the full cursor. Broadcast
 buffering can be rounded up by Tokio; neither it nor the replay buffer grows with slow readers.
 
-Reconciliation and cancellation of a given run are serialised across clones
-of the same harness. Reconciliation and the post-submission transition finish
-in independent tasks even if their caller is cancelled, so a committed terminal
-state is followed by its event or an explicit invalidation. Other processes
-have separate buses; a CLI waiter also publishes a progress snapshot when it
-observes a terminal state written by another process.
+Reconciliations for a run are serialised across harnesses sharing a bus and
+state database, including output materialisation. Cancellation has separate
+coordination and does not wait for reconciliation's backend calls. Conditional
+database updates prevent stale reconciliation or cancellation results from
+replacing newer state. Reconciliation and post-submission transition tasks
+survive caller cancellation, so a committed terminal state is followed by its
+event or explicit invalidation. Other processes have separate buses; a CLI
+waiter also publishes a progress snapshot when it observes a terminal state
+written by another process.
 
 Applications start one independent forwarding task per registered `EventSink`
 using `ExtensionRegistry::forward_event_sinks` and should observe the returned

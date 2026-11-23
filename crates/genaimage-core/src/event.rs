@@ -1,14 +1,15 @@
 //! In-process events, bounded replay and non-blocking live delivery.
 
 use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
 };
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex};
 use uuid::Uuid;
 
 use crate::{
@@ -122,8 +123,17 @@ enum BusMessage {
     Invalidated(u64),
 }
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+pub(crate) enum RunLockKind {
+    Reconcile,
+    Cancel,
+}
+
+type RunLockKey = (PathBuf, String, RunLockKind);
+
 struct Inner {
     id: Uuid,
+    run_locks: Mutex<HashMap<RunLockKey, Weak<AsyncMutex<()>>>>,
     capacity: usize,
     state: Mutex<State>,
     sender: broadcast::Sender<BusMessage>,
@@ -147,6 +157,7 @@ impl EventBus {
         let (sender, _) = broadcast::channel(capacity);
         Self(Arc::new(Inner {
             id: Uuid::new_v4(),
+            run_locks: Mutex::new(HashMap::new()),
             capacity,
             state: Mutex::new(State {
                 latest: 0,
@@ -156,6 +167,23 @@ impl EventBus {
             }),
             sender,
         }))
+    }
+
+    pub(crate) fn run_lock(
+        &self,
+        database: &Path,
+        run_id: &str,
+        kind: RunLockKind,
+    ) -> Arc<AsyncMutex<()>> {
+        let key = (database.to_path_buf(), run_id.to_owned(), kind);
+        let mut locks = self.0.run_locks.lock().expect("run lock map poisoned");
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
     }
 
     pub fn publish(&self, event: Event) -> EventEnvelope {
