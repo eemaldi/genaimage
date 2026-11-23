@@ -3,6 +3,7 @@ mod health;
 mod outputs;
 mod runs;
 mod settings;
+mod uploads;
 mod workflows;
 
 use axum::{http::StatusCode, Router};
@@ -16,6 +17,7 @@ pub(crate) fn api() -> Router<AppState> {
         .merge(events::routes())
         .merge(runs::routes())
         .merge(settings::routes())
+        .merge(uploads::routes())
         .merge(workflows::routes())
         .fallback(|| async {
             Problem::new(

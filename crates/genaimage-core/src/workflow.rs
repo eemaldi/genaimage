@@ -282,10 +282,11 @@ impl LoadedWorkflow {
             if definition.kind == ParameterKind::ImageUpload {
                 let path = value.as_str().ok_or_else(|| {
                     HarnessError::Workflow(format!(
-                        "image-upload parameter '{name}' must be a path string"
+                        "image-upload parameter '{name}' must be a string"
                     ))
                 })?;
                 upload_paths.insert(name.clone(), PathBuf::from(path));
+                resolved.insert(name.clone(), value);
                 continue;
             }
             set_node_input(
@@ -332,9 +333,6 @@ impl LoadedWorkflow {
                 Value::String(uploaded.clone()),
                 parameter,
             )?;
-            bound
-                .parameters
-                .insert(parameter.clone(), Value::String(path.display().to_string()));
         }
         Ok(())
     }

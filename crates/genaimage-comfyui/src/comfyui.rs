@@ -236,7 +236,6 @@ impl ImageBackend for ComfyUiClient {
     }
 
     async fn upload_image(&self, path: &Path) -> Result<UploadResponse> {
-        let bytes = tokio::fs::read(path).await?;
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -248,14 +247,21 @@ impl ImageBackend for ComfyUiClient {
         let mime = mime_guess::from_path(path)
             .first_raw()
             .unwrap_or("application/octet-stream");
+        let bytes = tokio::fs::read(path).await?;
+        self.upload_image_bytes(bytes, &file_name, mime).await
+    }
+
+    async fn upload_image_bytes(
+        &self,
+        bytes: Vec<u8>,
+        filename: &str,
+        media_type: &str,
+    ) -> Result<UploadResponse> {
         let part = Part::bytes(bytes)
-            .file_name(file_name)
-            .mime_str(mime)
+            .file_name(filename.to_owned())
+            .mime_str(media_type)
             .map_err(|error| {
-                HarnessError::ComfyUi(format!(
-                    "cannot prepare upload '{}': {error}",
-                    path.display()
-                ))
+                HarnessError::ComfyUi(format!("cannot prepare upload '{filename}': {error}"))
             })?;
         let form = Form::new()
             .part("image", part)
@@ -271,7 +277,7 @@ impl ImageBackend for ComfyUiClient {
             .send()
             .await
             .map_err(|error| {
-                HarnessError::ComfyUi(format!("image upload '{}' failed: {error}", path.display()))
+                HarnessError::ComfyUi(format!("image upload '{filename}' failed: {error}"))
             })?;
         #[derive(Deserialize)]
         struct RawUpload {

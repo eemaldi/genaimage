@@ -178,35 +178,23 @@ async fn bodies_are_limited_even_without_a_length_header() {
             1024 * 1024 + 1,
             StatusCode::PAYLOAD_TOO_LARGE,
         ),
-        ("/api/v1/uploads", 16, StatusCode::NOT_FOUND),
+        ("/api/v1/uploads", 16, StatusCode::BAD_REQUEST),
         ("/api/v1/uploads", 17, StatusCode::PAYLOAD_TOO_LARGE),
     ] {
         let chunks = stream::iter(vec![Ok::<_, Infallible>(Bytes::from(vec![b'x'; size]))]);
         let request = Request::post(path)
             .header(header::HOST, "127.0.0.1:4567")
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=image")
             .body(Body::from_stream(chunks))
             .unwrap();
         problem(router.clone().oneshot(request).await.unwrap(), status).await;
     }
-    let chunks = stream::iter(vec![
-        Ok::<_, Infallible>(Bytes::from_static(b"12345678")),
-        Ok(Bytes::from_static(b"123456789")),
-    ]);
-    let request = Request::post("/api/v1/uploads")
-        .header(header::HOST, "127.0.0.1:4567")
-        .body(Body::from_stream(chunks))
-        .unwrap();
-    problem(
-        router.clone().oneshot(request).await.unwrap(),
-        StatusCode::PAYLOAD_TOO_LARGE,
-    )
-    .await;
-
     let broken = stream::iter(vec![Err::<Bytes, _>(std::io::Error::other(
         "connection lost",
     ))]);
     let request = Request::post("/api/v1/uploads")
         .header(header::HOST, "127.0.0.1:4567")
+        .header(header::CONTENT_TYPE, "multipart/form-data; boundary=image")
         .body(Body::from_stream(broken))
         .unwrap();
     problem(

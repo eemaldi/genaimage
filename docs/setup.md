@@ -37,12 +37,12 @@ This is not authentication: legacy browsers without recognisable headers and
 local programs that forge headers cannot be distinguished from CLI clients.
 Avoid untrusted local applications and old browsers. There is no permissive CORS.
 
-Request bodies are limited to 1 MiB by default. The planned upload route uses
-`server.max_upload_bytes` (default 33,554,432 bytes, or 32 MiB); its limit is
-configurable now but uploads are not yet implemented. Oversized requests return
-413. Bodies must arrive within 30 seconds (408 on timeout); outstanding reads
-are cancelled with 503 when shutdown begins. Bodies are buffered within their
-limit, so consider available memory before increasing it.
+Request bodies are limited to 1 MiB by default. The uploads API uses
+`server.max_upload_bytes` (default 33,554,432 bytes, or 32 MiB), including
+multipart framing. Oversized requests return 413. Bodies must arrive within
+30 seconds (408 on timeout); outstanding reads are cancelled with 503 when
+shutdown begins. Uploads are streamed to disk; submitting a run verifies and
+holds one reference image at a time in memory before sending it to ComfyUI.
 
 ## 2. Configuration
 
@@ -83,8 +83,9 @@ Each canonical workspace gets its own database and runs directory. An empty
 database may be rebound; once it contains runs, it is bound atomically to its
 workspace and backend endpoint, including when a custom path is used. Changing
 either then requires its original settings or a separate database.
-Uploads is reserved for future use; the current adapter uploads explicit input
-files directly. XDG directories must be absolute.
+The uploads API stores reference images in the configured uploads directory.
+The CLI continues to upload explicit local input files directly to ComfyUI.
+XDG directories must be absolute.
 
 ### Settings API
 

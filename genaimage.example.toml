@@ -1,7 +1,7 @@
 [server]
 host = "127.0.0.1"
 port = 3000
-# Maximum body size for the planned upload endpoint (32 MiB).
+# Maximum multipart body size for the uploads API (32 MiB).
 max_upload_bytes = 33554432
 
 [comfyui]

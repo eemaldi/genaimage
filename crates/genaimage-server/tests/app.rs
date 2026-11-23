@@ -253,7 +253,7 @@ async fn fixture_uses_default_server_limits_and_explicit_backend_timeout() {
             1024 * 1024 + 1,
             StatusCode::PAYLOAD_TOO_LARGE,
         ),
-        ("/api/v1/uploads", 1024 * 1024 + 1, StatusCode::NOT_FOUND),
+        ("/api/v1/uploads", 1024 * 1024 + 1, StatusCode::BAD_REQUEST),
     ] {
         let response = api
             .request(Method::POST, path)

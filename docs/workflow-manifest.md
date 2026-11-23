@@ -134,9 +134,13 @@ at these limits. Parameter `minimum` and `maximum` are floating-point range
 bounds, not integer values themselves: fractional or wider limits are valid and
 do not expand the supported range of integer bindings.
 
-`image_upload` parameters contain a local path. The file is uploaded to the
-configured ComfyUI input area before submission; the run stores the path,
-checksum, byte size, and returned ComfyUI filename.
+`image_upload` parameters are strings. When using the HTTP API, set the
+parameter to the `upload_id` returned by `POST /api/v1/uploads`
+(`sha256:<lowercase hex digest>`), not a filesystem path. The core verifies
+the stored bytes and uploads them to the configured ComfyUI input area before
+prompt submission. Run provenance records the upload ID, SHA-256, sanitised
+original filename, byte size and returned ComfyUI filename. The direct CLI
+still accepts local paths and records the path instead of an upload ID.
 
 ## Presets
 
