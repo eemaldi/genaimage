@@ -1,14 +1,23 @@
 # GenAImage
 
-GenAImage is a local ComfyUI harness for controlled, inspectable image
-generation. It validates API-format workflows, submits explicit parameter
-values, tracks queue state, captures outputs and provenance, and enforces the
-human approval gates in the character concept art workflow.
+GenAImage is a thin, fast, local harness for controlled, inspectable ComfyUI
+image generation. The target is a loopback server with an embedded web portal,
+a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
+and the [architecture](docs/architecture.md). The server, portal and LLM
+assistance are planned; the existing CLI will become a thin server client.
+
+Today it validates API-format workflows, submits explicit parameter values,
+tracks queue state, captures outputs and provenance, and enforces the existing
+character concept art approval gates.
 
 ComfyUI remains a separate process. GenAImage does not install, start, bundle,
 or replace ComfyUI, models, weights, or custom nodes.
 
-## Interfaces
+## Current interfaces
+
+The Tauri desktop and character gate pilot are being retired in favour of the
+planned portal and general-purpose harness; the following describes the
+current release.
 
 - `genaimage` — the Rust command-line application for scripts and reproducible
   operation.
@@ -30,7 +39,9 @@ gate, SQLite, and provenance logic is not duplicated in the frontend.
 - Ordered character approvals with an immutable decision history.
 
 Remote/multi-host routing, cloud storage, model installation, and custom-node
-management are intentionally out of scope.
+management are outside the current scope. The planned outbound endpoint policy
+allows explicitly configured private or Compose hosts; the server will still
+bind to loopback only.
 
 ## Prerequisites
 
@@ -89,9 +100,9 @@ Install the CLI binary:
 cargo install --locked --path crates/genaimage-cli
 ```
 
-## Character concept workflow
+## Character concept workflow (current, being retired)
 
-The character workflow remains human-controlled:
+The existing character workflow remains human-controlled until it is removed:
 
 ```bash
 genaimage character init CHR-001 --name "Character name"
@@ -111,7 +122,7 @@ Read [the complete workflow](workflows/character-concept-art/WORKFLOW.md).
 Character templates remain in
 [templates/character-concept-art/](templates/character-concept-art/).
 
-## Desktop application
+## Desktop application (current, being retired)
 
 Install and run the Tauri desktop development build:
 

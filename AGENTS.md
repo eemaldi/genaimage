@@ -1,27 +1,48 @@
 # GenAImage
 
-GenAImage is a local harness for controllable ComfyUI image generation. A shared
-Rust core drives an externally running local ComfyUI server through HTTP and
-WebSocket, while a Rust CLI and Tauri 2 desktop provide operator surfaces.
+GenAImage is a thin, fast, local glue layer and harness for controllable
+ComfyUI image generation, assisted by local LLMs. Read
+[ADR 0001](docs/adr/0001-target-architecture.md) and the
+[architecture](docs/architecture.md) before making architectural changes.
 
 ## Architecture
 
 - `crates/genaimage-core` owns configuration, ComfyUI transport, workflow
-  binding, SQLite run state, cancellation/reconnect, gates, and provenance.
-- `crates/genaimage-cli` is the scripted operator interface over the core.
-- `apps/desktop/src-tauri` invokes the same core from typed Tauri commands;
-  `apps/desktop/src` is the React/TypeScript WebView only.
-- ComfyUI remains external. Do not install, start, bundle, or replace ComfyUI,
-  models, weights, or custom nodes from this repository.
-- Workflows are ComfyUI API-format JSON plus a sidecar `*.genaimage.json`
-  manifest. Pipeline/orchestration choices and generation settings must remain
-  explicit and inspectable.
-- Agents make bounded creative decisions or guide iteration; workflow
-  orchestration and generation transport stay in the Rust core.
-- Skills package reusable image-making procedures and domain knowledge.
+  manifests and explicit binding, the run queue, reconciliation, persistence
+  and provenance. The assistant tool runtime and provider abstractions are
+  planned in the core; do not duplicate orchestration in operator surfaces.
+- `crates/genaimage-cli` is the scripted interface. The target is a thin client
+  of the same local API as the portal; today it calls the core directly.
+- The planned Rust server serves its API and embedded Svelte portal from one
+  loopback-bound binary. ComfyUI and the OpenAI-compatible local LLM service
+  remain separate processes. Docker Compose support is planned for local
+  dependencies, not public exposure.
+- Outbound service endpoints default to loopback. The target also allows
+  explicitly allow-listed private/Compose hosts, never public endpoints; this
+  is planned and current ComfyUI profiles remain loopback-only. The GenAImage
+  server itself must bind to loopback only.
+- The existing Tauri desktop and character approval-gate pilot are being
+  retired. Until removal, preserve their current checks and records rather than
+  bypassing them. They are not the future architecture.
+- Use ComfyUI API-format JSON and strict `*.genaimage.json` workflow manifests.
+  ComfyUI, models, weights and custom nodes are external; do not silently
+  install, replace or substitute them.
 
-Keep generation logic in the shared core rather than duplicating it in CLI or
-frontend code. Never represent a failed/unknown operation as a successful run.
+## Generation and assistant guardrails
+
+- Keep generation choices explicit and inspectable. Never silently substitute a
+  model, node, seed, image, prompt or setting; never represent a failed or
+  unknown operation as a successful run.
+- LLM output is a proposal the user can edit and must explicitly confirm. The
+  assistant never submits a run without that confirmation. A successful
+  technical run is not creative approval.
+- Reconcile an ambiguous prompt submission against ComfyUI queue/history;
+  never blindly retry it.
+- Preserve source workflows and previously written run/production records.
+  Create new versions instead of overwriting them.
+- Keep the harness thin and fast. The target budgets are cold start < 150 ms,
+  idle RSS < 40 MB, binary < 25 MB, portal initial JS < 150 KB gzip and p95
+  non-ComfyUI API latency < 20 ms.
 
 ## Project-local agent skills
 
@@ -32,39 +53,13 @@ format with standard `name` and `description` frontmatter; do not rely on
 client-specific metadata or tools unless a skill explicitly declares that
 dependency.
 
-## Repository commands
-
-Run the repository CI checks locally with:
-
-```text
-python3 scripts/ci_check.py
-```
-
-## Character concept art pilot
-
-The human-in-the-loop character concept art workflow is documented in
-`workflows/character-concept-art/WORKFLOW.md`; reusable records are in
-`templates/character-concept-art/`. Follow its sequential approval gates
-strictly: never generate images before Gate 3 approval or additional views
-before Gate 5 approval. The CLI and desktop now enforce these required gates,
-but a technical success never approves a design or advances a gate. Gate
-decisions require explicit approver and decision-note input.
-
 ## Working in this repository
 
 - Write documentation and user-facing text in English (UK).
-- Check the existing implementation and documentation before deciding how a
-  feature fits the architecture above.
-- Prefer Rust tests against the fake ComfyUI server to tests requiring a local
-  model installation. Keep the latter opt-in and explicit.
-- Keep CLI output JSON-stable and desktop commands typed; errors must explain the
-  invalid binding, gate, host, or recovery action.
-- Prompt submission is not blindly retried after an ambiguous network result.
-  Reconcile ComfyUI queue/history before a new submission.
-- Preserve source workflows and previously written run/production records.
-  Create a new version instead of overwriting.
-- Keep generation behaviour explicit and user-controllable; avoid hiding
-  important model, workflow, or pipeline choices in implicit prompt-only
-  behaviour.
-- Keep Copilot- and Claude-specific entry-point files aligned with this shared
-  guidance when it changes.
+- Check existing implementation and documentation before deciding how a feature
+  fits the architecture. Clearly mark planned behaviour as not yet implemented.
+- Prefer focused Rust tests against fake ComfyUI and LLM servers; no real models
+  are required in CI. Keep real-model tests opt-in and explicit.
+- Keep CLI output JSON-stable and errors actionable. Keep Copilot- and
+  Claude-specific entry points aligned with this guidance.
+- Run the repository CI checks locally with `python3 scripts/ci_check.py`.
