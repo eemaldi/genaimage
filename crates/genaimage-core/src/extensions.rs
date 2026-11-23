@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    config::ComfyUiProfile, HarnessError, ImageBackend, ResolvedConfig, Result, RunProgress,
+    config::ComfyUiProfile, EventBus, EventEnvelope, HarnessError, ImageBackend, ReceiveError,
+    ResolvedConfig, Result, ResyncReason,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -98,12 +99,17 @@ pub trait AssistantTool: Send + Sync {
     async fn invoke(&self, arguments: Value) -> Result<Value>;
 }
 
-/// Consumes a run progress update. This contract does not dispatch events or
-/// define a bus, delivery guarantees or persistence policy. When #21 adds a
-/// typed event envelope, use it here and keep sink handling off the publish path.
+/// A sink must resynchronise its state when delivery reports a gap.
+#[derive(Clone, Debug)]
+pub enum SinkNotification {
+    Event(Box<EventEnvelope>),
+    ResyncRequired(ResyncReason),
+}
+
+/// Consumes bus notifications away from the publisher's execution path.
 #[async_trait]
 pub trait EventSink: Send + Sync {
-    async fn handle(&self, event: &RunProgress) -> Result<()>;
+    async fn handle(&self, notification: &SinkNotification) -> Result<()>;
 }
 
 /// Holds application-supplied extensions without depending on concrete adapters.
@@ -170,6 +176,39 @@ impl ExtensionRegistry {
 
     pub fn event_sink(&self, name: &str) -> Option<Arc<dyn EventSink>> {
         self.event_sinks.get(name).cloned()
+    }
+
+    /// Start one independent forwarding task per registered sink. Retain the
+    /// handles to observe sink errors; a lagging sink is notified and stops.
+    /// Call once per bus after registration, from a Tokio runtime.
+    pub fn forward_event_sinks(
+        &self,
+        bus: &EventBus,
+    ) -> BTreeMap<String, tokio::task::JoinHandle<Result<()>>> {
+        self.event_sinks
+            .iter()
+            .map(|(name, sink)| {
+                let mut subscription = bus.subscribe();
+                let sink = Arc::clone(sink);
+                let task = tokio::spawn(async move {
+                    loop {
+                        match subscription.recv().await {
+                            Ok(event) => {
+                                sink.handle(&SinkNotification::Event(Box::new(event)))
+                                    .await?
+                            }
+                            Err(ReceiveError::ResyncRequired(reason)) => {
+                                sink.handle(&SinkNotification::ResyncRequired(reason))
+                                    .await?;
+                                return Ok(());
+                            }
+                            Err(ReceiveError::Closed) => return Ok(()),
+                        }
+                    }
+                });
+                (name.clone(), task)
+            })
+            .collect()
     }
 }
 

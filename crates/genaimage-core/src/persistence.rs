@@ -70,7 +70,7 @@ impl RunStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunRecord {
     pub id: String,
     pub prompt_id: String,

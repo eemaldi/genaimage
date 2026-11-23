@@ -1,14 +1,14 @@
 use std::sync::Mutex;
 
 use tempfile::TempDir;
-use tokio::time::timeout;
+use tokio::{sync::mpsc, time::timeout};
 
 use super::*;
 use crate::{
     async_trait,
     image_backend::{
-        EventMonitor, HistorySnapshot, OutputReference, PromptResponse, QueueSnapshot,
-        UploadResponse,
+        BackendEvent, EventMonitor, HistorySnapshot, OutputReference, PromptResponse,
+        QueueSnapshot, UploadResponse,
     },
     ExtensionRegistry, HarnessConfig,
 };
@@ -241,24 +241,30 @@ async fn runs_to_completion_with_progress_and_checksummed_output() {
         assert_eq!(prompt_id, &run.prompt_id);
         state.queue_position = Some(QueuePosition::Running);
     }
-    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let mut receiver = harness.events().subscribe();
     let waiter = {
         let harness = harness.clone();
         let id = run.id.clone();
-        tokio::spawn(async move { harness.wait_for_run(&id, Some(sender)).await.unwrap() })
+        tokio::spawn(async move { harness.wait_for_run(&id).await.unwrap() })
     };
     timeout(Duration::from_secs(3), async {
         let mut progress_seen = false;
         let mut running_seen = false;
         while !progress_seen || !running_seen {
             let update = receiver.recv().await.unwrap();
-            if let Some(event) = update.event {
-                assert_eq!(event.prompt_id.as_deref(), Some(run.prompt_id.as_str()));
-                assert_eq!(event.value, Some(4));
-                assert!(!progress_seen, "only one event belongs to this run");
-                progress_seen = true;
+            if let Event::RunProgress {
+                run: updated_run,
+                backend_event,
+            } = update.event
+            {
+                if let Some(event) = backend_event {
+                    assert_eq!(event.prompt_id.as_deref(), Some(run.prompt_id.as_str()));
+                    assert_eq!(event.value, Some(4));
+                    assert!(!progress_seen, "only one event belongs to this run");
+                    progress_seen = true;
+                }
+                running_seen |= updated_run.status == RunStatus::Running;
             }
-            running_seen |= update.run.status == RunStatus::Running;
         }
     })
     .await
@@ -273,6 +279,36 @@ async fn runs_to_completion_with_progress_and_checksummed_output() {
         .unwrap()
         .unwrap();
     assert_eq!(completed.status, RunStatus::Completed);
+    let mut replay = harness.events().subscribe_since(0).unwrap();
+    assert!(matches!(
+        replay.recv().await.unwrap().event,
+        Event::BackendHealthChanged { .. }
+    ));
+    assert!(matches!(
+        replay.recv().await.unwrap().event,
+        Event::RunQueued { .. }
+    ));
+    let mut started = false;
+    let mut output_seen = false;
+    loop {
+        match replay.recv().await.unwrap().event {
+            Event::RunStarted { run: started_run } => {
+                assert_eq!(started_run.id, run.id);
+                started = true;
+            }
+            Event::RunOutput { run_id, output } => {
+                assert_eq!(run_id, run.id);
+                assert_eq!(output.run_id, run.id);
+                output_seen = true;
+            }
+            Event::RunCompleted { run: finished } => {
+                assert_eq!(finished.status, RunStatus::Completed);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(started && output_seen);
     let result = harness.reconcile(&run.id).await.unwrap();
     let [output] = result.outputs.as_slice() else {
         panic!("expected one output")
@@ -314,6 +350,14 @@ async fn failed_history_never_materialises_outputs() {
     assert!(result.run.manifest_path.is_none());
     assert!(result.outputs.is_empty());
     assert_eq!(state.lock().unwrap().downloads, 0);
+    let mut replay = harness.events().subscribe_since(0).unwrap();
+    assert!(matches!(
+        replay.recv().await.unwrap().event,
+        Event::RunQueued { .. }
+    ));
+    assert!(
+        matches!(replay.recv().await.unwrap().event, Event::RunFailed { run } if run.status == RunStatus::Failed)
+    );
 }
 
 #[tokio::test]
@@ -346,6 +390,14 @@ async fn cancellation_waits_for_backend_evidence_for_pending_and_running_prompts
         let result = harness.reconcile(&run.id).await.unwrap();
         assert_eq!(result.run.status, RunStatus::Cancelled);
         assert!(result.outputs.is_empty());
+        let mut replay = harness.events().subscribe_since(0).unwrap();
+        assert!(matches!(
+            replay.recv().await.unwrap().event,
+            Event::RunQueued { .. }
+        ));
+        assert!(
+            matches!(replay.recv().await.unwrap().event, Event::RunCancelled { run } if run.status == RunStatus::Cancelled)
+        );
     }
 }
 
@@ -394,6 +446,10 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         let (_workspace, harness, state, request) = setup(true);
         let run = harness.submit(request).await.unwrap();
         assert_eq!(run.status, RunStatus::UnknownSubmission);
+        let mut replay = harness.events().subscribe_since(0).unwrap();
+        assert!(
+            matches!(replay.recv().await.unwrap().event, Event::RunUnknownSubmission { run } if run.status == RunStatus::UnknownSubmission)
+        );
         for _ in 0..2 {
             assert_eq!(
                 harness.reconcile(&run.id).await.unwrap().run.status,

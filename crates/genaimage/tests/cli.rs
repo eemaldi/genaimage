@@ -462,3 +462,147 @@ fn unselected_new_paths_only_config_does_not_block_xdg() {
         workspace.join("custom-runs").display().to_string()
     );
 }
+
+#[test]
+fn run_wait_preserves_json_and_human_progress() {
+    use serde_json::json;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread,
+        time::Duration,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server = {
+        let stopping = Arc::clone(&stopping);
+        thread::spawn(move || {
+            while !stopping.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fake server accept: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let (header_end, content_length) = loop {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert_ne!(n, 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..end]);
+                        let length = header
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        break (end + 4, length);
+                    }
+                };
+                while bytes.len() < header_end + content_length {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert_ne!(n, 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                let header = String::from_utf8_lossy(&bytes[..header_end]);
+                let path = header
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
+                let (status, body) = if path == "/object_info" {
+                    ("200 OK", json!({"KSampler": {}}))
+                } else if path == "/prompt" {
+                    let request: Value =
+                        serde_json::from_slice(&bytes[header_end..header_end + content_length])
+                            .unwrap();
+                    (
+                        "200 OK",
+                        json!({"prompt_id": request["prompt_id"], "node_errors": {}}),
+                    )
+                } else if path == "/queue" {
+                    ("200 OK", json!({"queue_running": [], "queue_pending": []}))
+                } else if let Some(prompt_id) = path.strip_prefix("/history/") {
+                    (
+                        "200 OK",
+                        json!({prompt_id: {"status": {"status_str": "success", "completed": true}, "outputs": {}}}),
+                    )
+                } else {
+                    ("400 Bad Request", json!({}))
+                };
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        })
+    };
+    let temp = TempDir::new().unwrap();
+    write(
+        &temp.path().join("genaimage.toml"),
+        &format!("[profiles.local]\nbase_url = \"http://{address}\"\n"),
+    );
+    let workflows = temp.path().join("workflows/comfyui");
+    write(
+        &workflows.join("api.json"),
+        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
+    );
+    write(
+        &workflows.join("test.genaimage.json"),
+        r#"{"schema_version":1,"id":"test","version":"1.0.0","workflow":"api.json"}"#,
+    );
+
+    for json_mode in [true, false] {
+        let mut command = cli();
+        command.arg("--workspace").arg(temp.path());
+        if json_mode {
+            command.arg("--json");
+        }
+        let output = command.args(["run", "test", "--wait"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let records: Vec<Value> = serde_json::Deserializer::from_slice(&output.stdout)
+            .into_iter::<Value>()
+            .map(|value| value.unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["status"], "queued");
+        assert_eq!(records[1]["status"], "completed");
+        assert_eq!(records[0]["id"], records[1]["id"]);
+        if json_mode {
+            assert!(output.stderr.is_empty());
+            assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 2);
+        } else {
+            let progress = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                progress.contains(&format!(
+                    "{}: completed",
+                    records[0]["id"].as_str().unwrap()
+                )),
+                "{progress}"
+            );
+        }
+    }
+    stopping.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+}

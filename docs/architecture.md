@@ -58,9 +58,8 @@ The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 from the resolved ComfyUI settings using an adapter factory supplied by the CLI;
 core does not construct adapters. The registry looks up registered extensions by
 name without a fallback. Only the image backend is configured today; the LLM
-and tool contracts have no runtime implementation, and progress still uses the
-existing channel rather than an event bus. These are compile-time extension
-points, not runtime plugin loading. Core lifecycle tests use a fake backend
+and tool contracts have no runtime implementation. These are compile-time
+extension points, not runtime plugin loading. Core lifecycle tests use a fake backend
 without connecting to ComfyUI; adapter contract tests still exercise the wire
 protocol against a fake server.
 
@@ -105,6 +104,34 @@ finishes after the queue check.
 Preserve source workflows and existing run records; write new
 versions instead of overwriting them. A successful technical run is not creative
 approval.
+
+## Core events
+
+The in-process `EventBus` publishes typed run lifecycle, progress, output,
+backend health and settings-change events. Each JSON event is an envelope with
+`id`, `timestamp` (UTC RFC 3339) and a snake-case `type` discriminator plus
+variant-specific fields. The bus assigns increasing IDs and timestamps; IDs
+are ordered by publication, but wall-clock timestamps need not be monotonic.
+The orchestrator publishes lifecycle changes after recording them, and retains
+its existing database events. Health changes are published when queried; the
+settings event is available to future settings writers.
+
+The default bus retains 1,024 events in memory. `subscribe_since` replays
+strictly after a cursor and hands over atomically to the live broadcast. A
+cursor before the retained window or ahead of the bus is rejected with a
+resync-required reason. A lagging subscriber receives a resync-required error
+and must reload authoritative state and subscribe again; it must not treat a
+partial stream as complete. IDs and replay are local to one bus lifetime and
+are not durable across restarts: reconnecting to a new bus requires a full
+resync, even if a numeric cursor happens to fit. Broadcast buffering can be
+rounded up by Tokio; neither it nor the replay buffer grows with slow readers.
+
+Applications start one independent forwarding task per registered `EventSink`
+using `ExtensionRegistry::forward_event_sinks` and should observe the returned
+handles for failures. Each sink receives an explicit resync notification and
+its task stops on lag. Slow sinks and subscribers do not block publishers. The
+CLI consumes progress from the bus, retaining its existing JSON output. SSE
+transport remains planned for [#30](https://github.com/eemaldi/genaimage/issues/30).
 
 ## State and provenance
 

@@ -2,24 +2,21 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::{
-    sync::mpsc,
-    time::{interval, Duration},
-};
+use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
 use crate::{
     artifacts::{self, InputFileRecord},
     config::ResolvedConfig,
-    image_backend::{BackendEvent, BackendHealth, HistoryOutcome, ImageBackend},
+    image_backend::{BackendHealth, HistoryOutcome, ImageBackend},
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
     workflow::{GenerationMode, LoadedWorkflow, WorkflowManifest},
-    HarnessError, Result,
+    Event, EventBus, HarnessError, Result,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -39,12 +36,6 @@ pub struct ReconcileResult {
     pub outputs: Vec<OutputRecord>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct RunProgress {
-    pub run: RunRecord,
-    pub event: Option<BackendEvent>,
-}
-
 #[derive(Debug, Default)]
 pub struct WorkflowDiscovery {
     pub manifests: Vec<WorkflowManifest>,
@@ -62,30 +53,30 @@ pub struct Harness {
     config: ResolvedConfig,
     repository: RunRepository,
     backend: Arc<dyn ImageBackend>,
+    events: EventBus,
+    last_health: Arc<Mutex<Option<Value>>>,
 }
 
 impl Harness {
     pub fn new(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
+        Self::with_event_bus(config, backend, EventBus::default())
+    }
+
+    pub fn with_event_bus(config: ResolvedConfig, backend: Arc<dyn ImageBackend>, events: EventBus) -> Result<Self> {
         let repository = RunRepository::open(&config.state_database)?.with_identity(
-            &config.workspace,
-            backend.name(),
-            backend.base_url(),
-            config.claim_legacy_state,
+            &config.workspace, backend.name(), backend.base_url(), config.claim_legacy_state,
         )?;
-        Ok(Self {
-            config,
-            repository,
-            backend,
-        })
+        Ok(Self { config, repository, backend, events, last_health: Arc::new(Mutex::new(None)) })
     }
 
     /// Opens the state database on the blocking pool, using the supplied backend.
     pub async fn new_async(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
-        tokio::task::spawn_blocking(move || Self::new(config, backend))
-            .await
-            .map_err(|error| {
-                HarnessError::Database(format!("state database task failed: {error}"))
-            })?
+        Self::with_event_bus_async(config, backend, EventBus::default()).await
+    }
+
+    pub async fn with_event_bus_async(config: ResolvedConfig, backend: Arc<dyn ImageBackend>, events: EventBus) -> Result<Self> {
+        tokio::task::spawn_blocking(move || Self::with_event_bus(config, backend, events)).await
+            .map_err(|error| HarnessError::Database(format!("state database task failed: {error}")))?
     }
 
     fn backend_error(&self, message: String) -> HarnessError {
@@ -99,8 +90,27 @@ impl Harness {
         &self.config
     }
 
+    pub fn events(&self) -> &EventBus {
+        &self.events
+    }
+
     pub async fn health(&self) -> Result<BackendHealth> {
-        self.backend.health().await
+        let result = self.backend.health().await;
+        let (health, error) = match &result {
+            Ok(health) => (Some(health.clone()), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        let current = json!({"health": health, "error": error});
+        let mut previous = self.last_health.lock().expect("health mutex poisoned");
+        if previous.as_ref() != Some(&current) {
+            *previous = Some(current);
+            self.events.publish(Event::BackendHealthChanged {
+                backend: self.backend.name().to_owned(),
+                health,
+                error,
+            });
+        }
+        result
     }
 
     pub fn repository(&self) -> &RunRepository {
@@ -326,6 +336,7 @@ impl Harness {
                             &response.node_errors,
                         )
                         .await?;
+                    self.events.publish(Event::RunFailed { run: run.clone() });
                     return Ok(run);
                 }
                 if response.prompt_id != prompt_id {
@@ -344,6 +355,7 @@ impl Harness {
                         &serde_json::to_value(response)?,
                     )
                     .await?;
+                self.events.publish(Event::RunQueued { run: run.clone() });
             }
             Err(error) => {
                 let message = error.to_string();
@@ -358,6 +370,8 @@ impl Harness {
                         &json!({ "error": message }),
                     )
                     .await?;
+                self.events
+                    .publish(Event::RunUnknownSubmission { run: run.clone() });
             }
         }
         Ok(run)
@@ -401,6 +415,7 @@ impl Harness {
                         &serde_json::to_value(&queue)?,
                     )
                     .await?;
+                self.events.publish(Event::RunStarted { run: run.clone() });
             }
         } else if queue.contains(&run.prompt_id)
             && !matches!(run.status, RunStatus::Queued | RunStatus::Cancelling)
@@ -419,6 +434,7 @@ impl Harness {
                     &json!({ "prompt_id": run.prompt_id }),
                 )
                 .await?;
+            self.events.publish(Event::RunQueued { run: run.clone() });
         }
 
         let history = self.backend.history(&run.prompt_id).await?;
@@ -441,6 +457,8 @@ impl Harness {
                 repository
                     .record_event(run_id, "run_cancelled", Some(&message), &history.raw)
                     .await?;
+                self.events
+                    .publish(Event::RunCancelled { run: run.clone() });
             }
             HistoryOutcome::Completed => {
                 let source_inputs = read_source_inputs(&PathBuf::from(&run.output_dir))?;
@@ -462,6 +480,12 @@ impl Harness {
                         Some(&manifest_path.display().to_string()),
                     )
                     .await?;
+                for output in repository.outputs(run_id).await? {
+                    self.events.publish(Event::RunOutput {
+                        run_id: run_id.to_owned(),
+                        output,
+                    });
+                }
                 repository
                     .record_event(
                         run_id,
@@ -473,6 +497,8 @@ impl Harness {
                         }),
                     )
                     .await?;
+                self.events
+                    .publish(Event::RunCompleted { run: run.clone() });
             }
             HistoryOutcome::Failed => {
                 let error = format!(
@@ -486,6 +512,7 @@ impl Harness {
                 repository
                     .record_event(run_id, "run_failed", Some(&error), &history.raw)
                     .await?;
+                self.events.publish(Event::RunFailed { run: run.clone() });
             }
         }
         Ok(ReconcileResult {
@@ -503,11 +530,7 @@ impl Harness {
         Ok(results)
     }
 
-    pub async fn wait_for_run(
-        &self,
-        run_id: &str,
-        progress: Option<mpsc::UnboundedSender<RunProgress>>,
-    ) -> Result<RunRecord> {
+    pub async fn wait_for_run(&self, run_id: &str) -> Result<RunRecord> {
         let repository = self.repository.as_async();
         let initial = repository.get(run_id).await?;
         let mut monitor = self.backend.monitor_events(&initial.client_id).await?;
@@ -528,9 +551,7 @@ impl Harness {
                                 &serde_json::to_value(&event)?,
                             ).await?;
                             let run = repository.get(run_id).await?;
-                            if let Some(sender) = &progress {
-                                let _ = sender.send(RunProgress { run, event: Some(event) });
-                            }
+                            self.events.publish(Event::RunProgress { run, backend_event: Some(event) });
                         }
                     } else {
                         events_open = false;
@@ -538,15 +559,10 @@ impl Harness {
                 }
                 _ = poll.tick() => {
                     let result = self.reconcile(run_id).await?;
-                    if let Some(sender) = &progress {
-                        let _ = sender.send(RunProgress {
-                            run: result.run.clone(),
-                            event: None
-                        });
-                    }
                     if result.run.status.is_terminal() {
                         return Ok(result.run);
                     }
+                    self.events.publish(Event::RunProgress { run: result.run, backend_event: None });
                 }
             }
         }

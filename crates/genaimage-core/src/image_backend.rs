@@ -53,7 +53,7 @@ pub trait ImageBackend: Send + Sync {
     async fn monitor_events(&self, client_id: &str) -> Result<EventMonitor>;
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BackendHealth {
     pub system: Value,
 }
@@ -92,7 +92,7 @@ pub struct UploadResponse {
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BackendEvent {
     pub event_type: String,
     pub prompt_id: Option<String>,
