@@ -39,6 +39,11 @@ impl AppState {
         }
     }
 
+    /// Starts graceful draining and notifies long-lived handlers. Idempotent.
+    pub fn begin_shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+
     /// Resolves when graceful draining starts, even if it has already started.
     /// Long-lived response streams (such as SSE) should await this to close
     /// without holding up server shutdown.

@@ -4,23 +4,17 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 
-use axum::{
-    body::Bytes,
-    extract::{Path as AxumPath, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
-    Json, Router,
-};
+use axum::{routing::get, Json, Router};
 use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{
     config::ComfyUiProfile, Harness, HarnessConfig, ImageBackend, RunRequest, RunStatus,
 };
+use genaimage_test_support::{FakeComfyServer, FakeComfyState};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -30,194 +24,12 @@ fn write_file(path: &Path, content: &str) {
     fs::write(path, content).expect("write file");
 }
 
-#[derive(Clone, Default)]
-struct FakeComfyState {
-    prompt_id: Arc<Mutex<Option<String>>>,
-    complete: Arc<AtomicBool>,
-    cancelled: Arc<AtomicBool>,
-    running: Arc<AtomicBool>,
-    fail_submit_response: Arc<AtomicBool>,
-    redirect_submit_response: Arc<AtomicBool>,
-    prompt_calls: Arc<AtomicUsize>,
-    upload_calls: Arc<AtomicUsize>,
-    interrupt_calls: Arc<AtomicUsize>,
-}
-
-async fn fake_system() -> Json<Value> {
-    Json(json!({ "system": { "os": "test" }, "devices": [] }))
-}
-
-async fn fake_object_info() -> Json<Value> {
-    Json(json!({
-        "CheckpointLoaderSimple": {},
-        "CLIPTextEncode": {},
-        "EmptyLatentImage": {},
-        "VAEDecode": {},
-        "KSampler": {
-            "input": {
-                "required": {
-                    "seed": ["INT", {}],
-                    "steps": ["INT", {}]
-                }
-            }
-        },
-        "SaveImage": {
-            "input": {
-                "required": {
-                    "filename_prefix": ["STRING", {}]
-                }
-            }
-        },
-        "LoadImage": {
-            "input": {
-                "required": {
-                    "image": ["STRING", {}]
-                }
-            }
-        }
-    }))
-}
-
-async fn fake_upload(State(state): State<FakeComfyState>, _body: Bytes) -> Json<Value> {
-    state.upload_calls.fetch_add(1, Ordering::SeqCst);
-    Json(json!({
-        "name": "uploaded-reference.png",
-        "subfolder": "",
-        "type": "input"
-    }))
-}
-
-async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {
-    state.prompt_calls.fetch_add(1, Ordering::SeqCst);
-    let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
-    *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
-    if state.redirect_submit_response.load(Ordering::SeqCst) {
-        return Redirect::temporary("/prompt").into_response();
-    }
-    if state.fail_submit_response.load(Ordering::SeqCst) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "deliberate fake failure" })),
-        )
-            .into_response();
-    }
-    Json(json!({
-        "prompt_id": prompt_id,
-        "number": 1,
-        "node_errors": {}
-    }))
-    .into_response()
-}
-
-async fn fake_queue(State(state): State<FakeComfyState>) -> Json<Value> {
-    let prompt_id = state.prompt_id.lock().expect("prompt lock").clone();
-    let has_job = !state.complete.load(Ordering::SeqCst)
-        && !state.cancelled.load(Ordering::SeqCst)
-        && prompt_id.is_some();
-    let entry = has_job.then(|| json!([1, prompt_id, {}, {}]));
-    let running = if has_job && state.running.load(Ordering::SeqCst) {
-        entry.clone().into_iter().collect()
-    } else {
-        Vec::new()
-    };
-    let pending = if has_job && !state.running.load(Ordering::SeqCst) {
-        entry.into_iter().collect()
-    } else {
-        Vec::new()
-    };
-    Json(json!({
-        "queue_running": running,
-        "queue_pending": pending
-    }))
-}
-
-async fn fake_interrupt(State(state): State<FakeComfyState>) -> Json<Value> {
-    state.interrupt_calls.fetch_add(1, Ordering::SeqCst);
-    state.cancelled.store(true, Ordering::SeqCst);
-    Json(json!({}))
-}
-
-async fn fake_queue_delete(
-    State(state): State<FakeComfyState>,
-    Json(_body): Json<Value>,
-) -> Json<Value> {
-    state.cancelled.store(true, Ordering::SeqCst);
-    Json(json!({}))
-}
-
-async fn fake_history(
-    State(state): State<FakeComfyState>,
-    AxumPath(prompt_id): AxumPath<String>,
-) -> Result<Json<Value>, StatusCode> {
-    if state.interrupt_calls.load(Ordering::SeqCst) > 0
-        && state.prompt_id.lock().expect("prompt lock").as_deref() == Some(prompt_id.as_str())
-    {
-        return Ok(Json(json!({
-            prompt_id.clone(): {
-                "status": {
-                    "status_str": "error",
-                    "completed": false,
-                    "messages": [["execution_interrupted", {"prompt_id": prompt_id}]]
-                }
-            }
-        })));
-    }
-    if !state.complete.load(Ordering::SeqCst) {
-        return Ok(Json(json!({})));
-    }
-    Ok(Json(json!({
-        prompt_id: {
-            "status": {
-                "status_str": "success",
-                "completed": true,
-                "messages": []
-            },
-            "outputs": {
-                "9": {
-                    "images": [{
-                        "filename": "ComfyUI_00001_.png",
-                        "subfolder": "",
-                        "type": "output"
-                    }]
-                }
-            }
-        }
-    })))
-}
-
-async fn fake_view(Query(query): Query<BTreeMap<String, String>>) -> Result<Vec<u8>, StatusCode> {
-    if !query.contains_key("filename") {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(b"not-a-real-png-but-deterministic".to_vec())
-}
-
-async fn start_fake_comfyui(state: FakeComfyState) -> SocketAddr {
-    let app = Router::new()
-        .route("/system_stats", get(fake_system))
-        .route("/object_info", get(fake_object_info))
-        .route("/upload/image", post(fake_upload))
-        .route("/prompt", post(fake_prompt))
-        .route("/interrupt", post(fake_interrupt))
-        .route("/queue", get(fake_queue).post(fake_queue_delete))
-        .route("/history/{prompt_id}", get(fake_history))
-        .route("/view", get(fake_view))
-        .with_state(state);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind fake ComfyUI");
-    let address = listener.local_addr().expect("listener address");
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("fake server");
-    });
-    address
-}
-
 #[tokio::test]
 async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
-    let address = start_fake_comfyui(state.clone()).await;
+    let fake = FakeComfyServer::start(state.clone()).await;
+    let address = fake.address();
     configure_harness(&temp, address);
     let workflow_dir = temp.path().join("workflows/comfyui/text-to-image");
     write_file(
@@ -276,7 +88,8 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
 async fn queue_deletion_acknowledgement_without_history_is_not_confirmation() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
-    let address = start_fake_comfyui(state).await;
+    let fake = FakeComfyServer::start(state).await;
+    let address = fake.address();
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
     let harness = open_harness(temp.path()).await.expect("open harness");
@@ -299,7 +112,8 @@ async fn running_prompt_is_interrupted_then_reconciled() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
     state.running.store(true, Ordering::SeqCst);
-    let address = start_fake_comfyui(state.clone()).await;
+    let fake = FakeComfyServer::start(state.clone()).await;
+    let address = fake.address();
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
     let harness = open_harness(temp.path()).await.expect("open harness");
@@ -323,7 +137,8 @@ async fn ambiguous_submission_is_reconciled_without_automatic_retry() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
     state.fail_submit_response.store(true, Ordering::SeqCst);
-    let address = start_fake_comfyui(state.clone()).await;
+    let fake = FakeComfyServer::start(state.clone()).await;
+    let address = fake.address();
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
     let harness = open_harness(temp.path()).await.expect("open harness");
@@ -351,7 +166,8 @@ async fn submission_is_not_replayed_after_a_post_preserving_redirect() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
     state.redirect_submit_response.store(true, Ordering::SeqCst);
-    let address = start_fake_comfyui(state.clone()).await;
+    let fake = FakeComfyServer::start(state.clone()).await;
+    let address = fake.address();
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
     let harness = open_harness(temp.path()).await.expect("open harness");
@@ -373,7 +189,8 @@ async fn submission_is_not_replayed_after_a_post_preserving_redirect() {
 async fn image_input_is_uploaded_and_recorded_before_submission() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
-    let address = start_fake_comfyui(state.clone()).await;
+    let fake = FakeComfyServer::start(state.clone()).await;
+    let address = fake.address();
     configure_harness(&temp, address);
     let reference = temp.path().join("reference.png");
     fs::write(&reference, b"reference-payload").expect("reference");
