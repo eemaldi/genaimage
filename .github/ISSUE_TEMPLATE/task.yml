@@ -1,0 +1,97 @@
+name: Task
+description: Propose a scoped, agent-ready roadmap task.
+title: "[Task] "
+labels:
+  - agent-ready
+  - chore
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Explain why this task is needed. Include roadmap metadata where applicable.
+      placeholder: |
+        <!-- roadmap-id: T00 -->
+        > Part of #N (Epic name) · Phase: **Foundations** · Roadmap ID: `T00`
+
+        Describe the context and reason for this task.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope (checklist)
+      description: List the bounded changes as unchecked checklist items.
+      placeholder: |
+        - [ ] First change
+        - [ ] Second change
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria (checklist)
+      description: State observable completion criteria as unchecked checklist items.
+      placeholder: |
+        - [ ] First acceptance criterion
+        - [ ] Second acceptance criterion
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Record related work that this task will not do, or state that there is none.
+      placeholder: _None._
+    validations:
+      required: true
+  - type: textarea
+    id: pointers
+    attributes:
+      label: Pointers
+      description: Link relevant files, documentation, issues or pull requests, or state that there are none.
+      placeholder: |
+        - `path/to/file`
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: List blocked-by and blocking issues, or state that there are no dependencies.
+      placeholder: |
+        Blocked by:
+        - #...
+
+        Blocking:
+        - #...
+
+        If there are no dependencies, write: None. Ready to start.
+    validations:
+      required: true
+  - type: textarea
+    id: guardrails
+    attributes:
+      label: Guardrails
+      description: These guardrails are included in the submitted task. Keep them intact and follow them.
+      value: |
+        - Generation stays explicit and inspectable: never silently substitute a model, node, seed, image, prompt or setting.
+        - An ambiguous prompt submission is reconciled against ComfyUI queue/history, never blindly retried.
+        - Previously written run records are preserved; create new versions instead of overwriting.
+        - LLM output is a proposal the user can edit and must confirm; the assistant never submits a run without explicit confirmation.
+        - Everything runs locally; the server binds to loopback only.
+        - Keep it thin and fast; respect the performance budgets.
+        - English (UK) for documentation and user-facing text.
+        - Read `AGENTS.md` and `docs/adr/` before starting; keep generation logic in the core.
+        - Add focused tests (fake ComfyUI / fake LLM servers; no real models in CI).
+        - Validate with `python3 scripts/ci_check.py`.
+    validations:
+      required: true
+  - type: checkboxes
+    id: guardrails_ack
+    attributes:
+      label: Guardrails acknowledgement
+      description: Confirm the task follows the guardrails above.
+      options:
+        - label: I have read and will follow these guardrails.
+          required: true
