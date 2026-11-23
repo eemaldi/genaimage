@@ -16,7 +16,6 @@ use crate::{
     artifacts::{self, InputFileRecord},
     comfyui::{ComfyUiClient, ComfyUiEvent, ComfyUiHealth},
     config::ResolvedConfig,
-    gates::CharacterState,
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
     workflow::{LoadedWorkflow, WorkflowManifest},
     HarnessError, Result,
@@ -29,8 +28,6 @@ pub struct RunRequest {
     pub preset: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, Value>,
-    #[serde(default)]
-    pub character_id: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
 }
@@ -45,6 +42,18 @@ pub struct ReconcileResult {
 pub struct RunProgress {
     pub run: RunRecord,
     pub event: Option<ComfyUiEvent>,
+}
+
+#[derive(Debug, Default)]
+pub struct WorkflowDiscovery {
+    pub manifests: Vec<WorkflowManifest>,
+    pub diagnostics: Vec<WorkflowDiagnostic>,
+}
+
+#[derive(Debug)]
+pub struct WorkflowDiagnostic {
+    pub path: PathBuf,
+    pub error: HarnessError,
 }
 
 #[derive(Clone)]
@@ -78,34 +87,59 @@ impl Harness {
         &self.repository
     }
 
-    pub fn discover_workflows(&self) -> Result<Vec<WorkflowManifest>> {
-        if !self.config.workflows.exists() {
-            return Ok(Vec::new());
-        }
-        let mut manifests = Vec::new();
-        visit_files(&self.config.workflows, &mut |path| {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".genaimage.json"))
-            {
-                let loaded = LoadedWorkflow::load(path)?;
-                manifests.push(loaded.manifest);
-            }
-            Ok(())
+    pub fn discover_workflows(&self) -> Result<WorkflowDiscovery> {
+        let mut discovery = WorkflowDiscovery::default();
+        visit_workflows(&self.config.workflows, |path, workflow| match workflow {
+            Ok(loaded) => discovery.manifests.push(loaded.manifest),
+            Err(error) => discovery.diagnostics.push(WorkflowDiagnostic {
+                path: path.to_path_buf(),
+                error,
+            }),
         })?;
-        manifests.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(manifests)
+        discovery
+            .manifests
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        discovery
+            .diagnostics
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(discovery)
     }
 
     pub fn load_workflow(&self, workflow: &str) -> Result<LoadedWorkflow> {
-        let direct = PathBuf::from(workflow);
-        let candidates = if direct.is_absolute() {
-            vec![direct]
-        } else {
-            vec![
-                self.config.workspace.join(&direct),
-                self.config.workflows.join(&direct),
+        let direct = Path::new(workflow);
+        if direct.is_absolute() {
+            return LoadedWorkflow::load(direct);
+        }
+        for candidate in [
+            self.config.workspace.join(direct),
+            self.config.workflows.join(direct),
+        ] {
+            if candidate.is_file() {
+                return LoadedWorkflow::load(&candidate);
+            }
+        }
+
+        let mut matches = Vec::new();
+        let mut invalid_matches = Vec::new();
+        let mut skipped = false;
+        visit_workflows(&self.config.workflows, |path, result| match result {
+            Ok(loaded) if loaded.manifest.id == workflow => matches.push(loaded),
+            Err(error) => {
+                skipped = true;
+                if sidecar_declares_id(path, workflow) {
+                    invalid_matches.push((path.to_path_buf(), error));
+                }
+            }
+            _ => {}
+        })?;
+        if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
+            return Err(HarnessError::Workflow(format!(
+                "cannot resolve workflow id '{workflow}': invalid manifest '{}' declares it ({error}); select an explicit manifest path",
+                path.display()
+            )));
+        }
+        if matches.is_empty() {
+            for candidate in [
                 self.config
                     .workflows
                     .join(format!("{workflow}.genaimage.json")),
@@ -113,31 +147,21 @@ impl Harness {
                     .workflows
                     .join(workflow)
                     .join("workflow.genaimage.json"),
-            ]
-        };
-        for candidate in candidates {
-            if candidate.is_file() {
-                return LoadedWorkflow::load(&candidate);
-            }
-        }
-        let mut matches = Vec::new();
-        visit_files(&self.config.workflows, &mut |path| {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".genaimage.json"))
-            {
-                let loaded = LoadedWorkflow::load(path)?;
-                if loaded.manifest.id == workflow {
-                    matches.push(loaded);
+            ] {
+                if candidate.is_file() {
+                    return LoadedWorkflow::load(&candidate);
                 }
             }
-            Ok(())
-        })?;
+        }
         match matches.len() {
             0 => Err(HarnessError::Workflow(format!(
-                "workflow '{workflow}' was not found below '{}'",
-                self.config.workflows.display()
+                "workflow '{workflow}' was not found below '{}'{}",
+                self.config.workflows.display(),
+                if skipped {
+                    "; some manifests could not be loaded; use 'workflow list' for details"
+                } else {
+                    ""
+                }
             ))),
             1 => Ok(matches.remove(0)),
             _ => Err(HarnessError::Workflow(format!(
@@ -148,31 +172,6 @@ impl Harness {
 
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
         let loaded = self.load_workflow(&request.workflow)?;
-        let required_gates = loaded.required_gates();
-        let (character_state, gate_snapshot) = if required_gates.is_empty() {
-            (None, None)
-        } else {
-            let character_id = request.character_id.as_deref().ok_or_else(|| {
-                HarnessError::Gate(format!(
-                    "workflow '{}' requires a character context for {}",
-                    loaded.manifest.id,
-                    required_gates
-                        .iter()
-                        .map(|gate| gate.label())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            })?;
-            let character_dir = self.character_dir(character_id)?;
-            let state = CharacterState::load(&character_dir)?;
-            state.assert_approved(&required_gates)?;
-            let snapshot = serde_json::to_value(&state)?;
-            (
-                Some((character_id.to_owned(), character_dir, state)),
-                Some(snapshot),
-            )
-        };
-
         let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;
         self.client.validate_workflow_nodes(&bound.workflow).await?;
         let mut source_inputs = Vec::new();
@@ -192,14 +191,7 @@ impl Harness {
         let run_id = format!("run-{}", Uuid::new_v4());
         let prompt_id = Uuid::new_v4().to_string();
         let client_id = format!("genaimage-{}", Uuid::new_v4());
-        let output_dir = self.output_directory(
-            &loaded,
-            character_state
-                .as_ref()
-                .map(|(_, directory, _)| directory.as_path()),
-            request.version.as_deref(),
-            &run_id,
-        )?;
+        let output_dir = self.output_directory(&loaded, request.version.as_deref(), &run_id)?;
         fs::create_dir_all(&output_dir)?;
         artifacts::initialise_run_files(
             &output_dir,
@@ -219,10 +211,8 @@ impl Harness {
             workflow_version: loaded.manifest.version.clone(),
             workflow_sha256: loaded.workflow_sha256.clone(),
             generation_mode: loaded.manifest.generation_mode,
-            character_id: character_state.map(|(id, _, _)| id),
             status: RunStatus::Submitting,
             parameters: parameters.clone(),
-            gate_snapshot,
             output_dir: output_dir.display().to_string(),
         };
         let mut run = self.repository.insert(&new_run)?;
@@ -536,124 +526,18 @@ impl Harness {
         self.repository.get(run_id)
     }
 
-    pub fn initialise_character(
-        &self,
-        character_id: &str,
-        name: Option<String>,
-    ) -> Result<CharacterState> {
-        let directory = self.character_dir(character_id)?;
-        if CharacterState::state_path(&directory).exists() {
-            return Err(HarnessError::Configuration(format!(
-                "character '{character_id}' is already initialised at '{}'",
-                directory.display()
-            )));
-        }
-        fs::create_dir_all(directory.join("specifications"))?;
-        fs::create_dir_all(directory.join("references"))?;
-        fs::create_dir_all(directory.join("briefs"))?;
-        fs::create_dir_all(directory.join("generations"))?;
-        fs::create_dir_all(directory.join("reviews"))?;
-        fs::create_dir_all(directory.join("delivery"))?;
-        self.copy_character_template(
-            "production-record.md",
-            &directory.join("production-record.md"),
-        )?;
-        self.copy_character_template("input-package.md", &directory.join("input-package.md"))?;
-        self.copy_character_template(
-            "design-specification.md",
-            &directory.join("specifications/design-specification.md"),
-        )?;
-        self.copy_character_template("visual-brief.md", &directory.join("briefs/visual-brief.md"))?;
-        self.copy_character_template(
-            "revision-review.md",
-            &directory.join("reviews/revision-review.md"),
-        )?;
-        let state = CharacterState::new(character_id, name);
-        state.save(&directory)?;
-        Ok(state)
-    }
-
-    pub fn character_status(&self, character_id: &str) -> Result<CharacterState> {
-        CharacterState::load(&self.character_dir(character_id)?)
-    }
-
-    pub fn decide_character_gate(
-        &self,
-        character_id: &str,
-        gate: crate::GateId,
-        status: crate::ApprovalStatus,
-        approver: String,
-        decision: String,
-    ) -> Result<CharacterState> {
-        let directory = self.character_dir(character_id)?;
-        let mut state = CharacterState::load(&directory)?;
-        state.decide(gate, status, approver, decision)?;
-        state.save(&directory)?;
-        Ok(state)
-    }
-
-    fn character_dir(&self, character_id: &str) -> Result<PathBuf> {
-        if character_id.is_empty()
-            || character_id.chars().any(|character| {
-                !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-            })
-        {
-            return Err(HarnessError::InvalidPath {
-                path: PathBuf::from(character_id),
-                reason: "character ID must contain only ASCII letters, digits, '-' or '_'"
-                    .to_owned(),
-            });
-        }
-        Ok(self.config.characters.join(character_id))
-    }
-
-    fn copy_character_template(&self, template_name: &str, target: &Path) -> Result<()> {
-        let source = self
-            .config
-            .workspace
-            .join("templates/character-concept-art")
-            .join(template_name);
-        if target.exists() {
-            return Ok(());
-        }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if source.exists() {
-            fs::copy(source, target)?;
-        } else {
-            let title = match template_name {
-                "production-record.md" => "Character Production Record",
-                "input-package.md" => "Character Input Package",
-                "design-specification.md" => "Character Design Specification",
-                "visual-brief.md" => "Visual Generation Brief",
-                "revision-review.md" => "Revision Review",
-                _ => "Character Record",
-            };
-            fs::write(
-                target,
-                format!(
-                    "# {title}\n\nCreated by GenAImage. Follow \
-                     `workflows/character-concept-art/WORKFLOW.md` and preserve all prior versions.\n"
-                ),
-            )?;
-        }
-        Ok(())
-    }
-
     fn output_directory(
         &self,
         workflow: &LoadedWorkflow,
-        character_dir: Option<&Path>,
         version: Option<&str>,
         run_id: &str,
     ) -> Result<PathBuf> {
         let version = version.unwrap_or(run_id);
         let safe_version: String = version
             .chars()
-            .map(|character| {
-                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                    character
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
                 } else {
                     '_'
                 }
@@ -664,18 +548,11 @@ impl Harness {
                 "output version cannot be empty".to_owned(),
             ));
         }
-        if let Some(character_dir) = character_dir {
-            Ok(character_dir
-                .join("generations")
-                .join(safe_version)
-                .join(run_id))
-        } else {
-            Ok(self
-                .config
-                .runs
-                .join(&workflow.manifest.id)
-                .join(safe_version))
-        }
+        Ok(self
+            .config
+            .runs
+            .join(&workflow.manifest.id)
+            .join(safe_version))
     }
 }
 
@@ -709,7 +586,29 @@ fn read_manifest_path(output_dir: &Path) -> Result<PathBuf> {
         })
 }
 
-fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
+fn sidecar_declares_id(path: &Path, id: &str) -> bool {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|manifest| manifest.get("id").and_then(Value::as_str) == Some(id))
+}
+
+fn visit_workflows(
+    directory: &Path,
+    mut visitor: impl FnMut(&Path, Result<LoadedWorkflow>),
+) -> Result<()> {
+    visit_files(directory, &mut |path| {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".genaimage.json"))
+        {
+            visitor(path, LoadedWorkflow::load(path));
+        }
+    })
+}
+
+fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path)) -> Result<()> {
     if !directory.exists() {
         return Ok(());
     }
@@ -718,7 +617,7 @@ fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path) -> Result<()>) -
         if path.is_dir() {
             visit_files(&path, visitor)?;
         } else {
-            visitor(&path)?;
+            visitor(&path);
         }
     }
     Ok(())

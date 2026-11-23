@@ -13,7 +13,7 @@ fn cli() -> Command {
 }
 
 #[test]
-fn workflow_validation_and_character_gates_are_available_through_cli() {
+fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let temp = TempDir::new().expect("temp");
     write(
         &temp.path().join("genaimage.toml"),
@@ -31,7 +31,7 @@ fn workflow_validation_and_character_gates_are_available_through_cli() {
     write(
         &temp
             .path()
-            .join("workflows/comfyui/example/workflow.genaimage.json"),
+            .join("workflows/comfyui/example/valid.genaimage.json"),
         r#"{
   "schema_version": 1,
   "id": "example",
@@ -49,6 +49,34 @@ fn workflow_validation_and_character_gates_are_available_through_cli() {
   }
 }"#,
     );
+    let legacy = "workflows/comfyui/example/legacy.genaimage.json";
+    write(
+        &temp.path().join(legacy),
+        r#"{"schema_version":1,"id":"legacy","version":"1.0.0","workflow":"api.json","required_gates":["gate3"]}"#,
+    );
+    write(
+        &temp
+            .path()
+            .join("workflows/comfyui/example/broken.genaimage.json"),
+        "{",
+    );
+
+    let list = cli()
+        .arg("--workspace")
+        .arg(temp.path())
+        .arg("--json")
+        .args(["workflow", "list"])
+        .output()
+        .expect("run CLI list");
+    let warnings = String::from_utf8_lossy(&list.stderr);
+    assert!(list.status.success(), "stderr: {warnings}");
+    let manifests: Vec<Value> = serde_json::from_slice(&list.stdout).expect("manifest list JSON");
+    assert_eq!(manifests.len(), 1);
+    assert_eq!(manifests[0]["id"], "example");
+    assert!(warnings.contains("legacy.genaimage.json"));
+    assert!(warnings.contains("remove the 'required_gates' field"));
+    assert!(warnings.contains("broken.genaimage.json"));
+
     let validate = cli()
         .arg("--workspace")
         .arg(temp.path())
@@ -64,83 +92,102 @@ fn workflow_validation_and_character_gates_are_available_through_cli() {
     let validation: Value = serde_json::from_slice(&validate.stdout).expect("validation JSON");
     assert_eq!(validation["valid"], true);
 
-    let init = cli()
+    let rejected = cli()
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
-        .args(["character", "init", "CHR-CLI", "--name", "CLI character"])
+        .args(["workflow", "validate", legacy])
         .output()
-        .expect("run character init");
-    assert!(
-        init.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&init.stderr)
-    );
-    assert!(temp
-        .path()
-        .join("characters/CHR-CLI/workflow-state.json")
-        .is_file());
-
-    let gate = cli()
-        .arg("--workspace")
-        .arg(temp.path())
-        .arg("--json")
-        .args([
-            "character",
-            "approve",
-            "CHR-CLI",
-            "--gate",
-            "gate1",
-            "--approver",
-            "test",
-            "--note",
-            "input complete",
-        ])
-        .output()
-        .expect("run gate approval");
-    assert!(
-        gate.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&gate.stderr)
-    );
-    let state: Value = serde_json::from_slice(&gate.stdout).expect("gate JSON");
-    assert_eq!(state["gates"]["gate1"]["status"], "approved");
+        .expect("validate the legacy sidecar explicitly");
+    assert!(!rejected.status.success());
+    let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
+    let message = error["error"].as_str().expect("error message");
+    assert!(message.contains(legacy));
+    assert!(message.contains("remove the 'required_gates' field"));
 }
 
 #[test]
-fn invalid_gate_fails_without_mutating_state() {
+fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
     let temp = TempDir::new().expect("temp");
-    let init = cli()
-        .arg("--workspace")
-        .arg(temp.path())
-        .arg("--json")
-        .args(["character", "init", "CHR-INVALID"])
-        .output()
-        .expect("run init");
-    assert!(init.status.success());
+    let workflows = temp.path().join("workflows/comfyui");
+    write(
+        &workflows.join("api.json"),
+        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
+    );
+    write(
+        &workflows.join("valid.genaimage.json"),
+        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
+    );
+    write(
+        &workflows.join("legacy.genaimage.json"),
+        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json","required_gates":["gate3"]}"#,
+    );
+    let run_cli = |args: &[&str]| {
+        cli()
+            .arg("--workspace")
+            .arg(temp.path())
+            .arg("--json")
+            .args(args)
+            .output()
+            .expect("run CLI")
+    };
+    for valid_name in ["valid.genaimage.json", "shared.genaimage.json"] {
+        let rejected = run_cli(&["run", "shared"]);
+        assert!(!rejected.status.success());
+        let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
+        let message = error["error"].as_str().expect("error message");
+        assert!(message.contains("workflow id 'shared'"), "{message}");
+        assert!(message.contains("legacy.genaimage.json"), "{message}");
+        assert!(
+            message.contains("select an explicit manifest path"),
+            "{message}"
+        );
+        assert!(run_cli(&["workflow", "validate", valid_name])
+            .status
+            .success());
 
-    let premature = cli()
-        .arg("--workspace")
-        .arg(temp.path())
-        .arg("--json")
-        .args([
-            "character",
-            "approve",
-            "CHR-INVALID",
-            "--gate",
-            "gate3",
-            "--approver",
-            "test",
-            "--note",
-            "not allowed",
-        ])
-        .output()
-        .expect("run premature approval");
-    assert!(!premature.status.success());
-    let error: Value = serde_json::from_slice(&premature.stderr).expect("error JSON");
-    assert_eq!(error["status"], "error");
+        if valid_name == "valid.genaimage.json" {
+            fs::rename(
+                workflows.join(valid_name),
+                workflows.join("shared.genaimage.json"),
+            )
+            .expect("move valid sidecar to the conventional filename");
+        }
+    }
+}
+
+#[test]
+fn jobs_accepts_the_retired_workspace_path_but_rejects_other_unknown_keys() {
+    let temp = TempDir::new().expect("temp");
+    let config = temp.path().join("genaimage.toml");
+    let legacy = "[paths]\ncharacters = \"characters\"\n";
+    write(&config, legacy);
+    let jobs = |command| {
+        cli()
+            .arg("--workspace")
+            .arg(temp.path())
+            .arg("--json")
+            .args(["jobs", command])
+            .output()
+            .expect("run CLI jobs command")
+    };
+    for command in ["list", "reconcile"] {
+        let output = jobs(command);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let runs: Vec<Value> = serde_json::from_slice(&output.stdout).expect("jobs JSON");
+        assert!(runs.is_empty());
+    }
+
+    write(&config, &format!("{legacy}typo = \"invalid\"\n"));
+    let rejected = jobs("list");
+    assert!(!rejected.status.success());
+    let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
     assert!(error["error"]
         .as_str()
-        .expect("error string")
-        .contains("Gate 1"));
+        .expect("error message")
+        .contains("unknown field `typo`"));
 }

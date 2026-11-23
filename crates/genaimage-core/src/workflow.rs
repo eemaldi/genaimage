@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{gates::GateId, HarnessError, Result};
+use crate::{HarnessError, Result};
 
 pub const MANIFEST_VERSION: u32 = 1;
 
@@ -29,8 +29,6 @@ pub struct WorkflowManifest {
     pub presets: BTreeMap<String, BTreeMap<String, Value>>,
     #[serde(default)]
     pub outputs: Vec<OutputDefinition>,
-    #[serde(default)]
-    pub required_gates: Vec<GateId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -43,17 +41,6 @@ pub enum GenerationMode {
     Refinement,
     MultiView,
     Delivery,
-}
-
-impl GenerationMode {
-    pub fn required_gate(self) -> Option<GateId> {
-        match self {
-            Self::Generic | Self::Delivery => None,
-            Self::InitialConcept | Self::Correction => Some(GateId::Gate3),
-            Self::Refinement => Some(GateId::Gate4),
-            Self::MultiView => Some(GateId::Gate5),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -111,7 +98,20 @@ pub struct LoadedWorkflow {
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
         let manifest_bytes = fs::read(manifest_path)?;
-        let manifest: WorkflowManifest = serde_json::from_slice(&manifest_bytes)?;
+        let manifest: WorkflowManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            if serde_json::from_slice::<Value>(&manifest_bytes)
+                .is_ok_and(|manifest| manifest.get("required_gates").is_some())
+            {
+                return HarnessError::Workflow(format!(
+                    "manifest '{}' uses retired approval gates; remove the 'required_gates' field and validate it again",
+                    manifest_path.display()
+                ));
+            }
+            HarnessError::Workflow(format!(
+                "cannot parse manifest '{}': {error}",
+                manifest_path.display()
+            ))
+        })?;
         if manifest.schema_version != MANIFEST_VERSION {
             return Err(HarnessError::Workflow(format!(
                 "manifest '{}' uses schema version {}, expected {}",
@@ -150,14 +150,6 @@ impl LoadedWorkflow {
         };
         loaded.validate()?;
         Ok(loaded)
-    }
-
-    pub fn required_gates(&self) -> Vec<GateId> {
-        let mut gates = BTreeSet::from_iter(self.manifest.required_gates.iter().copied());
-        if let Some(gate) = self.manifest.generation_mode.required_gate() {
-            gates.insert(gate);
-        }
-        gates.into_iter().collect()
     }
 
     pub fn parameter_summary(&self) -> Vec<ParameterSummary> {

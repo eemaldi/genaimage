@@ -18,7 +18,7 @@ rejected with a request to export API format.
   "version": "1.0.0",
   "title": "Readable workflow title",
   "workflow": "api-workflow.json",
-  "generation_mode": "initial_concept",
+  "generation_mode": "generic",
   "parameters": {
     "seed": {
       "node": "3",
@@ -32,7 +32,7 @@ rejected with a request to export API format.
       "input": "image",
       "kind": "image_upload",
       "required": false,
-      "description": "Optional approved source reference."
+      "description": "Optional source reference."
     }
   },
   "presets": {
@@ -45,8 +45,7 @@ rejected with a request to export API format.
       "node": "9",
       "kind": "image"
     }
-  ],
-  "required_gates": ["gate3"]
+  ]
 }
 ```
 
@@ -74,18 +73,10 @@ checksum, byte size, and returned ComfyUI filename.
 
 A preset is a named set of parameter values. CLI values override preset
 values, and the effective values are recorded in the run manifest. A preset does
-not approve content or bypass gate checks.
+not approve content.
 
-## Generation modes and gates
-
-The manifest's `generation_mode` adds an invariant gate:
-
-- `generic`, `delivery`: no automatic gate;
-- `initial_concept`, `correction`: Gate 3;
-- `refinement`: Gate 4;
-- `multi_view`: Gate 5.
-
-`required_gates` can add more gates but cannot remove the mode-derived one.
+`generation_mode` is optional metadata and defaults to `generic`. It does
+not change validation or submission.
 
 ## Outputs and manifests
 
@@ -100,7 +91,6 @@ Every completed run records:
 - parameter values and preset;
 - source upload metadata;
 - ComfyUI client/prompt IDs and history;
-- gate snapshot, when applicable;
 - output paths, byte sizes, and SHA-256 hashes.
 
 Neither an output nor the run manifest may overwrite an existing file.

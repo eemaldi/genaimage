@@ -50,17 +50,13 @@ Use `jobs reconcile` to compare persisted prompt/client IDs with ComfyUI queue
 and history. A WebSocket failure is recoverable while HTTP reconciliation
 remains available, and the event is kept in the run history.
 
-## Gate 3 or Gate 5 is blocked
+## A legacy workflow is missing from the list
 
-Load the character status and record every predecessor explicitly:
+`workflow list` warns on stderr about sidecars it could not load and still
+lists valid workflows. If a sidecar has the retired `required_gates` field,
+remove that field and run `workflow validate <manifest-path>` again. If an
+invalid sidecar shares an ID with a valid one, select an explicit manifest path
+rather than using the shared ID.
 
-```bash
-genaimage character status <character-id>
-genaimage character approve <character-id> \
-  --gate <gate-id> \
-  --approver <name> \
-  --note <decision>
-```
-
-A score, successful generation, or silence is not approval. A rejected earlier
-gate resets later approvals to pending.
+The obsolete `paths.characters` setting in `genaimage.toml` is ignored. You
+can remove it without changing the state database or existing run manifests.

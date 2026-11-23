@@ -1,10 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
-use genaimage_core::{
-    ApprovalStatus, GateId, Harness, HarnessConfig, HarnessError, RunProgress, RunRequest,
-    RunStatus,
-};
+use genaimage_core::{Harness, HarnessConfig, HarnessError, RunProgress, RunRequest, RunStatus};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -44,10 +41,6 @@ enum Command {
         #[command(subcommand)]
         command: JobsCommand,
     },
-    Character {
-        #[command(subcommand)]
-        command: CharacterCommand,
-    },
 }
 
 #[derive(Subcommand)]
@@ -74,8 +67,6 @@ struct RunCommand {
     #[arg(long = "set", value_name = "NAME=JSON")]
     parameters: Vec<String>,
     #[arg(long)]
-    character: Option<String>,
-    #[arg(long)]
     version: Option<String>,
     #[arg(long)]
     wait: bool,
@@ -100,36 +91,6 @@ enum JobsCommand {
     },
     Cancel {
         run_id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum CharacterCommand {
-    Init {
-        character_id: String,
-        #[arg(long)]
-        name: Option<String>,
-    },
-    Status {
-        character_id: String,
-    },
-    Approve {
-        character_id: String,
-        #[arg(long, value_parser = parse_gate)]
-        gate: GateId,
-        #[arg(long)]
-        approver: String,
-        #[arg(long)]
-        note: String,
-    },
-    Reject {
-        character_id: String,
-        #[arg(long, value_parser = parse_gate)]
-        gate: GateId,
-        #[arg(long)]
-        approver: String,
-        #[arg(long)]
-        reason: String,
     },
 }
 
@@ -176,7 +137,6 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
         }
         Command::Run(command) => run_command(cli, command).await?,
         Command::Jobs { command } => jobs_command(cli, command).await?,
-        Command::Character { command } => character_command(cli, command)?,
     }
     Ok(())
 }
@@ -205,7 +165,17 @@ fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError
 fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
     let harness = Harness::open(&cli.workspace)?;
     match command {
-        WorkflowCommand::List => output(cli, &harness.discover_workflows()?)?,
+        WorkflowCommand::List => {
+            let discovery = harness.discover_workflows()?;
+            for diagnostic in discovery.diagnostics {
+                eprintln!(
+                    "warning: skipping manifest '{}': {}",
+                    diagnostic.path.display(),
+                    diagnostic.error
+                );
+            }
+            output(cli, &discovery.manifests)?;
+        }
         WorkflowCommand::Validate { workflow } => {
             let loaded = harness.load_workflow(workflow)?;
             output(
@@ -214,8 +184,7 @@ fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessE
                     "valid": true,
                     "manifest": loaded.manifest_path,
                     "workflow": loaded.workflow_path,
-                    "workflow_sha256": loaded.workflow_sha256,
-                    "required_gates": loaded.required_gates()
+                    "workflow_sha256": loaded.workflow_sha256
                 }),
             )?;
         }
@@ -226,7 +195,6 @@ fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessE
                 &serde_json::json!({
                     "manifest": loaded.manifest,
                     "parameters": loaded.parameter_summary(),
-                    "required_gates": loaded.required_gates(),
                     "workflow_sha256": loaded.workflow_sha256
                 }),
             )?;
@@ -243,7 +211,6 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
             workflow: command.workflow.clone(),
             preset: command.preset.clone(),
             parameters,
-            character_id: command.character.clone(),
             version: command.version.clone(),
         })
         .await?;
@@ -301,42 +268,6 @@ async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessErr
     Ok(())
 }
 
-fn character_command(cli: &Cli, command: &CharacterCommand) -> Result<(), HarnessError> {
-    let harness = Harness::open(&cli.workspace)?;
-    let state = match command {
-        CharacterCommand::Init { character_id, name } => {
-            harness.initialise_character(character_id, name.clone())?
-        }
-        CharacterCommand::Status { character_id } => harness.character_status(character_id)?,
-        CharacterCommand::Approve {
-            character_id,
-            gate,
-            approver,
-            note,
-        } => harness.decide_character_gate(
-            character_id,
-            *gate,
-            ApprovalStatus::Approved,
-            approver.clone(),
-            note.clone(),
-        )?,
-        CharacterCommand::Reject {
-            character_id,
-            gate,
-            approver,
-            reason,
-        } => harness.decide_character_gate(
-            character_id,
-            *gate,
-            ApprovalStatus::Rejected,
-            approver.clone(),
-            reason.clone(),
-        )?,
-    };
-    output(cli, &state)?;
-    Ok(())
-}
-
 fn output<T: Serialize>(cli: &Cli, value: &T) -> Result<(), HarnessError> {
     let rendered = if cli.json {
         serde_json::to_string(value)?
@@ -364,23 +295,6 @@ fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, Harnes
         parameters.insert(name.to_owned(), parsed);
     }
     Ok(parameters)
-}
-
-fn parse_gate(value: &str) -> Result<GateId, String> {
-    match value {
-        "1" | "gate1" => Ok(GateId::Gate1),
-        "2" | "gate2" => Ok(GateId::Gate2),
-        "3" | "gate3" => Ok(GateId::Gate3),
-        "phase04" | "phase04-review" => Ok(GateId::Phase04Review),
-        "4" | "gate4" => Ok(GateId::Gate4),
-        "5" | "gate5" => Ok(GateId::Gate5),
-        "phase07" | "phase07-review" => Ok(GateId::Phase07Review),
-        "phase08" | "phase08-review" => Ok(GateId::Phase08Review),
-        _ => Err(
-            "expected gate1, gate2, gate3, phase04-review, gate4, gate5, phase07-review, or phase08-review"
-                .to_owned(),
-        ),
-    }
 }
 
 fn print_progress(progress: &RunProgress) {
