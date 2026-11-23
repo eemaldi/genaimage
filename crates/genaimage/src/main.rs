@@ -29,6 +29,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start the loopback HTTP server.
+    Serve,
     Doctor,
     Config {
         #[command(subcommand)]
@@ -105,12 +107,24 @@ enum JobsCommand {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
-        .without_time()
-        .init();
     let cli = Cli::parse();
+    if matches!(cli.command, Command::Serve) {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::builder()
+                    .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            )
+            .with_writer(std::io::stderr)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_target(false)
+            .without_time()
+            .init();
+    }
     if let Err(error) = execute(&cli).await {
         if cli.json {
             eprintln!(
@@ -147,6 +161,10 @@ async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
 async fn execute(cli: &Cli) -> Result<(), HarnessError> {
     match &cli.command {
         Command::Config { command } => return config_command(cli, command).await,
+        Command::Serve => {
+            let harness = open_harness(cli).await?;
+            genaimage_server::serve(genaimage_server::AppState::new(harness.into())).await?;
+        }
         Command::Doctor => {
             let harness = open_harness(cli).await?;
             let health = harness.health().await?;

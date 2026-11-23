@@ -7,3 +7,17 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+axum.workspace = true
+genaimage-api = { path = "../genaimage-api" }
+genaimage-core = { path = "../genaimage-core" }
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+genaimage-comfyui = { path = "../genaimage-comfyui" }
+serde_json.workspace = true
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }

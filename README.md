@@ -3,8 +3,9 @@
 GenAImage is a thin, fast, local harness for controlled, inspectable ComfyUI
 image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
-and the [architecture](docs/architecture.md). The server, portal and LLM
-assistance are planned; the existing CLI will become a thin server client.
+and the [architecture](docs/architecture.md). A loopback server with a health
+endpoint is available now. The domain API, portal, LLM assistance and migration
+to a thin CLI client are planned.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.
@@ -14,8 +15,9 @@ or replace ComfyUI, models, weights, or custom nodes.
 
 ## Current interfaces
 
-The current interface is `genaimage`, the Rust command-line application for
-scripts and reproducible operation. It calls the shared `genaimage-core` crate.
+`genaimage` is the Rust command-line application for scripts and reproducible
+operation. Operator commands call the shared `genaimage-core` crate directly.
+`genaimage serve` starts the local HTTP server.
 
 ## Current scope
 
@@ -28,8 +30,8 @@ scripts and reproducible operation. It calls the shared `genaimage-core` crate.
 
 Remote/multi-host routing, cloud storage, model installation, and custom-node
 management are outside the current scope. The planned outbound endpoint policy
-allows explicitly configured private or Compose hosts; the server will still
-bind to loopback only.
+allows explicitly configured private or Compose hosts; the server itself
+binds to loopback only.
 
 ## Prerequisites
 
@@ -39,6 +41,16 @@ bind to loopback only.
 - Python 3.11 or newer for repository checks.
 
 ## Quick start
+
+Start the loopback server and check its health from a separate terminal:
+
+```bash
+cargo run -p genaimage -- serve
+curl http://127.0.0.1:3000/api/v1/health
+```
+
+The server starts without ComfyUI. Health reports the image backend as
+`unavailable` until it responds. Other endpoints and the portal are planned.
 
 Create project configuration:
 

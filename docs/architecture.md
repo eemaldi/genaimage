@@ -16,16 +16,13 @@ planned architecture, the assistant tool runtime and self-hosted web portal.
 Current dependencies (arrows point to dependencies):
 
 ```text
-          genaimage (CLI binary)
-             /              \
-            v                |
-    genaimage-comfyui        |
-            |                |
-            v                v
-          genaimage-core
-
-    genaimage-api       (skeleton, no dependencies)
-    genaimage-server    (skeleton, no dependencies)
+genaimage (CLI) -> genaimage-server -> genaimage-api
+      |                   |
+      |                   v
+      +------------> genaimage-core
+      |                   ^
+      v                   |
+      genaimage-comfyui --+
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
@@ -36,16 +33,41 @@ Current dependencies (arrows point to dependencies):
   ComfyUI responses and progress events into core-owned types.
 - `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
   adapter factory to the extension registry and passes the selected backend to
-  the core harness until the local API is available.
-- `genaimage-api` is reserved for shared API types and the client.
-- `genaimage-server` is reserved for the Axum server. It will serve the API and
-  the embedded Svelte portal on loopback only; neither is implemented yet.
+  the core harness. `genaimage serve` passes this harness to `genaimage-server`;
+  the other commands continue to call the core directly.
+- `genaimage-api` holds shared API wire types, currently health and problem
+  details. The API client is planned.
+- `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
+  health; the domain API and embedded Svelte portal are planned.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
 The target is for the CLI and browser portal to use the same loopback API.
-The server will use the core and local adapters rather than reimplementing
-run orchestration or assistant logic.
+The server uses the core and local adapters rather than reimplementing run
+orchestration or assistant logic.
+
+## Local HTTP server
+
+`genaimage serve` listens on the configured `[server]` host and port (default
+`127.0.0.1:3000`). It validates each resolved address before binding. `build_app`
+assembles `/api/v1` from per-domain routers sharing an `AppState` with an
+`Arc<Harness>`. Tests can call the router in-process or serve it on an ephemeral
+loopback listener without installing process signal handlers.
+
+- `GET /api/v1/health` returns HTTP 200 while the server is running, with `self`
+  set to `ok`, `image_backend` set to `ok` or `unavailable`, and `llm` set to
+  `not_configured`. It checks the image backend through `Harness::health` on
+  each request with a two-second deadline. If unavailable, `image_backend_reason`
+  is `timeout` or `probe_failed`; neither prevents server startup.
+- Requests get a generated `x-request-id` when the caller does not supply one;
+  the server returns the ID and includes it in structured request tracing.
+- API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
+  hint. On SIGINT or SIGTERM, the listener stops accepting requests and drains
+  in-flight requests without changing stored run statuses. Long-lived handlers
+  can await `AppState::wait_for_shutdown` to close their streams as draining starts.
+
+Workflows, runs, events (SSE), outputs, uploads, settings and OpenAPI endpoints
+are planned, as are the browser portal and its additional request hardening.
 
 ## Providers, extensions and deployment
 
@@ -72,9 +94,8 @@ nodes or settings.
 Outbound endpoints default to loopback. Configuration permits explicitly
 allow-listed private hosts and Compose service names. The ComfyUI adapter
 validates and pins resolved addresses, rejects public addresses and disables
-redirects and proxies. The LLM adapter and server remain planned; future
-adapters must enforce the same policy. Server binding is configured as
-loopback only even when an outbound host is allow-listed.
+redirects and proxies. The planned LLM adapter must enforce the same policy.
+Server binding is loopback-only even when an outbound host is allow-listed.
 
 ## Run and assistant flow
 
