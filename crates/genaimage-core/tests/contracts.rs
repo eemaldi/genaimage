@@ -109,7 +109,7 @@ fn schema_matches_v2_structure_and_rejects_retired_or_mistyped_fields() {
     let validator = jsonschema::JSONSchema::compile(&schema).expect("compile schema");
     let mut manifest = valid_manifest("workflow.api.json");
     manifest["parameters"]["seed"]["widget"] = json!("slider");
-    manifest["parameters"]["seed"]["step"] = json!(0.5);
+    manifest["parameters"]["seed"]["step"] = json!(1);
     manifest["parameters"]["seed"]["options"] = json!([1, 2]);
     manifest["parameters"]["seed"]["group"] = json!("Sampling");
     manifest["parameters"]["seed"]["advanced"] = json!(true);
@@ -148,6 +148,176 @@ fn schema_matches_v2_structure_and_rejects_retired_or_mistyped_fields() {
 }
 
 #[test]
+fn schema_and_loader_enforce_kind_specific_hints_and_defaults() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../docs/schemas/workflow-manifest.v2.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let temp = TempDir::new().unwrap();
+    for (kind, valid, invalid, widgets, step) in [
+        (
+            "string",
+            json!("hello"),
+            json!(1),
+            vec!["text", "textarea", "select"],
+            Value::Null,
+        ),
+        (
+            "image_upload",
+            json!("image.png"),
+            json!(false),
+            vec!["file"],
+            Value::Null,
+        ),
+        (
+            "integer",
+            json!(5),
+            json!(1.5),
+            vec!["number", "slider", "select"],
+            json!(1),
+        ),
+        (
+            "seed",
+            json!(42),
+            json!("wrong"),
+            vec!["number", "slider", "select"],
+            json!(2),
+        ),
+        (
+            "number",
+            json!(1.5),
+            json!("wrong"),
+            vec!["number", "slider", "select"],
+            json!(0.5),
+        ),
+        (
+            "boolean",
+            json!(true),
+            json!(1),
+            vec!["checkbox", "select"],
+            Value::Null,
+        ),
+    ] {
+        let mut manifest = valid_manifest("workflow.api.json");
+        let seed = &mut manifest["parameters"]["seed"];
+        seed["kind"] = json!(kind);
+        seed["default"] = valid.clone();
+        seed["options"] = json!([valid]);
+        seed["step"] = step;
+        manifest["presets"]["fast"]
+            .as_object_mut()
+            .unwrap()
+            .remove("seed");
+        for widget in widgets {
+            manifest["parameters"]["seed"]["widget"] = json!(widget);
+            assert!(
+                validator.is_valid(&manifest),
+                "schema rejected {kind}/{widget}"
+            );
+            let path = create_workflow(&temp, manifest.clone(), valid_workflow());
+            assert!(
+                LoadedWorkflow::load(&path).is_ok(),
+                "loader rejected {kind}/{widget}"
+            );
+        }
+        for field in ["default", "options"] {
+            let mut bad = manifest.clone();
+            bad["parameters"]["seed"][field] = if field == "options" {
+                json!([invalid])
+            } else {
+                invalid.clone()
+            };
+            assert!(!validator.is_valid(&bad), "schema accepted {kind}/{field}");
+            let path = create_workflow(&temp, bad, valid_workflow());
+            assert!(
+                LoadedWorkflow::load(&path).is_err(),
+                "loader accepted {kind}/{field}"
+            );
+        }
+    }
+
+    for (field, value) in [
+        ("options", json!(["wrong", true, {}])),
+        ("options", json!([])),
+        ("step", json!(-5)),
+        ("step", json!(0)),
+        ("step", json!(0.5)),
+        ("widget", json!("checkbox")),
+        ("widget", json!("unknown")),
+    ] {
+        let mut manifest = valid_manifest("workflow.api.json");
+        manifest["parameters"]["seed"][field] = value;
+        assert!(!validator.is_valid(&manifest), "schema accepted {field}");
+        let path = create_workflow(&temp, manifest, valid_workflow());
+        let error = LoadedWorkflow::load(&path).unwrap_err().to_string();
+        assert!(
+            error.contains(if field == "options" { "option" } else { field }),
+            "{error}"
+        );
+    }
+    for kind in ["string", "boolean", "image_upload"] {
+        let mut manifest = valid_manifest("workflow.api.json");
+        manifest["parameters"]["seed"]["kind"] = json!(kind);
+        manifest["parameters"]["seed"]["step"] = json!(1);
+        manifest["presets"]["fast"]
+            .as_object_mut()
+            .unwrap()
+            .remove("seed");
+        assert!(!validator.is_valid(&manifest));
+        let path = create_workflow(&temp, manifest, valid_workflow());
+        assert!(LoadedWorkflow::load(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("step"));
+    }
+    for invalid in [Value::Null, json!([]), json!({})] {
+        let mut manifest = valid_manifest("workflow.api.json");
+        manifest["presets"]["fast"]["steps"] = invalid;
+        assert!(!validator.is_valid(&manifest));
+        let path = create_workflow(&temp, manifest, valid_workflow());
+        assert!(LoadedWorkflow::load(&path).is_err());
+    }
+}
+
+#[test]
+fn cross_field_rules_require_workflow_validation() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../docs/schemas/workflow-manifest.v2.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let temp = TempDir::new().unwrap();
+    let mut cases = Vec::new();
+    let mut default_above_max = valid_manifest("workflow.api.json");
+    default_above_max["parameters"]["steps"]["default"] = json!(999);
+    cases.push((default_above_max, "above maximum"));
+    let mut wrong_preset_type = valid_manifest("workflow.api.json");
+    wrong_preset_type["presets"]["fast"]["steps"] = json!("12");
+    cases.push((wrong_preset_type, "expects Integer"));
+    let mut default_not_in_options = valid_manifest("workflow.api.json");
+    default_not_in_options["parameters"]["steps"]["default"] = json!(5);
+    default_not_in_options["parameters"]["steps"]["options"] = json!([10, 20]);
+    cases.push((default_not_in_options, "default must appear"));
+    let mut option_out_of_range = valid_manifest("workflow.api.json");
+    option_out_of_range["parameters"]["steps"]["options"] = json!([101]);
+    cases.push((option_out_of_range, "above maximum"));
+    let mut option_disallowed = valid_manifest("workflow.api.json");
+    option_disallowed["parameters"]["steps"]["allowed_values"] = json!([10]);
+    option_disallowed["parameters"]["steps"]["options"] = json!([11]);
+    cases.push((option_disallowed, "allowed set"));
+    for (manifest, expected) in cases {
+        assert!(
+            validator.is_valid(&manifest),
+            "cross-field case unexpectedly expressible in schema"
+        );
+        let path = create_workflow(&temp, manifest, valid_workflow());
+        let error = LoadedWorkflow::load(&path).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn parameter_kinds_still_enforce_their_value_types() {
     use genaimage_core::workflow::ParameterDefinition;
     for (kind, valid, invalid) in [
@@ -180,7 +350,7 @@ fn v2_metadata_and_hints_round_trip_without_changing_bindings() {
     seed["default"] = json!(7);
     seed["widget"] = json!("slider");
     seed["step"] = json!(4.0);
-    seed["options"] = json!([1, 2]);
+    seed["options"] = json!([7, 42]);
     seed["group"] = json!("Sampling");
     seed["advanced"] = json!(true);
     seed["placeholder"] = json!("Choose a seed");

@@ -326,6 +326,7 @@ impl LoadedWorkflow {
             if let Some(default) = &parameter.default {
                 parameter.validate_value(name, default)?;
             }
+            parameter.validate_hints(name)?;
         }
         for name in self.manifest.presets.keys() {
             self.validate_values(
@@ -363,6 +364,60 @@ impl LoadedWorkflow {
 }
 
 impl ParameterDefinition {
+    fn validate_hints(&self, name: &str) -> Result<()> {
+        if let Some(widget) = &self.widget {
+            let valid = match self.kind {
+                ParameterKind::String => matches!(widget.as_str(), "text" | "textarea" | "select"),
+                ParameterKind::ImageUpload => widget == "file",
+                ParameterKind::Integer | ParameterKind::Number | ParameterKind::Seed => {
+                    matches!(widget.as_str(), "number" | "slider" | "select")
+                }
+                ParameterKind::Boolean => matches!(widget.as_str(), "checkbox" | "select"),
+            };
+            if !valid {
+                return Err(HarnessError::Workflow(format!(
+                    "parameter '{name}' widget '{widget}' is not supported for {:?}",
+                    self.kind
+                )));
+            }
+        }
+        if let Some(step) = self.step {
+            let numeric = matches!(
+                self.kind,
+                ParameterKind::Integer | ParameterKind::Number | ParameterKind::Seed
+            );
+            let integer = matches!(self.kind, ParameterKind::Integer | ParameterKind::Seed);
+            if !numeric || !step.is_finite() || step <= 0.0 || (integer && step.fract() != 0.0) {
+                return Err(HarnessError::Workflow(format!(
+                    "parameter '{name}' step must be positive and compatible with {:?}",
+                    self.kind
+                )));
+            }
+        }
+        if let Some(options) = &self.options {
+            if options.is_empty() {
+                return Err(HarnessError::Workflow(format!(
+                    "parameter '{name}' options must not be empty"
+                )));
+            }
+            for option in options {
+                self.validate_value(name, option).map_err(|error| {
+                    HarnessError::Workflow(format!(
+                        "invalid option for parameter '{name}': {error}"
+                    ))
+                })?;
+            }
+            if let Some(default) = &self.default {
+                if !options.contains(default) {
+                    return Err(HarnessError::Workflow(format!(
+                        "parameter '{name}' default must appear in its options"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_value(&self, name: &str, value: &Value) -> Result<()> {
         let valid_type = match self.kind {
             ParameterKind::String | ParameterKind::ImageUpload => value.is_string(),

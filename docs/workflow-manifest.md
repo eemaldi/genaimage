@@ -94,13 +94,34 @@ existing run database, new records still store `generic` in its historical
 
 UI hints are advisory only: `options` does not restrict accepted values (use
 `allowed_values` for that), and `step` does not round or constrain values.
-Hints are optional and may be `null`; consumers can ignore unrecognised widget
-names. Defaults and presets are explicit values, not UI hints.
+Hints are optional and may be `null`, but when present they must be usable:
+
+| Kind | Supported `widget` values | `step` |
+| --- | --- | --- |
+| `string` | `text`, `textarea`, `select` | Not supported |
+| `image_upload` | `file` | Not supported |
+| `integer`, `seed` | `number`, `slider`, `select` | Positive whole number |
+| `number` | `number`, `slider`, `select` | Positive number |
+| `boolean` | `checkbox`, `select` | Not supported |
+
+An `options` list must be non-empty, and each option must satisfy the kind,
+range and `allowed_values` constraints. If a default is present, it must appear
+in `options`. Presets and overrides may still select any valid binding, even
+one not in `options` or not aligned to `step`.
 
 No two named parameters may bind the same node/input. Unknown preset parameters,
 missing nodes/inputs, unsupported JSON types, and invalid ranges fail
-preflight. The schema checks structure, while workflow validation also checks
-node/input bindings and values against kinds, ranges and allow-lists.
+preflight. The published schema checks structure, kind-specific default and
+option types, widgets and steps, and rejects non-scalar preset values. JSON
+Schema draft 7 cannot compare a value to another property in the instance or
+look up a preset key in the parameter map. Thus, for example, it cannot check a
+default against that parameter's `minimum`, `maximum` or `allowed_values`,
+check that options contain the default, or validate a preset value against its
+named parameter. Its mathematical `integer` type also permits `1.0`, whereas
+Rust binding expects an integer JSON representation within its supported
+integer range. Always run `genaimage workflow validate <manifest-path>` as well:
+the loader enforces these cross-field rules and checks workflow node/input
+bindings. The bundled-manifest test runs both checks.
 
 `image_upload` parameters contain a local path. The file is uploaded to the
 configured ComfyUI input area before submission; the run stores the path,

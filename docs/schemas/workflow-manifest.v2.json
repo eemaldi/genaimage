@@ -64,7 +64,13 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "additionalProperties": {}
+        "additionalProperties": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
       }
     },
     "outputs": {
@@ -143,7 +149,8 @@
             "array",
             "null"
           ],
-          "items": {}
+          "items": {},
+          "minItems": 1
         },
         "group": {
           "type": [
@@ -163,7 +170,221 @@
             "null"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "string"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "text",
+                  "textarea",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "image_upload"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "string"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "file",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "integer",
+                  "seed"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "number",
+                  "slider",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "number"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "number"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "number",
+                  "slider",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "options": {
+                "items": {
+                  "type": "boolean"
+                }
+              },
+              "widget": {
+                "enum": [
+                  "checkbox",
+                  "select",
+                  null
+                ]
+              },
+              "step": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "output": {
       "type": "object",
@@ -180,5 +401,6 @@
         }
       }
     }
-  }
+  },
+  "description": "Structural and kind-specific validation. Cross-field constraints, preset-to-parameter references and workflow node bindings also require GenAImage workflow validation."
 }
