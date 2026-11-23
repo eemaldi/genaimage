@@ -18,7 +18,7 @@ use crate::{
     config::ResolvedConfig,
     image_backend::{BackendEvent, BackendHealth, HistoryOutcome, ImageBackend},
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
-    workflow::{LoadedWorkflow, WorkflowManifest},
+    workflow::{GenerationMode, LoadedWorkflow, WorkflowManifest},
     HarnessError, Result,
 };
 
@@ -262,7 +262,7 @@ impl Harness {
             workflow_id: loaded.manifest.id.clone(),
             workflow_version: loaded.manifest.version.clone(),
             workflow_sha256: loaded.workflow_sha256.clone(),
-            generation_mode: loaded.manifest.generation_mode,
+            generation_mode: GenerationMode::Generic,
             status: RunStatus::Submitting,
             parameters: parameters.clone(),
             output_dir: output_dir.display().to_string(),

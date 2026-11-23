@@ -33,11 +33,10 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
             .path()
             .join("workflows/comfyui/example/valid.genaimage.json"),
         r#"{
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "example",
   "version": "1.0.0",
   "workflow": "api.json",
-  "generation_mode": "generic",
   "parameters": {
     "seed": {
       "node": "3",
@@ -74,7 +73,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     assert_eq!(manifests.len(), 1);
     assert_eq!(manifests[0]["id"], "example");
     assert!(warnings.contains("legacy.genaimage.json"));
-    assert!(warnings.contains("remove the 'required_gates' field"));
+    assert!(warnings.contains("upgrade to version 2"));
     assert!(warnings.contains("broken.genaimage.json"));
 
     let validate = cli()
@@ -103,7 +102,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
     let message = error["error"].as_str().expect("error message");
     assert!(message.contains(legacy));
-    assert!(message.contains("remove the 'required_gates' field"));
+    assert!(message.contains("upgrade to version 2"));
 }
 
 #[test]
@@ -116,7 +115,7 @@ fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
     );
     write(
         &workflows.join("valid.genaimage.json"),
-        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
+        r#"{"schema_version":2,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
     );
     write(
         &workflows.join("legacy.genaimage.json"),

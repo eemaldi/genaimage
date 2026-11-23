@@ -13,19 +13,26 @@ rejected with a request to export API format.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "workflow-id",
   "version": "1.0.0",
   "title": "Readable workflow title",
   "workflow": "api-workflow.json",
-  "generation_mode": "generic",
+  "description": "A short description of the workflow.",
+  "tags": ["example"],
+  "category": "image generation",
+  "thumbnail": "thumbnail.png",
   "parameters": {
     "seed": {
       "node": "3",
       "input": "seed",
       "kind": "seed",
       "required": true,
-      "default": 42
+      "default": 42,
+      "widget": "number",
+      "step": 1,
+      "group": "Sampling",
+      "advanced": false
     },
     "reference": {
       "node": "12",
@@ -49,6 +56,24 @@ rejected with a request to export API format.
 }
 ```
 
+The published [JSON Schema](schemas/workflow-manifest.v2.json) defines the
+structural format. Unknown fields are rejected, including the retired
+`generation_mode` and `required_gates` fields. `id`, `version`, `workflow` and
+`schema_version` are required; `id` and `version` must not be blank. `title`
+defaults to an empty string. Optional `description`, `tags` (a list of
+strings), `category` and `thumbnail` (a string reference) are descriptive
+metadata; they do not affect generation or cause files to be loaded.
+
+### Upgrading from version 1
+
+Version 1 manifests are not migrated automatically. Remove
+`generation_mode` and `required_gates`, change `schema_version` to `2`, and
+optionally add metadata and UI hints. Validate the result against the schema
+and run `genaimage workflow validate <manifest-path>`. Previously written run
+records remain readable and are not rewritten. For compatibility with the
+existing run database, new records still store `generic` in its historical
+`generation_mode` column; this does not change binding or generation.
+
 ## Parameter fields
 
 | Field | Meaning |
@@ -60,10 +85,22 @@ rejected with a request to export API format.
 | `default` | Optional explicit default |
 | `allowed_values` | Optional JSON value allow-list |
 | `minimum` / `maximum` | Optional numeric range |
+| `widget` | Optional string naming a suggested control |
+| `step` | Optional numeric increment suggested for a control |
+| `options` | Optional list of suggested JSON values |
+| `group` | Optional string for grouping controls |
+| `advanced` | Optional boolean marking a control as advanced |
+| `placeholder` | Optional string for a control's placeholder |
+
+UI hints are advisory only: `options` does not restrict accepted values (use
+`allowed_values` for that), and `step` does not round or constrain values.
+Hints are optional and may be `null`; consumers can ignore unrecognised widget
+names. Defaults and presets are explicit values, not UI hints.
 
 No two named parameters may bind the same node/input. Unknown preset parameters,
 missing nodes/inputs, unsupported JSON types, and invalid ranges fail
-preflight.
+preflight. The schema checks structure, while workflow validation also checks
+node/input bindings and values against kinds, ranges and allow-lists.
 
 `image_upload` parameters contain a local path. The file is uploaded to the
 configured ComfyUI input area before submission; the run stores the path,
@@ -74,9 +111,6 @@ checksum, byte size, and returned ComfyUI filename.
 A preset is a named set of parameter values. CLI values override preset
 values, and the effective values are recorded in the run manifest. A preset does
 not approve content.
-
-`generation_mode` is optional metadata and defaults to `generic`. It does
-not change validation or submission.
 
 ## Outputs and manifests
 

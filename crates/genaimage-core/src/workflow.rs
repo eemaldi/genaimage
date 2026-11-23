@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{HarnessError, Result};
 
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +22,13 @@ pub struct WorkflowManifest {
     pub title: String,
     pub workflow: PathBuf,
     #[serde(default)]
-    pub generation_mode: GenerationMode,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, ParameterDefinition>,
     #[serde(default)]
@@ -31,6 +37,7 @@ pub struct WorkflowManifest {
     pub outputs: Vec<OutputDefinition>,
 }
 
+// Retained for reading and writing historical run records, not workflow manifests.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationMode {
@@ -61,6 +68,18 @@ pub struct ParameterDefinition {
     pub minimum: Option<f64>,
     #[serde(default)]
     pub maximum: Option<f64>,
+    #[serde(default)]
+    pub widget: Option<String>,
+    #[serde(default)]
+    pub step: Option<f64>,
+    #[serde(default)]
+    pub options: Option<Vec<Value>>,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub advanced: Option<bool>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -98,20 +117,23 @@ pub struct LoadedWorkflow {
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
         let manifest_bytes = fs::read(manifest_path)?;
-        let manifest: WorkflowManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
-            if serde_json::from_slice::<Value>(&manifest_bytes)
-                .is_ok_and(|manifest| manifest.get("required_gates").is_some())
-            {
-                return HarnessError::Workflow(format!(
-                    "manifest '{}' uses retired approval gates; remove the 'required_gates' field and validate it again",
-                    manifest_path.display()
-                ));
-            }
-            HarnessError::Workflow(format!(
-                "cannot parse manifest '{}': {error}",
+        // Inspect the version before strict deserialisation so legacy fields cannot hide
+        // the actionable upgrade error.
+        if serde_json::from_slice::<Value>(&manifest_bytes)
+            .is_ok_and(|manifest| manifest.get("schema_version").and_then(Value::as_u64) == Some(1))
+        {
+            return Err(HarnessError::Workflow(format!(
+                "manifest '{}' uses schema version 1; upgrade to version 2: remove 'generation_mode' and 'required_gates', set 'schema_version' to 2, and validate against docs/schemas/workflow-manifest.v2.json",
                 manifest_path.display()
-            ))
-        })?;
+            )));
+        }
+        let manifest: WorkflowManifest =
+            serde_json::from_slice(&manifest_bytes).map_err(|error| {
+                HarnessError::Workflow(format!(
+                    "cannot parse manifest '{}': {error}",
+                    manifest_path.display()
+                ))
+            })?;
         if manifest.schema_version != MANIFEST_VERSION {
             return Err(HarnessError::Workflow(format!(
                 "manifest '{}' uses schema version {}, expected {}",
