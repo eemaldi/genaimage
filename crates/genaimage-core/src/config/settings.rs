@@ -256,9 +256,11 @@ impl SettingsUpdate {
         let mut errors = Vec::new();
         for (key, value, test) in [
             ("comfyui.base_url", &self.config.comfyui.base_url, probe),
-            ("llm.base_url", &self.config.llm.base_url, false),
+            ("llm.base_url", &self.config.llm.base_url, probe),
         ] {
-            if (test || self.edits.contains_key(key)) && validate_endpoint(key, value, &[]).is_err()
+            if !value.is_empty()
+                && (test || self.edits.contains_key(key))
+                && validate_endpoint(key, value, &[]).is_err()
             {
                 errors.push(SettingIssue::new(
                     key,
@@ -271,6 +273,49 @@ impl SettingsUpdate {
         } else {
             Err(errors)
         }
+    }
+
+    /// Check the database path without opening, creating or migrating a database.
+    pub fn validate_storage(&self) -> std::result::Result<(), Vec<SettingIssue>> {
+        let target = &self.config.state_database;
+        let error = |reason| vec![SettingIssue::new("paths.state_database", reason)];
+        let file_reason = "use a regular file or a path to a new database file";
+        if matches!(
+            target
+                .to_string_lossy()
+                .rsplit(std::path::is_separator)
+                .next(),
+            Some("" | "." | "..")
+        ) {
+            return Err(error(file_reason));
+        }
+        let ancestors: Vec<_> = target.ancestors().collect();
+        for path in ancestors.into_iter().rev() {
+            let database = path == target;
+            match fs::metadata(path) {
+                Ok(metadata)
+                    if (database && metadata.is_file()) || (!database && metadata.is_dir()) =>
+                {
+                    continue
+                }
+                // A missing component is fine; a dangling link is not.
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        && fs::symlink_metadata(path)
+                            .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+                {
+                    continue
+                }
+                _ => {
+                    return Err(error(if database {
+                        file_reason
+                    } else {
+                        "use directories for the database path's ancestors"
+                    }))
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Atomically replace only the known changed values, refusing a stale source.

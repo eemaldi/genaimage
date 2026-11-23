@@ -96,8 +96,9 @@ shutdown starts, so a stalled upload cannot prevent draining.
 The [settings API](setup.md#settings-api) uses core validation and atomic TOML
 persistence. The server serialises writes and publishes the saved configuration
 and the active harness together; handlers snapshot the active harness before
-using it. The event bus survives a swap. The core prevents endpoint changes
-from invalidating the database ownership of existing runs or racing submissions.
+using it. The event bus survives a swap. ComfyUI timing changes retain the
+active adapter’s DNS pin. Endpoint identity and storage changes wait for
+restart, when core checks database ownership again.
 
 ### Live event stream
 

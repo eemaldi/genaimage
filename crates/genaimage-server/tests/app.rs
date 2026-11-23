@@ -471,7 +471,7 @@ async fn settings_report_sources_and_key_level_errors_without_writing() {
 }
 
 #[tokio::test]
-async fn settings_probe_then_save_and_hot_reload_an_empty_database() {
+async fn settings_stage_endpoint_even_with_empty_database_and_apply_timing_live() {
     let api = ApiHarness::start().await;
     let alternate = FakeComfyServer::start(FakeComfyState::default()).await;
     api.fake.health_unavailable.store(true, Ordering::SeqCst);
@@ -479,7 +479,11 @@ async fn settings_probe_then_save_and_hot_reload_an_empty_database() {
     let new_port = if port == 3001 { 3002 } else { 3001 };
     let path = api.workspace().join("genaimage.toml");
     let original = std::fs::read(&path).unwrap();
-    let patch = json!({"comfyui.base_url": format!("http://{}", alternate.address()), "server.port": new_port});
+    let patch = json!({
+        "comfyui.base_url": format!("http://{}", alternate.address()),
+        "server.port": new_port,
+        "comfyui.request_timeout_seconds": 1,
+    });
     let probe: SettingsTestResponse = api.post_json(TEST_SETTINGS, &patch).await;
     assert_eq!(probe.comfyui, HealthStatus::Ok);
     assert_eq!(probe.llm, HealthStatus::NotConfigured);
@@ -496,33 +500,37 @@ async fn settings_probe_then_save_and_hot_reload_an_empty_database() {
         .unwrap();
     assert_eq!(saved.status(), StatusCode::OK);
     let saved: SettingsResponse = saved.json().await.unwrap();
-    assert_eq!(saved.restart_required, ["server.port"]);
+    assert_eq!(saved.restart_required, ["comfyui.base_url", "server.port"]);
     assert_eq!(
         saved.settings["server.port"].active_value,
         Some(json!(port))
     );
     assert_eq!(saved.settings["server.port"].value, new_port);
-    assert!(saved.settings["comfyui.base_url"].active_value.is_none());
+    assert_eq!(
+        saved.settings["comfyui.base_url"].active_value,
+        Some(json!(api.core.config().comfyui.base_url))
+    );
+    assert!(saved.settings["comfyui.request_timeout_seconds"]
+        .active_value
+        .is_none());
     let edited = std::fs::read_to_string(&path).unwrap();
     assert!(edited.starts_with("# API fixture configuration\n"));
     assert!(edited.contains(&format!("port = {new_port} # listener\n")));
     assert!(edited.contains("state_database = \"state.sqlite3\""));
     ApiHarness::await_event(&mut events, Duration::from_secs(2), |e| {
-        matches!(&e.event, Event::SettingsChanged { settings } if settings["restart_required"] == json!(["server.port"]))
+        matches!(&e.event, Event::SettingsChanged { settings } if settings["restart_required"] == json!(["comfyui.base_url", "server.port"]))
     }).await;
     let health: HealthResponse = api.get_json("/api/v1/health").await;
-    assert_eq!(health.image_backend, HealthStatus::Ok);
+    assert_eq!(health.image_backend, HealthStatus::Unavailable);
 
     install_workflow(&api);
-    assert!(matches!(
-        api.core.submit(run_request()).await,
-        Err(genaimage_core::HarnessError::SettingsConflict(_))
-    ));
-    assert_eq!(
-        api.submit_run(run_request()).await.unwrap().status,
-        RunStatus::Queued
-    );
-    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    api.fake.hang_submit_response.store(true, Ordering::SeqCst);
+    let run = tokio::time::timeout(Duration::from_secs(3), api.submit_run(run_request()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, RunStatus::UnknownSubmission);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
     api.shutdown().await;
 }
 
@@ -534,16 +542,34 @@ async fn endpoint_and_separate_database_wait_for_restart_when_runs_exist() {
     let alternate_state = FakeComfyState::default();
     let alternate = FakeComfyServer::start(alternate_state.clone()).await;
     let url = format!("http://{}", alternate.address());
-    let path = api.workspace().join("genaimage.toml");
-    let original = std::fs::read(&path).unwrap();
-    let rejected = api
+    let staged = api
         .request(Method::PUT, SETTINGS)
         .json(&json!({"comfyui.base_url": url}))
         .send()
         .await
         .unwrap();
-    ApiHarness::assert_problem(rejected, StatusCode::CONFLICT).await;
-    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(staged.status(), StatusCode::OK);
+    assert_eq!(
+        staged
+            .json::<SettingsResponse>()
+            .await
+            .unwrap()
+            .restart_required,
+        ["comfyui.base_url"]
+    );
+    // The existing startup ownership check refuses the saved endpoint with the old database.
+    let config =
+        genaimage_core::HarnessConfig::load_with(api.workspace(), None, api.workspace(), |key| {
+            matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME")
+                .then(|| api.workspace().to_str().unwrap().to_owned())
+        })
+        .unwrap();
+    let adapter = std::sync::Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
+    assert!(
+        matches!(genaimage_core::Harness::new_async(config, adapter).await,
+            Err(genaimage_core::HarnessError::Configuration(message)) if message.contains("belongs to workspace")
+        )
+    );
     let response = api
         .request(Method::PUT, SETTINGS)
         .json(&json!({
@@ -606,4 +632,105 @@ async fn settings_probe_refuses_non_loopback_and_times_out() {
         Some(ImageBackendHealthReason::Timeout)
     );
     api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_reject_invalid_database_targets_without_touching_storage() {
+    let api = ApiHarness::start().await;
+    let root = api.workspace();
+    std::fs::create_dir(root.join("directory")).unwrap();
+    std::fs::write(root.join("file"), "not a directory").unwrap();
+    let path = root.join("genaimage.toml");
+    let original = std::fs::read(&path).unwrap();
+    let mut invalid = vec!["directory", "file/missing/state.sqlite3", "missing/"];
+    #[cfg(unix)]
+    let _socket = {
+        let socket = std::os::unix::net::UnixListener::bind(root.join("special")).unwrap();
+        std::os::unix::fs::symlink(root.join("missing"), root.join("dangling")).unwrap();
+        invalid.extend(["special", "dangling/state.sqlite3"]);
+        socket
+    };
+    for target in invalid {
+        let response = api
+            .request(Method::PUT, SETTINGS)
+            .json(&json!({"paths.state_database": target}))
+            .send()
+            .await
+            .unwrap();
+        let problem = ApiHarness::assert_problem(response, StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert_eq!(problem.errors[0].key, "paths.state_database", "{target}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    let response = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"paths.state_database": "new-directory/state.sqlite3"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!root.join("new-directory").exists());
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_probe_llm_uses_models_route_without_persisting_or_following_redirects() {
+    use axum::{response::Redirect, routing::get, Json, Router};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let root = format!("http://localhost:{}", listener.local_addr().unwrap().port());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route(
+                    "/v1/models",
+                    get(|| async { Json(json!({"object": "list", "data": []})) }),
+                )
+                .route(
+                    "/redirect/models",
+                    get(|| async { Redirect::temporary("/v1/models") }),
+                )
+                .route("/stalled/models", get(std::future::pending::<StatusCode>)),
+        )
+        .await
+        .unwrap();
+    });
+    let api = ApiHarness::start().await;
+    let path = api.workspace().join("genaimage.toml");
+    let original = std::fs::read(&path).unwrap();
+    for (suffix, status) in [
+        ("", HealthStatus::Ok),
+        ("/v1/", HealthStatus::Ok),
+        ("/redirect", HealthStatus::Unavailable),
+        ("/stalled", HealthStatus::Unavailable),
+    ] {
+        let response: SettingsTestResponse = tokio::time::timeout(
+            Duration::from_secs(5),
+            api.post_json(
+                TEST_SETTINGS,
+                &json!({"llm.base_url": format!("{root}{suffix}")}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.comfyui, HealthStatus::Ok);
+        assert_eq!(response.llm, status, "{suffix}");
+    }
+    let response = api
+        .request(Method::POST, TEST_SETTINGS)
+        .json(
+            &json!({"llm.base_url": "http://192.168.10.2", "llm.allowed_hosts": ["192.168.10.2"]}),
+        )
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::UNPROCESSABLE_ENTITY).await;
+    assert_eq!(problem.errors[0].key, "llm.base_url");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let configured = ApiHarness::start_with_config(5, &[("GENAIMAGE_LLM_URL", &root)]).await;
+    let response: SettingsTestResponse = configured.post_json(TEST_SETTINGS, &json!({})).await;
+    assert_eq!(response.llm, HealthStatus::Ok);
+    configured.shutdown().await;
+    api.shutdown().await;
+    server.abort();
 }

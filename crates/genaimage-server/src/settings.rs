@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::http::StatusCode;
 use genaimage_api::{Setting, SettingError, SettingSource, SettingsPatch, SettingsResponse};
-use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{
     config::{SettingIssue, SettingSource as Source, SettingsUpdate},
     Event, Harness, HarnessError, ResolvedConfig,
@@ -118,17 +117,16 @@ impl SettingsState {
         if !update.has_edits() {
             return Ok(self.get());
         }
+        update.validate_storage().map_err(invalid_settings)?;
         let active = self.harness();
-        let (desired, new_active) = active
-            .apply_settings(update, |profile| Ok(Arc::new(ComfyUiClient::new(profile)?)))
-            .map_err(|error| match error {
-                HarnessError::SettingsConflict(detail) => Problem::new(
-                    StatusCode::CONFLICT,
-                    detail,
-                    "Resolve the configuration conflict and try again.",
-                ),
-                _ => save_failed(),
-            })?;
+        let (desired, new_active) = active.apply_settings(update).map_err(|error| match error {
+            HarnessError::SettingsConflict(detail) => Problem::new(
+                StatusCode::CONFLICT,
+                detail,
+                "Resolve the configuration conflict and try again.",
+            ),
+            _ => save_failed(),
+        })?;
         let snapshot = Snapshot {
             desired: Arc::new(desired),
             active: Arc::new(new_active),

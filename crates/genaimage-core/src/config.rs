@@ -78,22 +78,12 @@ impl Default for ComfyUiProfile {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
     pub allowed_hosts: Vec<String>,
-}
-
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://127.0.0.1:11434/v1".into(),
-            model: String::new(),
-            allowed_hosts: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -384,7 +374,9 @@ fn validate_fields(
         ));
     }
     errors.extend(comfyui.validate_base_url().err());
-    errors.extend(validate_endpoint("llm.base_url", &llm.base_url, &llm.allowed_hosts).err());
+    if !llm.base_url.is_empty() {
+        errors.extend(validate_endpoint("llm.base_url", &llm.base_url, &llm.allowed_hosts).err());
+    }
     errors
 }
 

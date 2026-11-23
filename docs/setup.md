@@ -71,9 +71,8 @@ workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
 see `genaimage.example.toml`. The `serve` command uses `[server]`. LLM
-integration is planned, so its settings do not start or contact an LLM service.
-Set `llm.model` explicitly when that integration becomes available: no model
-is selected automatically.
+inference is planned. The settings connectivity test can check an explicitly
+configured LLM URL, but it does not start a service or select a model.
 The server bind host is restricted to loopback regardless of outbound settings.
 
 State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`,
@@ -109,23 +108,27 @@ has changed on disk, the save is refused; restart to load the external edits.
 
 GET and PUT list staged changes in `restart_required`. Each affected entry
 has the saved `value` and the current `active_value`. All `[server]` and
-`[paths]` settings take effect on restart. ComfyUI transport settings normally
-apply live; new requests use the updated adapter. A different endpoint can
-only take over the active database when it has no runs and no submission is
-in progress. Otherwise the server returns 409. To switch away from a database
-with runs, save the new endpoint together with a separate `paths.state_database`:
-that pair takes effect on restart. Finish or reconcile outstanding runs before
-restarting; existing runs remain associated with their original endpoint and
-database. LLM settings are saved but have no runtime effect yet.
+`[paths]` settings, plus `comfyui.base_url` and `comfyui.allowed_hosts`, take
+effect on restart, even if the current database is empty. ComfyUI request and
+WebSocket reconnect timings apply live without changing the active endpoint
+or its pinned DNS addresses.
+
+On restart, the existing database ownership check still applies. Before
+switching endpoints, finish or reconcile outstanding runs and select a separate
+`paths.state_database` if the old database contains runs. Saving validates
+that the database target is a regular file or a new file under directory
+ancestors. It does not create, open or migrate a database.
 
 `POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
-saved settings). It tests ComfyUI without saving or changing the running
-adapter. The probe has a two-second deadline and reports `ok` or `unavailable`
-(with `timeout` or `probe_failed`). It never follows redirects or uses proxies.
-The API only accepts loopback URLs for new endpoints and for the ComfyUI probe;
-configure explicitly allow-listed private/Compose hosts via the file or
-environment instead. LLM probes return `not_configured` until a provider is
-implemented.
+saved settings). It tests ComfyUI and a configured LLM without saving or
+changing the running adapter. The probes run concurrently with a two-second
+budget each. The LLM probe sends an unauthenticated `GET` to `{base}/models`,
+or `/v1/models` if the URL has no base path. It reports `ok` for an HTTP 2xx
+response, `unavailable` if the probe fails, and `not_configured` if
+`llm.base_url` is unset or empty. Both probes pin validated loopback addresses
+and never follow redirects or use proxies. The API accepts only loopback URLs
+for new endpoints and for probes; configure allow-listed private/Compose hosts
+via the file or environment instead.
 
 ### Environment overrides
 
@@ -163,9 +166,8 @@ model = "your-explicit-model"
 Allow-listing never permits public addresses. The ComfyUI adapter resolves all
 addresses on the first network operation (with a bounded DNS lookup), rejects
 any public result and pins HTTP and WebSocket connections to the validated
-addresses. HTTP redirects and proxies are disabled. Offline commands do not
-resolve service names. The future LLM adapter must use the
-same resolved-address policy; its endpoint is not contacted today.
+addresses. HTTP redirects and proxies are disabled. Offline commands do not resolve service names. The settings LLM probe
+uses the same address validation and pinning, restricted to loopback.
 
 ### Migrating legacy configuration and data
 

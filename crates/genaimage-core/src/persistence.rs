@@ -188,23 +188,6 @@ impl RunRepository {
         Ok(self)
     }
 
-    pub(crate) fn has_runs(&self) -> Result<bool> {
-        self.guarded_read(|connection| {
-            Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM runs)", [], |row| row.get(0))?)
-        })
-    }
-
-    /// The first run binds the replacement identity in the same transaction as
-    /// its insertion. Preparing an adapter must not change the on-disk database.
-    pub(crate) fn for_backend(&self, backend: &str, endpoint: &str) -> Self {
-        let mut replacement = self.clone();
-        if let Some(identity) = &mut replacement.identity {
-            identity.backend = backend.to_owned();
-            identity.endpoint = endpoint.to_owned();
-        }
-        replacement
-    }
-
     // The ownership check and each write share a transaction, including the first run.
     fn guarded<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut connection = self.connection()?;

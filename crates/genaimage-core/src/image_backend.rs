@@ -1,6 +1,6 @@
 //! Image generation backend contract and transport-neutral run data.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -26,6 +26,16 @@ pub trait ImageBackend: Send + Sync {
 
     /// Endpoint recorded in run provenance.
     fn base_url(&self) -> &str;
+    /// Update timing without changing the backend identity or dropping its DNS
+    /// pin. Backends that cannot guarantee this defer timing changes to restart.
+    fn with_timing(
+        &self,
+        _request_timeout_seconds: u64,
+        _websocket_reconnect_seconds: u64,
+    ) -> Option<Arc<dyn ImageBackend>> {
+        None
+    }
+
     async fn health(&self) -> Result<BackendHealth>;
 
     /// Available workflow node classes, keyed by the class names used in workflows.
