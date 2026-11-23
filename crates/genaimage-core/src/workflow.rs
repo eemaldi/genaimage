@@ -201,6 +201,47 @@ impl LoadedWorkflow {
         }
     }
 
+    /// Collects all parameter errors using the same preset and default rules as binding.
+    pub fn validate_bindings(
+        &self,
+        preset: Option<&str>,
+        overrides: &BTreeMap<String, Value>,
+    ) -> Result<Vec<ParameterError>> {
+        let mut values = self.preset_values(preset)?;
+        let mut errors = Vec::new();
+        for (name, value) in overrides {
+            if self.manifest.parameters.contains_key(name) {
+                values.insert(name.clone(), value.clone());
+            } else {
+                errors.push(ParameterError {
+                    parameter: name.clone(),
+                    reason: format!(
+                        "parameter '{name}' is not defined by workflow '{}'",
+                        self.manifest.id
+                    ),
+                });
+            }
+        }
+        for (name, definition) in &self.manifest.parameters {
+            match values.get(name).or(definition.default.as_ref()) {
+                Some(value) => {
+                    if let Err(error) = definition.validate_value(name, value) {
+                        errors.push(ParameterError {
+                            parameter: name.clone(),
+                            reason: error.to_string(),
+                        });
+                    }
+                }
+                None if definition.required => errors.push(ParameterError {
+                    parameter: name.clone(),
+                    reason: format!("required parameter '{name}' has no value"),
+                }),
+                None => {}
+            }
+        }
+        Ok(errors)
+    }
+
     pub fn bind(
         &self,
         preset: Option<&str>,
@@ -458,6 +499,13 @@ impl ParameterDefinition {
         }
         Ok(())
     }
+}
+
+/// A named parameter and the reason its binding is invalid.
+#[derive(Clone, Debug)]
+pub struct ParameterError {
+    pub parameter: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug)]

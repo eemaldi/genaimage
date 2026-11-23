@@ -35,11 +35,11 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
   adapter factory to the extension registry and passes the selected backend to
   the core harness. `genaimage serve` passes this harness to `genaimage-server`;
   the other commands continue to call the core directly.
-- `genaimage-api` holds shared API wire types, currently health and problem
+- `genaimage-api` holds shared API wire types for health, workflows and problem
   details. The API client is planned.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
-  health and live events; other domain API routes and the embedded Svelte
-  portal are planned.
+  health, workflows and live events; other domain API routes and the embedded
+  Svelte portal are planned.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
@@ -92,9 +92,6 @@ middleware enforces the limit for all handlers. Each body must arrive within
 30 seconds or receives 408; body reads are cancelled with 503 when graceful
 shutdown starts, so a stalled upload cannot prevent draining.
 
-Workflows, runs, outputs, uploads, settings and OpenAPI endpoints are planned,
-as is the browser portal.
-
 ### Live event stream
 
 `GET /api/v1/events` returns `text/event-stream` without compression, with
@@ -144,6 +141,43 @@ idempotently and without overwriting newer snapshot state, then continue
 processing live events. If the replacement stream also signals `resync`, start
 again with a fresh stream and snapshot. Resync frames are not subject to
 `run_id` filtering. Slow readers do not block event publishers.
+
+### Workflows API
+
+The workflows API is read-only apart from validation, which does not submit a run:
+
+- `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
+  tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
+  manifests that cannot be loaded. For IDs `.` and `..`, `thumbnail_url` is
+  null because browsers normalise those URL path segments. The API does not
+  generate a detail URL for any ID; callers using dot-segment IDs need an HTTP
+  client that preserves the literal request path.
+- `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
+  constraints and UI hints, presets and outputs. IDs are identifiers, not paths;
+  URL-encode them as path segments. An unknown ID returns 404 problem details.
+  Duplicate IDs and invalid manifests claiming an ID must be fixed before that
+  ID can be resolved.
+- `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
+  `preset` and `parameters` (an object of overrides). Preset values are overridden
+  by parameters and manifest defaults fill remaining values. It returns `valid`,
+  `parameter_errors` (each with `parameter` and `reason`), and `node_check`.
+  The node status is `available`, `missing` (with `missing_classes`) or
+  `unavailable` (with a reason); an unavailable or timed-out check is not valid.
+  An unknown preset or malformed request returns problem details. Validation
+  neither uploads images nor submits generation.
+- `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
+  or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
+  Missing, unsupported, oversized, absolute, traversal or escaping symlink
+  paths return 404 problem details. On Unix, descriptor-relative no-follow
+  opens reject symlinks below the configured workflow root, whose own symlinks
+  are trusted and resolved before it is pinned. Non-regular files are rejected
+  without blocking on FIFOs. On other
+  platforms containment is checked before and after opening on a best-effort
+  basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
+  a declaration, not a guarantee that the image can be read.
+
+Runs, outputs, uploads, settings and OpenAPI endpoints are planned, as is the
+browser portal.
 
 ### API integration tests
 

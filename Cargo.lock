@@ -661,6 +661,7 @@ name = "genaimage-api"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -715,7 +716,10 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "mime_guess",
+ "percent-encoding",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
