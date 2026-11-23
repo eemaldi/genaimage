@@ -353,3 +353,61 @@ fn offline_commands_can_change_endpoint_before_any_runs() {
         );
     }
 }
+
+#[test]
+fn paths_only_legacy_workspace_is_detected_before_xdg_config() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("project");
+    fs::create_dir_all(&workspace).unwrap();
+    write(
+        &workspace.join("genaimage.toml"),
+        "[paths]\ncharacters = 'characters'\nstate_database = 'old.sqlite3'\nruns = 'old-runs'\n",
+    );
+    write(
+        &temp.path().join("config/genaimage/genaimage.toml"),
+        "[server]\nport = 8765\n",
+    );
+    let output = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .arg("--workspace")
+        .arg(&workspace)
+        .args(["--json", "config", "show"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("genaimage.toml") && error.contains("--config") && error.contains("[paths]"),
+        "{error}"
+    );
+}
+
+#[test]
+fn explicit_config_ignores_malformed_workspace_file() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("project");
+    fs::create_dir_all(&workspace).unwrap();
+    write(&workspace.join("genaimage.toml"), "[server\n");
+    write(
+        &temp.path().join("selected.toml"),
+        "[server]\nport = 8765\n",
+    );
+    let output = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .arg("--workspace")
+        .arg(&workspace)
+        .args(["--config", "selected.toml", "--json", "config", "show"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(config["server"]["port"], 8765);
+}

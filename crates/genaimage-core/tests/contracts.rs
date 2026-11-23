@@ -772,17 +772,22 @@ fn legacy_database_requires_verified_claim_and_remains_bound() {
     let repo = RunRepository::open(&path).unwrap();
     let original = repo.get("run-legacy").unwrap();
     let error = repo
-        .bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
-        .unwrap_err()
+        .clone()
+        .with_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
+        .err()
+        .unwrap()
         .to_string();
     assert!(error.contains("GENAIMAGE_CLAIM_LEGACY_STATE=1"));
-    repo.bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", true)
+    let repo = repo
+        .with_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", true)
         .unwrap();
     assert!(repo
-        .bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:9999/", true)
+        .clone()
+        .with_identity(temp.path(), "ComfyUI", "http://127.0.0.1:9999/", true)
         .is_err());
     assert!(repo
-        .bind_identity(
+        .clone()
+        .with_identity(
             &temp.path().join("other"),
             "ComfyUI",
             "http://127.0.0.1:8188/",
@@ -796,6 +801,6 @@ fn legacy_database_requires_verified_claim_and_remains_bound() {
     drop(repo);
     RunRepository::open(&path)
         .unwrap()
-        .bind_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
+        .with_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
         .unwrap();
 }

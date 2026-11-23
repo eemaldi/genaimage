@@ -161,46 +161,12 @@ impl HarnessConfig {
         } else if project.exists() {
             Some(project)
         } else {
+            check_legacy_workspace_config(&workspace)?;
             let path = xdg("XDG_CONFIG_HOME", ".config")?
                 .join("genaimage")
                 .join(PROJECT_CONFIG);
             path.exists().then_some(path)
         };
-        let workspace_config = workspace.join(PROJECT_CONFIG);
-        if workspace_config.is_file() {
-            let selected = chosen.as_ref().and_then(|path| {
-                let absolute = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    cwd.join(path)
-                };
-                absolute.canonicalize().ok()
-            });
-            let canonical_workspace_config = workspace_config.canonicalize().map_err(|error| {
-                invalid(
-                    "workspace config",
-                    &workspace_config.display().to_string(),
-                    &format!(
-                        "make the file accessible or move it aside after reviewing it ({error})"
-                    ),
-                )
-            })?;
-            if selected.as_deref() != Some(canonical_workspace_config.as_path()) {
-                let source = fs::read_to_string(&workspace_config).map_err(|error| {
-                    invalid(
-                        "workspace config",
-                        &workspace_config.display().to_string(),
-                        &format!(
-                            "make the file readable or move it aside after reviewing it ({error})"
-                        ),
-                    )
-                })?;
-                let value: toml::Value = toml::from_str(&source).map_err(|error| invalid("workspace config", &workspace_config.display().to_string(), &format!("repair or move aside the unselected file before proceeding ({error}); see docs/setup.md")))?;
-                if value.get("active_profile").is_some() || value.get("profiles").is_some() {
-                    return Err(invalid("workspace config", &workspace_config.display().to_string(), "legacy active_profile/profiles are not selected; migrate this file to [comfyui] and select it with --config, or move it aside only after preserving its settings and data; see docs/setup.md"));
-                }
-            }
-        }
         let mut config: Self = if let Some(path) = chosen {
             let path = if path.is_absolute() {
                 path
@@ -360,6 +326,34 @@ impl HarnessConfig {
     pub fn example() -> String {
         include_str!("../../../genaimage.example.toml").to_owned()
     }
+}
+
+fn check_legacy_workspace_config(workspace: &Path) -> Result<()> {
+    let path = workspace.join(PROJECT_CONFIG);
+    let Some(value) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
+    else {
+        return Ok(());
+    };
+    let paths = value.get("paths").and_then(toml::Value::as_table);
+    let legacy_paths = paths.is_some_and(|paths| {
+        paths.contains_key("characters")
+            || ((paths.contains_key("state_database") || paths.contains_key("runs"))
+                && !["server", "comfyui", "llm"]
+                    .iter()
+                    .any(|key| value.get(key).and_then(toml::Value::as_table).is_some()))
+    });
+    if value.get("active_profile").is_some()
+        || value
+            .get("profiles")
+            .and_then(toml::Value::as_table)
+            .is_some()
+        || legacy_paths
+    {
+        return Err(invalid("workspace config", &path.display().to_string(), &format!("legacy workspace configuration is no longer discovered automatically; migrate it to the new format and pass --config '{}', or copy the old state_database and runs paths into the new [paths] section and move the legacy file aside; see docs/setup.md", path.display())));
+    }
+    Ok(())
 }
 
 fn invalid(key: &str, value: &str, fix: &str) -> HarnessError {
@@ -540,50 +534,70 @@ mod tests {
     }
 
     #[test]
-    fn unselected_legacy_workspace_config_requires_migration() {
+    fn legacy_workspace_probe_runs_only_before_xdg_discovery() {
         let parent = TempDir::new().unwrap();
         let workspace = parent.path().join("project");
         fs::create_dir_all(&workspace).unwrap();
         let workspace_config = workspace.join(PROJECT_CONFIG);
-        fs::write(
-            &workspace_config,
-            "active_profile = 'old'\n[profiles.old]\nbase_url = 'http://localhost:9000'\n",
-        )
-        .unwrap();
         let mut env: HashMap<_, _> = values(&parent).into_iter().collect();
         let load = |env: &HashMap<&str, String>, explicit: Option<&Path>| {
             HarnessConfig::load_with(&workspace, explicit, parent.path(), |key| {
                 env.get(key).cloned()
             })
         };
-        let error = load(&env, None).unwrap_err().to_string();
-        assert!(
-            error.contains("project/genaimage.toml")
-                && error.contains("migrate")
-                && error.contains("--config"),
-            "{error}"
-        );
+        let xdg = parent.path().join("config/genaimage/genaimage.toml");
+        fs::create_dir_all(xdg.parent().unwrap()).unwrap();
+        fs::write(&xdg, "[server]\nport = 1001\n").unwrap();
+        for source in [
+            "active_profile = 'old'\n",
+            "[profiles.old]\nbase_url = 'http://localhost:9000'\n",
+            "[paths]\ncharacters = 'characters'\n",
+            "[paths]\nstate_database = 'old.sqlite3'\n",
+            "[paths]\nruns = 'old-runs'\n",
+            "[comfyui]\n[paths]\ncharacters = 'characters'\n",
+        ] {
+            fs::write(&workspace_config, source).unwrap();
+            let error = load(&env, None).unwrap_err().to_string();
+            assert!(
+                error.contains("project/genaimage.toml")
+                    && error.contains("--config")
+                    && error.contains("[paths]")
+                    && error.contains("no longer discovered"),
+                "{source}: {error}"
+            );
+        }
+        for source in [
+            "[server\n",
+            "[paths]\nworkflows = 'workflows'\n",
+            "[comfyui]\n[paths]\nruns = 'runs'\n",
+        ] {
+            fs::write(&workspace_config, source).unwrap();
+            assert_eq!(load(&env, None).unwrap().server.port, 1001, "{source}");
+        }
+        fs::write(&workspace_config, "[paths]\ncharacters = 'characters'\n").unwrap();
         let selected = parent.path().join("other.toml");
         fs::write(&selected, "[server]\nport = 4444\n").unwrap();
         env.insert("GENAIMAGE_CONFIG", selected.display().to_string());
-        assert!(load(&env, None).unwrap_err().to_string().contains("legacy"));
-        assert!(load(&env, Some(&workspace_config))
-            .unwrap_err()
-            .to_string()
-            .contains("active_profile"));
+        assert_eq!(load(&env, None).unwrap().server.port, 4444);
+        assert_eq!(load(&env, Some(&selected)).unwrap().server.port, 4444);
+        fs::write(&workspace_config, "[server\n").unwrap();
+        assert_eq!(load(&env, Some(&selected)).unwrap().server.port, 4444);
+        assert_eq!(load(&env, None).unwrap().server.port, 4444);
+        env.remove("GENAIMAGE_CONFIG");
+        fs::write(&workspace_config, "[paths]\nruns = 'old-runs'\n").unwrap();
         fs::write(
-            &workspace_config,
-            "[comfyui]\nbase_url = 'http://localhost:9000'\n",
+            parent.path().join(PROJECT_CONFIG),
+            "[server]\nport = 5555\n",
         )
         .unwrap();
-        assert_eq!(load(&env, None).unwrap().server.port, 4444);
-        assert_eq!(
-            load(&env, Some(Path::new("project/genaimage.toml")))
-                .unwrap()
-                .comfyui
-                .base_url,
-            "http://localhost:9000"
-        );
+        assert_eq!(load(&env, None).unwrap().server.port, 5555);
+        fs::write(&workspace_config, "[server\n").unwrap();
+        assert_eq!(load(&env, None).unwrap().server.port, 5555);
+        assert!(load(&env, Some(&workspace_config)).is_err());
+        fs::remove_file(parent.path().join(PROJECT_CONFIG)).unwrap();
+        fs::remove_file(&workspace_config).unwrap();
+        fs::create_dir(&workspace_config).unwrap();
+        assert_eq!(load(&env, None).unwrap().server.port, 1001);
     }
 
     #[test]

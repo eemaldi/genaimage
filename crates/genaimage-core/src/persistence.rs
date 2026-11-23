@@ -188,18 +188,6 @@ impl RunRepository {
         Ok(self)
     }
 
-    pub fn bind_identity(
-        &self,
-        workspace: &Path,
-        backend: &str,
-        endpoint: &str,
-        claim_legacy: bool,
-    ) -> Result<()> {
-        self.clone()
-            .with_identity(workspace, backend, endpoint, claim_legacy)
-            .map(|_| ())
-    }
-
     // The ownership check and each write share a transaction, including the first run.
     fn guarded<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut connection = self.connection()?;

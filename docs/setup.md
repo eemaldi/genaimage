@@ -23,9 +23,12 @@ this order:
 An explicitly selected file must exist. `--workspace` selects the workspace,
 not the configuration search directory. Relative data and workflow paths are
 resolved against the workspace; relative configuration paths use the current
-directory. `genaimage config show` displays the resolved configuration. An unselected
-legacy `genaimage.toml` in the workspace is not silently ignored: migrate it
-or deliberately move it aside after preserving its settings and data.
+directory. `genaimage config show` displays the resolved configuration.
+If no `--config`, `GENAIMAGE_CONFIG` or current-directory file is selected,
+GenAImage checks for a clearly legacy workspace file before XDG discovery. It
+asks you to migrate or move that file aside after preserving its settings and
+data. This check tolerates unreadable or malformed files; explicit and
+current-directory selections do not inspect an unselected workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
 see `genaimage.example.toml`. The server and LLM are planned components, so
