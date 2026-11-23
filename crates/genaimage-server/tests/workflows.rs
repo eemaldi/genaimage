@@ -294,3 +294,23 @@ async fn defaults_and_ambiguous_or_invalid_identifiers_are_handled() {
     assert!(problem.detail.contains("invalid manifest"));
     api.shutdown().await;
 }
+
+#[tokio::test]
+async fn catalogue_thumbnail_url_encodes_workflow_ids_as_one_path_segment() {
+    let api = ApiHarness::start().await;
+    install(&api, Some("image.png"));
+    let dir = &api.core.config().workflows;
+    let path = dir.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["id"] = json!("workflow / one");
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(dir.join("image.png"), b"image").unwrap();
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    let url = list.workflows[0].thumbnail_url.as_deref().unwrap();
+    let response = api.request(Method::GET, url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
+    let details: WorkflowDetails = api.get_json(url.strip_suffix("/thumbnail").unwrap()).await;
+    assert_eq!(details.id, "workflow / one");
+    api.shutdown().await;
+}
