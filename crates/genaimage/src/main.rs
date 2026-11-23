@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{Harness, HarnessConfig, HarnessError, RunProgress, RunRequest, RunStatus};
+use genaimage_core::{
+    ExtensionRegistry, Harness, HarnessConfig, HarnessError, RunProgress, RunRequest, RunStatus,
+};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -90,6 +92,10 @@ enum JobsCommand {
     Wait {
         run_id: String,
     },
+    /// Request cancellation; a running ComfyUI job uses a global interrupt.
+    #[command(
+        long_about = "Request cancellation. ComfyUI uses a global interrupt for running jobs, so if the target finishes before the request arrives, it may interrupt a different prompt. A cancellation remains unconfirmed without evidence for the target prompt."
+    )]
     Cancel {
         run_id: String,
     },
@@ -116,11 +122,25 @@ async fn main() {
     }
 }
 
+fn open_harness(workspace: &std::path::Path) -> Result<Harness, HarnessError> {
+    let config = HarnessConfig::load(workspace)?;
+    let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
+    let backend = registry
+        .image_backend(&config.active_profile)
+        .ok_or_else(|| {
+            HarnessError::Configuration(format!(
+                "no image backend for profile '{}'",
+                config.active_profile
+            ))
+        })?;
+    Harness::new(config, backend)
+}
+
 async fn execute(cli: &Cli) -> Result<(), HarnessError> {
     match &cli.command {
         Command::Config { command } => return config_command(cli, command),
         Command::Doctor => {
-            let harness = Harness::open(&cli.workspace, ComfyUiClient::new)?;
+            let harness = open_harness(&cli.workspace)?;
             let health = harness.health().await?;
             output(
                 cli,
@@ -132,7 +152,7 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
         }
         Command::Workflow { command } => workflow_command(cli, command)?,
         Command::Presets { workflow } => {
-            let harness = Harness::open(&cli.workspace, ComfyUiClient::new)?;
+            let harness = open_harness(&cli.workspace)?;
             let loaded = harness.load_workflow(workflow)?;
             output(cli, &loaded.manifest.presets)?;
         }
@@ -156,7 +176,7 @@ fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError
             output(cli, &serde_json::json!({ "path": path, "created": true }))?;
         }
         ConfigCommand::Show => {
-            let harness = Harness::open(&cli.workspace, ComfyUiClient::new)?;
+            let harness = open_harness(&cli.workspace)?;
             output(cli, harness.config())?;
         }
     }
@@ -164,7 +184,7 @@ fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError
 }
 
 fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
-    let harness = Harness::open(&cli.workspace, ComfyUiClient::new)?;
+    let harness = open_harness(&cli.workspace)?;
     match command {
         WorkflowCommand::List => {
             let discovery = harness.discover_workflows()?;
@@ -205,7 +225,7 @@ fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessE
 }
 
 async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError> {
-    let harness = Harness::open(&cli.workspace, ComfyUiClient::new)?;
+    let harness = open_harness(&cli.workspace)?;
     let parameters = parse_parameters(&command.parameters)?;
     let run = harness
         .submit(RunRequest {
@@ -242,7 +262,7 @@ async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError
 }
 
 async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessError> {
-    let harness = Harness::open(&cli.workspace, ComfyUiClient::new)?;
+    let harness = open_harness(&cli.workspace)?;
     match command {
         JobsCommand::List { limit } => output(cli, &harness.list_runs(*limit)?)?,
         JobsCommand::Show { run_id, events } => output(

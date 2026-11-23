@@ -9,6 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+async-trait = "0.1"
+futures-core = "0.3"
 chrono.workspace = true
 hex.workspace = true
 rusqlite.workspace = true
@@ -22,4 +24,5 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"

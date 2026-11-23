@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -15,10 +16,10 @@ use uuid::Uuid;
 use crate::{
     artifacts::{self, InputFileRecord},
     config::ResolvedConfig,
+    image_backend::{BackendEvent, BackendHealth, HistoryOutcome, ImageBackend},
     persistence::{NewRun, OutputRecord, RunEvent, RunRecord, RunRepository, RunStatus},
-    transport::{ComfyUiEvent, ComfyUiHealth, ComfyUiTransport},
     workflow::{LoadedWorkflow, WorkflowManifest},
-    HarnessConfig, HarnessError, Result,
+    HarnessError, Result,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -41,7 +42,7 @@ pub struct ReconcileResult {
 #[derive(Clone, Debug, Serialize)]
 pub struct RunProgress {
     pub run: RunRecord,
-    pub event: Option<ComfyUiEvent>,
+    pub event: Option<BackendEvent>,
 }
 
 #[derive(Debug, Default)]
@@ -57,33 +58,35 @@ pub struct WorkflowDiagnostic {
 }
 
 #[derive(Clone)]
-pub struct Harness<T> {
+pub struct Harness {
     config: ResolvedConfig,
     repository: RunRepository,
-    client: T,
+    backend: Arc<dyn ImageBackend>,
 }
 
-impl<T: ComfyUiTransport> Harness<T> {
-    pub fn open(
-        workspace: &Path,
-        connect: impl FnOnce(&crate::config::ComfyUiProfile) -> Result<T>,
-    ) -> Result<Self> {
-        let config = HarnessConfig::load(workspace)?;
+impl Harness {
+    pub fn new(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
         let repository = RunRepository::open(&config.state_database)?;
-        let client = connect(&config.comfyui)?;
         Ok(Self {
             config,
             repository,
-            client,
+            backend,
         })
+    }
+
+    fn backend_error(&self, message: String) -> HarnessError {
+        HarnessError::Backend {
+            backend: self.backend.name().to_owned(),
+            message,
+        }
     }
 
     pub fn config(&self) -> &ResolvedConfig {
         &self.config
     }
 
-    pub async fn health(&self) -> Result<ComfyUiHealth> {
-        self.client.health().await
+    pub async fn health(&self) -> Result<BackendHealth> {
+        self.backend.health().await
     }
 
     pub fn repository(&self) -> &RunRepository {
@@ -197,11 +200,12 @@ impl<T: ComfyUiTransport> Harness<T> {
                 missing_class_types.join(", ")
             )));
         }
-        let available = self.client.object_info().await?;
+        let available = self.backend.object_info().await?;
         let available = available.as_object().ok_or_else(|| {
-            HarnessError::ComfyUi(
-                "ComfyUI /object_info did not return an object; cannot validate nodes".to_owned(),
-            )
+            self.backend_error(format!(
+                "{} /object_info did not return an object; cannot validate nodes",
+                self.backend.name()
+            ))
         })?;
         let unavailable: Vec<&str> = class_types
             .iter()
@@ -210,7 +214,8 @@ impl<T: ComfyUiTransport> Harness<T> {
             .collect();
         if !unavailable.is_empty() {
             return Err(HarnessError::Workflow(format!(
-                "ComfyUI does not provide required node types: {}",
+                "{} does not provide required node types: {}",
+                self.backend.name(),
                 unavailable.join(", ")
             )));
         }
@@ -225,7 +230,7 @@ impl<T: ComfyUiTransport> Harness<T> {
         let mut uploaded_names = BTreeMap::new();
         for (parameter, relative_path) in &bound.image_uploads {
             let path = resolve_input_path(&self.config.workspace, relative_path);
-            let upload = self.client.upload_image(&path).await?;
+            let upload = self.backend.upload_image(&path).await?;
             let mut source = artifacts::checksum_file(&path)?;
             source.parameter = parameter.clone();
             source.uploaded_name = upload.name.clone();
@@ -274,7 +279,7 @@ impl<T: ComfyUiTransport> Harness<T> {
         )?;
 
         match self
-            .client
+            .backend
             .submit(&bound.workflow, &client_id, &prompt_id)
             .await
         {
@@ -289,7 +294,8 @@ impl<T: ComfyUiTransport> Harness<T> {
                         .is_some_and(|errors| !errors.is_empty());
                 if validation_failed {
                     let error = format!(
-                        "ComfyUI rejected one or more workflow nodes: {}",
+                        "{} rejected one or more workflow nodes: {}",
+                        self.backend.name(),
                         response.node_errors
                     );
                     run = self.repository.update_status(
@@ -317,7 +323,7 @@ impl<T: ComfyUiTransport> Harness<T> {
                 self.repository.record_event(
                     &run.id,
                     "prompt_queued",
-                    Some("ComfyUI accepted the prompt"),
+                    Some(&format!("{} accepted the prompt", self.backend.name())),
                     &serde_json::to_value(response)?,
                 )?;
             }
@@ -360,36 +366,53 @@ impl<T: ComfyUiTransport> Harness<T> {
                 run,
             });
         }
-        let queue = self.client.queue().await?;
+        let queue = self.backend.queue().await?;
         if queue.is_running(&run.prompt_id) {
-            if run.status != RunStatus::Running {
+            if !matches!(run.status, RunStatus::Running | RunStatus::Cancelling) {
                 run = self
                     .repository
                     .update_status(run_id, RunStatus::Running, None, None)?;
                 self.repository.record_event(
                     run_id,
                     "prompt_running",
-                    Some("ComfyUI reports the prompt as executing"),
+                    Some(&format!(
+                        "{} reports the prompt as executing",
+                        self.backend.name()
+                    )),
                     &serde_json::to_value(&queue)?,
                 )?;
             }
-        } else if queue.contains(&run.prompt_id) && run.status != RunStatus::Queued {
+        } else if queue.contains(&run.prompt_id)
+            && !matches!(run.status, RunStatus::Queued | RunStatus::Cancelling)
+        {
             run = self
                 .repository
                 .update_status(run_id, RunStatus::Queued, None, None)?;
             self.repository.record_event(
                 run_id,
                 "prompt_queued",
-                Some("ComfyUI reports the prompt in the pending queue"),
+                Some(&format!(
+                    "{} reports the prompt in the pending queue",
+                    self.backend.name()
+                )),
                 &json!({ "prompt_id": run.prompt_id }),
             )?;
         }
 
-        let history = self.client.history(&run.prompt_id).await?;
-        if history.complete {
-            if run.status == RunStatus::Cancelling {
-                let message =
-                    "ComfyUI stopped the prompt after the cancellation request".to_owned();
+        let history = self.backend.history(&run.prompt_id).await?;
+        if history.prompt_id != run.prompt_id {
+            return Err(self.backend_error(format!(
+                "requested history for prompt '{}', but received history for '{}'",
+                run.prompt_id, history.prompt_id
+            )));
+        }
+        match history.outcome {
+            HistoryOutcome::Unresolved => {}
+            HistoryOutcome::Cancelled => {
+                let message = format!(
+                    "{} confirmed cancellation of the prompt",
+                    self.backend.name()
+                );
                 run = self.repository.update_status(
                     run_id,
                     RunStatus::Cancelled,
@@ -402,11 +425,12 @@ impl<T: ComfyUiTransport> Harness<T> {
                     Some(&message),
                     &history.raw,
                 )?;
-            } else if history.success {
+            }
+            HistoryOutcome::Completed => {
                 let source_inputs = read_source_inputs(&PathBuf::from(&run.output_dir))?;
                 let workflow_manifest_path = read_manifest_path(&PathBuf::from(&run.output_dir))?;
                 let manifest_path = artifacts::materialise_history(
-                    &self.client,
+                    self.backend.as_ref(),
                     &self.repository,
                     &run,
                     &workflow_manifest_path,
@@ -429,9 +453,11 @@ impl<T: ComfyUiTransport> Harness<T> {
                         "manifest_path": manifest_path
                     }),
                 )?;
-            } else {
+            }
+            HistoryOutcome::Failed => {
                 let error = format!(
-                    "ComfyUI completed prompt '{}' without a successful result",
+                    "{} completed prompt '{}' without a successful result",
+                    self.backend.name(),
                     run.prompt_id
                 );
                 run =
@@ -440,17 +466,6 @@ impl<T: ComfyUiTransport> Harness<T> {
                 self.repository
                     .record_event(run_id, "run_failed", Some(&error), &history.raw)?;
             }
-        } else if run.status == RunStatus::Cancelling && !queue.contains(&run.prompt_id) {
-            let message = "ComfyUI queue no longer contains the cancelled prompt";
-            run =
-                self.repository
-                    .update_status(run_id, RunStatus::Cancelled, Some(message), None)?;
-            self.repository.record_event(
-                run_id,
-                "run_cancelled",
-                Some(message),
-                &serde_json::to_value(&queue)?,
-            )?;
         }
         Ok(ReconcileResult {
             outputs: self.repository.outputs(run_id)?,
@@ -472,12 +487,13 @@ impl<T: ComfyUiTransport> Harness<T> {
         progress: Option<mpsc::UnboundedSender<RunProgress>>,
     ) -> Result<RunRecord> {
         let initial = self.repository.get(run_id)?;
-        let mut monitor = self.client.monitor_events(&initial.client_id)?;
+        let mut monitor = self.backend.monitor_events(&initial.client_id).await?;
         let mut poll = interval(Duration::from_secs(1));
+        poll.tick().await;
+        let mut events_open = true;
         loop {
-            poll.tick().await;
             tokio::select! {
-                event = monitor.receiver.recv() => {
+                event = monitor.recv(), if events_open => {
                     if let Some(event) = event {
                         let relevant = event.prompt_id.as_deref().is_none()
                             || event.prompt_id.as_deref() == Some(initial.prompt_id.as_str());
@@ -493,6 +509,8 @@ impl<T: ComfyUiTransport> Harness<T> {
                                 let _ = sender.send(RunProgress { run, event: Some(event) });
                             }
                         }
+                    } else {
+                        events_open = false;
                     }
                 }
                 _ = poll.tick() => {
@@ -504,7 +522,6 @@ impl<T: ComfyUiTransport> Harness<T> {
                         });
                     }
                     if result.run.status.is_terminal() {
-                        monitor.abort();
                         return Ok(result.run);
                     }
                 }
@@ -515,16 +532,16 @@ impl<T: ComfyUiTransport> Harness<T> {
     pub async fn cancel(&self, run_id: &str) -> Result<RunRecord> {
         let run = self.repository.get(run_id)?;
         if run.status.is_terminal() {
-            return Err(HarnessError::ComfyUi(format!(
+            return Err(self.backend_error(format!(
                 "run '{run_id}' is already {} and cannot be cancelled",
                 run.status.as_str()
             )));
         }
-        let queue = self.client.queue().await?;
+        let queue = self.backend.queue().await?;
         if queue.is_running(&run.prompt_id) {
             self.repository
                 .update_status(run_id, RunStatus::Cancelling, None, None)?;
-            let response = match self.client.interrupt().await {
+            let response = match self.backend.interrupt().await {
                 Ok(response) => response,
                 Err(error) => {
                     self.repository.update_status(
@@ -539,13 +556,16 @@ impl<T: ComfyUiTransport> Harness<T> {
             self.repository.record_event(
                 run_id,
                 "interrupt_requested",
-                Some("ComfyUI was asked to interrupt the executing prompt"),
+                Some(&format!(
+                    "{} was asked to interrupt the executing prompt",
+                    self.backend.name()
+                )),
                 &response,
             )?;
         } else if queue.contains(&run.prompt_id) {
             self.repository
                 .update_status(run_id, RunStatus::Cancelling, None, None)?;
-            let response = match self.client.delete_queued(&run.prompt_id).await {
+            let response = match self.backend.delete_queued(&run.prompt_id).await {
                 Ok(response) => response,
                 Err(error) => {
                     self.repository.update_status(
@@ -560,14 +580,18 @@ impl<T: ComfyUiTransport> Harness<T> {
             self.repository.record_event(
                 run_id,
                 "delete_requested",
-                Some("ComfyUI was asked to remove the queued prompt"),
+                Some(&format!(
+                    "{} was asked to remove the queued prompt",
+                    self.backend.name()
+                )),
                 &response,
             )?;
             return self.repository.get(run_id);
         } else {
-            return Err(HarnessError::ComfyUi(format!(
-                "prompt '{}' is not in the local ComfyUI queue; reconcile the run first",
-                run.prompt_id
+            return Err(self.backend_error(format!(
+                "prompt '{}' is not in the local {} queue; reconcile the run first",
+                run.prompt_id,
+                self.backend.name()
             )));
         }
         self.repository.get(run_id)
@@ -669,3 +693,6 @@ fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path)) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -13,11 +13,12 @@ use axum::{
     body::Bytes,
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{Harness, RunRequest, RunStatus};
+use genaimage_core::{Harness, HarnessConfig, RunRequest, RunStatus};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -34,6 +35,7 @@ struct FakeComfyState {
     cancelled: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
     fail_submit_response: Arc<AtomicBool>,
+    redirect_submit_response: Arc<AtomicBool>,
     prompt_calls: Arc<AtomicUsize>,
     upload_calls: Arc<AtomicUsize>,
     interrupt_calls: Arc<AtomicUsize>,
@@ -83,24 +85,26 @@ async fn fake_upload(State(state): State<FakeComfyState>, _body: Bytes) -> Json<
     }))
 }
 
-async fn fake_prompt(
-    State(state): State<FakeComfyState>,
-    Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {
     state.prompt_calls.fetch_add(1, Ordering::SeqCst);
     let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
     *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    if state.redirect_submit_response.load(Ordering::SeqCst) {
+        return Redirect::temporary("/prompt").into_response();
+    }
     if state.fail_submit_response.load(Ordering::SeqCst) {
-        return Err((
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "deliberate fake failure" })),
-        ));
+        )
+            .into_response();
     }
-    Ok(Json(json!({
+    Json(json!({
         "prompt_id": prompt_id,
         "number": 1,
         "node_errors": {}
-    })))
+    }))
+    .into_response()
 }
 
 async fn fake_queue(State(state): State<FakeComfyState>) -> Json<Value> {
@@ -143,6 +147,19 @@ async fn fake_history(
     State(state): State<FakeComfyState>,
     AxumPath(prompt_id): AxumPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if state.interrupt_calls.load(Ordering::SeqCst) > 0
+        && state.prompt_id.lock().expect("prompt lock").as_deref() == Some(prompt_id.as_str())
+    {
+        return Ok(Json(json!({
+            prompt_id.clone(): {
+                "status": {
+                    "status_str": "error",
+                    "completed": false,
+                    "messages": [["execution_interrupted", {"prompt_id": prompt_id}]]
+                }
+            }
+        })));
+    }
     if !state.complete.load(Ordering::SeqCst) {
         return Ok(Json(json!({})));
     }
@@ -210,7 +227,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
         include_str!("../../../workflows/comfyui/text-to-image/api-workflow.json"),
     );
 
-    let harness = Harness::open(temp.path(), ComfyUiClient::new).expect("open harness");
+    let harness = open_harness(temp.path()).expect("open harness");
     let submitted = harness
         .submit(RunRequest {
             workflow: "text-to-image".to_owned(),
@@ -227,7 +244,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
     assert_eq!(submitted.status, RunStatus::Queued);
 
     drop(harness);
-    let reopened = Harness::open(temp.path(), ComfyUiClient::new).expect("reopen harness");
+    let reopened = open_harness(temp.path()).expect("reopen harness");
     assert_eq!(
         reopened
             .get_run(&submitted.id)
@@ -254,13 +271,13 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
 }
 
 #[tokio::test]
-async fn queued_prompt_is_cancelled_only_after_deletion_is_observed() {
+async fn queue_deletion_acknowledgement_without_history_is_not_confirmation() {
     let temp = TempDir::new().expect("temp directory");
     let state = FakeComfyState::default();
     let address = start_fake_comfyui(state).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = Harness::open(temp.path(), ComfyUiClient::new).expect("open harness");
+    let harness = open_harness(temp.path()).expect("open harness");
     let submitted = harness
         .submit(test_run_request("contract-workflow"))
         .await
@@ -272,7 +289,7 @@ async fn queued_prompt_is_cancelled_only_after_deletion_is_observed() {
         .reconcile(&submitted.id)
         .await
         .expect("reconcile cancellation");
-    assert_eq!(reconciled.run.status, RunStatus::Cancelled);
+    assert_eq!(reconciled.run.status, RunStatus::Cancelling);
 }
 
 #[tokio::test]
@@ -283,7 +300,7 @@ async fn running_prompt_is_interrupted_then_reconciled() {
     let address = start_fake_comfyui(state.clone()).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = Harness::open(temp.path(), ComfyUiClient::new).expect("open harness");
+    let harness = open_harness(temp.path()).expect("open harness");
     let submitted = harness
         .submit(test_run_request("contract-workflow"))
         .await
@@ -307,7 +324,7 @@ async fn ambiguous_submission_is_reconciled_without_automatic_retry() {
     let address = start_fake_comfyui(state.clone()).await;
     configure_harness(&temp, address);
     create_harness_workflow(&temp);
-    let harness = Harness::open(temp.path(), ComfyUiClient::new).expect("open harness");
+    let harness = open_harness(temp.path()).expect("open harness");
 
     let run = harness
         .submit(test_run_request("contract-workflow"))
@@ -324,6 +341,29 @@ async fn ambiguous_submission_is_reconciled_without_automatic_retry() {
     assert_eq!(reconciled.len(), 1);
     assert_eq!(reconciled[0].run.id, run.id);
     assert_eq!(reconciled[0].run.status, RunStatus::Queued);
+    assert_eq!(state.prompt_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn submission_is_not_replayed_after_a_post_preserving_redirect() {
+    let temp = TempDir::new().expect("temp directory");
+    let state = FakeComfyState::default();
+    state.redirect_submit_response.store(true, Ordering::SeqCst);
+    let address = start_fake_comfyui(state.clone()).await;
+    configure_harness(&temp, address);
+    create_harness_workflow(&temp);
+    let harness = open_harness(temp.path()).expect("open harness");
+    let run = harness
+        .submit(test_run_request("contract-workflow"))
+        .await
+        .expect("submit run");
+    assert_eq!(run.status, RunStatus::UnknownSubmission);
+    assert_eq!(state.prompt_calls.load(Ordering::SeqCst), 1);
+    let reconciled = harness
+        .reconcile(&run.id)
+        .await
+        .expect("reconcile redirected response");
+    assert_eq!(reconciled.run.status, RunStatus::Queued);
     assert_eq!(state.prompt_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -373,7 +413,7 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
         &manifest_path,
         &serde_json::to_string_pretty(&manifest).expect("manifest JSON"),
     );
-    let harness = Harness::open(temp.path(), ComfyUiClient::new).expect("open harness");
+    let harness = open_harness(temp.path()).expect("open harness");
 
     let run = harness
         .submit(RunRequest {
@@ -410,6 +450,12 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
         preflight["source_inputs"][0]["uploaded_name"],
         json!("uploaded-reference.png")
     );
+}
+
+fn open_harness(workspace: &Path) -> genaimage_core::Result<Harness> {
+    let config = HarnessConfig::load(workspace)?;
+    let backend = Arc::new(ComfyUiClient::new(&config.comfyui)?);
+    Harness::new(config, backend)
 }
 
 fn configure_harness(temp: &TempDir, address: SocketAddr) {

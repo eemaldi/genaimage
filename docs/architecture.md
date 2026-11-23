@@ -31,13 +31,12 @@ Current dependencies (arrows point to dependencies):
 - `genaimage-core` owns configuration, workflow manifests and explicit
   binding, run orchestration, SQLite run state and provenance. Core decides
   when to submit, reconcile, cancel and finalise runs. It calls a narrow
-  transport port, to be formalised as `ImageBackend` in
-  [#19](https://github.com/eemaldi/genaimage/issues/19), and has no HTTP or
-  WebSocket client dependencies.
-- `genaimage-comfyui` implements that port over HTTP and WebSocket, mapping
+  `ImageBackend` trait and has no HTTP or WebSocket client dependencies.
+- `genaimage-comfyui` implements `ImageBackend` over HTTP and WebSocket, mapping
   ComfyUI responses and progress events into core-owned types.
 - `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
-  adapter to the core harness until the local API is available.
+  adapter factory to the extension registry and passes the selected backend to
+  the core harness until the local API is available.
 - `genaimage-api` is reserved for shared API types and the client.
 - `genaimage-server` is reserved for the Axum server. It will serve the API and
   the embedded Svelte portal on loopback only; neither is implemented yet.
@@ -52,10 +51,18 @@ run orchestration or assistant logic.
 
 The planned LLM provider uses an OpenAI-compatible API, with an explicitly
 configured endpoint and model. Ollama, llama.cpp and LM Studio are intended
-local options when their compatible APIs are enabled. Traits will provide
-extension points for providers, ComfyUI transport and assistant tools; fakes
-can exercise them in tests without real models. They do not imply arbitrary
-plugin loading or providers already implemented.
+local options when their compatible APIs are enabled.
+
+The core defines async, object-safe `ImageBackend`, `LlmProvider`,
+`AssistantTool` and `EventSink` contracts. The CLI builds an `ExtensionRegistry`
+from the resolved active profile using an adapter factory supplied by the CLI;
+core does not construct adapters. The registry looks up registered extensions by
+name without a fallback. Only the image backend is configured today; the LLM
+and tool contracts have no runtime implementation, and progress still uses the
+existing channel rather than an event bus. These are compile-time extension
+points, not runtime plugin loading. Core lifecycle tests use a fake backend
+without connecting to ComfyUI; adapter contract tests still exercise the wire
+protocol against a fake server.
 
 ComfyUI and the LLM service remain separate from GenAImage. A planned local
 Docker Compose setup can run the dependencies with host-published ports bound
@@ -80,14 +87,22 @@ remains loopback only even when an outbound host is allow-listed.
 3. Check available workflow classes with ComfyUI, upload explicit image inputs,
    and record source hashes and returned filenames. Save the resolved workflow
    and preflight snapshot under a new run directory.
-4. Submit once with a harness-selected prompt ID and client ID. Observe
-   progress, reconcile queue/history and capture checksummed output and run
-   provenance.
+4. Persist the harness-selected prompt ID and client ID before submitting once.
+   Observe advisory progress events, reconcile queue/history and capture
+   checksummed output and run provenance.
 
 Never silently substitute a model, node, seed, image, prompt or setting. Safe
 reads may retry, but an ambiguous prompt submission remains
 `unknown_submission`: reconcile with ComfyUI queue/history rather than blindly
-retrying. Preserve source workflows and existing run records; write new
+retrying. If neither source identifies the prompt, leave the submission unknown.
+Cancellation is confirmed only by evidence for the target prompt, such as
+history recording an interruption. A queue/history gap or deletion request
+acknowledgement alone leaves the run in `cancelling`; a later success or error
+still resolves it. ComfyUI may provide no history for deletion of a queued
+prompt, and its global interrupt can affect a different prompt if the target
+finishes after the queue check.
+
+Preserve source workflows and existing run records; write new
 versions instead of overwriting them. A successful technical run is not creative
 approval.
 
