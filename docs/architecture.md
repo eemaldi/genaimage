@@ -38,7 +38,8 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
 - `genaimage-api` holds shared API wire types, currently health and problem
   details. The API client is planned.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
-  health; the domain API and embedded Svelte portal are planned.
+  health and live events; other domain API routes and the embedded Svelte
+  portal are planned.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
@@ -89,8 +90,54 @@ middleware enforces the limit for all handlers. Each body must arrive within
 30 seconds or receives 408; body reads are cancelled with 503 when graceful
 shutdown starts, so a stalled upload cannot prevent draining.
 
-Workflows, runs, events (SSE), outputs, uploads, settings and OpenAPI endpoints
-are planned, as is the browser portal.
+Workflows, runs, outputs, uploads, settings and OpenAPI endpoints are planned,
+as is the browser portal.
+
+### Live event stream
+
+`GET /api/v1/events` returns `text/event-stream` without compression, with
+`Cache-Control: no-cache` and `X-Accel-Buffering: no`. A `: connected` comment
+flushes the response; `: heartbeat` comments are sent after every 15 seconds of
+stream inactivity. Comments do not change the last event ID. The stream ends
+when the server starts graceful shutdown.
+
+Each ordinary frame has a decimal `id` from the core event bus, an `event`
+name equal to the envelope's snake-case `type`, and a `data` line containing
+the entire [core event envelope](#core-events) as JSON. For example:
+
+```text
+id: 42
+event: backend_health_changed
+data: {"bus_id":"6b43069f-ae9b-497a-8bb6-0d3129058eb8","id":42,"timestamp":"2026-01-01T10:00:00Z","type":"backend_health_changed","backend":"comfyui","health":null,"error":"Unavailable"}
+
+```
+
+Without a cursor the stream delivers only new events. Supply `Last-Event-ID`
+(or `?last_event_id=` when the header is absent) to replay events strictly after
+that ID, then continue live without a gap or duplicate at the handover. IDs
+must be unsigned decimal integers; malformed cursors return 400 problem
+details. `?run_id=` selects events for that exact run in both replay and live
+delivery, excluding global events such as backend health and settings changes.
+Filtered streams can have gaps because IDs are assigned across the whole bus.
+The numeric cursor is scoped to the originating bus; do not resume it across
+server restarts. Clients should retain the envelope's `bus_id` and resynchronise
+if they observe a different one; a numeric ID alone cannot detect every restart.
+
+If a cursor falls outside the replay window, the subscriber falls behind, or
+the core invalidates the stream, the server sends a final `event: resync` frame
+and closes the stream. Its empty `id:` clears the browser's reconnect cursor;
+its JSON `data` has a `reason` and the corresponding details:
+
+| `reason` | Details |
+| --- | --- |
+| `cursor_out_of_range` | `requested`, `oldest` (or `null`), and `latest` IDs |
+| `lagged` | `skipped`: number of broadcast messages missed |
+| `invalidated` | `id`: the invalidation boundary |
+
+A client receiving `resync` should stop automatic reconnects (close the
+`EventSource` in its `resync` listener), refresh authoritative state and open a
+new stream without the stale cursor. Resync frames are not subject to `run_id`
+filtering. Slow readers do not block event publishers.
 
 ### API integration tests
 
@@ -193,8 +240,9 @@ or publishing its event fails, the bus invalidates existing subscribers and
 rejects replay across that boundary. Invalidation reserves an ID and clears the
 replay window; no event is silently presented as a complete stream. IDs and
 replay are local to one bus lifetime and are not durable across restarts:
-reconnecting to a new bus requires a full resync. The numeric-only `subscribe_since` is for the originating bus lifetime;
-transport consumers should retain and check the full cursor. Broadcast
+reconnecting to a new bus requires a full resync. The numeric-only
+`subscribe_since` is for the originating bus lifetime; transport consumers
+should retain and check the full cursor. Broadcast
 buffering can be rounded up by Tokio; neither it nor the replay buffer grows
 with slow readers.
 

@@ -3,9 +3,9 @@
 GenAImage is a thin, fast, local harness for controlled, inspectable ComfyUI
 image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
-and the [architecture](docs/architecture.md). A loopback server with a health
-endpoint is available now. The domain API, portal, LLM assistance and migration
-to a thin CLI client are planned.
+and the [architecture](docs/architecture.md). The loopback server offers a health
+endpoint and a [live event stream](docs/architecture.md#live-event-stream). Other
+domain API routes, the portal, LLM assistance and a thin CLI client are planned.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.

@@ -1,3 +1,4 @@
+mod events;
 mod health;
 
 use axum::{http::StatusCode, Router};
@@ -7,6 +8,7 @@ use crate::{AppState, Problem};
 pub(crate) fn api() -> Router<AppState> {
     Router::new()
         .merge(health::routes())
+        .merge(events::routes())
         .fallback(|| async {
             Problem::new(
                 StatusCode::NOT_FOUND,
