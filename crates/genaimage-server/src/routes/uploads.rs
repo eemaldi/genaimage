@@ -197,6 +197,11 @@ fn multipart_problem(mut error: &(dyn std::error::Error + 'static)) -> Problem {
 
 fn storage_problem(error: UploadError) -> Problem {
     match error {
+        UploadError::UnsafeEntry => Problem::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.to_string(),
+            "Inspect the configured uploads directory and move the unexpected entry out of the store before uploading the image again.",
+        ),
         UploadError::TooLarge => Problem::new(
             StatusCode::PAYLOAD_TOO_LARGE,
             error.to_string(),

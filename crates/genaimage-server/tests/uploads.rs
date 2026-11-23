@@ -207,6 +207,48 @@ async fn duplicate_upload_repairs_missing_and_corrupt_images_without_changing_me
     api.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn refuses_symlinked_upload_entries_without_touching_external_files() {
+    use std::{fs, os::unix::fs::symlink};
+
+    let api = ApiHarness::start().await;
+    let original = store_png(&api).await;
+    let digest = api.core.config().uploads.join(&original.sha256);
+    let external = api.workspace().join("external");
+    fs::rename(&digest, &external).unwrap();
+    let external_image = external.join("image");
+    let external_metadata = external.join("metadata.json");
+    let original_metadata = fs::read(&external_metadata).unwrap();
+    fs::write(&external_image, b"leave untouched").unwrap();
+    symlink(&external, &digest).unwrap();
+
+    for entry in [None, Some("image"), Some("metadata.json")] {
+        if let Some(name) = entry {
+            if digest.is_symlink() {
+                fs::remove_file(&digest).unwrap();
+                fs::create_dir(&digest).unwrap();
+            } else {
+                fs::remove_file(digest.join("image")).unwrap();
+                fs::remove_file(digest.join("metadata.json")).unwrap();
+            }
+            symlink(external.join(name), digest.join(name)).unwrap();
+            let other = if name == "image" {
+                "metadata.json"
+            } else {
+                "image"
+            };
+            fs::copy(external.join(other), digest.join(other)).unwrap();
+        }
+        let result = upload(&api, "second.png", PNG, "image/png").await;
+        let problem = ApiHarness::assert_problem(result, StatusCode::INTERNAL_SERVER_ERROR).await;
+        assert!(problem.recovery.contains("move the unexpected entry"));
+        assert_eq!(fs::read(&external_image).unwrap(), b"leave untouched");
+        assert_eq!(fs::read(&external_metadata).unwrap(), original_metadata);
+    }
+    api.shutdown().await;
+}
+
 fn install_image_workflow(api: &ApiHarness) {
     install_workflow(api);
     let dir = &api.core.config().workflows;

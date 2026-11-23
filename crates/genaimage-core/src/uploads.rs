@@ -47,6 +47,8 @@ pub enum UploadError {
     Json(#[from] serde_json::Error),
     #[error("The stored upload does not match its recorded metadata or SHA-256.")]
     Integrity,
+    #[error("The upload store entry is a symbolic link or is not the expected file type.")]
+    UnsafeEntry,
 }
 
 #[derive(Clone)]
@@ -94,22 +96,12 @@ impl UploadStore {
         }) else {
             return Ok(None);
         };
-        let bytes = match fs::read(self.root.join(hash).join(METADATA_FILE)).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let directory = match DigestDirectory::open(&self.root.join(hash)).await {
+            Ok(directory) => directory,
+            Err(UploadError::Io(error)) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
         };
-        let metadata: UploadMetadata = serde_json::from_slice(&bytes)?;
-        if metadata.upload_id != id
-            || metadata.sha256 != hash
-            || !matches!(
-                metadata.media_type.as_str(),
-                "image/png" | "image/jpeg" | "image/webp"
-            )
-        {
-            return Err(UploadError::Integrity);
-        }
-        Ok(Some(metadata))
+        directory.metadata(id, hash).await
     }
 
     /// Return the exact bytes that were verified, not a path to reopen later.
@@ -117,11 +109,8 @@ impl UploadStore {
         &self,
         metadata: &UploadMetadata,
     ) -> Result<Vec<u8>, UploadError> {
-        let file = open_image(
-            &self.root.join(&metadata.sha256).join(IMAGE_FILE),
-            metadata.byte_size,
-        )
-        .await?;
+        let directory = DigestDirectory::open(&self.root.join(&metadata.sha256)).await?;
+        let file = directory.open_image(metadata.byte_size).await?;
         let mut bytes = Vec::new();
         file.take(metadata.byte_size.saturating_add(1))
             .read_to_end(&mut bytes)
@@ -136,21 +125,150 @@ impl UploadStore {
     }
 }
 
-async fn open_image(path: &Path, size: u64) -> Result<fs::File, UploadError> {
-    // Do not open an unexpected file type, such as a pipe or symlink.
-    if !fs::symlink_metadata(path).await?.is_file() {
-        return Err(UploadError::Integrity);
-    }
-    let file = fs::File::open(path).await?;
-    let metadata = file.metadata().await?;
-    if !metadata.is_file() || metadata.len() != size {
-        return Err(UploadError::Integrity);
-    }
-    Ok(file)
+struct DigestDirectory {
+    #[cfg(unix)]
+    fd: rustix::fd::OwnedFd,
+    #[cfg(not(unix))]
+    path: PathBuf,
 }
 
-async fn verify_image(path: &Path, metadata: &UploadMetadata) -> Result<(), UploadError> {
-    let file = open_image(path, metadata.byte_size).await?;
+impl DigestDirectory {
+    async fn open(path: &Path) -> Result<Self, UploadError> {
+        check_directory(path).await?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{open, Mode, OFlags};
+            let fd = open(
+                path,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(no_follow_error)?;
+            Ok(Self { fd })
+        }
+        #[cfg(not(unix))]
+        Ok(Self {
+            path: path.to_owned(),
+        })
+    }
+
+    async fn check_file(&self, name: &str) -> Result<(), UploadError> {
+        #[cfg(unix)]
+        let regular = {
+            use rustix::fs::{statat, AtFlags, FileType};
+            let stat =
+                statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW).map_err(std::io::Error::from)?;
+            FileType::from_raw_mode(stat.st_mode).is_file()
+        };
+        #[cfg(not(unix))]
+        let regular = {
+            check_directory(&self.path).await?;
+            fs::symlink_metadata(self.path.join(name)).await?.is_file()
+        };
+        if !regular {
+            return Err(UploadError::UnsafeEntry);
+        }
+        Ok(())
+    }
+
+    async fn open_file(&self, name: &str) -> Result<fs::File, UploadError> {
+        self.check_file(name).await?;
+        #[cfg(unix)]
+        let file = {
+            use rustix::fs::{openat, Mode, OFlags};
+            let fd = openat(
+                &self.fd,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(no_follow_error)?;
+            fs::File::from_std(fd.into())
+        };
+        #[cfg(not(unix))]
+        let file = fs::File::open(self.path.join(name)).await?;
+        if !file.metadata().await?.is_file() {
+            return Err(UploadError::UnsafeEntry);
+        }
+        Ok(file)
+    }
+
+    async fn metadata(&self, id: &str, hash: &str) -> Result<Option<UploadMetadata>, UploadError> {
+        match self.check_file(IMAGE_FILE).await {
+            Ok(()) => {}
+            Err(UploadError::Io(error)) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let mut file = match self.open_file(METADATA_FILE).await {
+            Ok(file) => file,
+            Err(UploadError::Io(error)) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await?;
+        let metadata: UploadMetadata = serde_json::from_slice(&bytes)?;
+        if metadata.upload_id != id
+            || metadata.sha256 != hash
+            || !matches!(
+                metadata.media_type.as_str(),
+                "image/png" | "image/jpeg" | "image/webp"
+            )
+        {
+            return Err(UploadError::Integrity);
+        }
+        Ok(Some(metadata))
+    }
+
+    async fn open_image(&self, size: u64) -> Result<fs::File, UploadError> {
+        let file = self.open_file(IMAGE_FILE).await?;
+        if file.metadata().await?.len() != size {
+            return Err(UploadError::Integrity);
+        }
+        Ok(file)
+    }
+
+    async fn replace_image(&self, staged: &Path) -> Result<(), UploadError> {
+        match self.check_file(IMAGE_FILE).await {
+            Ok(()) => {}
+            Err(UploadError::Io(error)) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        #[cfg(unix)]
+        {
+            // renameat does not follow the destination entry, even if it is swapped.
+            let source = Self::open(staged).await?;
+            rustix::fs::renameat(&source.fd, IMAGE_FILE, &self.fd, IMAGE_FILE)
+                .map_err(std::io::Error::from)?;
+        }
+        #[cfg(not(unix))]
+        {
+            check_directory(&self.path).await?;
+            fs::rename(staged.join(IMAGE_FILE), self.path.join(IMAGE_FILE)).await?;
+        }
+        Ok(())
+    }
+}
+
+async fn check_directory(path: &Path) -> Result<(), UploadError> {
+    if !fs::symlink_metadata(path).await?.is_dir() {
+        return Err(UploadError::UnsafeEntry);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn no_follow_error(error: rustix::io::Errno) -> UploadError {
+    match error {
+        rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => UploadError::UnsafeEntry,
+        _ => std::io::Error::from(error).into(),
+    }
+}
+
+async fn verify_image(
+    directory: &DigestDirectory,
+    metadata: &UploadMetadata,
+) -> Result<(), UploadError> {
+    let file = directory.open_image(metadata.byte_size).await?;
     let mut reader = file.take(metadata.byte_size.saturating_add(1));
     let mut hash = Sha256::new();
     let mut size = 0;
@@ -233,15 +351,15 @@ impl StagedUpload {
             Ok(()) => return Ok(metadata),
             Err(error) => error,
         };
-        let existing = store
-            .metadata(&metadata.upload_id)
+        let destination = DigestDirectory::open(&destination).await?;
+        let existing = destination
+            .metadata(&metadata.upload_id, &metadata.sha256)
             .await?
             .ok_or(rename_error)?;
         if existing.byte_size != metadata.byte_size || existing.media_type != metadata.media_type {
             return Err(UploadError::Integrity);
         }
-        let image = destination.join(IMAGE_FILE);
-        match verify_image(&image, &existing).await {
+        match verify_image(&destination, &existing).await {
             Ok(()) => {}
             Err(error) => {
                 if !matches!(error, UploadError::Integrity)
@@ -251,7 +369,7 @@ impl StagedUpload {
                 }
                 // Every repair has the same digest. Keep first-upload metadata
                 // and replace only the image, without exposing a partial file.
-                fs::rename(directory.path().join(IMAGE_FILE), &image).await?;
+                destination.replace_image(directory.path()).await?;
             }
         }
         Ok(existing)

@@ -210,7 +210,10 @@ The response is 201 with `upload_id` (`sha256:<lowercase hex digest>`),
 `sha256`, `byte_size`, `media_type` and `original_filename` (a sanitised
 basename). Identical bytes share one upload ID and keep the first accepted
 filename. A repeat upload verifies the stored copy and repairs missing or
-corrupt bytes atomically without changing the metadata. `Location` points to
+corrupt bytes atomically without changing the metadata. The server refuses
+symlinked digest directories, image files and metadata files. Unix reads and
+repairs are relative to the opened digest directory; elsewhere, type checks
+are best effort and do not guard against concurrent path swaps. `Location` points to
 `GET /api/v1/uploads/{id}` for the same metadata; it does not serve the image
 bytes. Malformed multipart requests return 400,
 oversized requests 413 and unrecognised signatures 415, with problem details
