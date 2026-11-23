@@ -51,7 +51,7 @@ Use these as anchors, not as a replacement for the current destination spec.
 
 - **YouTube uploads**: Official YouTube upload guidance, verified 2026-07-10, recommends progressive scan, H.264 High Profile, CABAC, 2 consecutive B-frames, closed GOP, variable bitrate, 4:2:0 chroma subsampling, audio codecs including AAC-LC, Opus, or Eclipsa, and uploading at the same frame rate as the source recording. It lists common frame rates including 24, 25, 30, 48, 50, and 60 fps, while noting that other frame rates are acceptable.
 - **TikTok Auction In-Feed Ads**: TikTok Ads Manager guidance, verified 2026-07-10, lists vertical 9:16 as recommended, with at least 540 x 960 px; horizontal 16:9 at least 960 x 540 px; square 1:1 at least 640 x 640 px; video formats including MP4 and MOV; duration up to 10 minutes; and maximum file size of 500 MB for the referenced in-feed unit.
-- **Meta ads**: Meta Ads Guide and Help pages are placement-specific and volatile; verify in Ads Manager, the current Ads Guide, or the client media plan at delivery time. Public Meta pages checked on 2026-07-10 showed placement-specific requirements in search/help snippets (for example, MP4/MOV/GIF on some video placements, 16:9 recommendations for in-stream video, and 9:16 recommendations for some Audience Network placements), but some pages were login-gated or temporarily blocked during review. Do not use one Meta placement's spec for all Meta placements.
+- **Meta ads**: Meta Ads Guide and Help pages are placement-specific and volatile; verify in Ads Manager, the current Ads Guide, or the client media plan at delivery time. Public Meta pages checked on 2026-07-10 showed placement-specific requirements in search/help snippets (for example, MP4/MOV/GIF on some video placements, 16:9 recommendations for in-stream video, and 9:16 recommendations for some Audience Network placements), but some pages were behind a login or temporarily blocked during review. Do not use one Meta placement's spec for all Meta placements.
 - **Google Ads**: Google Ads specs pages, verified 2026-07-10, vary by campaign type and asset. Common image sizes include 1200 x 628 and 1200 x 1200, but video ad delivery must be checked against the specific campaign and YouTube ad format.
 - **IAB digital video/CTV ads**: IAB Tech Lab guidance defines cross-screen ad file specifications such as resolution, bitrate, frame rate, aspect ratio, color space, and multi-file delivery for intelligent selection and CTV/ad-serving workflows.
 - **IMF**: SMPTE describes Interoperable Master Format, ST 2067, as a file-based media format for delivery and storage of audiovisual masters across multiple territories and platforms. It is suited to componentized, multi-version professional delivery, not casual social upload.
@@ -115,7 +115,7 @@ Check the timeline before rendering:
 
 - Sequence raster, pixel aspect, frame rate, and color management match the intended output.
 - Source clips are not scaled beyond acceptable quality unless intentionally stylized.
-- Generated images/video do not contain visible watermarks, prompt artifacts, malformed text, distorted hands/faces/product geometry, unsafe brand claims, or unintended copyrighted characters/logos.
+- Generated images/video do not contain visible watermarks, prompt artifacts, malformed text, distorted hands/faces/product geometry, unsafe brand claims, or unintended copyrighted designs/logos.
 - Text overlays are legible at target device size.
 - Legal supers, disclaimers, prices, dates, and offer terms match the approved copy.
 - Captions/subtitles use approved language, line breaks, reading speed, timing, speaker IDs, and non-speech audio cues.
@@ -254,7 +254,7 @@ Versioning rules:
 - Keep rejected and superseded versions out of the delivery folder or mark them clearly.
 - Do not reuse a filename for a changed file; it breaks checksum-based verification.
 - Use ISO dates (`YYYYMMDD`) and standard locale tags (`en-US`, `fr-CA`) when useful.
-- Keep filenames ASCII-safe unless the receiver explicitly supports other characters.
+- Keep filenames ASCII-safe unless the receiver explicitly supports other symbols.
 
 ## Checksums, manifests, and package structure
 

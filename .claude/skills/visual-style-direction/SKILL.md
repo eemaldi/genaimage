@@ -77,7 +77,7 @@ Record every reference with:
 - **observed evidence**: what is visibly or audibly present;
 - **interpretation**: the effect that evidence creates;
 - **transferable mechanism**: an abstract rule that can be reused;
-- **identity-bearing details to exclude**: protected artwork, distinctive character design, logo, trade dress, exact layout, signature motif, unique prop, recognizable sequence, or artist-specific combination;
+- **identity-bearing details to exclude**: protected artwork, distinctive subject design, logo, trade dress, exact layout, signature motif, unique prop, recognizable sequence, or artist-specific combination;
 - confidence and unresolved questions.
 
 Use descriptions such as “low-key side light with rapid falloff and a small warm practical in the background,” not “cinematic like Reference A.”
@@ -226,7 +226,7 @@ This is an example, not a mandatory palette.
 
 Also provide a human-readable token table with role, value, allowed use, prohibited use, contrast partners, and fallback.
 
-Label numeric layout, type, motion, and safe-area ranges as proof-set starting points until they have been tested against the actual regulated copy, device sizes, platform UI, viewing distance, and encoded deliverables. Promote them to approved constraints only after the relevant proof gate passes.
+Label numeric layout, type, motion, and safe-area ranges as proof-set starting points until they have been tested against the actual regulated copy, device sizes, platform UI, viewing distance, and encoded deliverables. Promote them to approved constraints only after the relevant proof is reviewed and accepted.
 
 ## Build the color and contrast system
 
@@ -379,7 +379,7 @@ This is an example for a calm technical product film.
 
 ## Define motion as a semantic system
 
-For each motion class, specify **purpose, object, path, duration range, easing character, overlap, sound relationship, and reduced-motion alternative**.
+For each motion class, specify **purpose, object, path, duration range, easing style, overlap, sound relationship, and reduced-motion alternative**.
 
 Useful classes include:
 
@@ -518,35 +518,35 @@ Add machine-readable JSON or YAML only if the production pipeline consumes it. K
 
 ## Review the system, not just the beauty frame
 
-Review at five gates.
+Review across five areas.
 
-### Gate 1 — Brief fidelity
+### Brief fidelity
 
 - Does the hierarchy communicate the intended message without explanation?
 - Is the emotional read appropriate to the audience and context?
 - Are all assumptions visible?
 
-### Gate 2 — Originality and rights
+### Originality and rights
 
 - Can every adopted reference mechanism be named abstractly?
 - Have identity-bearing details been removed or licensed?
 - Does the result imply an unintended brand affiliation?
 - Are font, image, likeness, location, and asset permissions recorded?
 
-### Gate 3 — System coherence
+### System coherence
 
 - Do palette, type, composition, material, light, camera, and motion express the same thesis?
 - Are invariants stable across easy and difficult cases?
 - Are exceptions deliberate and logged?
 
-### Gate 4 — Production resilience
+### Production resilience
 
 - Does the direction work in every target ratio and at thumbnail size?
 - Can it survive localization, compression, low light, mixed footage, and batch generation?
 - Are color transforms and metadata reproducible?
 - Can another agent implement it without guessing?
 
-### Gate 5 — Accessibility and continuity
+### Accessibility and continuity
 
 - Do overlays and essential graphics meet the declared contrast target on worst-case frames?
 - Is information redundant beyond color and motion?
@@ -660,7 +660,7 @@ Create a 30-second launch film plus six stills for a repairable modular desk lam
 
 ### Motion
 
-| Class | Purpose | Timing character | Reduced-motion version |
+| Class | Purpose | Timing style | Reduced-motion version |
 |---|---|---|---|
 | Orient | move from whole lamp to joint | slow-in, decisive settle | cut from whole to joint with matched position |
 | Reveal | expose replaceable fastener | short masked slide tied to part movement | two-state cut plus highlight |

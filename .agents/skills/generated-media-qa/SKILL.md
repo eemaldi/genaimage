@@ -193,7 +193,7 @@ For revision loops, require a delta review plus spot checks around changed areas
 
 ## Deterministic report normalization helper
 
-Use `scripts/normalize_qa_report.py` when a QA report needs a stable JSON handoff for automation, ticket creation, release gates, or producer review. The helper is Python 3.11+ and uses only the standard library. It validates the report shape, normalizes and sorts findings, summarizes severity counts, and computes a mechanical disposition from an explicit policy supplied in the report or via CLI.
+Use `scripts/normalize_qa_report.py` when a QA report needs a stable JSON handoff for automation, ticket creation, release decisions, or producer review. The helper is Python 3.11+ and uses only the standard library. It validates the report shape, normalizes and sorts findings, summarizes severity counts, and computes a mechanical disposition from an explicit policy supplied in the report or via CLI.
 
 Run it from a copied skill package or this repository:
 

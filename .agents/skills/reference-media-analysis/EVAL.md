@@ -253,7 +253,7 @@ User request: "The generated image is attached next to the reference. Tell me if
 Expected approach:
 
 - Compare intent match and distinctness separately.
-- Rate similarity and identify which dimensions are close: composition, palette, product pose, text, character, props, brand cues.
+- Rate similarity and identify which dimensions are close: composition, palette, product pose, text, subject, props, brand cues.
 - Check rights, likeness/voice if relevant, trademark/trade dress, product claims/fidelity, cultural/privacy issues, accessibility, technical specs, and provenance/disclosure.
 - Give one of: safe to send, revise before client, blocked/escalate.
 - Provide concrete revision instructions if similarity is 3 or 4.
