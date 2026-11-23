@@ -23,6 +23,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
@@ -77,21 +78,29 @@ impl Default for FakeComfyState {
 }
 
 impl FakeComfyState {
-    /// Wait until a WebSocket subscriber has registered, before emitting progress.
-    pub async fn wait_for_progress_listener(&self) {
-        loop {
-            let notified = self.connected.notified();
-            if self.progress.receiver_count() > 0 {
-                return;
+    /// Wait up to `deadline` for a WebSocket subscriber before emitting progress.
+    pub async fn wait_for_progress_listener(
+        &self,
+        deadline: Duration,
+    ) -> Result<(), tokio::time::error::Elapsed> {
+        tokio::time::timeout(deadline, async {
+            loop {
+                let notified = self.connected.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.progress.receiver_count() > 0 {
+                    return;
+                }
+                notified.await;
             }
-            notified.await;
-        }
+        })
+        .await
     }
 }
 
 async fn fake_websocket(State(state): State<FakeComfyState>, ws: WebSocketUpgrade) -> Response {
     let mut rx = state.progress.subscribe();
-    state.connected.notify_one();
+    state.connected.notify_waiters();
     let mut shutdown = state.shutdown.subscribe();
     ws.on_upgrade(move |mut socket| async move {
         loop {
@@ -335,5 +344,19 @@ impl Drop for FakeComfyServer {
     fn drop(&mut self) {
         self.shutdown.send_replace(true);
         self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn progress_listener_wait_times_out_if_no_client_connects() {
+        let state = FakeComfyState::default();
+        assert!(state
+            .wait_for_progress_listener(Duration::from_millis(20))
+            .await
+            .is_err());
     }
 }

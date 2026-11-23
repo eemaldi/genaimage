@@ -1,6 +1,12 @@
 mod common;
 
-use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::{poll_fn, Future},
+    sync::atomic::Ordering,
+    task::Poll,
+    time::Duration,
+};
 
 use common::ApiHarness;
 use genaimage_api::{HealthResponse, HealthStatus, ImageBackendHealthReason};
@@ -185,13 +191,19 @@ async fn missing_node_class_is_rejected_before_submission() {
 async fn fake_websocket_delivers_scripted_progress() {
     let api = ApiHarness::start().await;
     let backend = ComfyUiClient::new(&api.core.config().comfyui).unwrap();
+    let first = api.fake.wait_for_progress_listener(Duration::from_secs(2));
+    let second = api.fake.wait_for_progress_listener(Duration::from_secs(2));
+    tokio::pin!(first, second);
+    poll_fn(|cx| {
+        assert!(first.as_mut().poll(cx).is_pending());
+        assert!(second.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
     let mut monitor = backend.monitor_events("test-client").await.unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        api.fake.wait_for_progress_listener(),
-    )
-    .await
-    .unwrap();
+    let (first_result, second_result) = tokio::join!(first, second);
+    first_result.unwrap();
+    second_result.unwrap();
     api.fake
         .progress
         .send(
