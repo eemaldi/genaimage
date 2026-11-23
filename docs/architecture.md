@@ -103,7 +103,9 @@ subscribe before an action then await matching core events with a deadline.
 `request_with_origin` can override or omit Origin for hardening tests. The
 fake's state switches script health, queue state, completion and ambiguous
 submissions; queue and history overrides support more elaborate scenarios.
-Its default queue and history track the most recently submitted prompt. Await
+The fixture uses the default upload limit and the server's fixed body-read
+deadline; its fake-backend request timeout defaults to five seconds. Its default
+queue and history track the most recently submitted prompt. Await
 `wait_for_progress_listener` with a deadline before sending scripted WebSocket
 events.
 Dropping the fixture stops both listener tasks.

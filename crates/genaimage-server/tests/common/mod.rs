@@ -37,11 +37,25 @@ impl ApiHarness {
         let fake = FakeComfyState::default();
         let backend = FakeComfyServer::start(fake.clone()).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind API");
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let address = listener.local_addr().unwrap();
+        let origin = format!("http://{address}");
         let config_path = workspace.path().join("genaimage.toml");
-        std::fs::write(&config_path, format!(
-            "[server]\nport = {}\n[comfyui]\nbase_url = \"http://{}\"\nrequest_timeout_seconds = {}\nwebsocket_reconnect_seconds = 1\n[paths]\nstate_database = \"state.sqlite3\"\nworkflows = \"workflows\"\nruns = \"runs\"\nuploads = \"uploads\"\n", listener.local_addr().unwrap().port(), backend.address(), seconds
-        )).unwrap();
+        let max_upload_bytes = genaimage_core::config::ServerConfig::default().max_upload_bytes;
+        std::fs::write(
+            &config_path,
+            format!(
+                "[server]\nport = {}\nmax_upload_bytes = {}\n\
+                 [comfyui]\nbase_url = \"http://{}\"\nrequest_timeout_seconds = {}\n\
+                 websocket_reconnect_seconds = 1\n\
+                 [paths]\nstate_database = \"state.sqlite3\"\nworkflows = \"workflows\"\n\
+                 runs = \"runs\"\nuploads = \"uploads\"\n",
+                address.port(),
+                max_upload_bytes,
+                backend.address(),
+                seconds
+            ),
+        )
+        .unwrap();
         let root = workspace.path().to_str().unwrap().to_owned();
         let config = HarnessConfig::load_with(
             workspace.path(),
@@ -55,7 +69,7 @@ impl ApiHarness {
         .unwrap();
         let adapter = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
         let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
-        let app = build_app(AppState::new(core.clone()));
+        let app = build_app(AppState::new(core.clone()), address.port());
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("API server");
         });

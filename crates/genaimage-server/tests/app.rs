@@ -233,6 +233,46 @@ async fn requests_use_bound_host_and_same_origin_and_allow_override() {
         .unwrap();
     assert_eq!(custom.headers()[header::ORIGIN], "http://localhost:1");
     assert_eq!(api.core.config().server.port, get.url().port().unwrap());
+    let bad_host = api
+        .request(Method::GET, "/api/v1/health")
+        .header(header::HOST, "evil.example:1234")
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(bad_host, StatusCode::MISDIRECTED_REQUEST).await;
+    let bad_origin = api
+        .request_with_origin(Method::POST, "/api/v1/health", Some("http://localhost:1"))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(bad_origin, StatusCode::FORBIDDEN).await;
+}
+
+#[tokio::test]
+async fn fixture_uses_default_server_limits_and_explicit_backend_timeout() {
+    let api = ApiHarness::start().await;
+    assert_eq!(
+        api.core.config().server.max_upload_bytes,
+        genaimage_core::config::ServerConfig::default().max_upload_bytes
+    );
+    assert_eq!(api.core.config().comfyui.request_timeout_seconds, 5);
+    for (path, size, expected) in [
+        ("/api/v1/missing", 1024 * 1024, StatusCode::NOT_FOUND),
+        (
+            "/api/v1/missing",
+            1024 * 1024 + 1,
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+        ("/api/v1/uploads", 1024 * 1024 + 1, StatusCode::NOT_FOUND),
+    ] {
+        let response = api
+            .request(Method::POST, path)
+            .body(vec![b'x'; size])
+            .send()
+            .await
+            .unwrap();
+        ApiHarness::assert_problem(response, expected).await;
+    }
 }
 
 #[tokio::test]
