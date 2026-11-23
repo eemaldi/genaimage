@@ -522,7 +522,10 @@ impl Harness {
             }) {
                 return Err(HarnessError::InvalidRunRequest("Use a version containing only letters, digits, hyphens, underscores or dots, other than '.' and '..'.".into()));
             }
-            self.load_workflow_by_id(&request.workflow)?.ok_or_else(|| HarnessError::Workflow(format!("workflow '{}' was not found", request.workflow)))?
+            self.load_workflow_by_id(&request.workflow)?
+                .ok_or_else(|| {
+                    HarnessError::Workflow(format!("workflow '{}' was not found", request.workflow))
+                })?
         } else {
             self.load_workflow(&request.workflow)?
         };

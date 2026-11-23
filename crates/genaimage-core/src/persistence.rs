@@ -859,6 +859,23 @@ const EXPECTED_TABLES: [(&str, i64, &str); 5] = [
     ("run_submission_keys", 4, "SELECT key, fingerprint, run_id FROM run_submission_keys LIMIT 0"),
 ];
 
+const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
+    (5, "SELECT node_warnings_json FROM runs LIMIT 0"),
+    (
+        6,
+        "SELECT uses_submission_lock, submission_acknowledged FROM runs LIMIT 0",
+    ),
+];
+
+fn check_run_columns(connection: &Connection, version: i64) -> rusqlite::Result<()> {
+    for &(since, query) in RUN_COLUMNS_BY_VERSION {
+        if version >= since {
+            connection.prepare(query)?;
+        }
+    }
+    Ok(())
+}
+
 /// Inspect an existing candidate without opening it for writing or migrating it.
 /// Ownership is stricter than startup: even an empty database explicitly bound
 /// elsewhere may be in use by another process, so the settings API will not rebind it.
@@ -903,6 +920,7 @@ pub(crate) fn database_matches_settings(
         }
         has_identity |= table == "genaimage_database_identity";
     }
+    check_run_columns(&transaction, version)?;
     let identity: Option<(String, String, String)> = if has_identity {
         transaction.query_row(
             "SELECT workspace, backend, endpoint FROM genaimage_database_identity WHERE singleton = 1",
@@ -970,7 +988,7 @@ fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {
         for (_, _, query) in EXPECTED_TABLES {
             transaction.prepare(query)?;
         }
-        Ok(())
+        check_run_columns(&transaction, SCHEMA_VERSION)
     })();
     migration_result.map_err(|error| HarnessError::Database(format!(
         "could not migrate state database '{}': {error}. Back up the database, then move it aside to rebuild the operational cache; keep the run records on disk",

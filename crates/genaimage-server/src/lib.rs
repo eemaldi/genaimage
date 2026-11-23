@@ -34,6 +34,7 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 #[derive(Clone)]
 pub struct AppState {
     settings: Arc<settings::SettingsState>,
+    // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
 }
 

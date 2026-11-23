@@ -64,6 +64,25 @@ async fn submits_once_concurrently_reports_progress_and_replays_current_run() {
     )
     .await;
     api.fake.wait_for_progress_listener(DEADLINE).await.unwrap();
+    let alternate_state = genaimage_test_support::FakeComfyState::default();
+    let alternate = genaimage_test_support::FakeComfyServer::start(alternate_state.clone()).await;
+    let update = api
+        .request(Method::PUT, "/api/v1/settings")
+        .json(&json!({
+            "comfyui.request_timeout_seconds": 2,
+            "comfyui.base_url": format!("http://{}", alternate.address()),
+            "paths.state_database": "next.sqlite3",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+    let update: genaimage_api::SettingsResponse = update.json().await.unwrap();
+    assert_eq!(
+        update.restart_required,
+        ["comfyui.base_url", "paths.state_database"]
+    );
+
     api.fake
         .progress
         .send(json!({"type":"progress", "data":{
@@ -92,6 +111,8 @@ async fn submits_once_concurrently_reports_progress_and_replays_current_run() {
     assert_eq!(history.events.len(), 2);
     assert!(history.events[0].id < history.events[1].id);
     assert_eq!(history.events[1].event_type, "run_completed");
+    assert_eq!(alternate_state.prompt_calls.load(Ordering::SeqCst), 0);
+    assert!(!api.workspace().join("next.sqlite3").exists());
     api.shutdown().await;
 }
 
@@ -257,7 +278,7 @@ async fn lists_with_stable_pages_and_filters_and_reports_problem_details() {
 }
 
 #[tokio::test]
-async fn shutdown_drains_disconnected_submission_and_persists_unknown_at_the_deadline() {
+async fn hot_reload_keeps_disconnected_submission_on_its_snapshot_and_drains_it() {
     use tokio::{
         io::AsyncWriteExt,
         net::TcpStream,
@@ -282,8 +303,23 @@ async fn shutdown_drains_disconnected_submission_and_persists_unknown_at_the_dea
     .await
     .expect("ComfyUI received prompt");
     drop(conn);
+    let original = api.core.list_runs(1).unwrap().remove(0);
+    let update = api
+        .request(Method::PUT, "/api/v1/settings")
+        .json(&json!({"comfyui.request_timeout_seconds": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+    let later = timeout(DEADLINE, submit(&api, "short-timeout", &request()))
+        .await
+        .unwrap();
     assert_eq!(
-        api.core.list_runs(1).unwrap()[0].status,
+        run(later, StatusCode::ACCEPTED).await.status,
+        RunStatus::UnknownSubmission
+    );
+    assert_eq!(
+        api.core.get_run(&original.id).unwrap().status,
         genaimage_core::RunStatus::Submitting
     );
     let start = Instant::now();
@@ -307,7 +343,8 @@ async fn shutdown_drains_disconnected_submission_and_persists_unknown_at_the_dea
         .error
         .unwrap()
         .contains("Shutdown deadline expired"));
-    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(replay.run.id, original.id);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

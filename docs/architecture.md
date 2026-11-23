@@ -106,7 +106,9 @@ persistence. The server serialises writes and publishes the saved configuration
 and the active harness together; handlers snapshot the active harness before
 using it. The event bus survives a swap. ComfyUI timing changes retain the
 active adapter’s DNS pin. Endpoint identity and storage changes wait for
-restart, when core checks database ownership again.
+restart, when core checks database ownership again. Each run mutation takes
+one active harness snapshot; submission gives that same snapshot to its
+monitor. Tasks from all snapshots share the listener's shutdown drain.
 
 ### Live event stream
 

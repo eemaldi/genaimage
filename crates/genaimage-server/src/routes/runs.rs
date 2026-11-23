@@ -50,9 +50,10 @@ async fn submit(
         )
     })?;
     let key = key.to_owned();
+    let harness = state.harness();
     let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        let result = task_state.harness.submit_keyed_until(key, RunRequest {
+        let result = harness.submit_keyed_until(key, RunRequest {
             workflow: body.workflow,
             preset: body.preset,
             parameters: body.parameters,
@@ -63,7 +64,7 @@ async fn submit(
             let monitor_state = task_state.clone();
             task_state.spawn_run_task(async move {
                 let lifecycle = &monitor_state.lifecycle;
-                if let Err(error) = monitor_state.harness.monitor_run(&id, &lifecycle.shutdown, &lifecycle.deadline).await {
+                if let Err(error) = harness.monitor_run(&id, &lifecycle.shutdown, &lifecycle.deadline).await {
                     tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
                 }
             });
@@ -89,7 +90,7 @@ async fn list(
 ) -> Result<Json<api::RunListResponse>, Problem> {
     let query = parse_query(query)?;
     let page = state
-        .harness
+        .harness()
         .repository()
         .as_async()
         .list_page(genaimage_core::persistence::RunListQuery {
@@ -113,7 +114,7 @@ async fn get_run(
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
     state
-        .harness
+        .harness()
         .repository()
         .as_async()
         .get(&parse_id(id)?)
@@ -128,7 +129,7 @@ async fn events(
     query: Result<Query<api::RunEventsQuery>, QueryRejection>,
 ) -> Result<Json<api::RunEventsResponse>, Problem> {
     let events = state
-        .harness
+        .harness()
         .repository()
         .as_async()
         .recent_events(parse_id(id)?, parse_query(query)?.limit)
@@ -154,12 +155,12 @@ async fn cancel(
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
     let id = parse_id(id)?;
-    let task = state.clone();
-    let run = run_mutation(&state, async move {
-        task.harness
-            .cancel_until(&id, &task.lifecycle.deadline)
-            .await
-    })
+    let harness = state.harness();
+    let deadline = state.lifecycle.deadline.clone();
+    let run = run_mutation(
+        &state,
+        async move { harness.cancel_until(&id, &deadline).await },
+    )
     .await?;
     Ok(Json(run_response(run)))
 }
@@ -169,11 +170,10 @@ async fn reconcile(
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<api::RunResponse>, Problem> {
     let id = parse_id(id)?;
-    let task = state.clone();
+    let harness = state.harness();
+    let deadline = state.lifecycle.deadline.clone();
     let result = run_mutation(&state, async move {
-        task.harness
-            .reconcile_until(&id, &task.lifecycle.deadline)
-            .await
+        harness.reconcile_until(&id, &deadline).await
     })
     .await?;
     Ok(Json(run_response(result.run)))
@@ -182,11 +182,10 @@ async fn reconcile(
 async fn reconcile_all(
     State(state): State<AppState>,
 ) -> Result<Json<api::ReconcileRunsResponse>, Problem> {
-    let task = state.clone();
+    let harness = state.harness();
+    let deadline = state.lifecycle.deadline.clone();
     let results = run_mutation(&state, async move {
-        task.harness
-            .reconcile_all_until(&task.lifecycle.deadline)
-            .await
+        harness.reconcile_all_until(&deadline).await
     })
     .await?;
     Ok(Json(api::ReconcileRunsResponse {
