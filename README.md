@@ -85,13 +85,6 @@ Install the CLI binary:
 cargo install --locked --path crates/genaimage-cli
 ```
 
-## Character concept-art pilot (retired)
-
-The [pilot workflow](workflows/character-concept-art/WORKFLOW.md) and
-[templates](templates/character-concept-art/) remain as historical material.
-The CLI no longer tracks or enforces the pilot's approval gates. Existing
-pilot records and outputs are left in place.
-
 ## Persistent records
 
 - `.genaimage/state.sqlite3` contains rebuildable operational state: run status,
