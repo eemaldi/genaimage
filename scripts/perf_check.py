@@ -2,6 +2,8 @@
 """Report informational performance-budget measurements for the release CLI."""
 
 import argparse
+import json
+import math
 import os
 import statistics
 import subprocess
@@ -16,42 +18,120 @@ IDLE_RSS_BUDGET_MB = 40.0
 BINARY_SIZE_BUDGET_MB = 25.0
 
 
+def cargo_target_dir():
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR") or "target").expanduser()
+    return target_dir if target_dir.is_absolute() else ROOT / target_dir
+
+
 def release_binary():
-    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).expanduser()
     name = "genaimage.exe" if os.name == "nt" else "genaimage"
-    return target_dir / "release" / name
+    return cargo_target_dir() / "release" / name
 
 
-def launch_sample(binary):
-    """Return process-start milliseconds and per-child peak RSS in decimal MB."""
-    start = time.perf_counter_ns()
-    if os.name == "posix" and hasattr(os, "wait4"):
-        null_fd = os.open(os.devnull, os.O_WRONLY)
-        pid = os.fork()
-        if pid == 0:
-            try:
-                os.dup2(null_fd, 1)
-                os.dup2(null_fd, 2)
-                os.execv(str(binary), [str(binary), "--version"])
-            except OSError:
-                os._exit(127)
-        os.close(null_fd)
-        _, status, usage = os.wait4(pid, 0)
-        elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
-        if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
-            raise subprocess.CalledProcessError(os.waitstatus_to_exitcode(status), [str(binary), "--version"])
-        rss_bytes = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
-        return elapsed_ms, rss_bytes / 1_000_000
+def find_gnu_time():
+    candidate = Path("/usr/bin/time")
+    if not sys.platform.startswith("linux") or not candidate.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [str(candidate), "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    return candidate if "GNU time" in result.stdout else None
 
+
+def proc_vm_hwm_bytes(pid):
+    try:
+        with open(f"/proc/{pid}/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def peak_rss_with_gnu_time(binary, time_executable):
     completed = subprocess.run(
-        [str(binary), "--version"],
+        [str(time_executable), "-f", "%M", str(binary), "--version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=True,
+        text=True,
+    )
+    try:
+        peak_rss_kb = int(completed.stderr.strip().splitlines()[-1])
+    except (IndexError, ValueError) as error:
+        raise ValueError("GNU time did not report peak RSS") from error
+    return peak_rss_kb * 1024 / 1_000_000
+
+
+def peak_rss_from_proc(binary):
+    command = [str(binary), "--version"]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    peak_rss_bytes = 0
+    while True:
+        sample = proc_vm_hwm_bytes(process.pid)
+        if sample is not None:
+            peak_rss_bytes = max(peak_rss_bytes, sample)
+        return_code = process.poll()
+        if return_code is not None:
+            break
+        time.sleep(0.001)
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command)
+    return peak_rss_bytes / 1_000_000 if peak_rss_bytes else None
+
+
+def launch_sample(binary, time_executable=None):
+    """Return direct launch milliseconds and executable-only peak RSS in MB."""
+    command = [str(binary), "--version"]
+    start = time.perf_counter_ns()
+    subprocess.run(
+        command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=True,
     )
-    del completed
     elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+
+    if time_executable:
+        return elapsed_ms, peak_rss_with_gnu_time(binary, time_executable)
+    if sys.platform.startswith("linux") and Path("/proc/self/status").is_file():
+        return elapsed_ms, peak_rss_from_proc(binary)
     return elapsed_ms, None
+
+
+def read_criterion_estimates(target_dir):
+    results = []
+    estimates = sorted((target_dir / "criterion").glob("*/new/estimates.json"))
+    for estimates_path in estimates:
+        try:
+            data = json.loads(estimates_path.read_text(encoding="utf-8"))
+            estimate_ns = float(data["median"]["point_estimate"])
+        except (OSError, KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(estimate_ns) or estimate_ns < 0:
+            continue
+        results.append((estimates_path.parents[1].name, estimate_ns))
+    return results
+
+
+def format_duration_ns(duration_ns):
+    if duration_ns < 1_000:
+        return f"{duration_ns:.2f} ns"
+    if duration_ns < 1_000_000:
+        return f"{duration_ns / 1_000:.2f} us"
+    return f"{duration_ns / 1_000_000:.2f} ms"
 
 
 def budget_status(value, budget):
@@ -60,7 +140,7 @@ def budget_status(value, budget):
     return "OVER BUDGET" if value >= budget else "WITHIN BUDGET"
 
 
-def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples):
+def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmarks=()):
     rows = [
         "## Performance budget (informational)",
         "",
@@ -76,8 +156,17 @@ def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples):
         "| Portal initial JavaScript | Not measurable yet (portal does not exist yet) | < 150 KB gzip | NOT MEASURED |",
         "| p95 non-ComfyUI API latency | Not measurable yet (server/API does not exist yet) | < 20 ms | NOT MEASURED |",
         "",
-        "Cold start and RSS use `genaimage --version`; RSS is a short-lived CLI proxy, not idle server memory. Over-budget measurements are informational and do not fail this run.",
+        "Cold start uses `genaimage --version`; RSS is the executable's peak, not idle server memory. Over-budget measurements are informational and do not fail this run.",
+        "",
+        "## Benchmarks",
+        "",
+        "| Criterion benchmark | Median estimate |",
+        "| --- | ---: |",
     ]
+    if benchmarks:
+        rows.extend(f"| {name} | {format_duration_ns(estimate_ns)} |" for name, estimate_ns in benchmarks)
+    else:
+        rows.append("| No Criterion estimates found; run `cargo bench` first | Not measured |")
     return "\n".join(rows)
 
 
@@ -113,13 +202,15 @@ def main(argv=None):
         if not binary.is_file():
             raise FileNotFoundError(f"release executable not found: {binary}")
         samples = 5 if args.quick else 15
-        measurements = [launch_sample(binary) for _ in range(samples)]
+        time_executable = find_gnu_time()
+        measurements = [launch_sample(binary, time_executable) for _ in range(samples)]
         cold_start_ms = statistics.median(sample[0] for sample in measurements)
         rss_samples = [sample[1] for sample in measurements if sample[1] is not None]
         idle_rss_mb = statistics.median(rss_samples) if rss_samples else None
         binary_size_mb = binary.stat().st_size / 1_000_000
-        report = render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples)
-    except (OSError, subprocess.CalledProcessError) as error:
+        benchmarks = read_criterion_estimates(cargo_target_dir())
+        report = render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmarks)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Performance measurement failed: {error}", file=sys.stderr)
         return 1
 

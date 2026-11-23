@@ -71,3 +71,10 @@ jobs:
       - name: Measure performance budgets
         run: python3 scripts/perf_check.py --quick
         continue-on-error: true
+
+      - name: Verify performance tables in the job summary
+        if: always()
+        run: |
+          cat "$GITHUB_STEP_SUMMARY"
+          grep -q '^## Performance budget' "$GITHUB_STEP_SUMMARY"
+          grep -q '^## Benchmarks' "$GITHUB_STEP_SUMMARY"
