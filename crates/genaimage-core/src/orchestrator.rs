@@ -84,7 +84,9 @@ impl Harness {
     pub async fn new_async(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
         tokio::task::spawn_blocking(move || Self::new(config, backend))
             .await
-            .map_err(|error| HarnessError::Database(format!("state database task failed: {error}")))?
+            .map_err(|error| {
+                HarnessError::Database(format!("state database task failed: {error}"))
+            })?
     }
 
     fn backend_error(&self, message: String) -> HarnessError {

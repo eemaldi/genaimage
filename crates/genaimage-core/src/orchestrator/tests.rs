@@ -464,6 +464,15 @@ async fn shared_database_refuses_cross_workspace_reconciliation() {
     let mut config = harness.config().clone();
     config.workspace = second.path().canonicalize().unwrap();
     config.claim_legacy_state = true;
+    let async_error =
+        match Harness::new_async(config.clone(), Arc::new(FakeImageBackend::default())).await {
+            Ok(_) => panic!("a foreign workspace must not open the database asynchronously"),
+            Err(error) => error.to_string(),
+        };
+    assert!(
+        async_error.contains("separate state database"),
+        "{async_error}"
+    );
     let error = match Harness::new(config, Arc::new(FakeImageBackend::default())) {
         Ok(_) => panic!("a foreign workspace must not open the database"),
         Err(error) => error.to_string(),

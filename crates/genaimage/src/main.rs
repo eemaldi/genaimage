@@ -127,7 +127,8 @@ async fn main() {
 async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
     let config = HarnessConfig::load_with_config(&cli.workspace, cli.config.as_deref())?;
     let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
-    let backend = registry.image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
+    let backend = registry
+        .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
         .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
     Harness::new_async(config, backend).await
 }
@@ -159,7 +160,10 @@ async fn execute(cli: &Cli) -> Result<(), HarnessError> {
 }
 
 async fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError> {
-    let path = cli.config.clone().unwrap_or_else(|| PathBuf::from("genaimage.toml"));
+    let path = cli
+        .config
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("genaimage.toml"));
     match command {
         ConfigCommand::Init { force } => {
             if path.exists() && !force {

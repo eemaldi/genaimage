@@ -455,10 +455,11 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
 
 async fn open_harness(workspace: &Path) -> genaimage_core::Result<Harness> {
     let config_path = workspace.join("genaimage.toml");
-    let config = HarnessConfig::load_with(workspace, Some(&config_path), workspace, |key| match key {
-        "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(workspace.display().to_string()),
-        _ => None,
-    })?;
+    let config =
+        HarnessConfig::load_with(workspace, Some(&config_path), workspace, |key| match key {
+            "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(workspace.display().to_string()),
+            _ => None,
+        })?;
     let backend = Arc::new(ComfyUiClient::new(&config.comfyui)?);
     Harness::new_async(config, backend).await
 }

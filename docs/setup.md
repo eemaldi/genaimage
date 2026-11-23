@@ -92,7 +92,9 @@ The new defaults do not move existing data. **Keep the original database and
 runs directory at their original absolute locations**: run records and output
 records contain absolute paths, so copying or moving these directories alone
 will not preserve access. Back them up with SQLite-aware tooling while the
-application is stopped. Set `paths.state_database = ".genaimage/state.sqlite3"`
+application is stopped. Opening the database upgrades it to SQLite schema
+version 3; older GenAImage releases will reject that version, so retain the
+backup if rollback is needed. Set `paths.state_database = ".genaimage/state.sqlite3"`
 and `paths.runs = "runs"` for the original workspace, and keep the original
 ComfyUI endpoint. Do not copy the files to the new defaults and delete the old
 locations.
