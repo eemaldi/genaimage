@@ -5,8 +5,8 @@ Read the repository-root [AGENTS.md](../AGENTS.md) and
 They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
-loopback server currently serves health, workflows and live events; the remaining
-domain API and embedded Svelte portal are planned. Keep generation orchestration, run state,
+loopback server currently serves health, workflows, runs, settings and live events; other
+domain endpoints and the embedded Svelte portal are planned. Keep generation orchestration, run state,
 provenance and the planned assistant runtime in the core, and ComfyUI transport
 in its adapter.
 

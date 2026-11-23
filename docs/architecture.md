@@ -40,6 +40,12 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows and live events; other domain API routes and the embedded
   Svelte portal are planned.
+
+- `genaimage-api` holds shared API wire types, including health, runs and problem
+  details. The API client is planned.
+- `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
+  health, runs and live events; other domain API routes and the embedded Svelte
+  portal are planned.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
@@ -65,11 +71,13 @@ callers must provide the intended port.
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
-  hint. On SIGINT or SIGTERM, the listener stops accepting requests and drains
-  in-flight requests without changing stored run statuses. Long-lived handlers
-  can await `AppState::wait_for_shutdown` to close their streams as draining starts.
-  The server closes any connections still open after five seconds, including
-  clients that have stopped reading.
+  hint. On SIGINT or SIGTERM, the listener stops accepting requests and new
+  run mutations, signals monitors and SSE streams to stop, and drains
+  connections and run tasks concurrently. After five seconds it closes
+  remaining connections and ends pending backend calls. Before exiting it
+  records unconfirmed submissions as `unknown_submission`, rolls back
+  cancellations that were not sent, and records attempted but unconfirmed
+  cancellations for reconciliation.
 
 The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
 Host headers for its actual port, plus the configured bind IP when it is a
@@ -98,7 +106,9 @@ persistence. The server serialises writes and publishes the saved configuration
 and the active harness together; handlers snapshot the active harness before
 using it. The event bus survives a swap. ComfyUI timing changes retain the
 active adapter’s DNS pin. Endpoint identity and storage changes wait for
-restart, when core checks database ownership again.
+restart, when core checks database ownership again. Each run mutation takes
+one active harness snapshot; submission gives that same snapshot to its
+monitor. Tasks from all snapshots share the listener's shutdown drain.
 
 ### Live event stream
 
@@ -184,8 +194,61 @@ The workflows API is read-only apart from validation, which does not submit a ru
   basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
   a declaration, not a guarantee that the image can be read.
 
-Runs, outputs, uploads, settings and OpenAPI endpoints are planned, as is the
-browser portal.
+Outputs, uploads and OpenAPI endpoints are planned, as is the browser portal.
+
+### Runs API
+
+| Method and path (under `/api/v1`) | Behaviour |
+| --- | --- |
+| `POST /runs` | Submit one explicit run. Returns 202 and its run snapshot without waiting for generation. `Location` identifies the run. |
+| `GET /runs` | List matching run snapshots, newest first. |
+| `GET /runs/{id}` | Return the current persisted run snapshot. |
+| `GET /runs/{id}/events` | Return the latest persisted events in ascending event ID order. `limit` defaults to 50 and accepts 1–200. |
+| `POST /runs/{id}/cancel` | Request pending deletion or running interruption through core; return the current snapshot. |
+| `POST /runs/{id}/reconcile` | Inspect ComfyUI queue and history for this run; return the refreshed snapshot. |
+| `POST /runs/reconcile` | Reconcile non-terminal runs, including unknown submissions, and return `{ "runs": [...] }`. |
+
+A submission body is `application/json`, for example
+`{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
+configured manifest ID, not a local path. `preset`, `parameters` (default `{}`)
+and `version` (an optional new output directory name) are optional. Server-side
+image file paths are not accepted; the uploads API is planned. The response
+includes the run and prompt IDs, workflow ID/version/hash, effective parameters,
+status, timestamps and any recorded error. An acknowledged partial submission
+is accepted, and its `node_warnings` appear in the run and its persisted
+acknowledgement event even if cancellation is in progress.
+
+Every submission requires one `Idempotency-Key` of 1–128 visible ASCII
+characters, excluding commas. Use a fresh key for each distinct run. The server
+hashes the decoded request (JSON object member order, whitespace and equivalent
+omitted defaults do not change the key's meaning). The core reserves the key
+and creates the run atomically in SQLite before sending the prompt. Keys remain
+bound to their runs across restarts. A replay returns HTTP 200 and the original
+run's **current** state; a different request for a reserved key returns 409.
+Validation rejected before reservation does not consume the key. If artefact
+preparation fails after reservation, the run is recorded as `failed` and is not
+sent. A process crash can leave a `submitting` record. Replaying its key or
+reconciling it recovers it as `unknown_submission` when the run uses the
+submission-lock protocol and no process holds its lock. This does not release
+the key or resend the prompt. Older runs without a protocol marker require
+queue or history evidence to advance; if neither identifies the prompt, an
+operator must investigate and decide how to recover.
+
+A timeout or other unconfirmed `/prompt` response produces
+`unknown_submission`. Neither a retry with the same key nor reconciliation
+resends the prompt. Use reconciliation to check queue and history. For newly
+accepted queued runs, the server observes progress via the core event bus and
+persists backend progress and lifecycle events. Monitoring stops on shutdown;
+use reconciliation to refresh old runs. A cancellation request can leave the
+run in `cancelling` until ComfyUI provides evidence for the target prompt.
+
+List responses contain `runs` and `next_cursor` (null at the end). Pass `cursor`
+back unchanged with the same filters. Ordering is descending by creation time,
+then descending by run ID; the versioned opaque token encodes both sort keys.
+This is not a snapshot of changing statuses. Filters are `status` (snake-case
+run status), `workflow` (exact manifest ID), and inclusive RFC 3339
+`created_from`/`created_to` (URL-encode any `+` offsets). `limit` defaults to 50
+and accepts 1–200. Errors use `application/problem+json` with a `recovery` hint.
 
 ### API integration tests
 
@@ -193,7 +256,7 @@ browser portal.
 isolated temporary configuration, data paths, loopback API and the shared
 scriptable fake ComfyUI in `genaimage-test-support` (a dev-only dependency).
 Tests can script backend state, issue typed JSON requests with same-origin
-headers, submit explicitly through core until the run route exists, and
+headers, submit through the runs API or directly through core, and
 subscribe before an action then await matching core events with a deadline.
 `request_with_origin` can override or omit Origin for hardening tests. The
 fake's state switches script health, queue state, completion and ambiguous
@@ -254,10 +317,14 @@ reads may retry, but an ambiguous prompt submission remains
 retrying. If neither source identifies the prompt, leave the submission unknown.
 Cancellation is confirmed only by evidence for the target prompt, such as
 history recording an interruption. A queue/history gap or deletion request
-acknowledgement alone leaves the run in `cancelling`; a later success or error
-still resolves it. ComfyUI may provide no history for deletion of a queued
-prompt, and its global interrupt can affect a different prompt if the target
-finishes after the queue check.
+acknowledgement alone leaves the run in `cancelling`. If a cancellation POST
+may have reached ComfyUI but its acknowledgement was lost, the run stays in
+`cancelling` and records `cancellation_unknown`. Only a definitely unsent or
+explicitly rejected request restores the previous state. Reconcile before
+trying again: ComfyUI may provide no history for deletion of a queued prompt. For running prompts, GenAImage sends a targeted interrupt only to
+recognised ComfyUI releases from 0.3.57 onward. For versions without confirmed
+support, upgrade or manage cancellation in ComfyUI itself; GenAImage never
+falls back to a global interrupt.
 
 Preserve source workflows and existing run records; write new
 versions instead of overwriting them. A successful technical run is not creative

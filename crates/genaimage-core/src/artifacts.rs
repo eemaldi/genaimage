@@ -88,6 +88,7 @@ pub(crate) async fn materialise_history(
     workflow_manifest_path: &Path,
     source_inputs: Vec<InputFileRecord>,
     history: &HistorySnapshot,
+    deadline: &tokio_util::sync::CancellationToken,
 ) -> Result<PathBuf> {
     let output_dir = PathBuf::from(&run.output_dir);
     fs::create_dir_all(output_dir.join("outputs"))?;
@@ -97,7 +98,8 @@ pub(crate) async fn materialise_history(
     }
     let mut output_records = Vec::new();
     for (index, output) in history.outputs.iter().enumerate() {
-        let bytes = client.download_output(output).await?;
+        let bytes =
+            crate::orchestrator::before_deadline(deadline, client.download_output(output)).await?;
         let file_name = output_file_name(index, output.kind.as_str(), output.filename.as_str());
         let target = output_dir.join("outputs").join(file_name);
         if target.exists() {

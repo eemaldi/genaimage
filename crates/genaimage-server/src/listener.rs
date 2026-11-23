@@ -20,10 +20,21 @@ pub async fn serve(state: AppState) -> io::Result<()> {
     let config = &harness.config().server;
     let listener = bind_loopback(&config.host, config.port).await?;
     let signal = shutdown_signal()?;
+    serve_on_listener(state, listener, signal, DRAIN_TIMEOUT).await
+}
+
+/// Serves a pre-bound loopback listener using the caller's shutdown signal.
+pub async fn serve_on_listener(
+    state: AppState,
+    listener: TcpListener,
+    signal: impl Future<Output = ()>,
+    drain_timeout: Duration,
+) -> io::Result<()> {
     let address = listener.local_addr()?;
+    verify_loopback(&address.ip().to_string(), &[address])?;
     tracing::info!(%address, "GenAImage server listening");
     let app = build_app(state.clone(), address.port());
-    serve_connections(listener, app, state, signal, DRAIN_TIMEOUT).await;
+    serve_connections(listener, app, state, signal, drain_timeout).await;
     Ok(())
 }
 
@@ -67,20 +78,23 @@ async fn serve_connections(
     drop(listener);
     state.begin_shutdown();
     tracing::info!("Shutdown requested; draining in-flight requests");
-    if timeout(drain_timeout, async {
-        while let Some(result) = connections.join_next().await {
-            report_connection(result);
+    let drain_connections = async {
+        if timeout(drain_timeout, async {
+            while let Some(result) = connections.join_next().await {
+                report_connection(result);
+            }
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                remaining = connections.len(),
+                "Connection drain timed out; closing remaining connections"
+            );
+            connections.shutdown().await;
         }
-    })
-    .await
-    .is_err()
-    {
-        tracing::warn!(
-            remaining = connections.len(),
-            "Connection drain timed out; closing remaining connections"
-        );
-        connections.shutdown().await;
-    }
+    };
+    tokio::join!(drain_connections, state.drain_run_tasks(drain_timeout));
 }
 
 fn report_connection(result: Result<(), tokio::task::JoinError>) {

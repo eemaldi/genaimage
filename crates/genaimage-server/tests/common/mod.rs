@@ -11,7 +11,7 @@ use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{
     EventEnvelope, EventSubscription, Harness, HarnessConfig, RunRecord, RunRequest,
 };
-use genaimage_server::{build_app, AppState};
+use genaimage_server::{serve_on_listener, AppState};
 use genaimage_test_support::{FakeComfyServer, FakeComfyState};
 use reqwest::{header, Method, Response, StatusCode};
 use serde::{de::DeserializeOwned, Serialize};
@@ -41,6 +41,14 @@ impl ApiHarness {
     }
 
     pub async fn start_with_config(seconds: u64, env: &[(&str, &str)]) -> Self {
+        Self::start_configured(seconds, env, Duration::from_secs(2)).await
+    }
+
+    pub async fn start_with_deadlines(seconds: u64, drain: Duration) -> Self {
+        Self::start_configured(seconds, &[], drain).await
+    }
+
+    async fn start_configured(seconds: u64, env: &[(&str, &str)], drain: Duration) -> Self {
         let workspace = TempDir::new().expect("temporary workspace");
         let fake = FakeComfyState::default();
         let backend = FakeComfyServer::start(fake.clone()).await;
@@ -83,11 +91,10 @@ impl ApiHarness {
         let adapter = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
         let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
         let state = AppState::new(core.clone());
-        let app = build_app(state.clone(), address.port());
         let shutdown = state.clone();
+        let server_state = state.clone();
         let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move { shutdown.wait_for_shutdown().await })
+            serve_on_listener(server_state, listener, shutdown.wait_for_shutdown(), drain)
                 .await
                 .expect("API server");
         });
@@ -104,8 +111,8 @@ impl ApiHarness {
         }
     }
 
-    /// Signal draining and wait for all HTTP connections, failing on timeout.
-    pub async fn shutdown(mut self) {
+    /// Drain without deleting the workspace, so callers can inspect persisted state.
+    pub async fn drain(&mut self) {
         self.state.begin_shutdown();
         let server = self.server.as_mut().expect("API server task");
         match timeout(SHUTDOWN_TIMEOUT, &mut *server).await {
@@ -118,6 +125,11 @@ impl ApiHarness {
                 panic!("timed out draining API server");
             }
         }
+    }
+
+    /// Signal draining and wait for all HTTP connections and run tasks.
+    pub async fn shutdown(mut self) {
+        self.drain().await;
     }
 
     pub fn workspace(&self) -> &Path {
@@ -186,7 +198,7 @@ impl ApiHarness {
         problem
     }
 
-    /// Submit explicitly through core until the HTTP run route exists.
+    /// Submit through the core for tests that exercise the fixture independently of the HTTP routes.
     pub async fn submit_run(&self, request: RunRequest) -> genaimage_core::Result<RunRecord> {
         self.state.harness().submit(request).await
     }
@@ -229,4 +241,19 @@ impl Drop for ApiHarness {
             }
         }
     }
+}
+
+pub fn install_workflow(api: &ApiHarness) {
+    let dir = &api.core.config().workflows;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("workflow.api.json"),
+        include_str!("../../../genaimage-core/tests/fixtures/contract-workflow.api.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("contract.genaimage.json"),
+        include_str!("../../../genaimage-core/tests/fixtures/contract-workflow.genaimage.json"),
+    )
+    .unwrap();
 }

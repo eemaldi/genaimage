@@ -42,8 +42,19 @@ pub struct FakeComfyState {
     pub prompt_calls: Arc<AtomicUsize>,
     pub upload_calls: Arc<AtomicUsize>,
     pub interrupt_calls: Arc<AtomicUsize>,
+    pub comfyui_version: Arc<Mutex<Option<String>>>,
+    pub interrupt_queue_head: Arc<Mutex<Option<String>>>,
+    pub interrupted_prompt_id: Arc<Mutex<Option<String>>>,
+    pub interrupt_target: Arc<Mutex<Option<String>>>,
+    pub cancellation_history: Arc<AtomicBool>,
+    pub node_errors: Arc<Mutex<Value>>,
     pub health_unavailable: Arc<AtomicBool>,
     pub health_hangs: Arc<AtomicBool>,
+    pub health_calls: Arc<AtomicUsize>,
+    pub hang_interrupt_response: Arc<AtomicBool>,
+    pub hang_delete_response: Arc<AtomicBool>,
+    pub reject_delete: Arc<AtomicBool>,
+    pub delete_calls: Arc<AtomicUsize>,
     pub missing_classes: Arc<Mutex<Vec<String>>>,
     pub object_info_unavailable: Arc<AtomicBool>,
     pub object_info_hangs: Arc<AtomicBool>,
@@ -68,8 +79,19 @@ impl Default for FakeComfyState {
             prompt_calls: Default::default(),
             upload_calls: Default::default(),
             interrupt_calls: Default::default(),
+            comfyui_version: Arc::new(Mutex::new(Some("0.3.57".into()))),
+            interrupt_queue_head: Default::default(),
+            interrupted_prompt_id: Default::default(),
+            interrupt_target: Default::default(),
+            cancellation_history: Arc::new(AtomicBool::new(true)),
+            node_errors: Arc::new(Mutex::new(json!({}))),
             health_unavailable: Default::default(),
             health_hangs: Default::default(),
+            health_calls: Default::default(),
+            hang_interrupt_response: Default::default(),
+            hang_delete_response: Default::default(),
+            reject_delete: Default::default(),
+            delete_calls: Default::default(),
             missing_classes: Default::default(),
             object_info_unavailable: Default::default(),
             object_info_hangs: Default::default(),
@@ -123,6 +145,7 @@ async fn fake_websocket(State(state): State<FakeComfyState>, ws: WebSocketUpgrad
 }
 
 async fn fake_system(State(state): State<FakeComfyState>) -> Response {
+    state.health_calls.fetch_add(1, Ordering::SeqCst);
     if state.health_hangs.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -130,7 +153,7 @@ async fn fake_system(State(state): State<FakeComfyState>) -> Response {
     if state.health_unavailable.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    Json(json!({ "system": { "os": "test" }, "devices": [] })).into_response()
+    Json(json!({ "system": { "os": "test", "comfyui_version": state.comfyui_version.lock().expect("version lock").clone() }, "devices": [] })).into_response()
 }
 
 async fn fake_object_info(State(state): State<FakeComfyState>) -> Response {
@@ -213,7 +236,7 @@ async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value
     Json(json!({
         "prompt_id": prompt_id,
         "number": 1,
-        "node_errors": {}
+        "node_errors": state.node_errors.lock().expect("node errors lock").clone()
     }))
     .into_response()
 }
@@ -243,16 +266,44 @@ async fn fake_queue(State(state): State<FakeComfyState>) -> Json<Value> {
     }))
 }
 
-async fn fake_interrupt(State(state): State<FakeComfyState>) -> Json<Value> {
+async fn fake_interrupt(
+    State(state): State<FakeComfyState>,
+    Json(body): Json<Value>,
+) -> StatusCode {
     state.interrupt_calls.fetch_add(1, Ordering::SeqCst);
-    state.cancelled.store(true, Ordering::SeqCst);
-    Json(json!({}))
+    let target = body["prompt_id"].as_str().map(str::to_owned);
+    *state.interrupt_target.lock().expect("target lock") = target.clone();
+    let original = state.prompt_id.lock().expect("prompt lock").clone();
+    // Script a replacement starting after the caller inspected the queue.
+    let running = state
+        .interrupt_queue_head
+        .lock()
+        .expect("queue head lock")
+        .clone()
+        .or_else(|| original.clone());
+    if running.is_some() && (target.is_none() || running == target) {
+        *state
+            .interrupted_prompt_id
+            .lock()
+            .expect("interrupted prompt lock") = running.clone();
+        if running == original {
+            state.cancelled.store(true, Ordering::SeqCst);
+        }
+    }
+    if state.hang_interrupt_response.load(Ordering::SeqCst) {
+        let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
+    }
+    StatusCode::OK
 }
 
 async fn fake_queue_delete(
     State(state): State<FakeComfyState>,
     Json(body): Json<Value>,
-) -> Json<Value> {
+) -> StatusCode {
+    state.delete_calls.fetch_add(1, Ordering::SeqCst);
+    if state.reject_delete.load(Ordering::SeqCst) {
+        return StatusCode::BAD_REQUEST;
+    }
     let prompt_id = state.prompt_id.lock().expect("prompt lock").clone();
     if prompt_id.as_deref().is_some_and(|prompt_id| {
         body["delete"]
@@ -261,7 +312,10 @@ async fn fake_queue_delete(
     }) {
         state.cancelled.store(true, Ordering::SeqCst);
     }
-    Json(json!({}))
+    if state.hang_delete_response.load(Ordering::SeqCst) {
+        let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
+    }
+    StatusCode::OK
 }
 
 async fn fake_history(
@@ -280,7 +334,14 @@ async fn fake_history(
     if state.prompt_id.lock().expect("prompt lock").as_deref() != Some(prompt_id.as_str()) {
         return Ok(Json(json!({})));
     }
-    if state.interrupt_calls.load(Ordering::SeqCst) > 0 {
+    if state.cancellation_history.load(Ordering::SeqCst)
+        && state
+            .interrupted_prompt_id
+            .lock()
+            .expect("interrupted prompt lock")
+            .as_deref()
+            == Some(prompt_id.as_str())
+    {
         return Ok(Json(json!({
             prompt_id.clone(): {
                 "status": {

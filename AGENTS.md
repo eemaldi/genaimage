@@ -16,8 +16,8 @@ ComfyUI image generation, assisted by local LLMs. Read
 - `crates/genaimage` is the scripted interface. Operator commands still call the
   adapter and core directly; `genaimage serve` starts the local Axum server in
   `crates/genaimage-server`, with shared wire types in `crates/genaimage-api`.
-- The server binds to loopback only and currently serves health, workflows and
-  live events. The remaining domain API routes and embedded Svelte portal are
+- The server binds to loopback only and currently serves health, workflows, runs,
+  settings and live events. The remaining domain API routes and embedded Svelte portal are
   planned.
   ComfyUI and the planned OpenAI-compatible local LLM service remain separate
   processes. Docker Compose support is planned for local dependencies, not public
