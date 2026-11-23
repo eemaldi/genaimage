@@ -3,12 +3,14 @@
 mod listener;
 mod problem;
 mod routes;
+mod security;
 
 use std::sync::Arc;
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::{HeaderName, Request},
-    Router,
+    middleware, Router,
 };
 use genaimage_core::Harness;
 use tokio::sync::watch;
@@ -50,10 +52,16 @@ impl AppState {
 }
 
 /// Builds the application without opening a socket or installing signal handlers.
-pub fn build_app(state: AppState) -> Router {
+pub fn build_app(state: AppState, port: u16) -> Router {
+    let security = security::SecurityConfig {
+        port,
+        max_upload_bytes: state.harness.config().server.max_upload_bytes,
+    };
     Router::new()
         .nest("/api/v1", routes::api())
         .with_state(state)
+        .layer(DefaultBodyLimit::disable())
+        .layer(middleware::from_fn_with_state(security, security::protect))
         .layer(PropagateRequestIdLayer::new(REQUEST_ID))
         .layer(
             TraceLayer::new_for_http()
@@ -68,4 +76,5 @@ pub fn build_app(state: AppState) -> Router {
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
         .layer(SetRequestIdLayer::new(REQUEST_ID, MakeRequestUuid))
+        .layer(middleware::from_fn(security::response_headers))
 }

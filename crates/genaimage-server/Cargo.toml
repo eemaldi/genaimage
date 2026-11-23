@@ -12,11 +12,13 @@ workspace = true
 axum.workspace = true
 genaimage-api = { path = "../genaimage-api" }
 genaimage-core = { path = "../genaimage-core" }
+http-body-util.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+futures-util.workspace = true
 genaimage-comfyui = { path = "../genaimage-comfyui" }
 serde_json.workspace = true
 tempfile = "3"

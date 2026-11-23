@@ -27,6 +27,7 @@ pub struct HarnessConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    pub max_upload_bytes: usize,
 }
 
 impl Default for ServerConfig {
@@ -34,6 +35,7 @@ impl Default for ServerConfig {
         Self {
             host: "127.0.0.1".into(),
             port: 3000,
+            max_upload_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -228,6 +230,10 @@ impl HarnessConfig {
         }
         text!("GENAIMAGE_SERVER_HOST", config.server.host);
         number!("GENAIMAGE_SERVER_PORT", config.server.port);
+        number!(
+            "GENAIMAGE_SERVER_MAX_UPLOAD_BYTES",
+            config.server.max_upload_bytes
+        );
         text!("GENAIMAGE_COMFYUI_URL", config.comfyui.base_url);
         number!(
             "GENAIMAGE_COMFYUI_REQUEST_TIMEOUT_SECONDS",
@@ -257,6 +263,13 @@ impl HarnessConfig {
         }
         if config.server.port == 0 {
             return Err(invalid("server.port", "0", "choose a port from 1 to 65535"));
+        }
+        if config.server.max_upload_bytes == 0 {
+            return Err(invalid(
+                "server.max_upload_bytes",
+                "0",
+                "use a positive byte limit",
+            ));
         }
         if config.comfyui.request_timeout_seconds == 0 {
             return Err(invalid(
@@ -649,14 +662,20 @@ mod tests {
         );
         assert_eq!(defaults.uploads, temp.path().join("data/genaimage/uploads"));
         assert_eq!(defaults.workflows, temp.path().join("workflows/comfyui"));
+        assert_eq!(defaults.server.max_upload_bytes, 32 * 1024 * 1024);
         fs::write(
             temp.path().join(PROJECT_CONFIG),
-            "[server]\nport = 9999\n[llm]\nmodel = 'from-file'\n[paths]\nruns = 'file-runs'\n",
+            "[server]\nport = 9999\nmax_upload_bytes = 123\n[llm]\nmodel = 'from-file'\n[paths]\nruns = 'file-runs'\n",
         )
         .unwrap();
+        assert_eq!(
+            load(&temp, None, &vars).unwrap().server.max_upload_bytes,
+            123
+        );
         vars.extend([
             ("GENAIMAGE_SERVER_HOST", "::1".into()),
             ("GENAIMAGE_SERVER_PORT", "4242".into()),
+            ("GENAIMAGE_SERVER_MAX_UPLOAD_BYTES", "456".into()),
             ("GENAIMAGE_COMFYUI_URL", "http://comfyui:8188".into()),
             ("GENAIMAGE_COMFYUI_ALLOWED_HOSTS", "comfyui, other".into()),
             ("GENAIMAGE_COMFYUI_REQUEST_TIMEOUT_SECONDS", "3".into()),
@@ -674,6 +693,7 @@ mod tests {
             (config.server.host.as_str(), config.server.port),
             ("::1", 4242)
         );
+        assert_eq!(config.server.max_upload_bytes, 456);
         assert_eq!(config.comfyui.base_url, "http://comfyui:8188");
         assert_eq!(config.comfyui.allowed_hosts, ["comfyui", "other"]);
         assert_eq!(
@@ -690,6 +710,12 @@ mod tests {
         assert_eq!(config.workflows, temp.path().join("wf"));
         assert_eq!(config.runs, temp.path().join("output"));
         assert_eq!(config.uploads, temp.path().join("input"));
+        let mut bad_limit = vars.clone();
+        bad_limit.push(("GENAIMAGE_SERVER_MAX_UPLOAD_BYTES", "invalid".into()));
+        assert!(load(&temp, None, &bad_limit)
+            .unwrap_err()
+            .to_string()
+            .contains("GENAIMAGE_SERVER_MAX_UPLOAD_BYTES"));
         vars.push(("GENAIMAGE_SERVER_PORT", "invalid".into()));
         let error = load(&temp, None, &vars).unwrap_err().to_string();
         assert!(
@@ -759,6 +785,11 @@ mod tests {
         .unwrap();
         let error = load(&temp, None, &values(&temp)).unwrap_err().to_string();
         assert!(error.contains("active_profile") && error.contains("migrate"));
+        fs::write(&path, "[server]\nmax_upload_bytes = 0\n").unwrap();
+        assert!(load(&temp, None, &values(&temp))
+            .unwrap_err()
+            .to_string()
+            .contains("server.max_upload_bytes"));
         fs::write(&path, "[server]\nhost = '0.0.0.0'\n").unwrap();
         let error = load(&temp, None, &values(&temp)).unwrap_err().to_string();
         assert!(
