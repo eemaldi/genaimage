@@ -59,7 +59,8 @@ rejected with a request to export API format.
 The published [JSON Schema](schemas/workflow-manifest.v2.json) defines the
 structural format. Unknown fields are rejected, including the retired
 `generation_mode` and `required_gates` fields. `id`, `version`, `workflow` and
-`schema_version` are required; `id` and `version` must not be blank. `title`
+`schema_version` are required; `id` and `version` must not be blank, and `id`
+must not be `.` or `..` because these are URL path segments. `title`
 defaults to an empty string. Optional `description`, `tags` (a list of
 strings), `category` and `thumbnail` (a string reference) are descriptive
 metadata; they do not affect generation. The workflows API serves a declared

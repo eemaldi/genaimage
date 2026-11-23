@@ -1,7 +1,10 @@
+use std::time::Duration;
+
+#[cfg(unix)]
 use std::{
     io::Read,
+    os::unix::fs::MetadataExt,
     path::{Component, Path},
-    time::Duration,
 };
 
 use axum::{
@@ -22,6 +25,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use crate::{AppState, Problem};
 
 const NODE_CHECK_DEADLINE: Duration = Duration::from_secs(2);
+#[cfg(unix)]
 const MAX_THUMBNAIL_BYTES: u64 = 10 * 1024 * 1024;
 
 pub(super) fn routes() -> Router<AppState> {
@@ -187,6 +191,7 @@ async fn thumbnail(
     Ok(([(header::CONTENT_TYPE, content_type)], bytes))
 }
 
+#[cfg(unix)]
 fn read_thumbnail(workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> {
     let relative = Path::new(workflow.manifest.thumbnail.as_deref()?);
     if relative.as_os_str().is_empty()
@@ -196,12 +201,7 @@ fn read_thumbnail(workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> 
     {
         return None;
     }
-    let directory = workflow.manifest_path.parent()?.canonicalize().ok()?;
-    let target = directory.join(relative).canonicalize().ok()?;
-    if !target.starts_with(&directory) {
-        return None;
-    }
-    let mime = mime_guess::from_path(&target).first_raw()?;
+    let mime = mime_guess::from_path(relative).first_raw()?;
     let content_type = match mime {
         "image/png" => "image/png",
         "image/jpeg" => "image/jpeg",
@@ -210,7 +210,14 @@ fn read_thumbnail(workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> 
         "image/avif" => "image/avif",
         _ => return None,
     };
-    let file = std::fs::File::open(target).ok()?;
+    let directory = workflow.manifest_path.parent()?.canonicalize().ok()?;
+    let expected = std::fs::metadata(&directory).ok()?;
+    let directory = open_directory(&directory)?;
+    let actual = directory.metadata().ok()?;
+    if expected.dev() != actual.dev() || expected.ino() != actual.ino() {
+        return None;
+    }
+    let file = open_beneath(directory, relative)?;
     if !file.metadata().ok()?.is_file() {
         return None;
     }
@@ -222,4 +229,100 @@ fn read_thumbnail(workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> 
         return None;
     }
     Some((content_type, bytes))
+}
+
+#[cfg(unix)]
+fn open_directory(path: &Path) -> Option<std::fs::File> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+    let flags =
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut directory: std::fs::File = open("/", flags, Mode::empty()).ok()?.into();
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = openat(&directory, name, flags, Mode::empty()).ok()?.into();
+            }
+            _ => return None,
+        }
+    }
+    Some(directory)
+}
+
+#[cfg(unix)]
+fn open_beneath(mut directory: std::fs::File, relative: &Path) -> Option<std::fs::File> {
+    use rustix::fs::{openat, Mode, OFlags};
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            if component == Component::CurDir {
+                continue;
+            }
+            return None;
+        };
+        let mut flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+        if components.peek().is_some() {
+            flags |= OFlags::DIRECTORY;
+        }
+        directory = openat(&directory, name, flags, Mode::empty()).ok()?.into();
+    }
+    Some(directory)
+}
+
+// Without descriptor-relative, no-follow opens, refusing the image is safer
+// than checking a path and then opening a potentially different file.
+#[cfg(not(unix))]
+fn read_thumbnail(_workflow: &LoadedWorkflow) -> Option<(&'static str, Vec<u8>)> {
+    None
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{open_beneath, open_directory};
+    use std::{io::Read, path::Path};
+
+    #[test]
+    fn open_remains_confined_after_directory_is_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflow");
+        let original = temp.path().join("original");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(root.join("image.png"), b"inside").unwrap();
+        std::fs::write(outside.join("image.png"), b"outside").unwrap();
+        let directory = open_directory(&root).unwrap();
+        std::fs::rename(&root, &original).unwrap();
+        std::os::unix::fs::symlink(&outside, &root).unwrap();
+        let mut image = open_beneath(directory, Path::new("image.png")).unwrap();
+        let mut contents = Vec::new();
+        image.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"inside");
+    }
+    #[test]
+    fn open_refuses_file_and_directory_symlink_swaps() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workflow");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("image.png"), b"outside").unwrap();
+        let image = root.join("image.png");
+        std::fs::write(&image, b"inside").unwrap();
+        let directory = open_directory(&root).unwrap();
+        assert!(image.canonicalize().unwrap().starts_with(&root));
+        std::fs::remove_file(&image).unwrap();
+        std::os::unix::fs::symlink(outside.join("image.png"), &image).unwrap();
+        assert!(open_beneath(directory, Path::new("image.png")).is_none());
+
+        let subdirectory = root.join("subdirectory");
+        std::fs::create_dir(&subdirectory).unwrap();
+        let directory = open_directory(&root).unwrap();
+        std::fs::remove_dir(&subdirectory).unwrap();
+        std::os::unix::fs::symlink(&outside, &subdirectory).unwrap();
+        assert!(open_beneath(directory, Path::new("subdirectory/image.png")).is_none());
+    }
 }

@@ -719,6 +719,7 @@ dependencies = [
  "mime_guess",
  "percent-encoding",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

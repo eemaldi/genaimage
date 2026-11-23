@@ -162,9 +162,12 @@ The workflows API is read-only apart from validation, which does not submit a ru
   neither uploads images nor submits generation.
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
-  Missing, unsupported, oversized, absolute, traversal or escaping symlink paths
-  return 404 problem details. The catalogue URL indicates a declaration, not a
-  guarantee that the image can be read.
+  Missing, unsupported, oversized, absolute, traversal or symlink paths return
+  404 problem details. On Unix, descriptor-relative no-follow opens keep each
+  component inside the opened manifest directory and non-regular files are
+  rejected without blocking on FIFOs. On other platforms thumbnails are
+  unavailable until equivalent safe access is implemented. The catalogue URL
+  indicates a declaration, not a guarantee that the image can be read.
 
 Runs, outputs, uploads, settings and OpenAPI endpoints are planned, as is the
 browser portal.

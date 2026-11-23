@@ -565,6 +565,31 @@ fn loaded_json(path: &Path) -> Value {
 }
 
 #[test]
+fn dot_segment_ids_are_rejected_by_schema_and_loader() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../docs/schemas/workflow-manifest.v2.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let temp = TempDir::new().unwrap();
+    for id in [".", ".."] {
+        let mut manifest = valid_manifest("workflow.api.json");
+        manifest["id"] = json!(id);
+        assert!(!validator.is_valid(&manifest));
+        let path = create_workflow(&temp, manifest, valid_workflow());
+        assert!(LoadedWorkflow::load(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("workflow id cannot"));
+    }
+    let mut manifest = valid_manifest("workflow.api.json");
+    manifest["id"] = json!("...");
+    assert!(validator.is_valid(&manifest));
+    let path = create_workflow(&temp, manifest, valid_workflow());
+    assert!(LoadedWorkflow::load(&path).is_ok());
+}
+
+#[test]
 fn manifest_versions_and_unknown_fields_are_rejected() {
     let temp = TempDir::new().expect("temp directory");
     for legacy_fields in [

@@ -174,6 +174,7 @@ async fn unavailable_and_malformed_backend_are_not_valid() {
     api.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn thumbnail_requires_a_safe_supported_local_file() {
     let api = ApiHarness::start().await;
@@ -308,9 +309,71 @@ async fn catalogue_thumbnail_url_encodes_workflow_ids_as_one_path_segment() {
     let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let url = list.workflows[0].thumbnail_url.as_deref().unwrap();
     let response = api.request(Method::GET, url).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
+    #[cfg(unix)]
+    {
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
+    }
+    #[cfg(not(unix))]
+    ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
     let details: WorkflowDetails = api.get_json(url.strip_suffix("/thumbnail").unwrap()).await;
     assert_eq!(details.id, "workflow / one");
+    api.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn thumbnail_fifos_and_symlinked_directories_are_rejected_promptly() {
+    use rustix::fs::{mkfifoat, Mode, CWD};
+    use std::time::Duration;
+
+    let api = ApiHarness::start().await;
+    install(&api, Some("pipe.png"));
+    let dir = &api.core.config().workflows;
+    mkfifoat(CWD, dir.join("pipe.png"), Mode::RUSR | Mode::WUSR).unwrap();
+    let path = "/api/v1/workflows/contract-workflow/thumbnail";
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        api.request(Method::GET, path).send(),
+    )
+    .await
+    .expect("FIFO open blocked")
+    .unwrap();
+    ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+
+    let outside = api.workspace().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("image.png"), b"outside").unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("linked")).unwrap();
+    install(&api, Some("linked/image.png"));
+    ApiHarness::assert_problem(
+        api.request(Method::GET, path).send().await.unwrap(),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+
+    std::fs::create_dir(dir.join("nested")).unwrap();
+    std::fs::write(dir.join("nested/image.png"), b"inside").unwrap();
+    install(&api, Some("nested/image.png"));
+    let response = api.request(Method::GET, path).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap(), &b"inside"[..]);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn dot_segment_ids_are_discovery_diagnostics() {
+    let api = ApiHarness::start().await;
+    for id in [".", ".."] {
+        install(&api, None);
+        let path = api.core.config().workflows.join("contract.genaimage.json");
+        let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest["id"] = json!(id);
+        std::fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+        assert!(list.workflows.is_empty());
+        assert_eq!(list.diagnostics.len(), 1);
+        assert!(list.diagnostics[0].error.contains("workflow id cannot"));
+    }
     api.shutdown().await;
 }

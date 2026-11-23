@@ -147,6 +147,11 @@ impl LoadedWorkflow {
                 "workflow id and version cannot be empty".to_owned(),
             ));
         }
+        if matches!(manifest.id.as_str(), "." | "..") {
+            return Err(HarnessError::Workflow(
+                "workflow id cannot be '.' or '..'; choose a different identifier".to_owned(),
+            ));
+        }
         let workflow_path = manifest_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
