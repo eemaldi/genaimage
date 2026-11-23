@@ -107,6 +107,56 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
 }
 
 #[test]
+fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
+    let temp = TempDir::new().expect("temp");
+    let workflows = temp.path().join("workflows/comfyui");
+    write(
+        &workflows.join("api.json"),
+        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
+    );
+    write(
+        &workflows.join("valid.genaimage.json"),
+        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
+    );
+    write(
+        &workflows.join("legacy.genaimage.json"),
+        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json","required_gates":["gate3"]}"#,
+    );
+    let run_cli = |args: &[&str]| {
+        cli()
+            .arg("--workspace")
+            .arg(temp.path())
+            .arg("--json")
+            .args(args)
+            .output()
+            .expect("run CLI")
+    };
+    for valid_name in ["valid.genaimage.json", "shared.genaimage.json"] {
+        let rejected = run_cli(&["run", "shared"]);
+        assert!(!rejected.status.success());
+        let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
+        let message = error["error"].as_str().expect("error message");
+        assert!(message.contains("workflow id 'shared'"), "{message}");
+        assert!(message.contains("legacy.genaimage.json"), "{message}");
+        assert!(
+            message.contains("select an explicit manifest path"),
+            "{message}"
+        );
+        assert!(run_cli(&["workflow", "validate", valid_name])
+            .status
+            .success());
+
+        if valid_name == "valid.genaimage.json" {
+            fs::rename(
+                workflows.join(valid_name),
+                workflows.join("shared.genaimage.json"),
+            )
+            .expect("move valid sidecar to the conventional filename");
+        }
+    }
+}
+
+#[test]
 fn jobs_accepts_the_retired_workspace_path_but_rejects_other_unknown_keys() {
     let temp = TempDir::new().expect("temp");
     let config = temp.path().join("genaimage.toml");

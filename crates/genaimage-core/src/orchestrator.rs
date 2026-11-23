@@ -106,13 +106,40 @@ impl Harness {
     }
 
     pub fn load_workflow(&self, workflow: &str) -> Result<LoadedWorkflow> {
-        let direct = PathBuf::from(workflow);
-        let candidates = if direct.is_absolute() {
-            vec![direct]
-        } else {
-            vec![
-                self.config.workspace.join(&direct),
-                self.config.workflows.join(&direct),
+        let direct = Path::new(workflow);
+        if direct.is_absolute() {
+            return LoadedWorkflow::load(direct);
+        }
+        for candidate in [
+            self.config.workspace.join(direct),
+            self.config.workflows.join(direct),
+        ] {
+            if candidate.is_file() {
+                return LoadedWorkflow::load(&candidate);
+            }
+        }
+
+        let mut matches = Vec::new();
+        let mut invalid_matches = Vec::new();
+        let mut skipped = false;
+        visit_workflows(&self.config.workflows, |path, result| match result {
+            Ok(loaded) if loaded.manifest.id == workflow => matches.push(loaded),
+            Err(error) => {
+                skipped = true;
+                if sidecar_declares_id(path, workflow) {
+                    invalid_matches.push((path.to_path_buf(), error));
+                }
+            }
+            _ => {}
+        })?;
+        if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
+            return Err(HarnessError::Workflow(format!(
+                "cannot resolve workflow id '{workflow}': invalid manifest '{}' declares it ({error}); select an explicit manifest path",
+                path.display()
+            )));
+        }
+        if matches.is_empty() {
+            for candidate in [
                 self.config
                     .workflows
                     .join(format!("{workflow}.genaimage.json")),
@@ -120,20 +147,12 @@ impl Harness {
                     .workflows
                     .join(workflow)
                     .join("workflow.genaimage.json"),
-            ]
-        };
-        for candidate in candidates {
-            if candidate.is_file() {
-                return LoadedWorkflow::load(&candidate);
+            ] {
+                if candidate.is_file() {
+                    return LoadedWorkflow::load(&candidate);
+                }
             }
         }
-        let mut matches = Vec::new();
-        let mut skipped = false;
-        visit_workflows(&self.config.workflows, |_, result| match result {
-            Ok(loaded) if loaded.manifest.id == workflow => matches.push(loaded),
-            Err(_) => skipped = true,
-            _ => {}
-        })?;
         match matches.len() {
             0 => Err(HarnessError::Workflow(format!(
                 "workflow '{workflow}' was not found below '{}'{}",
@@ -565,6 +584,13 @@ fn read_manifest_path(output_dir: &Path) -> Result<PathBuf> {
         .ok_or_else(|| {
             HarnessError::Workflow("preflight.json is missing workflow_manifest_path".to_owned())
         })
+}
+
+fn sidecar_declares_id(path: &Path, id: &str) -> bool {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|manifest| manifest.get("id").and_then(Value::as_str) == Some(id))
 }
 
 fn visit_workflows(

@@ -54,7 +54,9 @@ remains available, and the event is kept in the run history.
 
 `workflow list` warns on stderr about sidecars it could not load and still
 lists valid workflows. If a sidecar has the retired `required_gates` field,
-remove that field and run `workflow validate <manifest-path>` again.
+remove that field and run `workflow validate <manifest-path>` again. If an
+invalid sidecar shares an ID with a valid one, select an explicit manifest path
+rather than using the shared ID.
 
 The obsolete `paths.characters` setting in `genaimage.toml` is ignored. You
 can remove it without changing the state database or existing run manifests.
