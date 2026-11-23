@@ -21,9 +21,6 @@ ComfyUI image generation, assisted by local LLMs. Read
   explicitly allow-listed private/Compose hosts, never public endpoints; this
   is planned and current ComfyUI profiles remain loopback-only. The GenAImage
   server itself must bind to loopback only.
-- The existing character approval-gate pilot is being retired. Until removal,
-  preserve its current checks and records rather than bypassing them. It is not
-  the future architecture.
 - Use ComfyUI API-format JSON and strict `*.genaimage.json` workflow manifests.
   ComfyUI, models, weights and custom nodes are external; do not silently
   install, replace or substitute them.
