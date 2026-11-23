@@ -283,6 +283,8 @@ fn schema_and_loader_enforce_kind_specific_hints_and_defaults() {
 // jsonschema 0.18 rounds out-of-range JSON integers to f64 when comparing
 // bounds. Override only these two standard keywords for the integer boundary
 // cases, preserving the original numeric lexemes via serde_json's dev feature.
+// The keyword factory API requires an unboxed ValidationError.
+#[allow(clippy::result_large_err)]
 fn precise_integer_schema(schema: &Value) -> jsonschema::JSONSchema {
     use jsonschema::{
         paths::{JSONPointer, JsonPointerNode},
