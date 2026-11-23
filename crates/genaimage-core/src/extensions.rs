@@ -117,17 +117,18 @@ pub struct ExtensionRegistry {
     event_sinks: BTreeMap<String, Arc<dyn EventSink>>,
 }
 
+pub const COMFYUI_BACKEND: &str = "comfyui";
+
 impl ExtensionRegistry {
-    /// Build the active backend using the already resolved profile and an
-    /// adapter factory supplied by the application. Inactive profiles are not
-    /// constructed and a factory failure is returned, never replaced by a default.
+    /// Build the configured ComfyUI backend with the supplied adapter factory.
+    /// A factory failure is returned, never replaced by a default.
     pub fn from_config<B: ImageBackend + 'static>(
         config: &ResolvedConfig,
         connect: impl FnOnce(&ComfyUiProfile) -> Result<B>,
     ) -> Result<Self> {
         let mut registry = Self::default();
         registry
-            .register_image_backend(&config.active_profile, Arc::new(connect(&config.comfyui)?))?;
+            .register_image_backend(COMFYUI_BACKEND, Arc::new(connect(&config.comfyui)?))?;
         Ok(registry)
     }
 

@@ -175,7 +175,6 @@ impl ImageBackend for FakeImageBackend {
 fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>, RunRequest) {
     let workspace = tempfile::tempdir().unwrap();
     let mut config = HarnessConfig::load(workspace.path()).unwrap();
-    config.active_profile = "test-backend".to_owned();
     config.state_database = workspace.path().join("state.sqlite3");
     fs::create_dir_all(&config.workflows).unwrap();
     fs::write(
@@ -199,7 +198,7 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
     })
     .unwrap();
     assert!(registry.image_backend("local").is_none());
-    let backend = registry.image_backend(&config.active_profile).unwrap();
+    let backend = registry.image_backend(crate::extensions::COMFYUI_BACKEND).unwrap();
     let harness = Harness::new(config, backend).unwrap();
     let request = RunRequest {
         workflow: "contract-workflow".to_owned(),
@@ -419,15 +418,15 @@ fn registry_does_not_replace_an_extension_or_fall_back_on_factory_failure() {
 
     let mut registry =
         ExtensionRegistry::from_config(&config, |_| Ok(FakeImageBackend::default())).unwrap();
-    let original = registry.image_backend(&config.active_profile).unwrap();
+    let original = registry.image_backend(crate::extensions::COMFYUI_BACKEND).unwrap();
     assert!(registry
         .register_image_backend(
-            &config.active_profile,
+            crate::extensions::COMFYUI_BACKEND,
             Arc::new(FakeImageBackend::default())
         )
         .is_err());
     assert!(Arc::ptr_eq(
         &original,
-        &registry.image_backend(&config.active_profile).unwrap()
+        &registry.image_backend(crate::extensions::COMFYUI_BACKEND).unwrap()
     ));
 }

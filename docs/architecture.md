@@ -70,12 +70,12 @@ to loopback; GenAImage can run on the host. Compose does not change the server's
 loopback-only bind or justify automatically installing or changing models,
 nodes or settings.
 
-Outbound ComfyUI and LLM endpoints default to loopback. The target policy also
-permits explicitly allow-listed private hosts or Compose service names, subject
-to local reachability and validation of resolved addresses and redirects;
-public endpoints and blanket private-network access are excluded. This is
-planned: current ComfyUI profiles accept loopback only. Inbound server binding
-remains loopback only even when an outbound host is allow-listed.
+Outbound endpoints default to loopback. Configuration permits explicitly
+allow-listed private hosts and Compose service names. The ComfyUI adapter
+validates and pins resolved addresses, rejects public addresses and disables
+redirects and proxies. The LLM adapter and server remain planned; future
+adapters must enforce the same policy. Server binding is configured as
+loopback only even when an outbound host is allow-listed.
 
 ## Run and assistant flow
 

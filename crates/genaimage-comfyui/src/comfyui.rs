@@ -1,15 +1,14 @@
-use std::{path::Path, time::Duration};
+use std::{net::SocketAddr, path::Path, time::Duration};
 
 use futures_util::StreamExt;
 use reqwest::{
     multipart::{Form, Part},
-    redirect::Policy,
     Client, Url,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tokio::{sync::mpsc, time::sleep};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{client_async_tls_with_config, tungstenite::Message};
 
 use genaimage_core::{
     async_trait,
@@ -28,6 +27,7 @@ pub struct ComfyUiClient {
     http: Client,
     base_url: Url,
     websocket_reconnect: Duration,
+    addresses: Vec<SocketAddr>,
 }
 
 impl ComfyUiClient {
@@ -37,19 +37,14 @@ impl ComfyUiClient {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
         }
-        let submit_url = base_url.join("prompt")?;
-        let default_redirects = Policy::default();
-        let http = Client::builder()
-            // Only explicit safe reads may retry. Never replay a prompt POST,
-            // including when a redirect preserves the request method and body.
+        let addresses = profile.resolve_addresses()?;
+        let host = base_url.host_str().expect("validated host");
+        let mut builder = Client::builder()
             .retry(reqwest::retry::never())
-            .redirect(Policy::custom(move |attempt| {
-                if attempt.previous().first() == Some(&submit_url) {
-                    attempt.stop()
-                } else {
-                    default_redirects.redirect(attempt)
-                }
-            }))
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none());
+        builder = builder.resolve_to_addrs(host, &addresses);
+        let http = builder
             .timeout(Duration::from_secs(profile.request_timeout_seconds))
             .build()
             .map_err(|error| HarnessError::ComfyUi(format!("cannot build HTTP client: {error}")))?;
@@ -57,6 +52,7 @@ impl ComfyUiClient {
             http,
             base_url,
             websocket_reconnect: Duration::from_secs(profile.websocket_reconnect_seconds),
+            addresses,
         })
     }
 }
@@ -206,10 +202,18 @@ impl ImageBackend for ComfyUiClient {
             .query_pairs_mut()
             .append_pair("clientId", client_id);
         let reconnect_delay = self.websocket_reconnect;
+        let addresses = self.addresses.clone();
         let (sender, receiver) = mpsc::channel(128);
         let task = tokio::spawn(async move {
             loop {
-                match connect_async(websocket_url.as_str()).await {
+                let connection = match tokio::net::TcpStream::connect(addresses.as_slice()).await {
+                    Ok(stream) => {
+                        client_async_tls_with_config(websocket_url.as_str(), stream, None, None)
+                            .await
+                    }
+                    Err(error) => Err(error.into()),
+                };
+                match connection {
                     Ok((mut stream, _)) => {
                         while let Some(message) = stream.next().await {
                             let event = match message {

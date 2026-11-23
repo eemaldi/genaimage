@@ -17,7 +17,7 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     let temp = TempDir::new().expect("temp");
     write(
         &temp.path().join("genaimage.toml"),
-        "[profiles.local]\nbase_url = \"http://127.0.0.1:8188\"\n",
+        "[comfyui]\nbase_url = \"http://127.0.0.1:8188\"\n",
     );
     write(
         &temp.path().join("workflows/comfyui/example/api.json"),
@@ -61,6 +61,8 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     );
 
     let list = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
@@ -77,6 +79,8 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     assert!(warnings.contains("broken.genaimage.json"));
 
     let validate = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
@@ -92,6 +96,8 @@ fn valid_workflows_are_discovered_and_resolved_among_invalid_sidecars() {
     assert_eq!(validation["valid"], true);
 
     let rejected = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
         .arg("--workspace")
         .arg(temp.path())
         .arg("--json")
@@ -159,6 +165,8 @@ fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
     );
     let run_cli = |args: &[&str]| {
         cli()
+            .current_dir(temp.path())
+            .env("XDG_DATA_HOME", temp.path().join("data"))
             .arg("--workspace")
             .arg(temp.path())
             .arg("--json")
@@ -192,37 +200,48 @@ fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
 }
 
 #[test]
-fn jobs_accepts_the_retired_workspace_path_but_rejects_other_unknown_keys() {
+fn legacy_keys_are_rejected_with_migration_guidance() {
     let temp = TempDir::new().expect("temp");
-    let config = temp.path().join("genaimage.toml");
-    let legacy = "[paths]\ncharacters = \"characters\"\n";
-    write(&config, legacy);
-    let jobs = |command| {
-        cli()
-            .arg("--workspace")
-            .arg(temp.path())
-            .arg("--json")
-            .args(["jobs", command])
-            .output()
-            .expect("run CLI jobs command")
-    };
-    for command in ["list", "reconcile"] {
-        let output = jobs(command);
-        assert!(
-            output.status.success(),
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let runs: Vec<Value> = serde_json::from_slice(&output.stdout).expect("jobs JSON");
-        assert!(runs.is_empty());
-    }
+    write(
+        &temp.path().join("genaimage.toml"),
+        "[paths]\ncharacters = \"characters\"\n",
+    );
+    let output = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .args(["--json", "config", "show"])
+        .output()
+        .expect("run CLI");
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("error JSON");
+    let message = error["error"].as_str().expect("message");
+    assert!(message.contains("characters") && message.contains("migrate"));
+}
 
-    write(&config, &format!("{legacy}typo = \"invalid\"\n"));
-    let rejected = jobs("list");
-    assert!(!rejected.status.success());
-    let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
-    assert!(error["error"]
-        .as_str()
-        .expect("error message")
-        .contains("unknown field `typo`"));
+#[test]
+fn explicit_config_overrides_environment_and_current_directory() {
+    let temp = TempDir::new().expect("temp");
+    write(
+        &temp.path().join("genaimage.toml"),
+        "[server]\nport = 1111\n",
+    );
+    write(&temp.path().join("env.toml"), "[server]\nport = 2222\n");
+    write(
+        &temp.path().join("selected.toml"),
+        "[server]\nport = 3333\n",
+    );
+    let output = cli()
+        .current_dir(temp.path())
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("GENAIMAGE_CONFIG", temp.path().join("env.toml"))
+        .args(["--config", "selected.toml", "--json", "config", "show"])
+        .output()
+        .expect("run CLI");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: Value = serde_json::from_slice(&output.stdout).expect("config JSON");
+    assert_eq!(config["server"]["port"], 3333);
 }

@@ -3,10 +3,9 @@
 ## `doctor` cannot connect
 
 Confirm that ComfyUI is running independently and that `genaimage.toml` points
-to its loopback HTTP URL. If ComfyUI's port changed, update the
-`[profiles.local]` section.
-
-Only `localhost`, `127.0.0.1`, and `::1` are accepted in this release.
+to its HTTP URL. If ComfyUI's port changed, update `[comfyui]`.
+Loopback hosts are allowed; private or Compose hosts must be explicitly listed
+in `comfyui.allowed_hosts` and resolve only to private or loopback addresses.
 
 ## Workflow is identified as a UI export
 
@@ -59,5 +58,6 @@ lists valid workflows. Upgrade a version 1 sidecar as described in the
 invalid sidecar shares an ID with a valid one, select an explicit manifest path
 rather than using the shared ID.
 
-The obsolete `paths.characters` setting in `genaimage.toml` is ignored. You
-can remove it without changing the state database or existing run manifests.
+The obsolete `paths.characters` setting is rejected. Remove it; this does not
+change the state database or existing run manifests. See the [setup guide](setup.md)
+for migrating old profiles and data paths.
