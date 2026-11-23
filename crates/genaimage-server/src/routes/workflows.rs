@@ -214,7 +214,9 @@ fn read_thumbnail(workflow: &LoadedWorkflow, root: &Path) -> Option<(&'static st
     #[cfg(unix)]
     let file = {
         let relative_dir = manifest_dir.strip_prefix(root).ok()?;
-        let directory = open_directory(root)?;
+        let trusted_root = root.canonicalize().ok()?;
+        let directory = open_directory(&trusted_root)?;
+        // Real-directory swaps inside the pinned root stay contained and are out of scope.
         let directory = open_beneath(directory, relative_dir, true)?;
         open_beneath(directory, relative, false)?
     };
@@ -348,6 +350,30 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &subdirectory).unwrap();
         assert!(open_beneath(directory, Path::new("subdirectory/image.png"), false).is_none());
     }
+    #[test]
+    fn thumbnail_accepts_symlinked_root_with_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let actual = temp.path().join("actual");
+        let nested = actual.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(temp.path().join("other")).unwrap();
+        std::os::unix::fs::symlink(&actual, temp.path().join("alias")).unwrap();
+        let root = temp.path().join("other/../alias");
+        std::fs::write(
+            nested.join("api.json"),
+            br#"{ "1": {"class_type":"SaveImage", "inputs":{}} }"#,
+        )
+        .unwrap();
+        std::fs::write(nested.join("workflow.genaimage.json"), br#"{ "schema_version":2, "id":"test", "version":"1", "workflow":"api.json", "thumbnail":"image.png" }"#).unwrap();
+        std::fs::write(nested.join("image.png"), b"inside").unwrap();
+        let loaded =
+            genaimage_core::LoadedWorkflow::load(&root.join("nested/workflow.genaimage.json"))
+                .unwrap();
+        let (mime, bytes) = read_thumbnail(&loaded, &root).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, b"inside");
+    }
+
     #[test]
     fn rejects_manifest_directory_swapped_after_loading() {
         let temp = tempfile::tempdir().unwrap();

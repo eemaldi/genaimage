@@ -169,8 +169,9 @@ The workflows API is read-only apart from validation, which does not submit a ru
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
   paths return 404 problem details. On Unix, descriptor-relative no-follow
-  opens reject symlinks and keep each component inside the configured workflow
-  root; non-regular files are rejected without blocking on FIFOs. On other
+  opens reject symlinks below the configured workflow root, whose own symlinks
+  are trusted and resolved before it is pinned. Non-regular files are rejected
+  without blocking on FIFOs. On other
   platforms containment is checked before and after opening on a best-effort
   basis; this cannot prevent concurrent path swaps. The catalogue URL indicates
   a declaration, not a guarantee that the image can be read.
