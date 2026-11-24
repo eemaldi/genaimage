@@ -508,6 +508,14 @@ local options when their compatible APIs are enabled. The assistant runtime
 remains planned, so the application does not yet register this provider or
 invoke it from the portal or CLI.
 
+Core vision review sends the verified output bytes and recorded run parameters
+through an explicitly selected vision model. Reviews are model-opinion
+annotations stored append-only in the state database; they do not modify run
+records or provenance. PNG, JPEG and WebP inputs are accepted up to 20 MiB and
+are never silently downscaled or re-encoded. The editable prompt is written once
+to `assistant/prompts/vision_review.md` beneath the workspace data directory.
+The HTTP operator endpoint is planned separately from this core service.
+
 The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 `AssistantTool` and `EventSink` contracts. The CLI serve module builds an `ExtensionRegistry`
 from the resolved ComfyUI settings using an adapter factory supplied by the CLI;

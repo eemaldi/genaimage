@@ -73,6 +73,16 @@ pub enum HarnessError {
     RunConflict(String),
     #[error("Output was not found.")]
     OutputNotFound,
+    #[error("vision review unavailable: {reason}")]
+    VisionReviewUnavailable { reason: String },
+    #[error("vision review input is invalid: {0}")]
+    VisionReviewInput(String),
+    #[error("vision review image is {byte_size} bytes; the limit is {limit} bytes")]
+    VisionReviewImageTooLarge { byte_size: u64, limit: u64 },
+    #[error("vision review unsupported image: {0}")]
+    VisionReviewUnsupportedImage(String),
+    #[error("vision model returned invalid JSON: {0}")]
+    VisionReviewResponse(String),
     #[error("No completed manifest is recorded for this run.")]
     ManifestNotFound,
     #[error("{0}")]
