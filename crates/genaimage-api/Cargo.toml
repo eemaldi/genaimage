@@ -8,7 +8,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+client = ["dep:eventsource-stream", "dep:futures-util", "dep:reqwest", "dep:thiserror", "dep:url"]
+
 [dependencies]
+eventsource-stream = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["stream"] }
+thiserror = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 utoipa.workspace = true
 serde.workspace = true
 chrono.workspace = true

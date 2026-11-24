@@ -1,0 +1,307 @@
+//! Async HTTP client for the loopback GenAImage server (requires the `client` feature).
+
+mod events;
+mod media;
+
+pub use events::{EventStream, EventsQuery, StreamEvent};
+pub use media::{HeadEndpoint, OutputRequest};
+
+use std::{net::SocketAddr, time::Duration};
+
+use reqwest::{header, Method, RequestBuilder, Response, StatusCode};
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+use thiserror::Error;
+use url::{Host, Url};
+
+use crate::{
+    HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunsResponse,
+    RunEventsQuery, RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus,
+    SettingsPatch, SettingsResponse, SettingsTestResponse, SubmitRunRequest, UploadResponse,
+    WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest, WorkflowValidationResponse,
+};
+
+pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:3000";
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum Error {
+    #[error("Invalid server base URL {0:?}; use a loopback HTTP(S) origin, without a path.")]
+    InvalidBaseUrl(String),
+    #[error("Invalid resource ID {0:?}.")]
+    InvalidId(String),
+    #[error("Cannot connect to the GenAImage server at {base_url}. Start it with `genaimage serve` and check the address.")]
+    ServerNotRunning {
+        base_url: Url,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("{}: {} {}", .0.title, .0.detail, .0.recovery)]
+    Problem(Box<ProblemDetails>),
+    #[error("Unexpected HTTP status {status} from the GenAImage server.")]
+    HttpStatus {
+        status: StatusCode,
+        #[source]
+        source: Option<reqwest::Error>,
+    },
+    #[error("GenAImage HTTP request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("Submission of run {} is unconfirmed. Reconcile this run instead of submitting it again.", .0.id)]
+    UnknownSubmission(Box<RunResponse>),
+    #[error("Submission returned failed run {}: {}", .0.id, .0.error.as_deref().unwrap_or("no failure detail supplied"))]
+    FailedSubmission(Box<RunResponse>),
+    #[error("Expected text/event-stream from the GenAImage server.")]
+    UnexpectedEventContentType,
+    #[error("Invalid GenAImage event stream: {0}")]
+    EventStream(#[from] eventsource_stream::EventStreamError<reqwest::Error>),
+    #[error("Invalid JSON in a GenAImage event: {0}")]
+    EventJson(#[from] serde_json::Error),
+}
+
+/// A reusable client and connection pool. Cloning shares that pool.
+#[derive(Clone, Debug)]
+pub struct Client {
+    base_url: Url,
+    http: reqwest::Client,
+}
+
+impl Client {
+    /// Constructs a client for the default loopback server address.
+    pub fn new() -> Result<Self, Error> {
+        Self::with_base_url(DEFAULT_BASE_URL)
+    }
+
+    /// Constructs a client for a custom loopback origin, for example a different port.
+    pub fn with_base_url(base_url: &str) -> Result<Self, Error> {
+        let invalid = || Error::InvalidBaseUrl(base_url.into());
+        let base_url = Url::parse(base_url).map_err(|_| invalid())?;
+        let loopback = match base_url.host() {
+            Some(Host::Domain(name)) => name == "localhost",
+            Some(Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        };
+        if !loopback
+            || !matches!(base_url.scheme(), "http" | "https")
+            || base_url.path() != "/"
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+        {
+            return Err(invalid());
+        }
+        let http = reqwest::Client::builder()
+            .use_rustls_tls()
+            .no_proxy()
+            .resolve_to_addrs(
+                "localhost",
+                &[
+                    SocketAddr::from(([127, 0, 0, 1], 0)),
+                    SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
+                ],
+            )
+            .connect_timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()?;
+        Ok(Self { base_url, http })
+    }
+
+    pub async fn health(&self) -> Result<HealthResponse, Error> {
+        self.json(self.get(&["health"])?).await
+    }
+
+    /// Fetches the OpenAPI document as a JSON object, preserving all schema fields.
+    pub async fn openapi(&self) -> Result<Map<String, Value>, Error> {
+        self.json(self.get(&["openapi.json"])?).await
+    }
+
+    pub async fn workflows(&self) -> Result<WorkflowListResponse, Error> {
+        self.json(self.get(&["workflows"])?).await
+    }
+
+    pub async fn workflow(&self, id: &str) -> Result<WorkflowDetails, Error> {
+        self.json(self.get(&["workflows", id])?).await
+    }
+
+    pub async fn validate_workflow(
+        &self,
+        id: &str,
+        body: &WorkflowValidationRequest,
+    ) -> Result<WorkflowValidationResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["workflows", id, "validate"])?
+                .json(body),
+        )
+        .await
+    }
+
+    pub async fn runs(&self, query: &RunListQuery) -> Result<RunListResponse, Error> {
+        self.json(self.get(&["runs"])?.query(query)).await
+    }
+
+    /// Sends one submission with the caller's idempotency key. On an uncertain
+    /// outcome, inspect or reconcile the run rather than submitting a new one.
+    pub async fn submit_run(
+        &self,
+        idempotency_key: &str,
+        body: &SubmitRunRequest,
+    ) -> Result<RunResponse, Error> {
+        let run: RunResponse = self
+            .json(
+                self.request(Method::POST, &["runs"])?
+                    .header("idempotency-key", idempotency_key)
+                    .json(body),
+            )
+            .await?;
+        match run.status {
+            RunStatus::Created | RunStatus::Submitting | RunStatus::UnknownSubmission => {
+                Err(Error::UnknownSubmission(Box::new(run)))
+            }
+            RunStatus::Failed => Err(Error::FailedSubmission(Box::new(run))),
+            _ => Ok(run),
+        }
+    }
+
+    pub async fn run(&self, id: &str) -> Result<RunResponse, Error> {
+        self.json(self.get(&["runs", id])?).await
+    }
+
+    pub async fn run_events(
+        &self,
+        id: &str,
+        query: &RunEventsQuery,
+    ) -> Result<RunEventsResponse, Error> {
+        self.json(self.get(&["runs", id, "events"])?.query(query))
+            .await
+    }
+
+    pub async fn cancel_run(&self, id: &str) -> Result<RunResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", id, "cancel"])?)
+            .await
+    }
+
+    pub async fn reconcile_run(&self, id: &str) -> Result<RunResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", id, "reconcile"])?)
+            .await
+    }
+
+    pub async fn reconcile_runs(&self) -> Result<ReconcileRunsResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", "reconcile"])?)
+            .await
+    }
+
+    pub async fn outputs(&self, query: &OutputListQuery) -> Result<OutputListResponse, Error> {
+        self.json(self.get(&["outputs"])?.query(query)).await
+    }
+
+    /// Sends the image bytes as the server's `file` multipart field.
+    pub async fn upload(&self, filename: &str, image: Vec<u8>) -> Result<UploadResponse, Error> {
+        let form = reqwest::multipart::Form::new().part(
+            "file",
+            reqwest::multipart::Part::bytes(image).file_name(filename.to_owned()),
+        );
+        self.json(self.request(Method::POST, &["uploads"])?.multipart(form))
+            .await
+    }
+
+    pub async fn upload_metadata(&self, id: &str) -> Result<UploadResponse, Error> {
+        self.json(self.get(&["uploads", id])?).await
+    }
+
+    pub async fn settings(&self) -> Result<SettingsResponse, Error> {
+        self.json(self.get(&["settings"])?).await
+    }
+
+    pub async fn save_settings(&self, patch: &SettingsPatch) -> Result<SettingsResponse, Error> {
+        self.json(self.request(Method::PUT, &["settings"])?.json(patch))
+            .await
+    }
+
+    pub async fn test_settings(
+        &self,
+        patch: &SettingsPatch,
+    ) -> Result<SettingsTestResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["settings", "test"])?
+                .json(patch),
+        )
+        .await
+    }
+
+    fn get(&self, segments: &[&str]) -> Result<RequestBuilder, Error> {
+        self.request(Method::GET, segments)
+    }
+
+    fn request(&self, method: Method, segments: &[&str]) -> Result<RequestBuilder, Error> {
+        if let Some(id) = segments
+            .iter()
+            .find(|&&part| matches!(part, "" | "." | ".."))
+        {
+            return Err(Error::InvalidId((*id).into()));
+        }
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .expect("an HTTP origin has path segments")
+            .extend(["api", "v1"])
+            .extend(segments);
+        Ok(self.http.request(method, url))
+    }
+
+    async fn json<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, Error> {
+        Ok(self.send(request, false).await?.json().await?)
+    }
+
+    async fn send(
+        &self,
+        request: RequestBuilder,
+        allow_not_modified: bool,
+    ) -> Result<Response, Error> {
+        let request = request.build()?;
+        let head = request.method() == Method::HEAD;
+        let response = self.http.execute(request).await.map_err(|source| {
+            if source.is_connect() {
+                Error::ServerNotRunning {
+                    base_url: self.base_url.clone(),
+                    source,
+                }
+            } else {
+                Error::Http(source)
+            }
+        })?;
+        let status = response.status();
+        if status.is_success() || (allow_not_modified && status == StatusCode::NOT_MODIFIED) {
+            return Ok(response);
+        }
+        let source = if !head && has_content_type(&response, "application/problem+json") {
+            match response.json().await {
+                Ok(problem) => return Err(Error::Problem(problem)),
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
+        Err(Error::HttpStatus { status, source })
+    }
+}
+
+fn has_content_type(response: &Response, expected: &str) -> bool {
+    response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
+}
+
+fn optional_header(
+    request: RequestBuilder,
+    name: header::HeaderName,
+    value: Option<&str>,
+) -> RequestBuilder {
+    match value {
+        Some(value) => request.header(name, value),
+        None => request,
+    }
+}
