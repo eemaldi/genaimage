@@ -39,7 +39,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Start the loopback HTTP server.
-    Serve,
+    Serve {
+        /// Proxy portal requests to this loopback Vite HTTP origin.
+        #[arg(long, value_name = "URL")]
+        portal_dev_url: Option<String>,
+    },
     /// Generate shell completions.
     Completions {
         /// Shell to generate completions for.
@@ -47,8 +51,6 @@ enum Command {
         shell: clap_complete::Shell,
     },
     /// Open the server root in your default browser.
-    ///
-    /// The embedded portal is planned; this opens the server root for now.
     Open {
         /// Print the server root URL instead of launching a browser.
         #[arg(long)]
@@ -180,7 +182,7 @@ async fn main() -> ExitCode {
         };
     }
     match &cli.command {
-        Command::Serve => serve::execute(&cli).await,
+        Command::Serve { portal_dev_url } => serve::execute(&cli, portal_dev_url.as_deref()).await,
         Command::Config {
             command: ConfigCommand::Init { force },
         } => config_local::execute(&cli, *force),

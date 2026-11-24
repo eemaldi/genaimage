@@ -9,7 +9,7 @@ are informational. Threshold enforcement is deliberately deferred to [issue
 | --- | ---: | --- | --- |
 | Cold start | < 150 ms | Time for the `genaimage` process to start and handle a cheap command. | `scripts/perf_check.py` directly runs `genaimage --version` repeatedly and reports the median wall-clock time. This is a process-start proxy; it does not clear the operating-system file cache and is not server startup. |
 | Idle RSS | < 40 MB | Resident memory of an otherwise idle GenAImage process. | On Linux, GNU `/usr/bin/time -f %M` measures the executable child's peak RSS; if unavailable, the script polls `/proc/<pid>/status` for that process's `VmHWM`. The Python parent is not included. This is still only a short-lived CLI approximation, not a true idle-server measurement. |
-| Release binary size | < 25 MB | Size of the release `genaimage` executable. | File size in decimal megabytes (bytes divided by 1,000,000), measured from the release executable produced by Cargo. |
+| Release binary size | < 25 MB | Size of the release `genaimage` executable. | File size in decimal megabytes (bytes divided by 1,000,000), measured from the default release executable, including the portal and its compressed variants. |
 | Portal initial JavaScript | < 150 KB gzip | Compressed JavaScript required for the portal's initial load. | When `apps/portal/dist/index.html` exists, sum the independently gzipped sizes of its local module scripts and modulepreloads, counting each asset once. Build the portal first with `npm ci && npm run build` in `apps/portal`. |
 | p95 non-ComfyUI API latency | < 20 ms | 95th-percentile latency for GenAImage API requests that do not call ComfyUI. | Not measured yet: an API latency benchmark has not been implemented. |
 
@@ -17,9 +17,9 @@ The script uses the median of 5 launches in quick mode and 15 otherwise. On Linu
 child's `/proc` status; neither method uses the Python parent's RSS. If neither
 measurement method is available, RSS is reported as `NOT MEASURED`. Results are
 compared with the listed budgets, but over-budget results do not fail the script
-or the CI workflow. A missing portal build and unavailable API measurements
-are reported as
-`NOT MEASURED`, not treated as passing results. Broken or external JavaScript
+or the CI workflow. The default release build requires the portal. With
+`--no-build`, a missing portal build is reported as `NOT MEASURED`, as are
+unavailable API measurements. Broken or external JavaScript
 references fail the measurement rather than producing an incomplete total.
 Sizes use decimal kilobytes (1 KB = 1,000 bytes), with one gzip stream per file;
 dynamically loaded chunks not referenced from the initial HTML are excluded.
@@ -36,9 +36,11 @@ Run the focused Criterion benchmarks with:
 cargo bench --locked -p genaimage-core --bench performance -- --quick
 ```
 
-Run the release measurements with:
+Build the portal before running the release measurements (CI does the same).
+The core-only Criterion benchmark does not need the portal:
 
 ```sh
+(cd apps/portal && npm ci && npm run build)
 python3 scripts/perf_check.py --quick
 ```
 
@@ -51,5 +53,4 @@ table in stdout and the GitHub Actions job summary.
 
 `cargo test --workspace --all-targets` intentionally compiles and smoke-runs the
 Criterion harness as regression coverage. The separate quick performance job is
-still non-blocking, and budget enforcement belongs in #77 once the relevant
-server and portal exist.
+still non-blocking, and budget enforcement belongs in #77.

@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{output::Output, Cli};
 
-pub(crate) async fn execute(cli: &Cli) -> ExitCode {
+pub(crate) async fn execute(cli: &Cli, portal_dev_url: Option<&str>) -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -16,15 +16,23 @@ pub(crate) async fn execute(cli: &Cli) -> ExitCode {
         .with_writer(std::io::stderr)
         .json()
         .init();
-    match start(cli).await {
+    match start(cli, portal_dev_url).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => Output::new(cli.json).report_local(&error),
     }
 }
 
-async fn start(cli: &Cli) -> Result<(), HarnessError> {
+async fn start(cli: &Cli, portal_dev_url: Option<&str>) -> Result<(), HarnessError> {
+    let portal_dev = portal_dev_url
+        .map(genaimage_server::PortalDevProxy::new)
+        .transpose()
+        .map_err(|error| HarnessError::Configuration(error.to_string()))?;
     let harness = open_harness(cli).await?;
-    genaimage_server::serve(genaimage_server::AppState::new(harness.into())).await?;
+    let mut state = genaimage_server::AppState::new(harness.into());
+    if let Some(proxy) = portal_dev {
+        state = state.with_portal_dev(proxy);
+    }
+    genaimage_server::serve(state).await?;
     Ok(())
 }
 

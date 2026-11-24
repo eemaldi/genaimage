@@ -32,6 +32,14 @@ pub async fn serve_on_listener(
 ) -> io::Result<()> {
     let address = listener.local_addr()?;
     verify_loopback(&address.ip().to_string(), &[address])?;
+    if state
+        .portal_dev
+        .as_ref()
+        .is_some_and(|proxy| proxy.port() == address.port())
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "--portal-dev-url points to the GenAImage server port; use the separate Vite port (normally 5173)."));
+    }
     tracing::info!(%address, "GenAImage server listening");
     let app = build_app(state.clone(), address.port());
     serve_connections(listener, app, state, signal, drain_timeout).await;

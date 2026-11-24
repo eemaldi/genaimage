@@ -26,8 +26,9 @@ Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
 Health, events, workflows, runs, outputs, uploads and settings are available.
 The [OpenAPI 3.1 contract](api/openapi.json) is also served at
-`GET /api/v1/openapi.json`. The portal scaffold is development-only; serving
-embedded assets is planned.
+`GET /api/v1/openapi.json`. Open `http://127.0.0.1:3000/` for the embedded
+portal shell; feature pages and API integration are still being built.
+
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.
 Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be
@@ -208,9 +209,17 @@ workspace and endpoint. No automatic path rewriting or data migration is offered
 
 ## 3. CLI
 
-Install Rust 1.80 or newer and a C toolchain. Check the project and local
-ComfyUI connection without submitting a run. Start `genaimage serve` in a
-separate terminal first; see the [CLI reference](cli.md) for server selection.
+Install Rust 1.80 or newer and a C toolchain. For a default source build,
+install Node.js 24 and npm, then run `(cd apps/portal && npm ci && npm run build)`
+from the repository root before building or installing the CLI. The installed
+binary does not require Node.js. Use `--no-default-features` on Cargo commands
+to build without the embedded portal. For development only, pass
+`--portal-dev-url http://127.0.0.1:5173` to `genaimage serve` to serve Vite
+over the GenAImage origin instead; for HMR, open Vite directly.
+
+Check the project and local ComfyUI connection without submitting a run. Start
+`genaimage serve` in a separate terminal first; see the [CLI reference](cli.md)
+for server selection.
 
 ```bash
 cargo run -p genaimage -- workflow list

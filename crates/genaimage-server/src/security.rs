@@ -243,8 +243,21 @@ fn body_timeout() -> Response {
 
 pub(crate) async fn response_headers(request: Request<Body>, next: Next) -> Response {
     let mut response = next.run(request).await;
+    let csp = if response
+        .extensions()
+        .get::<crate::portal::DevPortalResponse>()
+        .is_some()
+    {
+        // Vite injects styles during development; scripts still need to be external.
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
+    } else {
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"
+    };
     let headers = response.headers_mut();
-    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
+    );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

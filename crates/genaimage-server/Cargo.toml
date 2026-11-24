@@ -8,6 +8,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["portal"]
+portal = ["dep:rust-embed"]
+
 [dependencies]
 axum = { workspace = true, features = ["query"] }
 futures-util.workspace = true
@@ -20,7 +24,9 @@ hyper-util = { version = "0.1", features = ["service", "tokio"] }
 mime_guess.workspace = true
 multer = "3"
 percent-encoding = "2"
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+rust-embed = { version = "8", features = ["debug-embed"], optional = true }
+url.workspace = true
 utoipa.workspace = true
 utoipa-axum = "0.2"
 serde.workspace = true

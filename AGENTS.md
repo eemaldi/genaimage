@@ -19,8 +19,8 @@ ComfyUI image generation, assisted by local LLMs. Read
   server in `crates/genaimage-server`; the local `config init` module uses only
   core configuration and error types to write an example configuration.
 - The server binds to loopback only and currently serves health, workflows, runs,
-  outputs, uploads, settings, live events and an OpenAPI contract. The embedded
-  Svelte portal is planned.
+  outputs, uploads, settings, live events, an OpenAPI contract and an embedded
+  Svelte portal shell. Portal page features are still being built.
   ComfyUI and the planned OpenAI-compatible local LLM service remain separate
   processes. Docker Compose support is planned for local dependencies, not public
   exposure.
@@ -64,6 +64,8 @@ dependency.
   are required in CI. Keep real-model tests opt-in and explicit.
 - Keep CLI output JSON-stable and errors actionable. Keep Copilot- and
   Claude-specific entry points aligned with this guidance.
-- Regenerate the API contract with `cargo run -p genaimage-server --example openapi`.
-  Portal types are checked when the portal exists.
+- Regenerate the API contract with `cargo run -p genaimage-server --no-default-features --example openapi`.
+  The example needs no portal build; CI checks the generated portal types.
+- Before default Cargo builds, run `npm ci && npm run build` in `apps/portal`.
+  Use `--no-default-features` for API-only builds.
 - Run the repository CI checks locally with `python3 scripts/ci_check.py`.

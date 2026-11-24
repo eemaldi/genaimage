@@ -23,6 +23,10 @@ async fn app(workspace: &TempDir, port: u16) -> Router {
 }
 
 async fn app_with_host(workspace: &TempDir, port: u16, host: &str) -> Router {
+    build_app(test_state(workspace, host).await, port)
+}
+
+async fn test_state(workspace: &TempDir, host: &str) -> AppState {
     let config =
         HarnessConfig::load_with(workspace.path(), None, workspace.path(), |key| match key {
             "HOME" => Some(workspace.path().to_str().unwrap().to_owned()),
@@ -33,7 +37,7 @@ async fn app_with_host(workspace: &TempDir, port: u16, host: &str) -> Router {
         .unwrap();
     let backend = ComfyUiClient::new(&config.comfyui).unwrap();
     let harness = Harness::new_async(config, Arc::new(backend)).await.unwrap();
-    build_app(AppState::new(harness.into()), port)
+    AppState::new(harness.into())
 }
 
 async fn problem(response: Response, status: StatusCode) {
@@ -329,4 +333,266 @@ async fn default_http_port_allows_both_canonical_and_explicit_authorities() {
             .unwrap();
         problem(response, status).await;
     }
+}
+
+async fn portal_request(router: &Router, method: &str, path: &str, encoding: &str) -> Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1:4567")
+                .header(header::ACCEPT_ENCODING, encoding)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn portal_fallback_does_not_handle_api_paths() {
+    let workspace = TempDir::new().unwrap();
+    let router = app(&workspace, 4567).await;
+    for path in ["/api", "/api/", "/api/v2/unknown", "/api/v1/unknown"] {
+        problem(
+            portal_request(&router, "GET", path, "br").await,
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+}
+
+#[cfg(not(feature = "portal"))]
+#[tokio::test]
+async fn api_only_build_has_no_index() {
+    let workspace = TempDir::new().unwrap();
+    let router = app(&workspace, 4567).await;
+    assert_eq!(
+        portal_request(&router, "GET", "/", "br").await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[cfg(feature = "portal")]
+#[tokio::test]
+async fn embedded_portal_serves_index_spa_fallback_and_immutable_assets() {
+    let workspace = TempDir::new().unwrap();
+    let router = app(&workspace, 4567).await;
+    let mut pages = Vec::new();
+    for path in ["/", "/unknown/deep-link", "/index.html.br"] {
+        let response = portal_request(&router, "GET", path, "").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+        assert!(!response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("unsafe-inline"));
+        pages.push(to_bytes(response.into_body(), 64 * 1024).await.unwrap());
+    }
+    assert_eq!(pages[0], pages[1]);
+    assert_eq!(pages[0], pages[2]);
+    let index = std::str::from_utf8(&pages[0]).unwrap();
+    assert!(index.contains("<title>GenAImage</title>"));
+    let (_, asset) = index
+        .split_once("src=\"/assets/")
+        .expect("Vite entry script");
+    let asset = format!("/assets/{}", asset.split('"').next().unwrap());
+    let response = portal_request(&router, "HEAD", &asset, "br").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(response.headers()[header::CONTENT_ENCODING], "br");
+    assert!(response.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("javascript"));
+    assert!(
+        response.headers()[header::CONTENT_LENGTH]
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+            > 0
+    );
+    assert!(to_bytes(response.into_body(), 0).await.unwrap().is_empty());
+    assert_eq!(
+        portal_request(&router, "POST", "/", "").await.status(),
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+}
+
+#[cfg(feature = "portal")]
+#[tokio::test]
+async fn embedded_portal_negotiates_precompressed_representations() {
+    let workspace = TempDir::new().unwrap();
+    let router = app(&workspace, 4567).await;
+    for (accept, expected) in [
+        ("gzip, br", Some("br")),
+        ("gzip;q=0.8, br;q=0.4", Some("gzip")),
+        ("br;q=0, *;q=0.5", Some("gzip")),
+        ("br;q=0, gzip;q=0", None),
+        ("br;q=0.1, identity;q=1", None),
+        ("", None),
+    ] {
+        let response = portal_request(&router, "GET", "/", accept).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .map(|value| value.to_str().unwrap()),
+            expected
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let expected_bytes: &[u8] = match expected {
+            Some("br") => include_bytes!("../../../apps/portal/dist/index.html.br"),
+            Some("gzip") => include_bytes!("../../../apps/portal/dist/index.html.gz"),
+            _ => include_bytes!("../../../apps/portal/dist/index.html"),
+        };
+        assert_eq!(bytes, expected_bytes);
+    }
+    let response = portal_request(&router, "GET", "/", "*;q=0").await;
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+}
+
+#[test]
+fn portal_dev_url_accepts_only_loopback_http_origins() {
+    use genaimage_server::PortalDevProxy;
+
+    for url in [
+        "http://192.0.2.1:5173",
+        "http://localhost.example:5173",
+        "http://[::ffff:192.0.2.1]:5173",
+        "https://localhost:5173",
+        "http://user@127.0.0.1:5173",
+        "http://localhost:5173/path",
+    ] {
+        assert!(
+            PortalDevProxy::new(url)
+                .unwrap_err()
+                .to_string()
+                .contains("--portal-dev-url"),
+            "{url}"
+        );
+    }
+    for url in [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://[::1]:5173",
+    ] {
+        assert!(PortalDevProxy::new(url).is_ok(), "{url}");
+    }
+}
+
+#[tokio::test]
+async fn portal_proxy_filters_hop_by_hop_headers_and_keeps_api_local() {
+    use axum::routing::get;
+    use genaimage_server::PortalDevProxy;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let vite = Router::new().fallback(get(move |request: axum::extract::Request| async move {
+        let headers = request.headers();
+        assert_eq!(headers[header::HOST], format!("localhost:{}", addr.port()));
+        assert_eq!(headers[header::ACCEPT], "text/javascript");
+        for blocked in [
+            header::COOKIE,
+            header::IF_NONE_MATCH,
+            header::IF_MODIFIED_SINCE,
+            header::ACCEPT_ENCODING,
+            header::CONNECTION,
+            header::TE,
+        ] {
+            assert!(!headers.contains_key(&blocked), "forwarded {blocked}");
+        }
+        let mut response = Response::builder();
+        for (name, value) in [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::SET_COOKIE, "unexpected=value"),
+            (header::CONNECTION, "eTaG , CACHE-Control"),
+            (header::CONNECTION, "Vary"),
+            (header::ETAG, "\"test\""),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::VARY, "Accept-Encoding"),
+            (header::PROXY_AUTHENTICATE, "Basic realm=local"),
+        ] {
+            response = response.header(name, value);
+        }
+        response
+            .body(Body::from(request.uri().to_string()))
+            .unwrap()
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, vite).await.unwrap() });
+    let workspace = TempDir::new().unwrap();
+    let state = test_state(&workspace, "127.0.0.1").await;
+    let router = build_app(
+        state.with_portal_dev(
+            PortalDevProxy::new(&format!("http://localhost:{}", addr.port())).unwrap(),
+        ),
+        4567,
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::get("/src/main.ts?t=123")
+                .header(header::HOST, "127.0.0.1:4567")
+                .header(header::COOKIE, "browser=value")
+                .header(header::CONNECTION, "If-None-Match, IF-Modified-Since")
+                .header(header::CONNECTION, " Accept-Encoding ")
+                .header(header::IF_NONE_MATCH, "\"test\"")
+                .header(header::IF_MODIFIED_SINCE, "Tue, 24 Nov 2026 12:00:00 GMT")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .header(header::ACCEPT, "text/javascript")
+                .header(header::TE, "trailers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "text/javascript");
+    for blocked in [
+        header::SET_COOKIE,
+        header::CONNECTION,
+        header::ETAG,
+        header::CACHE_CONTROL,
+        header::VARY,
+        header::PROXY_AUTHENTICATE,
+    ] {
+        assert!(
+            !response.headers().contains_key(&blocked),
+            "forwarded {blocked}"
+        );
+    }
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await.unwrap(),
+        "/src/main.ts?t=123"
+    );
+    problem(
+        portal_request(&router, "GET", "/api/missing", "").await,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    problem(
+        router
+            .oneshot(
+                Request::get("/")
+                    .header(header::HOST, "example.com:4567")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        StatusCode::MISDIRECTED_REQUEST,
+    )
+    .await;
+    server.abort();
 }

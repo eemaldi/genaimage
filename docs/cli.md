@@ -124,15 +124,24 @@ completion file on repeat runs; profile setup lines are guarded or added once.
   grep -qxF 'use genaimage' "$HOME/.config/elvish/rc.elv" || printf '%s\n' 'use genaimage' >> "$HOME/.config/elvish/rc.elv"
   ```
 
+## Local server
+
+`genaimage serve [--portal-dev-url <url>]` starts the loopback API and serves
+its embedded portal at `/` by default. The optional flag replaces the embedded
+assets with an HTTP proxy to Vite, even in a build without embedded assets.
+Use a loopback HTTP origin such as `http://127.0.0.1:5173`, with no credentials,
+path, query or fragment. Use a separate port from GenAImage. API requests stay
+on GenAImage. WebSocket upgrades are not proxied; refresh manually or use
+[Vite directly for HMR](../README.md#portal-development).
+
 ## Server-backed commands
 
 JSON field definitions follow the [OpenAPI contract](api/openapi.json).
 
 - **`open [--print]`** checks the server health endpoint, then opens the configured
-  loopback server root in the default browser. The embedded portal is planned;
-  for now, the URL is the server root. `--print` writes only that URL instead of
-  opening a browser; with `--json`, either mode emits `{"url": "..."}`. Launchers
-  receive the validated URL as one argument, without a shell, and their stdin,
+  loopback server root (the portal in default builds) in the default browser.
+  `--print` writes only that URL instead of opening a browser; with `--json`,
+  either mode emits `{"url": "..."}`. Launchers receive the validated URL as one argument, without a shell, and their stdin,
   stdout and stderr are redirected. On Linux and other Unix systems GenAImage
   invokes `xdg-open` and leaves standard `BROWSER` handling (including command
   lists and `%s` templates) to it; macOS uses `open`, and Windows uses

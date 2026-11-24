@@ -12,6 +12,10 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["portal"]
+portal = ["genaimage-server/portal"]
+
 [dependencies]
 clap.workspace = true
 clap_complete.workspace = true
@@ -19,7 +23,7 @@ futures-util.workspace = true
 genaimage-api = { path = "../genaimage-api", features = ["client"] }
 genaimage-comfyui = { path = "../genaimage-comfyui" }
 genaimage-core = { path = "../genaimage-core" }
-genaimage-server = { path = "../genaimage-server" }
+genaimage-server = { path = "../genaimage-server", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"

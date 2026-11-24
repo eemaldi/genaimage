@@ -29,6 +29,9 @@ class RunnerTests(unittest.TestCase):
         result, calls, tooling, _ = self.run_main(False)
         self.assertEqual(result, 0)
         tooling.assert_called_once_with(False)
+        cargo_checks = [call.args[1] for call in calls if call.args[1][:2] in (['cargo', 'clippy'], ['cargo', 'test'])]
+        self.assertEqual(len(cargo_checks), 2)
+        self.assertTrue(all('--no-default-features' in command for command in cargo_checks))
         self.assertFalse(any(call.args[1][0] == 'npm' or 'scripts/generate_portal_types.py' in call.args[1] for call in calls))
 
     def test_portal_commands_run_in_order_in_portal_directory(self):
@@ -40,6 +43,11 @@ class RunnerTests(unittest.TestCase):
         commands = [c.args[1] for c in calls]
         self.assertLess(commands.index(['npm', 'ci']), commands.index(type_check))
         self.assertLess(commands.index(type_check), commands.index(['npm', 'run', 'lint']))
+        build_index = commands.index(['npm', 'run', 'build'])
+        for command in ('clippy', 'test'):
+            index = next(i for i, args in enumerate(commands) if args[:2] == ['cargo', command])
+            self.assertLess(build_index, index)
+            self.assertNotIn('--no-default-features', commands[index])
         self.assertEqual(calls[commands.index(type_check)].args[2], Path('/project'))
         self.assertEqual(portal_calls, [
             (['npm', 'ci'], Path('/project/apps/portal')),
@@ -103,7 +111,7 @@ class CliBoundaryTests(unittest.TestCase):
         self.source.mkdir(parents=True)
         (self.source / 'serve.rs').write_text(
             'use genaimage_core::HarnessConfig;\n'
-            'pub(crate) async fn execute(cli: &Cli) -> ExitCode {}\n'
+            'pub(crate) async fn execute(cli: &Cli, portal_dev_url: Option<&str>) -> ExitCode {}\n'
         )
         (self.source / 'config_local.rs').write_text(
             'use genaimage_core::HarnessConfig;\n'
@@ -111,7 +119,7 @@ class CliBoundaryTests(unittest.TestCase):
         )
         (self.source / 'main.rs').write_text(
             'mod serve; mod config_local;\n'
-            'fn main() { serve::execute(&cli); config_local::execute(&cli, true); }\n'
+            'fn main() { serve::execute(&cli, None); config_local::execute(&cli, true); }\n'
         )
         self.patch = mock.patch.object(ci_check, 'ROOT', self.root)
         self.patch.start()
