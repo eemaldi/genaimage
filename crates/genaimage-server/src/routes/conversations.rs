@@ -16,8 +16,8 @@ use futures_util::{stream, StreamExt};
 use genaimage_api as api;
 use genaimage_core::{
     assistant::{
-        AssistantConversation, AssistantConversationListQuery, AssistantMessage,
-        AssistantMessageRole, AssistantMessageStatus, AssistantStream,
+        AssistantConfirmationDecision, AssistantConversation, AssistantConversationListQuery,
+        AssistantMessage, AssistantMessageRole, AssistantMessageStatus, AssistantStream,
     },
     ChatContent, ChatDelta, ChatMessage, HarnessError, LlmRoleBinding, ToolCall,
 };
@@ -147,7 +147,7 @@ pub(super) async fn get(
     post, path = "/assistant/conversations/{id}/messages",
     operation_id = "assistant_conversations_send_message",
     tag = "assistant",
-    description = "Append a user message and stream the assistant turn over SSE. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains status and the persisted assistant message ID when persistence succeeded; error events may omit message_id.",
+    description = "Append a user message and stream the assistant turn over SSE. A pending tool confirmation returns 409 until it is confirmed, edited or rejected. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, tool_result, confirmation_required, done, error. Non-confirmation tools run after schema validation; confirmation tools pause without invocation. The terminal event contains the exact status and persisted assistant message ID when persistence succeeded; awaiting_confirmation is not success.",
     params(("id" = String, Path, description = "Conversation ID")),
     request_body = api::SendAssistantMessageRequest,
     responses(
@@ -193,6 +193,83 @@ pub(super) async fn send_message(
         .await
         .map_err(problem)?;
     Ok(sse_response(state, id, model, assistant))
+}
+
+#[utoipa::path(
+    post, path = "/assistant/conversations/{id}/confirmations/{confirmation_id}",
+    operation_id = "assistant_confirmations_decide", tag = "assistant",
+    description = "Atomically confirm, edit or reject one pending tool call, then continue its turn over SSE. A decision is single-use.",
+    params(("id" = String, Path, description = "Conversation ID"), ("confirmation_id" = String, Path, description = "Confirmation ID")),
+    request_body = api::AssistantConfirmationRequest,
+    responses(
+        (status = 200, description = "SSE stream", body = String, content_type = "text/event-stream"),
+        (status = 400, description = "Invalid decision", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Confirmation not found", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Already decided or generation in flight", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Edited arguments are invalid or model capability is unsupported", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Text role unavailable", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn decide_confirmation(
+    State(state): State<AppState>,
+    ids: Result<Path<(String, String)>, PathRejection>,
+    body: Result<Json<api::AssistantConfirmationRequest>, JsonRejection>,
+) -> Result<Response, Problem> {
+    let Path((id, confirmation_id)) = ids.map_err(|error| {
+        Problem::invalid_path(
+            error,
+            "Use conversation and confirmation IDs returned by the assistant API.",
+        )
+    })?;
+    let Json(body) = body.map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Send one confirmation decision as application/json.",
+        )
+    })?;
+    let decision = match body.decision {
+        api::AssistantConfirmationDecisionKind::Confirm if body.arguments.is_none() && body.reason.is_none() => AssistantConfirmationDecision::Confirm,
+        api::AssistantConfirmationDecisionKind::Edit => AssistantConfirmationDecision::Edit(body.arguments.ok_or_else(|| Problem::new(StatusCode::BAD_REQUEST, "Edit decisions require arguments.", "Send an arguments JSON object."))?),
+        api::AssistantConfirmationDecisionKind::Reject if body.arguments.is_none() => AssistantConfirmationDecision::Reject(body.reason),
+        _ => return Err(Problem::new(StatusCode::BAD_REQUEST, "Fields do not match the confirmation decision.", "Confirm accepts no extra fields; edit requires arguments; reject optionally accepts reason.")),
+    };
+    let binding = text_binding(&state).await?;
+    let model = binding.model().to_owned();
+    let assistant = state
+        .conversation_service()
+        .decide_confirmation_with_binding(&id, &confirmation_id, decision, binding)
+        .await
+        .map_err(problem)?;
+    Ok(sse_response(state, id, model, assistant))
+}
+
+#[utoipa::path(
+    get, path = "/assistant/conversations/{id}/tool-calls",
+    operation_id = "assistant_tool_calls_list", tag = "assistant",
+    description = "Read the bounded, append-only audit trail for tool proposals and invocations.",
+    params(("id" = String, Path, description = "Conversation ID"), api::AssistantToolAuditQuery),
+    responses(
+        (status = 200, description = "Tool audit records", body = api::AssistantToolAuditResponse),
+        (status = 400, description = "Invalid query", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Conversation not found", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn tool_calls(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+    query: Result<Query<api::AssistantToolAuditQuery>, QueryRejection>,
+) -> Result<Json<api::AssistantToolAuditResponse>, Problem> {
+    let id = parse_id(id)?;
+    let query = parse_query(query)?;
+    let records = state
+        .conversation_service()
+        .list_tool_audit(&id, query.limit)
+        .await
+        .map_err(problem)?;
+    Ok(Json(api::AssistantToolAuditResponse {
+        tool_calls: records.into_iter().map(tool_audit_response).collect(),
+    }))
 }
 
 #[utoipa::path(
@@ -317,6 +394,48 @@ fn sse_response(
                         .expect("serialisable assistant SSE event");
                     Some((Ok::<_, Infallible>(event), Some(assistant)))
                 }
+                Some(Ok(ChatDelta::ToolResult {
+                    tool_call_id,
+                    tool,
+                    ok,
+                    result,
+                    error,
+                })) => {
+                    let event = Event::default()
+                        .event("tool_result")
+                        .json_data(api::AssistantToolResultEvent {
+                            conversation_id,
+                            user_message_id,
+                            tool_call_id,
+                            tool,
+                            ok,
+                            result,
+                            error,
+                        })
+                        .expect("serialisable assistant SSE event");
+                    Some((Ok::<_, Infallible>(event), Some(assistant)))
+                }
+                Some(Ok(ChatDelta::ConfirmationRequired {
+                    confirmation_id,
+                    conversation_id: event_conversation_id,
+                    tool_call_id,
+                    tool,
+                    arguments,
+                    json_schema,
+                })) => {
+                    let event = Event::default()
+                        .event("confirmation_required")
+                        .json_data(api::AssistantConfirmationRequiredEvent {
+                            confirmation_id,
+                            conversation_id: event_conversation_id,
+                            tool_call_id,
+                            tool,
+                            arguments,
+                            json_schema,
+                        })
+                        .expect("serialisable assistant SSE event");
+                    Some((Ok::<_, Infallible>(event), Some(assistant)))
+                }
                 Some(Err(_)) => {
                     tracing::warn!("assistant stream failed");
                     let terminal = assistant.terminal_message().await.ok();
@@ -342,13 +461,16 @@ fn sse_response(
                             return Some((Ok::<_, Infallible>(event), None));
                         }
                     };
-                    let kind = if terminal.status == AssistantMessageStatus::Complete {
+                    let kind = if terminal.status == AssistantMessageStatus::Complete
+                        || terminal.status == AssistantMessageStatus::AwaitingConfirmation
+                    {
                         "done"
                     } else {
                         "error"
                     };
                     let status = status_response(terminal.status);
-                    let error = (terminal.status != AssistantMessageStatus::Complete)
+                    let error = (terminal.status != AssistantMessageStatus::Complete
+                        && terminal.status != AssistantMessageStatus::AwaitingConfirmation)
                         .then(|| safe_terminal_error(terminal.status).to_owned());
                     let event = Event::default()
                         .event(kind)
@@ -444,6 +566,9 @@ fn safe_terminal_error(status: AssistantMessageStatus) -> &'static str {
         AssistantMessageStatus::Complete => "The assistant response is complete.",
         AssistantMessageStatus::Cancelled => "The assistant response was cancelled.",
         AssistantMessageStatus::Failed => "The assistant response failed.",
+        AssistantMessageStatus::AwaitingConfirmation => {
+            "The assistant response is awaiting user confirmation."
+        }
     }
 }
 
@@ -472,9 +597,17 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::NOT_FOUND,
             "Use a conversation ID returned by the assistant API.",
         ),
-        HarnessError::ConversationConflict(_) => (
+        HarnessError::ConversationConflict(_) | HarnessError::ToolConfirmationConflict(_) => (
             StatusCode::CONFLICT,
             "Wait for the current generation, cancel it, or reload the conversation before retrying.",
+        ),
+        HarnessError::ToolConfirmationNotFound { .. } => (
+            StatusCode::NOT_FOUND,
+            "Use a confirmation ID returned by this conversation.",
+        ),
+        HarnessError::InvalidToolArguments(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Edit the arguments to match the tool JSON schema and submit again.",
         ),
         HarnessError::InvalidConversationRequest(_) => (
             StatusCode::BAD_REQUEST,
@@ -558,6 +691,9 @@ fn status_response(value: AssistantMessageStatus) -> api::AssistantMessageStatus
         AssistantMessageStatus::Complete => api::AssistantMessageStatus::Complete,
         AssistantMessageStatus::Cancelled => api::AssistantMessageStatus::Cancelled,
         AssistantMessageStatus::Failed => api::AssistantMessageStatus::Failed,
+        AssistantMessageStatus::AwaitingConfirmation => {
+            api::AssistantMessageStatus::AwaitingConfirmation
+        }
     }
 }
 
@@ -643,5 +779,29 @@ fn tool_call_response(value: ToolCall) -> api::AssistantToolCall {
         id: value.id,
         name: value.name,
         arguments: value.arguments,
+    }
+}
+
+fn tool_audit_response(
+    value: genaimage_core::assistant::AssistantToolAuditRecord,
+) -> api::AssistantToolAuditRecord {
+    api::AssistantToolAuditRecord {
+        id: value.id,
+        conversation_id: value.conversation_id,
+        confirmation_id: value.confirmation_id,
+        tool_call_id: value.tool_call_id,
+        tool: value.tool,
+        proposed_arguments: value.proposed_arguments,
+        validation_outcome: value.validation_outcome,
+        validation_error: value.validation_error,
+        decision: value.decision,
+        effective_arguments: value.effective_arguments,
+        decided_by: value.decided_by,
+        invocation_ok: value.invocation_ok,
+        invocation_result: value.invocation_result,
+        invocation_error: value.invocation_error,
+        created_at: value.created_at,
+        decided_at: value.decided_at,
+        invoked_at: value.invoked_at,
     }
 }

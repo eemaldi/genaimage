@@ -47,6 +47,7 @@ pub enum AssistantMessageStatus {
     Complete,
     Cancelled,
     Failed,
+    AwaitingConfirmation,
 }
 
 impl AssistantMessageStatus {
@@ -55,6 +56,7 @@ impl AssistantMessageStatus {
             Self::Complete => "complete",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
+            Self::AwaitingConfirmation => "awaiting_confirmation",
         }
     }
 
@@ -63,6 +65,7 @@ impl AssistantMessageStatus {
             "complete" => Ok(Self::Complete),
             "cancelled" => Ok(Self::Cancelled),
             "failed" => Ok(Self::Failed),
+            "awaiting_confirmation" => Ok(Self::AwaitingConfirmation),
             _ => Err(HarnessError::Database(format!(
                 "unknown assistant message status '{value}'"
             ))),
@@ -103,6 +106,111 @@ pub struct AssistantConversationDetail {
     pub messages: Vec<AssistantMessage>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolConfirmationStatus {
+    Pending,
+    Confirmed,
+    Edited,
+    Rejected,
+    Expired,
+}
+
+impl AssistantToolConfirmationStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Confirmed => "confirmed",
+            Self::Edited => "edited",
+            Self::Rejected => "rejected",
+            Self::Expired => "expired",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "confirmed" => Ok(Self::Confirmed),
+            "edited" => Ok(Self::Edited),
+            "rejected" => Ok(Self::Rejected),
+            "expired" => Ok(Self::Expired),
+            _ => Err(HarnessError::Database(format!(
+                "unknown assistant tool confirmation status '{value}'"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AssistantToolConfirmation {
+    pub id: String,
+    pub conversation_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub proposed_arguments: serde_json::Value,
+    pub json_schema: serde_json::Value,
+    pub source_message_id: String,
+    pub user_message_id: String,
+    pub model_step: u32,
+    pub status: AssistantToolConfirmationStatus,
+    pub effective_arguments: Option<serde_json::Value>,
+    pub decision_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewAssistantConfirmation {
+    pub conversation_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub proposed_arguments: serde_json::Value,
+    pub json_schema: serde_json::Value,
+    pub source_message_id: String,
+    pub user_message_id: String,
+    pub model_step: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewAssistantToolAudit {
+    pub conversation_id: String,
+    pub confirmation_id: Option<String>,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub proposed_arguments: serde_json::Value,
+    pub validation_outcome: String,
+    pub validation_error: Option<String>,
+    pub decision: String,
+    pub effective_arguments: Option<serde_json::Value>,
+    pub decided_by: Option<String>,
+    pub invocation_ok: Option<bool>,
+    pub invocation_result: Option<serde_json::Value>,
+    pub invocation_error: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub invoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AssistantToolAuditRecord {
+    pub id: i64,
+    pub conversation_id: String,
+    pub confirmation_id: Option<String>,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub proposed_arguments: serde_json::Value,
+    pub validation_outcome: String,
+    pub validation_error: Option<String>,
+    pub decision: String,
+    pub effective_arguments: Option<serde_json::Value>,
+    pub decided_by: Option<String>,
+    pub invocation_ok: Option<bool>,
+    pub invocation_result: Option<serde_json::Value>,
+    pub invocation_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub invoked_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NewAssistantConversation {
     pub title: String,
@@ -131,6 +239,20 @@ impl NewAssistantMessage {
             status: AssistantMessageStatus::Complete,
             error: None,
             tool_call_id: None,
+        }
+    }
+
+    pub fn tool(call_id: String, result: serde_json::Value) -> Self {
+        Self {
+            role: AssistantMessageRole::Tool,
+            content: ChatMessage::Tool {
+                call_id: call_id.clone(),
+                result,
+            },
+            model: None,
+            status: AssistantMessageStatus::Complete,
+            error: None,
+            tool_call_id: Some(call_id),
         }
     }
 
@@ -256,6 +378,109 @@ impl ConversationStore {
             .await
     }
 
+    pub async fn pending_confirmation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<AssistantToolConfirmation>> {
+        let id = conversation_id.to_owned();
+        self.call(move |repository| pending_confirmation(&repository, &id))
+            .await
+    }
+
+    pub async fn create_confirmation(
+        &self,
+        new: NewAssistantConfirmation,
+    ) -> Result<AssistantToolConfirmation> {
+        self.call(move |repository| create_confirmation(&repository, new))
+            .await
+    }
+
+    pub async fn get_confirmation(
+        &self,
+        conversation_id: &str,
+        confirmation_id: &str,
+    ) -> Result<AssistantToolConfirmation> {
+        let conversation_id = conversation_id.to_owned();
+        let confirmation_id = confirmation_id.to_owned();
+        self.call(move |repository| {
+            get_confirmation(&repository, &conversation_id, &confirmation_id)
+        })
+        .await
+    }
+
+    pub async fn claim_confirmation(
+        &self,
+        conversation_id: &str,
+        confirmation_id: &str,
+        status: AssistantToolConfirmationStatus,
+        effective_arguments: Option<serde_json::Value>,
+        reason: Option<String>,
+    ) -> Result<AssistantToolConfirmation> {
+        let conversation_id = conversation_id.to_owned();
+        let confirmation_id = confirmation_id.to_owned();
+        self.call(move |repository| {
+            claim_confirmation(
+                &repository,
+                &conversation_id,
+                &confirmation_id,
+                status,
+                effective_arguments,
+                reason,
+            )
+        })
+        .await
+    }
+
+    pub async fn append_tool_audit(&self, audit: NewAssistantToolAudit) -> Result<()> {
+        self.call(move |repository| append_tool_audit(&repository, audit))
+            .await
+    }
+
+    pub async fn list_tool_audit(
+        &self,
+        conversation_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<AssistantToolAuditRecord>> {
+        let conversation_id = conversation_id.to_owned();
+        self.call(move |repository| list_tool_audit(&repository, &conversation_id, limit))
+            .await
+    }
+
+    pub async fn get_message(&self, message_id: &str) -> Result<AssistantMessage> {
+        let message_id = message_id.to_owned();
+        self.call(move |repository| {
+            repository.guarded_read(|connection| load_message(connection, &message_id))
+        })
+        .await
+    }
+
+    pub async fn set_message_status(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        status: AssistantMessageStatus,
+        error: Option<String>,
+    ) -> Result<AssistantMessage> {
+        let conversation_id = conversation_id.to_owned();
+        let message_id = message_id.to_owned();
+        self.call(move |repository| {
+            repository.guarded(|connection| {
+                let changed = connection.execute(
+                    "UPDATE assistant_messages SET status = ?3, error = ?4 WHERE id = ?1 AND conversation_id = ?2",
+                    params![message_id, conversation_id, status.as_str(), error],
+                )?;
+                if changed != 1 {
+                    return Err(HarnessError::Database("assistant terminal message changed unexpectedly".into()));
+                }
+                connection.execute(
+                    "UPDATE assistant_conversations SET updated_at = ?2 WHERE id = ?1",
+                    params![conversation_id, timestamp()],
+                )?;
+                load_message(connection, &message_id)
+            })
+        }).await
+    }
+
     pub async fn delete(&self, conversation_id: &str) -> Result<()> {
         let id = conversation_id.to_owned();
         self.call(move |repository| {
@@ -272,6 +497,298 @@ impl ConversationStore {
         })
         .await
     }
+}
+
+fn pending_confirmation(
+    repository: &RunRepository,
+    conversation_id: &str,
+) -> Result<Option<AssistantToolConfirmation>> {
+    repository.guarded_read(|connection| {
+        load_conversation(connection, conversation_id)?;
+        connection
+            .query_row(
+                "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json,
+                        json_schema, source_message_id, user_message_id, model_step, status,
+                        effective_arguments_json, decision_reason, created_at, decided_at
+                 FROM assistant_tool_confirmations
+                 WHERE conversation_id = ?1 AND status = 'pending'
+                 ORDER BY created_at ASC, id ASC LIMIT 1",
+                [conversation_id],
+                map_confirmation,
+            )
+            .optional()
+            .map_err(Into::into)
+    })
+}
+
+fn create_confirmation(
+    repository: &RunRepository,
+    new: NewAssistantConfirmation,
+) -> Result<AssistantToolConfirmation> {
+    let id = Uuid::new_v4().to_string();
+    let now = timestamp();
+    repository.guarded(|connection| {
+        load_conversation(connection, &new.conversation_id)?;
+        connection.execute(
+            "INSERT INTO assistant_tool_confirmations (
+                id, conversation_id, tool_call_id, tool_name, proposed_arguments_json,
+                json_schema, source_message_id, user_message_id, model_step, status, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10)",
+            params![
+                id,
+                new.conversation_id,
+                new.tool_call_id,
+                new.tool,
+                serde_json::to_string(&new.proposed_arguments)?,
+                serde_json::to_string(&new.json_schema)?,
+                new.source_message_id,
+                new.user_message_id,
+                new.model_step,
+                now,
+            ],
+        )?;
+        let marked = connection.execute(
+            "INSERT INTO assistant_message_terminal_states (message_id, status)
+             SELECT id, 'awaiting_confirmation' FROM assistant_messages
+             WHERE id = ?1 AND conversation_id = ?2 AND status = 'complete'",
+            params![new.source_message_id, new.conversation_id],
+        )?;
+        if marked != 1 {
+            return Err(HarnessError::ToolConfirmationConflict(
+                "The assistant proposal changed before its confirmation was persisted.".into(),
+            ));
+        }
+        insert_tool_audit(
+            connection,
+            NewAssistantToolAudit {
+                conversation_id: new.conversation_id.clone(),
+                confirmation_id: Some(id.clone()),
+                tool_call_id: new.tool_call_id.clone(),
+                tool: new.tool.clone(),
+                proposed_arguments: new.proposed_arguments.clone(),
+                validation_outcome: "valid".into(),
+                validation_error: None,
+                decision: "pending".into(),
+                effective_arguments: None,
+                decided_by: None,
+                invocation_ok: None,
+                invocation_result: None,
+                invocation_error: None,
+                decided_at: None,
+                invoked_at: None,
+            },
+        )?;
+        load_confirmation(connection, &new.conversation_id, &id)
+    })
+}
+
+fn get_confirmation(
+    repository: &RunRepository,
+    conversation_id: &str,
+    confirmation_id: &str,
+) -> Result<AssistantToolConfirmation> {
+    repository
+        .guarded_read(|connection| load_confirmation(connection, conversation_id, confirmation_id))
+}
+
+fn claim_confirmation(
+    repository: &RunRepository,
+    conversation_id: &str,
+    confirmation_id: &str,
+    status: AssistantToolConfirmationStatus,
+    effective_arguments: Option<serde_json::Value>,
+    reason: Option<String>,
+) -> Result<AssistantToolConfirmation> {
+    if status == AssistantToolConfirmationStatus::Pending
+        || status == AssistantToolConfirmationStatus::Expired
+    {
+        return Err(HarnessError::InvalidConversationRequest(
+            "A confirmation decision must be confirmed, edited or rejected.".into(),
+        ));
+    }
+    let now = timestamp();
+    repository.guarded(|connection| {
+        let current = load_confirmation(connection, conversation_id, confirmation_id)?;
+        let changed = connection.execute(
+            "UPDATE assistant_tool_confirmations
+             SET status = ?3, effective_arguments_json = ?4, decision_reason = ?5, decided_at = ?6
+             WHERE id = ?1 AND conversation_id = ?2 AND status = 'pending'",
+            params![
+                confirmation_id,
+                conversation_id,
+                status.as_str(),
+                effective_arguments
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+                reason,
+                now,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(HarnessError::ToolConfirmationConflict(format!(
+                "confirmation '{}' was already decided as {:?}",
+                current.id, current.status
+            )));
+        }
+        let resumed = connection.execute(
+            "DELETE FROM assistant_message_terminal_states WHERE message_id = ?1",
+            params![current.source_message_id],
+        )?;
+        if resumed != 1 {
+            return Err(HarnessError::ToolConfirmationConflict(
+                "The assistant proposal changed while the confirmation was being decided.".into(),
+            ));
+        }
+        load_confirmation(connection, conversation_id, confirmation_id)
+    })
+}
+
+fn append_tool_audit(repository: &RunRepository, audit: NewAssistantToolAudit) -> Result<()> {
+    repository.guarded(|connection| insert_tool_audit(connection, audit))
+}
+
+fn insert_tool_audit(
+    connection: &rusqlite::Connection,
+    audit: NewAssistantToolAudit,
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO assistant_tool_call_audit (
+            conversation_id, confirmation_id, tool_call_id, tool_name, proposed_arguments_json,
+            validation_outcome, validation_error, decision, effective_arguments_json, decided_by,
+            invocation_ok, invocation_result_json, invocation_error, created_at, decided_at, invoked_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            audit.conversation_id, audit.confirmation_id, audit.tool_call_id, audit.tool,
+            serde_json::to_string(&audit.proposed_arguments)?, audit.validation_outcome,
+            audit.validation_error, audit.decision,
+            audit.effective_arguments.as_ref().map(serde_json::to_string).transpose()?,
+            audit.decided_by, audit.invocation_ok,
+            audit.invocation_result.as_ref().map(serde_json::to_string).transpose()?,
+            audit.invocation_error, timestamp(),
+            audit.decided_at.map(|time| time.to_rfc3339_opts(SecondsFormat::Nanos, true)),
+            audit.invoked_at.map(|time| time.to_rfc3339_opts(SecondsFormat::Nanos, true)),
+        ],
+    )?;
+    Ok(())
+}
+
+fn list_tool_audit(
+    repository: &RunRepository,
+    conversation_id: &str,
+    limit: Option<usize>,
+) -> Result<Vec<AssistantToolAuditRecord>> {
+    let limit = bounded_limit(limit, 100, 200, "Limit")?;
+    repository.guarded_read(|connection| {
+        load_conversation(connection, conversation_id)?;
+        let mut statement = connection.prepare(
+            "SELECT id, conversation_id, confirmation_id, tool_call_id, tool_name,
+                    proposed_arguments_json, validation_outcome, validation_error, decision,
+                    effective_arguments_json, decided_by, invocation_ok, invocation_result_json,
+                    invocation_error, created_at, decided_at, invoked_at
+             FROM assistant_tool_call_audit WHERE conversation_id = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let records = statement
+            .query_map(
+                params![
+                    conversation_id,
+                    i64::try_from(limit).expect("bounded limit")
+                ],
+                map_tool_audit,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(records)
+    })
+}
+
+fn load_confirmation(
+    connection: &rusqlite::Connection,
+    conversation_id: &str,
+    confirmation_id: &str,
+) -> Result<AssistantToolConfirmation> {
+    connection
+        .query_row(
+            "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json,
+                json_schema, source_message_id, user_message_id, model_step, status,
+                effective_arguments_json, decision_reason, created_at, decided_at
+         FROM assistant_tool_confirmations WHERE id = ?1 AND conversation_id = ?2",
+            params![confirmation_id, conversation_id],
+            map_confirmation,
+        )
+        .optional()?
+        .ok_or_else(|| HarnessError::ToolConfirmationNotFound {
+            conversation_id: conversation_id.to_owned(),
+            confirmation_id: confirmation_id.to_owned(),
+        })
+}
+
+fn map_confirmation(row: &Row<'_>) -> rusqlite::Result<AssistantToolConfirmation> {
+    let status = AssistantToolConfirmationStatus::parse(&row.get::<_, String>(9)?)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    Ok(AssistantToolConfirmation {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        tool_call_id: row.get(2)?,
+        tool: row.get(3)?,
+        proposed_arguments: parse_json(row, 4)?,
+        json_schema: parse_json(row, 5)?,
+        source_message_id: row.get(6)?,
+        user_message_id: row.get(7)?,
+        model_step: row.get(8)?,
+        status,
+        effective_arguments: parse_json_optional(row, 10)?,
+        decision_reason: row.get(11)?,
+        created_at: parse_time(row, 12)?,
+        decided_at: parse_time_optional(row, 13)?,
+    })
+}
+
+fn map_tool_audit(row: &Row<'_>) -> rusqlite::Result<AssistantToolAuditRecord> {
+    Ok(AssistantToolAuditRecord {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        confirmation_id: row.get(2)?,
+        tool_call_id: row.get(3)?,
+        tool: row.get(4)?,
+        proposed_arguments: parse_json(row, 5)?,
+        validation_outcome: row.get(6)?,
+        validation_error: row.get(7)?,
+        decision: row.get(8)?,
+        effective_arguments: parse_json_optional(row, 9)?,
+        decided_by: row.get(10)?,
+        invocation_ok: row.get(11)?,
+        invocation_result: parse_json_optional(row, 12)?,
+        invocation_error: row.get(13)?,
+        created_at: parse_time(row, 14)?,
+        decided_at: parse_time_optional(row, 15)?,
+        invoked_at: parse_time_optional(row, 16)?,
+    })
+}
+
+fn parse_json(row: &Row<'_>, index: usize) -> rusqlite::Result<serde_json::Value> {
+    let value: String = row.get(index)?;
+    serde_json::from_str(&value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+fn parse_json_optional(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<serde_json::Value>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
 }
 
 fn create(
@@ -378,10 +895,11 @@ fn get(
     repository.guarded_read(|connection| {
         let conversation = load_conversation(connection, conversation_id)?;
         let mut statement = connection.prepare(
-            "SELECT id, conversation_id, seq, role, content_json, model, status, error,
-                    tool_call_id, created_at
+            "SELECT id, conversation_id, seq, role, content_json, model,
+                    status, error, tool_call_id, created_at
              FROM (
-                 SELECT id, conversation_id, seq, role, content_json, model, status, error,
+                 SELECT id, conversation_id, seq, role, content_json, model,
+                    COALESCE((SELECT status FROM assistant_message_terminal_states WHERE message_id = assistant_messages.id), status) AS status, error,
                         tool_call_id, created_at
                  FROM assistant_messages
                  WHERE conversation_id = ?1
@@ -501,7 +1019,8 @@ fn load_conversation(
 fn load_message(connection: &rusqlite::Connection, message_id: &str) -> Result<AssistantMessage> {
     connection
         .query_row(
-            "SELECT id, conversation_id, seq, role, content_json, model, status, error,
+            "SELECT id, conversation_id, seq, role, content_json, model,
+                    COALESCE((SELECT status FROM assistant_message_terminal_states WHERE message_id = assistant_messages.id), status) AS status, error,
                 tool_call_id, created_at
          FROM assistant_messages WHERE id = ?1",
             [message_id],
@@ -555,6 +1074,22 @@ fn parse_time(row: &Row<'_>, index: usize) -> rusqlite::Result<DateTime<Utc>> {
                 Box::new(error),
             )
         })
+}
+
+fn parse_time_optional(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|time| time.with_timezone(&Utc))
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        index,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+        })
+        .transpose()
 }
 
 fn bounded_limit(

@@ -177,6 +177,7 @@ pub enum AssistantMessageStatus {
     Complete,
     Cancelled,
     Failed,
+    AwaitingConfirmation,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -218,6 +219,67 @@ pub struct SendAssistantMessageRequest {
     pub content: Vec<AssistantChatContent>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantConfirmationDecisionKind {
+    Confirm,
+    Edit,
+    Reject,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantConfirmationRequest {
+    pub decision: AssistantConfirmationDecisionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantToolAuditRecord {
+    pub id: i64,
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_id: Option<String>,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub proposed_arguments: serde_json::Value,
+    pub validation_outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_error: Option<String>,
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_arguments: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AssistantToolAuditQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(minimum = 1, maximum = 200)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantToolAuditResponse {
+    pub tool_calls: Vec<AssistantToolAuditRecord>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct AssistantMessageStartedEvent {
     pub conversation_id: String,
@@ -237,6 +299,29 @@ pub struct AssistantToolCallEvent {
     pub conversation_id: String,
     pub user_message_id: String,
     pub tool_call: AssistantToolCall,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantToolResultEvent {
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantConfirmationRequiredEvent {
+    pub confirmation_id: String,
+    pub conversation_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    pub json_schema: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

@@ -126,11 +126,18 @@ async fn streams_text_tool_proposals_and_persisted_terminal_over_sse() {
                 && event.tool_call.name == "review_output"
                 && event.tool_call.arguments["output_id"] == "out-1"
     ));
-    let terminal = match stream.next().await.unwrap().unwrap() {
-        AssistantStreamEvent::Done(event) => event,
-        _ => panic!("expected done"),
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::ToolResult(event)
+            if event.tool_call_id == "call-1" && !event.ok && event.error.is_some()
+    ));
+    let terminal = loop {
+        match stream.next().await.unwrap().unwrap() {
+            AssistantStreamEvent::Done(event) | AssistantStreamEvent::Error(event) => break event,
+            _ => {}
+        }
     };
-    assert_eq!(terminal.status, AssistantMessageStatus::Complete);
+    assert_eq!(terminal.status, AssistantMessageStatus::Failed);
     assert_eq!(terminal.model, "assistant");
     assert!(terminal
         .message_id
@@ -145,12 +152,24 @@ async fn streams_text_tool_proposals_and_persisted_terminal_over_sse() {
         )
         .await
         .unwrap();
-    assert_eq!(detail.messages.len(), 2);
     assert_eq!(detail.messages[0].role, AssistantMessageRole::User);
-    assert_eq!(detail.messages[1].id, terminal.message_id.unwrap());
-    assert_eq!(detail.messages[1].status, AssistantMessageStatus::Complete);
-    assert_eq!(detail.messages[1].model.as_deref(), Some("assistant"));
-    assert_eq!(llm.chat_request_count(), 1);
+    assert!(detail
+        .messages
+        .iter()
+        .any(|message| message.role == AssistantMessageRole::Tool));
+    assert_eq!(
+        detail.messages.last().unwrap().id,
+        terminal.message_id.unwrap()
+    );
+    assert_eq!(
+        detail.messages.last().unwrap().status,
+        AssistantMessageStatus::Failed
+    );
+    assert_eq!(
+        detail.messages.last().unwrap().model.as_deref(),
+        Some("assistant")
+    );
+    assert_eq!(llm.chat_request_count(), 8);
 }
 
 #[tokio::test]

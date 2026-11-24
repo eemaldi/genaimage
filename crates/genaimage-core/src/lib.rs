@@ -24,7 +24,8 @@ pub use event::{
 };
 pub use extensions::{
     AssistantTool, ChatContent, ChatDelta, ChatMessage, ChatRequest, ChatStream, EventSink,
-    ExtensionRegistry, LlmModel, LlmProvider, SinkNotification, ToolCall, ToolDefinition,
+    ExtensionRegistry, LlmModel, LlmProvider, SinkNotification, ToolCall, ToolContext,
+    ToolDefinition,
 };
 pub use image_backend::ImageBackend;
 pub use llm_roles::{

@@ -181,6 +181,32 @@ restart, when core checks database ownership again. Each run mutation takes
 one active harness snapshot; submission gives that same snapshot to its
 monitor. Tasks from all snapshots share the listener's shutdown drain.
 
+### Assistant tool runtime
+
+The conversation service owns assistant tool orchestration. Registered
+`AssistantTool` implementations expose a name, description, JSON schema and
+confirmation metadata, and are invoked as
+`invoke(ToolContext, Value)`. Every request carrying tools is checked against
+the selected text model's advertised capabilities; tools are never silently
+dropped. A tool loop is bounded to eight model steps by default. Invalid and
+unknown calls are recorded and returned to the model as error tool results.
+
+Tools requiring confirmation are validated and persisted but not invoked. The
+message stream emits `confirmation_required` and completes its paused turn with
+`awaiting_confirmation`, which is not success. The user decides through
+`POST /api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}`.
+`confirm` uses the proposed arguments, `edit` must revalidate replacement
+arguments, and `reject` supplies a rejection tool result. Decisions are single
+use and compare-and-set in SQLite. A new user message is rejected with 409
+while a confirmation remains pending.
+
+Conversation SSE can emit `message_started`, `delta`, `tool_call`,
+`tool_result`, `confirmation_required`, `done` and `error`.
+`GET /api/v1/assistant/conversations/{id}/tool-calls` exposes the bounded,
+append-only audit trail. The `confirmation_id` passed in `ToolContext` is the
+stable idempotency key for a confirmed invocation; tools that submit external
+work must reuse it.
+
 ### Live event stream
 
 `GET /api/v1/events` returns `text/event-stream` without compression, with

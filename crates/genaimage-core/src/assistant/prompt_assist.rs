@@ -156,7 +156,9 @@ impl PromptAssistService {
                     }
                     response.push_str(&text);
                 }
-                ChatDelta::ToolCall(_) => {
+                ChatDelta::ToolCall(_)
+                | ChatDelta::ToolResult { .. }
+                | ChatDelta::ConfirmationRequired { .. } => {
                     return Err(HarnessError::PromptAssistProvider(
                         "LLM returned a tool call for a proposal-only prompt request".into(),
                     ));

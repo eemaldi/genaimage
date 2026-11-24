@@ -147,7 +147,9 @@ impl VisionReviewService {
                         )));
                     }
                 }
-                ChatDelta::ToolCall(_) => {
+                ChatDelta::ToolCall(_)
+                | ChatDelta::ToolResult { .. }
+                | ChatDelta::ConfirmationRequired { .. } => {
                     return Err(HarnessError::VisionReviewResponse(
                         "the model returned a tool call instead of review JSON".to_owned(),
                     ));

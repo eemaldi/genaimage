@@ -39,6 +39,8 @@ struct UploadBody {
     genaimage_api::AssistantMessageStartedEvent,
     genaimage_api::AssistantTerminalEvent,
     genaimage_api::AssistantToolCallEvent,
+    genaimage_api::AssistantToolResultEvent,
+    genaimage_api::AssistantConfirmationRequiredEvent,
     genaimage_api::EventEnvelope,
     genaimage_api::ResyncEvent,
     genaimage_api::ThumbnailSizeSchema
@@ -97,6 +99,8 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(suggestions::suggest))
         .routes(routes!(conversations::get))
         .routes(routes!(conversations::send_message))
+        .routes(routes!(conversations::decide_confirmation))
+        .routes(routes!(conversations::tool_calls))
         .routes(routes!(conversations::cancel))
         .routes(routes!(conversations::delete))
         .routes(routes!(prompt::assist))
