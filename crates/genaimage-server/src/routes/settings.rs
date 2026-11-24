@@ -87,19 +87,7 @@ pub(super) async fn save(
     patch: Result<Json<SettingsPatch>, JsonRejection>,
 ) -> Result<SettingsReply, Problem> {
     let patch = parse(patch)?;
-    let if_match = headers
-        .get_all(header::IF_MATCH)
-        .iter()
-        .map(|value| value.to_str().map(str::to_owned))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| {
-            Problem::new(
-                StatusCode::BAD_REQUEST,
-                "Invalid If-Match header.",
-                "Use the ETag returned by GET settings.",
-            )
-        })?;
-    let if_match = (!if_match.is_empty()).then(|| if_match.join(","));
+    let if_match = parse_if_match(&headers)?;
     let saved = tokio::task::spawn_blocking(move || state.settings.save(patch, if_match))
         .await
         .map_err(|_| save_failed())??;
@@ -110,14 +98,15 @@ pub(super) async fn save(
     post, path = "/settings/test",
     operation_id = "settings_probe",
     tag = "settings",
-    description = "Test proposed settings without saving them.",
+    description = "Test proposed settings without saving them. If-Match is optional for older clients; use the GET ETag to test the loaded revision.",
     request_body = genaimage_api::SettingsPatch,
-    params(ProbeQuery),
+    params(ProbeQuery, ("If-Match" = Option<String>, Header, description = "Current settings ETag")),
     responses(
         (status = 200, body = genaimage_api::SettingsTestResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 412, description = "Settings revision mismatch", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -129,6 +118,7 @@ pub(super) async fn save(
 pub(super) async fn probe(
     State(state): State<AppState>,
     query: Result<Query<ProbeQuery>, QueryRejection>,
+    headers: HeaderMap,
     patch: Result<Json<SettingsPatch>, JsonRejection>,
 ) -> Result<Json<SettingsTestResponse>, Problem> {
     let Query(query) = query.map_err(|_| {
@@ -150,7 +140,10 @@ pub(super) async fn probe(
             ))
         }
     };
-    let proposal = state.settings.propose(parse(patch)?, Some(service))?;
+    let if_match = parse_if_match(&headers)?;
+    let proposal = state
+        .settings
+        .propose(parse(patch)?, Some(service), if_match.as_deref())?;
     let config = proposal.config();
     let (reason, llm) = tokio::join!(
         async {
@@ -242,4 +235,20 @@ fn parse(input: Result<Json<SettingsPatch>, JsonRejection>) -> Result<SettingsPa
             "Send an application/json object with dotted setting keys.",
         )
     })
+}
+
+fn parse_if_match(headers: &HeaderMap) -> Result<Option<String>, Problem> {
+    let if_match = headers
+        .get_all(header::IF_MATCH)
+        .iter()
+        .map(|value| value.to_str().map(str::to_owned))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| {
+            Problem::new(
+                StatusCode::BAD_REQUEST,
+                "Invalid If-Match header.",
+                "Use the ETag returned by GET settings.",
+            )
+        })?;
+    Ok((!if_match.is_empty()).then(|| if_match.join(",")))
 }

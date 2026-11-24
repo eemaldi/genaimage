@@ -932,3 +932,60 @@ async fn settings_probe_selects_service_and_uses_effective_env_url() {
     assert_eq!(result.llm, HealthStatus::Unavailable);
     llm.shutdown().await;
 }
+
+#[tokio::test]
+async fn settings_probe_checks_revision_against_its_snapshot() {
+    let api = ApiHarness::start().await;
+    let original = api.request(Method::GET, SETTINGS).send().await.unwrap();
+    let old_etag = original.headers()[reqwest::header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let saved = api
+        .request(Method::PUT, SETTINGS)
+        .header(reqwest::header::IF_MATCH, &old_etag)
+        .json(&json!({"llm.model": "changed"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let new_etag = saved.headers()[reqwest::header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let before = api.fake.health_calls.load(Ordering::SeqCst);
+    let stale = api
+        .request(Method::POST, &format!("{TEST_SETTINGS}?service=comfyui"))
+        .header(reqwest::header::IF_MATCH, &old_etag)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(stale, StatusCode::PRECONDITION_FAILED).await;
+    assert!(problem.recovery.contains("Reload"));
+    assert_eq!(api.fake.health_calls.load(Ordering::SeqCst), before);
+    let stale_put = api
+        .request(Method::PUT, SETTINGS)
+        .header(reqwest::header::IF_MATCH, &old_etag)
+        .json(&json!({"llm.model": "stale"}))
+        .send()
+        .await
+        .unwrap();
+    let put_problem = ApiHarness::assert_problem(stale_put, StatusCode::PRECONDITION_FAILED).await;
+    assert_eq!(problem.detail, put_problem.detail);
+    assert_eq!(problem.recovery, put_problem.recovery);
+    let fresh = api
+        .request(Method::POST, &format!("{TEST_SETTINGS}?service=comfyui"))
+        .header(reqwest::header::IF_MATCH, &new_etag)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fresh.status(), StatusCode::OK);
+    let result: SettingsTestResponse = fresh.json().await.unwrap();
+    assert_eq!(result.comfyui, HealthStatus::Ok);
+    assert_eq!(api.fake.health_calls.load(Ordering::SeqCst), before + 1);
+    let legacy: SettingsTestResponse = api.post_json(TEST_SETTINGS, &json!({})).await;
+    assert_eq!(legacy.comfyui, HealthStatus::Ok);
+    api.shutdown().await;
+}

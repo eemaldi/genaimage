@@ -209,8 +209,11 @@ describe('portal API client', () => {
     expect(new Headers(fetcher.mock.calls[1][1]?.headers).get('If-Match')).toBe(
       '"rev1"',
     );
-    await client.testSettings({}, { service: 'llm' });
+    await client.testSettings({}, { service: 'llm', ifMatch: snapshot.etag });
     expect(fetcher.mock.calls[2][0]).toBe('/api/v1/settings/test?service=llm');
+    expect(new Headers(fetcher.mock.calls[2][1]?.headers).get('If-Match')).toBe(
+      '"rev1"',
+    );
     fetcher.mockResolvedValueOnce(Response.json(body));
     await expect(client.getSettingsWithRevision()).rejects.toBeInstanceOf(
       ApiResponseError,

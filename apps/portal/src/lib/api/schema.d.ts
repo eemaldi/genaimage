@@ -297,7 +297,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Test proposed settings without saving them. */
+        /** @description Test proposed settings without saving them. If-Match is optional for older clients; use the GET ETag to test the loaded revision. */
         post: operations["settings_probe"];
         delete?: never;
         options?: never;
@@ -3396,15 +3396,6 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Settings revision mismatch */
-            412: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
             /** @description Problem details */
             413: {
                 headers: {
@@ -3498,6 +3489,15 @@ export interface operations {
             };
             /** @description Settings conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Settings revision mismatch */
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3635,7 +3635,10 @@ export interface operations {
                 /** @description Choose one service; omit to test both for backwards compatibility. */
                 service?: string;
             };
-            header?: never;
+            header?: {
+                /** @description Current settings ETag */
+                "If-Match"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3673,6 +3676,15 @@ export interface operations {
             };
             /** @description Problem details */
             408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Settings revision mismatch */
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -369,11 +369,15 @@ export function createApiClient(
       json('put', '/api/v1/settings', { ...options, body }),
     testSettings: (
       body: JsonBody<Operation<'/api/v1/settings/test', 'post'>>,
-      options?: RequestOptions & { service?: 'comfyui' | 'llm' },
+      options?: RequestOptions & {
+        service?: 'comfyui' | 'llm';
+        ifMatch?: string;
+      },
     ) =>
       json('post', '/api/v1/settings/test', {
         signal: options?.signal,
         query: options?.service ? { service: options.service } : undefined,
+        header: options?.ifMatch ? { 'If-Match': options.ifMatch } : undefined,
         body,
       }),
   };

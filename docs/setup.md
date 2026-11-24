@@ -134,7 +134,8 @@ WAL sidecar files); for a new path, the nearest existing directory must be
 writable. Invalid targets return 422. Saving does not create or migrate a database.
 
 `POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
-saved settings). Omit the query to test ComfyUI and a configured LLM together,
+saved settings). An optional `If-Match` header rejects stale revisions with
+412 before probing; omit it only for legacy clients. Omit the query to test ComfyUI and a configured LLM together,
 or pass `?service=comfyui` or `?service=llm` to test only that service; the
 unselected status is `not_configured`. Environment-overridden endpoints use
 their effective values. Testing does not save settings or change the running

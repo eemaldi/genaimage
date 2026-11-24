@@ -160,7 +160,10 @@ test('tests each service separately and probe errors do not block saving', async
   await userEvent.click(
     screen.getByRole('button', { name: 'Test ComfyUI connection' }),
   );
-  expect(fake.testSettings).toHaveBeenCalledWith({}, { service: 'comfyui' });
+  expect(fake.testSettings).toHaveBeenCalledWith(
+    {},
+    { service: 'comfyui', ifMatch: '"rev1"' },
+  );
   expect(await screen.findByText('ComfyUI: ok')).toBeTruthy();
   expect(screen.queryByText('LLM: not configured')).toBeNull();
   await userEvent.click(
@@ -168,7 +171,7 @@ test('tests each service separately and probe errors do not block saving', async
   );
   expect(fake.testSettings).toHaveBeenCalledWith(
     { 'llm.base_url': 'http://localhost:1234/v1' },
-    { service: 'llm' },
+    { service: 'llm', ifMatch: '"rev1"' },
   );
   expect(await screen.findByText('Correct the listed settings.')).toBeTruthy();
   expect(
@@ -236,6 +239,98 @@ test('cancelling Back preserves jobs for the next Back traversal', async () => {
   history.back();
   await screen.findByRole('heading', { name: 'Jobs' });
   expect(location.hash).toBe('#/jobs');
+});
+
+test('cancelling Back to an unmarked entry restores the settings URL and page', async () => {
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: fixture(),
+    etag: '"rev1"',
+  });
+  vi.spyOn(window, 'confirm')
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  history.pushState(null, '', '#/jobs');
+  history.pushState(null, '', '#/settings?tab=paths');
+  render(App);
+  await screen.findByLabelText('LLM URL');
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
+  history.back();
+  await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(location.hash).toBe('#/settings?tab=paths'));
+  expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
+  expect((screen.getByLabelText('LLM URL') as HTMLInputElement).value).toBe(
+    'http://localhost:1234',
+  );
+  history.back();
+  await screen.findByRole('heading', { name: 'Jobs' });
+  expect(location.hash).toBe('#/jobs');
+});
+
+test('probe revision conflict preserves edits and offers explicit review', async () => {
+  await start();
+  fake.testSettings.mockRejectedValue(
+    new ApiProblemError({
+      type: 'about:blank',
+      title: 'Precondition failed',
+      status: 412,
+      detail: 'Settings changed since they were loaded.',
+      recovery: 'Reload settings and review your changes.',
+    }),
+  );
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Test ComfyUI connection' }),
+  );
+  expect(fake.testSettings).toHaveBeenCalledWith(
+    {},
+    { service: 'comfyui', ifMatch: '"rev1"' },
+  );
+  expect(
+    await screen.findByText('Settings changed since they were loaded.'),
+  ).toBeTruthy();
+  expect(
+    (screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  const updated = fixture();
+  updated.settings['llm.base_url'] = {
+    value: 'http://localhost:5678',
+    source: 'default',
+    read_only: false,
+  };
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: updated,
+    etag: '"rev2"',
+  });
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Reload settings for review' }),
+  );
+  expect(
+    await screen.findByText(
+      /current http:\/\/localhost:5678, your change http:\/\/localhost:1234/,
+    ),
+  ).toBeTruthy();
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Re-apply my changes' }),
+  );
+  expect((screen.getByLabelText('LLM URL') as HTMLInputElement).value).toBe(
+    'http://localhost:1234',
+  );
+  fake.testSettings.mockResolvedValueOnce({
+    comfyui: 'ok',
+    llm: 'not_configured',
+  });
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Test ComfyUI connection' }),
+  );
+  expect(fake.testSettings).toHaveBeenLastCalledWith(
+    {},
+    { service: 'comfyui', ifMatch: '"rev2"' },
+  );
 });
 
 test('blocks navigation while saving', async () => {
@@ -357,7 +452,10 @@ test('an invalid other service does not prevent a connection test', async () => 
   await userEvent.click(
     screen.getByRole('button', { name: 'Test ComfyUI connection' }),
   );
-  expect(fake.testSettings).toHaveBeenCalledWith({}, { service: 'comfyui' });
+  expect(fake.testSettings).toHaveBeenCalledWith(
+    {},
+    { service: 'comfyui', ifMatch: '"rev1"' },
+  );
   expect(await screen.findByText('ComfyUI: ok')).toBeTruthy();
 });
 

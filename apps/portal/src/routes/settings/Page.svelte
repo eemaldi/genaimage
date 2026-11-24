@@ -130,8 +130,14 @@
     try {
       result = await api.testSettings(patchFrom(form, settings, service), {
         service,
+        ifMatch: etag,
       });
     } catch (error) {
+      if (error instanceof ApiProblemError && error.status === 412) {
+        showError(error);
+        conflict = true;
+        return;
+      }
       probeProblem =
         error instanceof ApiProblemError
           ? error.problem
