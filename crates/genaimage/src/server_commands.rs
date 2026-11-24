@@ -52,7 +52,26 @@ impl<'a> Command<'a> {
                         };
                         writeln!(out, "  {reason}. Check that ComfyUI is running and check `genaimage config show`.")?;
                     }
-                    writeln!(out, "LLM: {}", health_label(health.llm))
+                    writeln!(out, "LLM: {}", health_label(health.llm))?;
+                    if let Some(reason) = &health.llm_reason {
+                        writeln!(out, "  {reason}")?;
+                    }
+                    for (name, role) in [
+                        ("text", health.llm_text.as_ref()),
+                        ("vision", health.llm_vision.as_ref()),
+                    ] {
+                        if let Some(role) = role {
+                            write!(out, "  {name}: {}", health_label(role.status))?;
+                            if let Some(model) = &role.model {
+                                write!(out, " ({model})")?;
+                            }
+                            if let Some(reason) = &role.reason {
+                                write!(out, " — {reason}")?;
+                            }
+                            writeln!(out)?;
+                        }
+                    }
+                    Ok(())
                 })?;
                 if health.server != HealthStatus::Ok || health.image_backend != HealthStatus::Ok {
                     return Ok(Status::NegativeResult);

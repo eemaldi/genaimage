@@ -52,6 +52,20 @@ pub struct OpenAiCompatibleProviderOptions {
     pub idle_timeout: Duration,
 }
 
+impl fmt::Debug for OpenAiCompatibleProviderOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenAiCompatibleProviderOptions")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("first_byte_timeout", &self.first_byte_timeout)
+            .field("idle_timeout", &self.idle_timeout)
+            .finish()
+    }
+}
+
 impl Default for OpenAiCompatibleProviderOptions {
     fn default() -> Self {
         Self {
@@ -71,6 +85,16 @@ pub struct OpenAiCompatibleProvider {
     base_url: Url,
     options: OpenAiCompatibleProviderOptions,
     connection: std::sync::Arc<OnceCell<PinnedConnection>>,
+}
+
+impl fmt::Debug for OpenAiCompatibleProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenAiCompatibleProvider")
+            .field("base_url", &self.base_url)
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -600,6 +624,18 @@ struct ChatParser {
     ended: bool,
 }
 
+impl fmt::Debug for ChatParser {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChatParser")
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("tool_calls", &self.tool_calls.len())
+            .field("ended", &self.ended)
+            .finish()
+    }
+}
+
 #[derive(Default)]
 struct PendingToolCall {
     id: String,
@@ -939,5 +975,29 @@ mod tests {
             ..Default::default()
         });
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn provider_debug_redacts_api_key() {
+        let options = OpenAiCompatibleProviderOptions {
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            api_key: Some("provider-debug-secret".into()),
+            ..OpenAiCompatibleProviderOptions::default()
+        };
+        let provider = OpenAiCompatibleProvider::new(options.clone()).unwrap();
+        let parser = ChatParser::new("model".into(), Some("provider-debug-secret".into()));
+        for debug in [
+            format!("{options:?}"),
+            format!("{provider:?}"),
+            format!("{parser:?}"),
+        ] {
+            assert!(!debug.contains("provider-debug-secret"), "{debug}");
+            assert!(debug.contains("<redacted>"), "{debug}");
+        }
     }
 }

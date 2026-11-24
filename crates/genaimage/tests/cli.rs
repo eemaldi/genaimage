@@ -367,7 +367,20 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
         .args(["doctor", "--json"]);
     assert_eq!(
         report(cli_output(command).await, 0),
-        json!({"self": "ok", "image_backend": "ok", "llm": "not_configured"})
+        json!({
+            "self": "ok",
+            "image_backend": "ok",
+            "llm": "not_configured",
+            "llm_reason": "Set llm.base_url to enable the assistant.",
+            "llm_text": {
+                "status": "not_configured",
+                "reason": "llm.text_model is empty."
+            },
+            "llm_vision": {
+                "status": "not_configured",
+                "reason": "llm.vision_model is empty."
+            }
+        })
     );
 
     let mut command = cli();
@@ -393,7 +406,19 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
     assert_eq!(
         report(server.cli(&["--json", "doctor"]).await, 6),
         json!({
-            "self": "ok", "image_backend": "unavailable", "llm": "not_configured", "image_backend_reason": "probe_failed"
+            "self": "ok",
+            "image_backend": "unavailable",
+            "llm": "not_configured",
+            "image_backend_reason": "probe_failed",
+            "llm_reason": "Set llm.base_url to enable the assistant.",
+            "llm_text": {
+                "status": "not_configured",
+                "reason": "llm.text_model is empty."
+            },
+            "llm_vision": {
+                "status": "not_configured",
+                "reason": "llm.vision_model is empty."
+            }
         })
     );
     let human = server.cli(&["doctor"]).await;

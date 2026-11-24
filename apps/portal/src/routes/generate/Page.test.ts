@@ -201,6 +201,8 @@ beforeEach(() => {
   fake.listOutputs.mockResolvedValue({ outputs: [] });
   fake.getSettings.mockResolvedValue({
     config_file: '',
+    api_key_set: false,
+    api_key_read_only: false,
     restart_required: [],
     settings: {
       'server.max_upload_bytes': {

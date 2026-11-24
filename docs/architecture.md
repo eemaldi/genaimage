@@ -20,9 +20,10 @@ genaimage client modules -> genaimage-api
 genaimage serve module -> genaimage-server -> genaimage-api
         |                       +-> genaimage-core
         +-> genaimage-comfyui -> genaimage-core
+        +-> genaimage-llm -> genaimage-core
         +-> genaimage-core
 genaimage local config module -> genaimage-core (configuration only)
-genaimage-llm -> genaimage-core (provider, not yet wired into the runtime)
+genaimage-llm -> genaimage-core (OpenAI-compatible provider)
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
@@ -34,7 +35,7 @@ genaimage-llm -> genaimage-core (provider, not yet wired into the runtime)
 - `genaimage-llm` implements `LlmProvider` for OpenAI-compatible local chat and
   model-listing endpoints. It handles SSE text and tool-call streams, vision
   data URLs and endpoint validation without moving assistant orchestration out
-  of core. It is not yet registered by the application runtime.
+  of core. The isolated serve module registers it when `llm.base_url` is set.
 - `genaimage` provides the scripted CLI. Its client modules use only the HTTP
   API through `genaimage-api` for GenAImage functionality. The isolated `serve`
   module supplies the ComfyUI adapter factory, constructs the core harness and
@@ -62,8 +63,6 @@ genaimage-llm -> genaimage-core (provider, not yet wired into the runtime)
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows, runs, outputs, uploads, settings and live events. The
   Svelte portal shell is embedded when the default `portal` feature is enabled.
-- `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
-  and is not a workspace member today.
 
 The CLI and the browser portal use the same loopback API. The portal in
 `apps/portal` uses Svelte 5, TypeScript, Vite and hash routing, with a typed
@@ -89,10 +88,14 @@ callers must provide the intended port.
 
 - `GET /api/v1/health` returns HTTP 200 while the server is running, with `self`
   set to `ok`, `image_backend` set to `ok` or `unavailable`, and `llm` set to
-  `not_configured`. It checks the image backend through `Harness::health` on
-  each request with a two-second deadline. If unavailable, `image_backend_reason`
-  is `timeout` or `probe_failed`; neither prevents server startup. Optional
-  `hints` provide recovery guidance for each service.
+  `not_configured`, `ok` or `unavailable`. The response includes `llm_reason`
+  plus per-role `llm_text` and `llm_vision` details. It checks the image backend
+  through `Harness::health` on each request with a two-second deadline. LLM
+  capability data uses a 30-second cache; health starts a background refresh
+  when needed and never waits for the LLM. A settings test is an explicit
+  refresh. If ComfyUI is unavailable, `image_backend_reason` is `timeout` or
+  `probe_failed`; neither prevents server startup. Optional `hints` provide
+  recovery guidance for each service.
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
@@ -140,6 +143,14 @@ disk; other bodies are buffered within their limit. Axum extractor limits
 are disabled because the hardening middleware bounds the request body. Each body must arrive within
 30 seconds or receives 408; body reads are cancelled with 503 when graceful
 shutdown starts, so a stalled upload cannot prevent draining.
+
+Core `LlmRoles` is the public gate for future assistant routes. `text()` and
+`vision()` return a role binding only for the exact configured model and never
+fall back to the other role. Known unsupported tools or vision capabilities are
+rejected before a provider call. `LlmRoleBinding::check_request` also rejects a
+mismatched model or request capability at the provider boundary. The settings
+API never serialises the LLM API key; it exposes only `api_key_set` and accepts
+an explicit replacement or clear operation.
 
 The [settings API](setup.md#settings-api) uses core validation and atomic TOML
 persistence. The server serialises writes and publishes the saved configuration

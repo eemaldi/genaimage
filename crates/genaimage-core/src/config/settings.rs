@@ -80,7 +80,6 @@ impl Metadata {
 }
 
 // Explicit wire allow-list: adding a field to core configuration does not expose it.
-// A future credential must have separate, write-only handling.
 macro_rules! setting_fields {
     ($callback:ident) => {
         $callback! {
@@ -92,8 +91,12 @@ macro_rules! setting_fields {
             "comfyui.websocket_reconnect_seconds" => comfyui.websocket_reconnect_seconds: integer,
             "comfyui.allowed_hosts" => comfyui.allowed_hosts: strings,
             "llm.base_url" => llm.base_url: string,
-            "llm.model" => llm.model: string,
+            "llm.text_model" => llm.text_model: string,
+            "llm.vision_model" => llm.vision_model: string,
             "llm.allowed_hosts" => llm.allowed_hosts: strings,
+            "llm.connect_timeout_secs" => llm.connect_timeout_secs: integer,
+            "llm.request_timeout_secs" => llm.request_timeout_secs: integer,
+            "llm.idle_timeout_secs" => llm.idle_timeout_secs: integer,
             "paths.state_database" => state_database: path,
             "paths.workflows" => workflows: path,
             "paths.runs" => runs: path,
@@ -122,6 +125,17 @@ impl ResolvedConfig {
         }
     }
 
+    pub fn llm_api_key_set(&self) -> bool {
+        self.llm
+            .api_key
+            .as_ref()
+            .is_some_and(|value| !value.is_empty())
+    }
+
+    pub fn llm_api_key_read_only(&self) -> bool {
+        self.settings.env.contains_key("llm.api_key")
+    }
+
     pub fn settings_values(&self) -> BTreeMap<&'static str, Value> {
         macro_rules! fields {
             ($($key:literal => $($field:ident).+: $kind:ident,)*) => {
@@ -144,8 +158,45 @@ impl ResolvedConfig {
         let current = self.settings_values();
         let mut config = self.clone();
         let mut edits = BTreeMap::new();
+        let mut api_key_edit = None;
         let mut errors = Vec::new();
         for (key, value) in patch {
+            if key == "llm.model" {
+                errors.push(SettingIssue::new(
+                    &key,
+                    "the legacy llm.model key was removed; use llm.text_model and, when needed, llm.vision_model",
+                ));
+                continue;
+            }
+            if key == "llm.api_key" {
+                if matches!(self.setting_source(&key), SettingSource::Env(_)) {
+                    errors.push(SettingIssue::new(&key, "this setting is read-only"));
+                    continue;
+                }
+                let replacement = match value {
+                    Value::Null => None,
+                    Value::String(value) if !value.is_empty() => Some(value),
+                    Value::String(_) => {
+                        errors.push(SettingIssue::new(
+                            &key,
+                            "use null to clear the API key, or provide a non-empty string",
+                        ));
+                        continue;
+                    }
+                    _ => {
+                        errors.push(SettingIssue::new(
+                            &key,
+                            "expected a non-empty string or null",
+                        ));
+                        continue;
+                    }
+                };
+                if replacement != config.llm.api_key {
+                    config.llm.api_key = replacement.clone();
+                    api_key_edit = Some(replacement);
+                }
+                continue;
+            }
             let Some(previous) = current.get(key.as_str()) else {
                 errors.push(SettingIssue::new(&key, "unknown setting"));
                 continue;
@@ -216,7 +267,11 @@ impl ResolvedConfig {
                 .map(SettingIssue::from_validation),
         );
         if errors.is_empty() {
-            Ok(SettingsUpdate { config, edits })
+            Ok(SettingsUpdate {
+                config,
+                edits,
+                api_key_edit,
+            })
         } else {
             Err(errors)
         }
@@ -236,6 +291,21 @@ fn parse<T: DeserializeOwned>(
 pub struct SettingsUpdate {
     config: ResolvedConfig,
     edits: BTreeMap<String, TomlValue>,
+    api_key_edit: Option<Option<String>>,
+}
+
+impl std::fmt::Debug for SettingsUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SettingsUpdate")
+            .field("config", &self.config)
+            .field("edits", &self.edits)
+            .field(
+                "api_key_edit",
+                &self.api_key_edit.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl SettingsUpdate {
@@ -244,7 +314,7 @@ impl SettingsUpdate {
     }
 
     pub fn has_edits(&self) -> bool {
-        !self.edits.is_empty()
+        !self.edits.is_empty() || self.api_key_edit.is_some()
     }
 
     /// Reject new non-loopback URLs from the HTTP settings surface. Private/Compose
@@ -354,7 +424,7 @@ impl SettingsUpdate {
 
     /// Atomically replace only the known changed values, refusing a stale source.
     pub fn persist(mut self) -> Result<ResolvedConfig> {
-        if self.edits.is_empty() {
+        if !self.has_edits() {
             return Ok(self.config);
         }
         let metadata = &mut self.config.settings;
@@ -400,6 +470,21 @@ impl SettingsUpdate {
                 *existing = Item::Value(value);
             } else {
                 table.insert(key, Item::Value(value));
+            }
+        }
+        if let Some(api_key) = self.api_key_edit {
+            let table = doc
+                .entry("llm")
+                .or_insert(Item::Table(Table::new()))
+                .as_table_like_mut()
+                .expect("llm is a validated table");
+            match api_key {
+                Some(api_key) => {
+                    table.insert("api_key", Item::Value(TomlValue::from(api_key)));
+                }
+                None => {
+                    table.remove("api_key");
+                }
             }
         }
         let source = doc.to_string();
@@ -515,24 +600,68 @@ mod tests {
         assert_eq!(initial.settings_file(), target);
         assert!(!target.exists());
         let saved = initial
-            .propose_settings(BTreeMap::from([("llm.model".into(), json!("local"))]))
+            .propose_settings(BTreeMap::from([("llm.text_model".into(), json!("local"))]))
             .unwrap()
             .persist()
             .unwrap();
         assert!(
-            matches!(saved.setting_source("llm.model"), SettingSource::File(path) if path == target)
+            matches!(saved.setting_source("llm.text_model"), SettingSource::File(path) if path == target)
         );
-        assert_eq!(load().llm.model, "local");
+        assert_eq!(load().llm.text_model, "local");
 
         let externally_edited = "[llm]\nmodel = 'external'\nunknown = true\n";
         fs::write(&target, externally_edited).unwrap();
         let error = saved
-            .propose_settings(BTreeMap::from([("llm.model".into(), json!("another"))]))
+            .propose_settings(BTreeMap::from([(
+                "llm.text_model".into(),
+                json!("another"),
+            )]))
             .unwrap()
             .persist()
             .unwrap_err();
         assert!(matches!(error, HarnessError::SettingsConflict(_)));
         assert_eq!(fs::read_to_string(&target).unwrap(), externally_edited);
+    }
+
+    #[test]
+    fn api_key_is_set_cleared_but_never_exposed_as_a_setting() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join(PROJECT_CONFIG);
+        let load = || {
+            HarnessConfig::load_with(workspace.path(), Some(&path), workspace.path(), |name| {
+                match name {
+                    "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => {
+                        Some(workspace.path().to_str().unwrap().to_owned())
+                    }
+                    _ => None,
+                }
+            })
+            .unwrap()
+        };
+        fs::write(&path, "# example\n").unwrap();
+        let initial = load();
+        let set = initial
+            .propose_settings(BTreeMap::from([(
+                "llm.api_key".into(),
+                json!("write-only-secret"),
+            )]))
+            .unwrap();
+        assert!(!format!("{set:?}").contains("write-only-secret"));
+        assert!(!serde_json::to_string(set.config())
+            .unwrap()
+            .contains("write-only-secret"));
+        let saved = set.persist().unwrap();
+        assert!(saved.llm_api_key_set());
+        assert!(!saved.settings_values().contains_key("llm.api_key"));
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("api_key") && contents.contains("write-only-secret"));
+        let cleared = saved
+            .propose_settings(BTreeMap::from([("llm.api_key".into(), Value::Null)]))
+            .unwrap()
+            .persist()
+            .unwrap();
+        assert!(!cleared.llm_api_key_set());
+        assert!(!fs::read_to_string(&path).unwrap().contains("api_key"));
     }
 
     #[test]

@@ -548,12 +548,25 @@ export interface components {
             image_backend: components["schemas"]["HealthStatus"];
             image_backend_reason?: null | components["schemas"]["ImageBackendHealthReason"];
             llm: components["schemas"]["HealthStatus"];
+            llm_reason?: string | null;
+            llm_text?: null | components["schemas"]["LlmRoleHealth"];
+            llm_vision?: null | components["schemas"]["LlmRoleHealth"];
             self: components["schemas"]["HealthStatus"];
         };
         /** @enum {string} */
         HealthStatus: "ok" | "unavailable" | "not_configured";
         /** @enum {string} */
         ImageBackendHealthReason: "probe_failed" | "timeout";
+        LlmModel: {
+            id: string;
+            supports_tools: boolean;
+            supports_vision: boolean;
+        };
+        LlmRoleHealth: {
+            model?: string | null;
+            reason?: string | null;
+            status: components["schemas"]["HealthStatus"];
+        };
         OutputListResponse: {
             next_cursor?: string | null;
             outputs: components["schemas"]["OutputResponse"][];
@@ -706,6 +719,10 @@ export interface components {
         };
         /** @description Effective settings for the next start, including values already applied live. */
         SettingsResponse: {
+            /** @description Whether the environment owns the write-only LLM API key. */
+            api_key_read_only: boolean;
+            /** @description Whether a write-only LLM API key is configured. Its value is never returned. */
+            api_key_set: boolean;
             /** @description Existing selected configuration file or the default target for a first save. */
             config_file: string;
             /** @description Keys whose saved and active values differ. */
@@ -719,6 +736,8 @@ export interface components {
             comfyui: components["schemas"]["HealthStatus"];
             comfyui_reason?: null | components["schemas"]["ImageBackendHealthReason"];
             llm: components["schemas"]["HealthStatus"];
+            llm_models?: components["schemas"]["LlmModel"][];
+            llm_reason?: string | null;
         };
         /** @description Explicit bindings for a workflow configured in the local workspace. */
         SubmitRunRequest: {

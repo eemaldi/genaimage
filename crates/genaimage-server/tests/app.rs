@@ -3,7 +3,7 @@ mod common;
 use std::{
     collections::BTreeMap,
     future::{poll_fn, Future},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, Arc},
     task::Poll,
     time::Duration,
 };
@@ -14,8 +14,9 @@ use genaimage_api::{
     SettingsTestResponse,
 };
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{Event, ImageBackend, RunRequest, RunStatus};
-use genaimage_test_support::{FakeComfyServer, FakeComfyState};
+use genaimage_core::{config::LlmConfig, Event, ImageBackend, LlmRoles, RunRequest, RunStatus};
+use genaimage_llm::{OpenAiCompatibleProvider, OpenAiCompatibleProviderOptions};
+use genaimage_test_support::{FakeComfyServer, FakeComfyState, FakeLlmScript, FakeLlmServer};
 use reqwest::{header, Method, StatusCode};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -60,11 +61,115 @@ async fn health_reports_a_reachable_fake_and_emits_an_event() {
     let hints = health.hints.unwrap();
     assert!(hints.server.contains("GenAImage"));
     assert!(hints.image_backend.contains("comfyui.base_url"));
-    assert!(hints.llm.contains("LLM integration is planned"));
+    assert!(hints.llm.contains("llm.base_url"));
     ApiHarness::await_event(&mut events, Duration::from_secs(2), |e| {
         matches!(e.event, Event::BackendHealthChanged { .. })
     })
     .await;
+}
+
+#[tokio::test]
+async fn concurrent_role_lookups_single_flight_the_model_probe() {
+    let llm = FakeLlmServer::start(
+        FakeLlmScript::default()
+            .with_models_response(json!({
+                "object": "list",
+                "data": [{ "id": "assistant", "supports_tools": true }]
+            }))
+            .with_models_response_delay(Duration::from_millis(100)),
+    )
+    .await;
+    let config = LlmConfig {
+        base_url: llm.base_url(),
+        text_model: "assistant".into(),
+        ..LlmConfig::default()
+    };
+    let provider = Arc::new(
+        OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+            base_url: config.base_url.clone(),
+            ..OpenAiCompatibleProviderOptions::default()
+        })
+        .unwrap(),
+    );
+    let roles = LlmRoles::new(
+        &config,
+        Some(provider as Arc<dyn genaimage_core::LlmProvider>),
+    );
+    let (first, second) = tokio::join!(roles.text(), roles.text());
+    assert_eq!(first.unwrap().model(), "assistant");
+    assert_eq!(second.unwrap().model(), "assistant");
+    assert_eq!(llm.models_request_count(), 1);
+}
+
+#[tokio::test]
+async fn health_reports_cached_llm_role_capabilities() {
+    let llm = FakeLlmServer::start(FakeLlmScript::default().with_models_response(json!({
+        "object": "list",
+        "data": [{
+            "id": "assistant",
+            "supports_tools": true,
+            "supports_vision": false
+        }]
+    })))
+    .await;
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm.base_url().as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "assistant"),
+        ],
+    )
+    .await;
+    let health = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let health: HealthResponse = api.get_json("/api/v1/health").await;
+            if health.llm != HealthStatus::Unavailable
+                || health.llm_reason.as_deref() != Some("The model capability probe is pending.")
+            {
+                return health;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("LLM health probe");
+    assert_eq!(health.llm, HealthStatus::Ok);
+    assert_eq!(health.llm_text.unwrap().model.as_deref(), Some("assistant"));
+    assert_eq!(
+        health.llm_vision.unwrap().status,
+        HealthStatus::NotConfigured
+    );
+}
+
+#[tokio::test]
+async fn health_reports_an_unreachable_llm_without_blocking() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let base_url = format!("http://{address}/v1");
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", &base_url),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "assistant"),
+        ],
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let health = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let health: HealthResponse = api.get_json("/api/v1/health").await;
+            if health.llm_reason.as_deref() != Some("The model capability probe is pending.") {
+                return health;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("LLM failure probe");
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(health.llm, HealthStatus::Unavailable);
+    assert!(health.llm_reason.unwrap().contains("unavailable"));
 }
 
 #[tokio::test]
@@ -419,7 +524,7 @@ const TEST_SETTINGS: &str = "/api/v1/settings/test";
 
 #[tokio::test]
 async fn settings_report_sources_and_key_level_errors_without_writing() {
-    let api = ApiHarness::start_with_config(5, &[("GENAIMAGE_LLM_MODEL", "env-model")]).await;
+    let api = ApiHarness::start_with_config(5, &[("GENAIMAGE_LLM_TEXT_MODEL", "env-model")]).await;
     let path = api.workspace().join("genaimage.toml");
     let original = std::fs::read(&path).unwrap();
     let settings: SettingsResponse = api.get_json(SETTINGS).await;
@@ -431,11 +536,11 @@ async fn settings_report_sources_and_key_level_errors_without_writing() {
     assert!(
         matches!(&settings.settings["server.port"].source, SettingSource::File { file } if file == &settings.config_file)
     );
-    let model = &settings.settings["llm.model"];
+    let model = &settings.settings["llm.text_model"];
     assert_eq!(model.value, "env-model");
     assert!(model.read_only);
     assert!(
-        matches!(&model.source, SettingSource::Env { variable } if variable == "GENAIMAGE_LLM_MODEL")
+        matches!(&model.source, SettingSource::Env { variable } if variable == "GENAIMAGE_LLM_TEXT_MODEL")
     );
     let response = api
         .request(Method::PUT, SETTINGS)
@@ -444,7 +549,7 @@ async fn settings_report_sources_and_key_level_errors_without_writing() {
             "paths.runs": "",
             "server.port": 0,
             "server.max_upload_bytes": "huge",
-            "llm.model": "not-the-env-model",
+            "llm.text_model": "not-the-env-model",
             "unknown.flag": true
         }))
         .send()
@@ -460,7 +565,7 @@ async fn settings_report_sources_and_key_level_errors_without_writing() {
         keys,
         [
             "comfyui.base_url",
-            "llm.model",
+            "llm.text_model",
             "paths.runs",
             "server.max_upload_bytes",
             "server.port",
@@ -472,6 +577,27 @@ async fn settings_report_sources_and_key_level_errors_without_writing() {
         .unwrap()
         .contains("must-not-echo"));
     assert_eq!(std::fs::read(&path).unwrap(), original);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_expose_only_llm_api_key_presence() {
+    let api = ApiHarness::start().await;
+    let saved = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"llm.api_key": "never-return-this-secret"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let body = saved.text().await.unwrap();
+    assert!(!body.contains("never-return-this-secret"));
+    let current: SettingsResponse = api.get_json(SETTINGS).await;
+    assert!(current.api_key_set);
+    assert!(!format!("{:?}", api.core).contains("never-return-this-secret"));
+    assert!(!api.state_debug().contains("never-return-this-secret"));
+    assert!(!current.settings.contains_key("llm.api_key"));
+    assert!(current.restart_required.contains(&"llm.api_key".into()));
     api.shutdown().await;
 }
 
@@ -731,6 +857,10 @@ async fn settings_probe_llm_uses_models_route_without_persisting_or_following_re
             listener,
             Router::new()
                 .route(
+                    "/models",
+                    get(|| async { Json(json!({"object": "list", "data": []})) }),
+                )
+                .route(
                     "/v1/models",
                     get(|| async { Json(json!({"object": "list", "data": []})) }),
                 )
@@ -851,12 +981,12 @@ async fn settings_etag_prevents_concurrent_lost_updates_and_preserves_legacy_put
     let first = api
         .request(Method::PUT, SETTINGS)
         .header(reqwest::header::IF_MATCH, &etag)
-        .json(&json!({"llm.model":"first"}))
+        .json(&json!({"llm.text_model":"first"}))
         .send();
     let second = api
         .request(Method::PUT, SETTINGS)
         .header(reqwest::header::IF_MATCH, &etag)
-        .json(&json!({"llm.model":"second"}))
+        .json(&json!({"llm.text_model":"second"}))
         .send();
     let (a, b) = tokio::join!(first, second);
     let (a, b) = (a.unwrap(), b.unwrap());
@@ -872,12 +1002,12 @@ async fn settings_etag_prevents_concurrent_lost_updates_and_preserves_legacy_put
     assert!(problem.recovery.contains("Reload"));
     let current: SettingsResponse = api.get_json(SETTINGS).await;
     assert_eq!(
-        current.settings["llm.model"].value,
-        saved.settings["llm.model"].value
+        current.settings["llm.text_model"].value,
+        saved.settings["llm.text_model"].value
     );
     let legacy = api
         .request(Method::PUT, SETTINGS)
-        .json(&json!({"llm.model":"legacy"}))
+        .json(&json!({"llm.text_model":"legacy"}))
         .send()
         .await
         .unwrap();
@@ -935,6 +1065,32 @@ async fn settings_probe_selects_service_and_uses_effective_env_url() {
 }
 
 #[tokio::test]
+async fn settings_probe_returns_model_capabilities() {
+    let llm = FakeLlmServer::start(FakeLlmScript::default().with_models_response(json!({
+        "object": "list",
+        "data": [{
+            "id": "assistant",
+            "supports_tools": false,
+            "supports_vision": true
+        }]
+    })))
+    .await;
+    let api = ApiHarness::start().await;
+    let result: SettingsTestResponse = api
+        .post_json(
+            &format!("{TEST_SETTINGS}?service=llm"),
+            &json!({"llm.base_url": llm.base_url()}),
+        )
+        .await;
+    assert_eq!(result.llm, HealthStatus::Ok);
+    assert_eq!(result.llm_models.len(), 1);
+    assert_eq!(result.llm_models[0].id, "assistant");
+    assert!(!result.llm_models[0].supports_tools);
+    assert!(result.llm_models[0].supports_vision);
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn settings_probe_checks_revision_against_its_snapshot() {
     let api = ApiHarness::start().await;
     let original = api.request(Method::GET, SETTINGS).send().await.unwrap();
@@ -945,7 +1101,7 @@ async fn settings_probe_checks_revision_against_its_snapshot() {
     let saved = api
         .request(Method::PUT, SETTINGS)
         .header(reqwest::header::IF_MATCH, &old_etag)
-        .json(&json!({"llm.model": "changed"}))
+        .json(&json!({"llm.text_model": "changed"}))
         .send()
         .await
         .unwrap();
@@ -968,7 +1124,7 @@ async fn settings_probe_checks_revision_against_its_snapshot() {
     let stale_put = api
         .request(Method::PUT, SETTINGS)
         .header(reqwest::header::IF_MATCH, &old_etag)
-        .json(&json!({"llm.model": "stale"}))
+        .json(&json!({"llm.text_model": "stale"}))
         .send()
         .await
         .unwrap();

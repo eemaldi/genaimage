@@ -455,6 +455,19 @@
             >
               The health probe failed.
             </p>{/if}
+          {#if service.name === 'LLM'}
+            {#if health.llm_reason}<p>{health.llm_reason}</p>{/if}
+            {#if health.llm_text}<p>
+                Text model: {health.llm_text.model ?? 'not configured'}
+                {health.llm_text.reason ? ` — ${health.llm_text.reason}` : ''}
+              </p>{/if}
+            {#if health.llm_vision}<p>
+                Vision model: {health.llm_vision.model ?? 'not configured'}
+                {health.llm_vision.reason
+                  ? ` — ${health.llm_vision.reason}`
+                  : ''}
+              </p>{/if}
+          {/if}
         </article>
       {/each}
     </div>

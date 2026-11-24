@@ -23,6 +23,7 @@ futures-util.workspace = true
 genaimage-api = { path = "../genaimage-api", features = ["client"] }
 genaimage-comfyui = { path = "../genaimage-comfyui" }
 genaimage-core = { path = "../genaimage-core" }
+genaimage-llm = { path = "../genaimage-llm" }
 genaimage-server = { path = "../genaimage-server", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

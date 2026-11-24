@@ -4,6 +4,7 @@ pub mod error;
 pub mod event;
 pub mod extensions;
 pub mod image_backend;
+pub mod llm_roles;
 pub mod media;
 pub mod orchestrator;
 pub mod persistence;
@@ -21,6 +22,10 @@ pub use event::{
 };
 pub use extensions::{AssistantTool, EventSink, ExtensionRegistry, LlmProvider, SinkNotification};
 pub use image_backend::ImageBackend;
+pub use llm_roles::{
+    AssistantUnavailable, LlmCapability, LlmHealthSnapshot, LlmModelSnapshot, LlmRole,
+    LlmRoleBinding, LlmRoleHealth, LlmRoleStatus, LlmRoles, LLM_PROVIDER,
+};
 pub use orchestrator::{Harness, KeyedSubmission, RunRequest};
 pub use persistence::{RunRecord, RunStatus};
 pub use workflow::{LoadedWorkflow, ParameterKind, WorkflowManifest};

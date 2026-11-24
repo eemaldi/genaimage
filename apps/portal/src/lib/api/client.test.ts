@@ -221,7 +221,7 @@ describe('portal API client', () => {
     const snapshot = await client.getSettingsWithRevision();
     expect(snapshot.etag).toBe('"rev1"');
     await client.putSettingsWithRevision(
-      { 'llm.model': 'local' },
+      { 'llm.text_model': 'local' },
       snapshot.etag,
     );
     expect(new Headers(fetcher.mock.calls[1][1]?.headers).get('If-Match')).toBe(

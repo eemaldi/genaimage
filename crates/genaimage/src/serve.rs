@@ -1,7 +1,8 @@
-use std::process::ExitCode;
+use std::{process::ExitCode, sync::Arc, time::Duration};
 
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError};
+use genaimage_core::{EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError, LlmRoles};
+use genaimage_llm::{OpenAiCompatibleProvider, OpenAiCompatibleProviderOptions};
 use tracing_subscriber::EnvFilter;
 
 use crate::{output::Output, Cli};
@@ -27,8 +28,8 @@ async fn start(cli: &Cli, portal_dev_url: Option<&str>) -> Result<(), HarnessErr
         .map(genaimage_server::PortalDevProxy::new)
         .transpose()
         .map_err(|error| HarnessError::Configuration(error.to_string()))?;
-    let harness = open_harness(cli).await?;
-    let mut state = genaimage_server::AppState::new(harness.into());
+    let (harness, llm_roles) = open_harness(cli).await?;
+    let mut state = genaimage_server::AppState::new(harness.into()).with_llm_roles(llm_roles);
     if let Some(proxy) = portal_dev {
         state = state.with_portal_dev(proxy);
     }
@@ -36,14 +37,30 @@ async fn start(cli: &Cli, portal_dev_url: Option<&str>) -> Result<(), HarnessErr
     Ok(())
 }
 
-async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
+async fn open_harness(cli: &Cli) -> Result<(Harness, LlmRoles), HarnessError> {
     let config = HarnessConfig::load_with_config(
         cli.workspace
             .as_deref()
             .unwrap_or_else(|| std::path::Path::new(".")),
         cli.config.as_deref(),
     )?;
-    let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
+    let mut registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
+    if !config.llm.base_url.is_empty() {
+        let provider = OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+            base_url: config.llm.base_url.clone(),
+            api_key: config.llm.api_key.clone(),
+            allowed_hosts: config.llm.allowed_hosts.clone(),
+            connect_timeout: Duration::from_secs(config.llm.connect_timeout_secs),
+            first_byte_timeout: Duration::from_secs(config.llm.request_timeout_secs),
+            idle_timeout: Duration::from_secs(config.llm.idle_timeout_secs),
+        })?;
+        registry.register_llm_provider(genaimage_core::LLM_PROVIDER, Arc::new(provider))?;
+    }
+    let llm_roles = LlmRoles::new(
+        &config.llm,
+        registry.llm_provider(genaimage_core::LLM_PROVIDER),
+    );
+    llm_roles.refresh_in_background();
     let backend = registry
         .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
         .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
@@ -58,5 +75,5 @@ async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
             }
         });
     }
-    Ok(harness)
+    Ok((harness, llm_roles))
 }

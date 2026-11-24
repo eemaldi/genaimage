@@ -18,6 +18,7 @@ futures-util.workspace = true
 genaimage-api = { path = "../genaimage-api" }
 genaimage-comfyui = { path = "../genaimage-comfyui" }
 genaimage-core = { path = "../genaimage-core" }
+genaimage-llm = { path = "../genaimage-llm" }
 http-body-util.workspace = true
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["service", "tokio"] }

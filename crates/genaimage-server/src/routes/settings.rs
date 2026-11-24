@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     extract::{
@@ -9,13 +9,17 @@ use axum::{
     Json,
 };
 use genaimage_api::{
-    HealthStatus, ImageBackendHealthReason, SettingsPatch, SettingsResponse, SettingsTestResponse,
+    HealthStatus, ImageBackendHealthReason, LlmModel as ApiLlmModel, SettingsPatch,
+    SettingsResponse, SettingsTestResponse,
 };
 use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{
-    config::{validate_endpoint, validate_endpoint_addresses, ComfyUiProfile},
+    config::{ComfyUiProfile, LlmConfig},
+    extensions::LlmProvider,
     image_backend::ImageBackend,
+    LlmRoles,
 };
+use genaimage_llm::{OpenAiCompatibleProvider, OpenAiCompatibleProviderOptions};
 use tokio::time::timeout;
 
 use crate::{settings::save_failed, AppState, Problem};
@@ -155,9 +159,14 @@ pub(super) async fn probe(
         },
         async {
             if service != "comfyui" {
-                probe_llm(&config.llm.base_url).await
+                probe_llm(
+                    &config.llm,
+                    state.llm_roles(),
+                    state.llm_roles().matches_config(&config.llm),
+                )
+                .await
             } else {
-                HealthStatus::NotConfigured
+                (HealthStatus::NotConfigured, None, Vec::new())
             }
         }
     );
@@ -170,7 +179,9 @@ pub(super) async fn probe(
             HealthStatus::Unavailable
         },
         comfyui_reason: reason,
-        llm,
+        llm: llm.0,
+        llm_reason: llm.1,
+        llm_models: llm.2,
     }))
 }
 
@@ -186,44 +197,64 @@ async fn probe_comfyui(profile: &ComfyUiProfile) -> Option<ImageBackendHealthRea
     }
 }
 
-async fn probe_llm(base_url: &str) -> HealthStatus {
-    if base_url.is_empty() {
-        return HealthStatus::NotConfigured;
+async fn probe_llm(
+    config: &LlmConfig,
+    active: &LlmRoles,
+    uses_active_config: bool,
+) -> (HealthStatus, Option<String>, Vec<ApiLlmModel>) {
+    if config.base_url.is_empty() {
+        return (
+            HealthStatus::NotConfigured,
+            Some("Set llm.base_url to enable the assistant.".into()),
+            Vec::new(),
+        );
     }
-    let result = timeout(PROBE_DEADLINE, async {
-        let key = "llm.base_url";
-        let mut url = validate_endpoint(key, base_url, &[]).ok()?;
-        let host = url.host_str()?.trim_matches(['[', ']']).to_owned();
-        let addresses: Vec<_> =
-            tokio::net::lookup_host((host.as_str(), url.port_or_known_default()?))
-                .await
-                .ok()?
-                .collect();
-        validate_endpoint_addresses(key, base_url, &[], &addresses).ok()?;
-        // OpenAI-compatible roots normally end in /v1. Honour explicit base paths.
-        if url.path() == "/" {
-            url.set_path("/v1/models");
+    let probe = async {
+        let models = if uses_active_config {
+            active.refresh(true).await?
         } else {
-            url.path_segments_mut().ok()?.pop_if_empty().push("models");
+            let provider = OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+                base_url: config.base_url.clone(),
+                api_key: config.api_key.clone(),
+                allowed_hosts: config.allowed_hosts.clone(),
+                connect_timeout: Duration::from_secs(config.connect_timeout_secs),
+                first_byte_timeout: Duration::from_secs(config.request_timeout_secs),
+                idle_timeout: Duration::from_secs(config.idle_timeout_secs),
+            })?;
+            let provider: Arc<dyn LlmProvider> = Arc::new(provider);
+            provider.list_models().await?
+        };
+        Ok::<_, genaimage_core::HarnessError>(models)
+    };
+    match timeout(PROBE_DEADLINE, probe).await {
+        Ok(Ok(models)) => {
+            let models = models
+                .into_iter()
+                .map(|model| {
+                    let override_capabilities = config.capabilities.get(&model.id);
+                    ApiLlmModel {
+                        id: model.id,
+                        supports_tools: override_capabilities
+                            .and_then(|value| value.tools)
+                            .unwrap_or(model.supports_tools),
+                        supports_vision: override_capabilities
+                            .and_then(|value| value.vision)
+                            .unwrap_or(model.supports_vision),
+                    }
+                })
+                .collect();
+            (HealthStatus::Ok, None, models)
         }
-        let response = reqwest::Client::builder()
-            .retry(reqwest::retry::never())
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .resolve_to_addrs(&host, &addresses)
-            .build()
-            .ok()?
-            .get(url)
-            .send()
-            .await
-            .ok()?;
-        Some(response.status().is_success())
-    })
-    .await;
-    if matches!(result, Ok(Some(true))) {
-        HealthStatus::Ok
-    } else {
-        HealthStatus::Unavailable
+        Ok(Err(error)) => (
+            HealthStatus::Unavailable,
+            Some(error.to_string()),
+            Vec::new(),
+        ),
+        Err(_) => (
+            HealthStatus::Unavailable,
+            Some("model listing timed out".into()),
+            Vec::new(),
+        ),
     }
 }
 

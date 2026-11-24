@@ -30,6 +30,10 @@
   let conflict = $state(false);
   let draft = $state<Form>();
   let previous = $state<Form>();
+  let apiKey = $state('');
+  let clearApiKey = $state(false);
+  let draftApiKey = $state<string>();
+  let draftClearApiKey = $state<boolean>();
   let fieldErrors = $state<Record<string, string>>({});
   let busy = $state(false);
   let loading = $state(true);
@@ -40,7 +44,9 @@
     settings
       ? Object.keys(form).some(
           (key) => form[key] !== display(settings!.settings[key].value),
-        )
+        ) ||
+          apiKey.length > 0 ||
+          clearApiKey
       : false,
   );
   let invalid = $derived(Object.keys(validation).length > 0);
@@ -61,6 +67,24 @@
       (problem.errors ?? []).map(({ key, reason }) => [key, reason]),
     );
   }
+  function patch(service?: string) {
+    const value = patchFrom(form, settings!, service);
+    if ((!service || service === 'llm') && apiKey) {
+      value['llm.api_key'] = apiKey;
+    } else if ((!service || service === 'llm') && clearApiKey) {
+      value['llm.api_key'] = null;
+    }
+    return value;
+  }
+  function updateApiKey(value: string) {
+    apiKey = value;
+    if (value) clearApiKey = false;
+    fieldErrors = {};
+    problem = undefined;
+    notice = '';
+    result = undefined;
+    probeProblem = undefined;
+  }
   function update(key: string, value: string) {
     form[key] = value;
     fieldErrors = {};
@@ -73,6 +97,8 @@
     settings = snapshot.settings;
     etag = snapshot.etag;
     form = formFrom(snapshot.settings);
+    apiKey = '';
+    clearApiKey = false;
     fieldErrors = {};
   }
   onMount(() => {
@@ -128,7 +154,7 @@
     probeProblem = undefined;
     result = undefined;
     try {
-      result = await api.testSettings(patchFrom(form, settings, service), {
+      result = await api.testSettings(patch(service), {
         service,
         ifMatch: etag,
       });
@@ -158,11 +184,15 @@
     busy = true;
     try {
       const pending = { ...form };
+      const pendingApiKey = apiKey;
+      const pendingClearApiKey = clearApiKey;
       const baseline = formFrom(settings);
       const fresh = await api.getSettingsWithRevision();
       load(fresh);
       draft = pending;
       previous = baseline;
+      draftApiKey = pendingApiKey;
+      draftClearApiKey = pendingClearApiKey;
       problem = undefined;
       notice =
         'Review the current and proposed values, then choose whether to re-apply your changes.';
@@ -181,8 +211,14 @@
         skipped.push(key);
       else form[key] = draft[key];
     }
+    if (!settings.api_key_read_only) {
+      apiKey = draftApiKey ?? '';
+      clearApiKey = draftClearApiKey ?? false;
+    }
     draft = undefined;
     previous = undefined;
+    draftApiKey = undefined;
+    draftClearApiKey = undefined;
     conflict = false;
     notice = skipped.length
       ? `Could not re-apply read-only settings: ${skipped.join(', ')}.`
@@ -204,10 +240,7 @@
     fieldErrors = {};
     notice = '';
     try {
-      const saved = await api.putSettingsWithRevision(
-        patchFrom(form, settings),
-        etag,
-      );
+      const saved = await api.putSettingsWithRevision(patch(), etag);
       load(saved);
       try {
         load(await api.getSettingsWithRevision());
@@ -259,6 +292,8 @@
       onclick={() => {
         draft = undefined;
         previous = undefined;
+        draftApiKey = undefined;
+        draftClearApiKey = undefined;
         conflict = false;
         notice = 'Your changes were discarded.';
       }}>Discard my changes</Button
@@ -312,6 +347,40 @@
             />
           {/if}
         {/each}
+        {#if section.title === 'LLM'}
+          <p>
+            The assistant is disabled until an LLM URL and text model are
+            configured. The vision model is optional and is never used as a
+            fallback.
+          </p>
+          <p>
+            API key: {settings.api_key_set ? 'set' : 'not set'}. Saved values
+            are never displayed here.
+          </p>
+          <Input
+            label="New LLM API key"
+            type="password"
+            autocomplete="new-password"
+            bind:value={() => apiKey, (value) => updateApiKey(value)}
+            disabled={busy || conflict || settings.api_key_read_only}
+            hint={settings.api_key_read_only
+              ? 'The LLM API key is owned by GENAIMAGE_LLM_API_KEY and is read-only here.'
+              : 'Leave blank to keep the existing key. Use Clear saved key to remove it.'}
+          />
+          {#if settings.api_key_set}
+            <label>
+              <input
+                type="checkbox"
+                bind:checked={clearApiKey}
+                disabled={busy ||
+                  conflict ||
+                  settings.api_key_read_only ||
+                  !!apiKey}
+              />
+              Clear saved LLM API key
+            </label>
+          {/if}
+        {/if}
         {#if section.title === 'ComfyUI' || section.title === 'LLM'}
           <Button
             onclick={() =>
@@ -340,7 +409,21 @@
             LLM: {result.llm === 'not_configured'
               ? 'not configured'
               : result.llm}
-          </p>{/if}
+          </p>
+          {#if result.llm_reason}<p>{result.llm_reason}</p>{/if}
+          {#if result.llm_models?.length}
+            <h3>Available models</h3>
+            <ul>
+              {#each result.llm_models ?? [] as model (model.id)}
+                <li>
+                  <strong>{model.id}</strong> — tools:
+                  {model.supports_tools ? 'supported' : 'not supported'};
+                  vision:
+                  {model.supports_vision ? 'supported' : 'not supported'}
+                </li>
+              {/each}
+            </ul>
+          {/if}{/if}
         {#if (probeService === 'comfyui' ? result.comfyui : result.llm) === 'unavailable'}<p
           >
             Check that the configured service is running and reachable, then
