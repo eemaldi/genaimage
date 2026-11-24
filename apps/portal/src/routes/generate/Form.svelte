@@ -208,6 +208,12 @@
         );
         continue;
       }
+      if (parameter.kind === 'image_upload') {
+        errors.push(
+          `Preset “${pending.preset}” now sets image input “${name}”; choose the image yourself.`,
+        );
+        continue;
+      }
       const field = presetField(parameter, initialField(parameter), raw);
       const error = bindingError(parameter, field);
       if (error) errors.push(`Parameter “${name}” in the preset: ${error}`);
@@ -218,6 +224,12 @@
       if (!parameter) {
         errors.push(
           `Parameter “${name}” is not available in revision ${workflow.revision}.`,
+        );
+        continue;
+      }
+      if (parameter.kind === 'image_upload') {
+        errors.push(
+          `Suggested image input “${name}” was not applied; choose the image yourself.`,
         );
         continue;
       }

@@ -317,6 +317,15 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
       continue;
     }
     const parameter = workflow.parameters[name];
+    if (
+      state.suggested &&
+      parameter.kind === 'image_upload' &&
+      !state.pendingSuggestion
+    ) {
+      const message = `Suggested image input “${name}” was not applied; choose the image yourself. Image upload values cannot come from an assistant suggestion.`;
+      warnings.push({ name, message });
+      continue;
+    }
     const currentDefault = fields.get(name)?.value;
     const seedMode =
       parameter.kind === 'seed'
@@ -391,9 +400,13 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     } catch {
       error = 'The encoded value is not supported.';
     }
-    if (state.pendingSuggestion)
+    if (state.pendingSuggestion) {
       state.pendingSuggestion.fields.set(name, field);
-    else fields.set(name, field);
+      if (parameter.kind === 'image_upload')
+        state.pendingSuggestion.issues.push(
+          `Suggested image input “${name}” will not be applied; choose the image yourself.`,
+        );
+    } else fields.set(name, field);
     if (error && state.pendingSuggestion)
       state.pendingSuggestion.issues.push(
         `Parameter “${name}”: ${error} Shared value: ${JSON.stringify(encoded) ?? '(missing)'}.`,
@@ -413,6 +426,14 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
         Object.hasOwn(workflow.presets, preset) &&
         Object.hasOwn(workflow.presets[preset], name)
       ) {
+        if (parameter.kind === 'image_upload') {
+          warnings.push({
+            name,
+            message: `Preset “${preset}” sets image input “${name}”; choose the image yourself.`,
+          });
+          fields.set(name, initialField(parameter));
+          continue;
+        }
         fields.set(
           name,
           presetField(

@@ -279,6 +279,62 @@ it('reports invalid suggested values without coercing or applying them', async (
   ).toBe(true);
 });
 
+it('does not apply an image newly bound by the current revision preset', async () => {
+  available();
+  vi.spyOn(api, 'suggestWorkflow').mockResolvedValue(response);
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [
+      {
+        id: 'portrait',
+        name: 'Portrait',
+        version: '2',
+        revision: 'current-revision',
+      },
+    ],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'getWorkflow').mockResolvedValue({
+    ...currentWorkflow,
+    presets: {
+      Studio: { Reference: `sha256:${'a'.repeat(64)}` },
+    },
+  });
+  vi.spyOn(api, 'getSettings').mockResolvedValue({
+    config_file: '',
+    api_key_set: false,
+    api_key_read_only: false,
+    restart_required: [],
+    settings: {},
+  });
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  await screen.findByRole('link', { name: 'Portrait' });
+  await openSuggestions(user);
+  await user.click(
+    await screen.findByRole('link', { name: 'Use this suggestion' }),
+  );
+  const reference = await screen.findByLabelText<HTMLInputElement>('Reference');
+  expect(reference.value).toBe('');
+  await user.click(
+    screen.getByRole('button', { name: 'Apply to current revision' }),
+  );
+  expect(
+    await screen.findByText(
+      /Preset “Studio” now sets image input “Reference”; choose the image yourself/,
+    ),
+  ).toBeTruthy();
+  expect(reference.value).toBe('');
+  expect(screen.getByLabelText<HTMLSelectElement>('Preset').value).toBe('');
+  expect(
+    (
+      screen.getByRole('button', {
+        name: 'Review parameters',
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
 it('keeps an oversized suggestion and disables its Generate link safely', async () => {
   available();
   vi.spyOn(api, 'suggestWorkflow').mockResolvedValue({
