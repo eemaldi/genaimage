@@ -1,0 +1,101 @@
+import type { components } from '../api/schema';
+
+export type Conversation =
+  components['schemas']['AssistantConversationResponse'];
+export type ConversationDetail =
+  components['schemas']['AssistantConversationDetailResponse'];
+export type StoredMessage = components['schemas']['AssistantMessageResponse'];
+export type ToolCall = components['schemas']['AssistantToolCall'];
+export type Confirmation =
+  components['schemas']['AssistantConfirmationRequiredEvent'];
+
+export type MessageItem =
+  | {
+      kind: 'message';
+      id: string;
+      conversationId: string;
+      seq: number;
+      role: 'user' | 'assistant';
+      text: string;
+      model?: string;
+      status: components['schemas']['AssistantMessageStatus'] | 'streaming';
+      error?: string;
+      createdAt?: string;
+    }
+  | {
+      kind: 'tool_call';
+      id: string;
+      conversationId: string;
+      toolCall: ToolCall;
+    }
+  | {
+      kind: 'tool_result';
+      id: string;
+      conversationId: string;
+      toolCallId: string;
+      tool: string;
+      ok: boolean;
+      result?: unknown;
+      error?: string;
+    }
+  | {
+      kind: 'confirmation_required';
+      id: string;
+      conversationId: string;
+      confirmation: Confirmation;
+    };
+
+export function messageItems(detail: ConversationDetail): MessageItem[] {
+  const items: MessageItem[] = [];
+  for (const message of detail.messages) {
+    const content = message.content;
+    if ('user' in content) {
+      const text = content.user
+        .map((part) => ('text' in part ? part.text : '[Image attachment]'))
+        .join('\n');
+      items.push({
+        kind: 'message',
+        id: message.id,
+        conversationId: message.conversation_id,
+        seq: message.seq,
+        role: 'user',
+        text,
+        status: message.status,
+        error: message.error ?? undefined,
+        createdAt: message.created_at,
+      });
+    } else if ('assistant' in content) {
+      items.push({
+        kind: 'message',
+        id: message.id,
+        conversationId: message.conversation_id,
+        seq: message.seq,
+        role: 'assistant',
+        text: content.assistant.text,
+        model: message.model ?? undefined,
+        status: message.status,
+        error: message.error ?? undefined,
+        createdAt: message.created_at,
+      });
+      for (const toolCall of content.assistant.tool_calls)
+        items.push({
+          kind: 'tool_call',
+          id: `${message.id}:${toolCall.id}`,
+          conversationId: message.conversation_id,
+          toolCall,
+        });
+    } else if ('tool' in content) {
+      items.push({
+        kind: 'tool_result',
+        id: message.id,
+        conversationId: message.conversation_id,
+        toolCallId: content.tool.call_id,
+        tool: message.tool_call_id ?? content.tool.call_id,
+        ok: !message.error,
+        result: content.tool.result,
+        error: message.error ?? undefined,
+      });
+    }
+  }
+  return items;
+}

@@ -424,9 +424,7 @@ test('cancelling a new link does not truncate forward history', async () => {
   await fireEvent.input(screen.getByLabelText('LLM URL'), {
     target: { value: 'http://localhost:1234' },
   });
-  await userEvent.click(
-    screen.getByRole('link', { name: 'Assistant Planned' }),
-  );
+  await userEvent.click(screen.getByRole('link', { name: 'Assistant' }));
   expect(location.hash).toBe('#/settings');
   history.forward();
   await screen.findByRole('heading', { name: 'Gallery' });
@@ -572,9 +570,7 @@ test('blocks navigation while saving', async () => {
     target: { value: 'http://localhost:1234' },
   });
   await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
-  await userEvent.click(
-    screen.getByRole('link', { name: 'Assistant Planned' }),
-  );
+  await userEvent.click(screen.getByRole('link', { name: 'Assistant' }));
   await waitFor(() =>
     expect(alert).toHaveBeenCalledWith(
       expect.stringContaining('save is in progress'),

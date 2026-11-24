@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick, type Component } from 'svelte';
   import Button from './lib/ui/Button.svelte';
   import Dialog from './lib/ui/Dialog.svelte';
   import ToastRegion from './lib/ui/ToastRegion.svelte';
@@ -30,9 +30,81 @@
   let main: HTMLElement;
   let header: HTMLElement;
   let navToggle: HTMLButtonElement;
+  let AssistantPanel = $state<Component>();
+  let assistantOpen = $state(loadAssistantOpen());
+  let assistantSide = $state<'left' | 'right'>(loadAssistantSide());
+  let assistantLoading = $state(false);
   let section = $derived(
     route.pattern === '/runs/:id' ? '/jobs' : route.pattern?.split('/:')[0],
   );
+
+  function loadAssistantOpen() {
+    try {
+      return localStorage.getItem('genaimage.assistant.open') === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  function loadAssistantSide(): 'left' | 'right' {
+    try {
+      return localStorage.getItem('genaimage.assistant.side') === 'left'
+        ? 'left'
+        : 'right';
+    } catch {
+      return 'right';
+    }
+  }
+
+  function persistAssistantOpen(value: boolean) {
+    try {
+      localStorage.setItem('genaimage.assistant.open', String(value));
+    } catch {
+      /* Keep the in-memory preference if storage is unavailable. */
+    }
+  }
+
+  async function loadAssistantPanel() {
+    if (AssistantPanel || assistantLoading) return;
+    assistantLoading = true;
+    try {
+      AssistantPanel = (await import('./lib/assistant/AssistantPanel.svelte'))
+        .default;
+    } finally {
+      assistantLoading = false;
+    }
+  }
+
+  async function toggleAssistant() {
+    assistantOpen = !assistantOpen;
+    persistAssistantOpen(assistantOpen);
+    if (assistantOpen) await loadAssistantPanel();
+    else {
+      await tick();
+      document.getElementById('assistant-toggle')?.focus();
+    }
+  }
+
+  function closeAssistant() {
+    assistantOpen = false;
+    persistAssistantOpen(false);
+    void tick().then(() =>
+      document.getElementById('assistant-toggle')?.focus(),
+    );
+  }
+
+  function setAssistantSide(side: 'left' | 'right') {
+    assistantSide = side;
+    try {
+      localStorage.setItem('genaimage.assistant.side', side);
+    } catch {
+      /* Keep the in-memory preference if storage is unavailable. */
+    }
+  }
+
+  onMount(() => {
+    if (assistantOpen) void loadAssistantPanel();
+  });
 
   function setShortcutPreference(
     event: Event & { currentTarget: HTMLInputElement },
@@ -151,6 +223,12 @@
         onclick={() => (navOpen = !navOpen)}>Menu</button
       >
       <Button
+        id="assistant-toggle"
+        aria-expanded={assistantOpen && route.path !== '/assistant'}
+        aria-controls="assistant-panel"
+        onclick={toggleAssistant}>Assistant chat</Button
+      >
+      <Button
         onclick={() => {
           keyboard.reset();
           helpOpen = true;
@@ -200,6 +278,20 @@
     <route.component params={route.params} query={route.query} />
   </div>
 </main>
+{#if assistantOpen && route.path !== '/assistant'}
+  <div id="assistant-panel">
+    {#if AssistantPanel}
+      <AssistantPanel
+        presentation="dock"
+        side={assistantSide}
+        close={closeAssistant}
+        setSide={setAssistantSide}
+      />
+    {:else if assistantLoading}<p class="visually-hidden" role="status">
+        Loading assistant…
+      </p>{/if}
+  </div>
+{/if}
 <ToastRegion returnFocus={focusMain} />
 <Dialog bind:open={helpOpen} title="Keyboard shortcuts" returnFocus={focusMain}>
   <p>For two-key shortcuts, press the keys in order, not together.</p>

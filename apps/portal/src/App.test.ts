@@ -10,6 +10,7 @@ import axe from 'axe-core';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mockNativeDialog } from './test/dialog';
 import App from './App.svelte';
+import { api } from './lib/api/client';
 
 afterEach(() => {
   cleanup();
@@ -31,7 +32,7 @@ it('renders the current route and responds to hash changes', async () => {
   window.location.hash = '#/assistant';
   await waitFor(() =>
     expect(
-      screen.getByText('The assistant is planned and not yet available.'),
+      screen.getByRole('heading', { name: 'Assistant', level: 1 }),
     ).toBeTruthy(),
   );
   window.location.hash = '#/missing';
@@ -49,7 +50,7 @@ it('identifies the current section, preserves the hash on skip, and moves focus 
   expect(
     screen.getByRole('link', { name: 'Workflows', current: 'location' }),
   ).toBeTruthy();
-  expect(screen.getByRole('link', { name: 'Assistant Planned' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Assistant' })).toBeTruthy();
   await user.tab();
   expect(document.activeElement).toBe(
     screen.getByRole('link', { name: 'Skip to main content' }),
@@ -146,4 +147,49 @@ it('has no axe violations in the shell or shortcut help (contrast checked separa
   } finally {
     document.documentElement.removeAttribute('lang');
   }
+});
+
+it('opens and closes the lazy assistant by keyboard with focus return', async () => {
+  vi.spyOn(api, 'health').mockResolvedValue({
+    self: 'ok',
+    image_backend: 'ok',
+    llm: 'ok',
+    llm_text: { status: 'ok', model: 'local' },
+  });
+  vi.spyOn(api, 'listAssistantConversations').mockResolvedValue({
+    conversations: [],
+    next_cursor: null,
+  });
+  const user = userEvent.setup();
+  render(App);
+  const toggle = screen.getByRole('button', { name: 'Assistant chat' });
+  toggle.focus();
+  await user.keyboard('{Enter}');
+  const close = await screen.findByRole('button', { name: 'Close assistant' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(document.activeElement).toBe(close);
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('button', { name: 'Close assistant' })).toBeNull();
+  expect(document.activeElement).toBe(toggle);
+  expect(localStorage.getItem('genaimage.assistant.open')).toBe('false');
+});
+
+it('persists the assistant dock side', async () => {
+  vi.spyOn(api, 'health').mockResolvedValue({
+    self: 'ok',
+    image_backend: 'ok',
+    llm: 'ok',
+    llm_text: { status: 'ok', model: 'local' },
+  });
+  vi.spyOn(api, 'listAssistantConversations').mockResolvedValue({
+    conversations: [],
+    next_cursor: null,
+  });
+  const user = userEvent.setup();
+  render(App);
+  await user.click(screen.getByRole('button', { name: 'Assistant chat' }));
+  await user.click(
+    await screen.findByRole('button', { name: 'Dock assistant on the left' }),
+  );
+  expect(localStorage.getItem('genaimage.assistant.side')).toBe('left');
 });

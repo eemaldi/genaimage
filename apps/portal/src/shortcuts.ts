@@ -4,7 +4,7 @@ export const sections = [
   { path: '/jobs', label: 'Jobs', key: 'j' },
   { path: '/gallery', label: 'Gallery', key: 'a' },
   { path: '/workflows', label: 'Workflows', key: 'w' },
-  { path: '/assistant', label: 'Assistant', planned: true },
+  { path: '/assistant', label: 'Assistant' },
   { path: '/settings', label: 'Settings', key: 's' },
 ] as const;
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createEventStore } from './events';
+import { readSseJson } from './sse';
 import type { ResyncEvent } from './events';
 
 class FakeEventSource extends EventTarget {
@@ -255,5 +256,46 @@ describe('portal event stream', () => {
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(10_000);
     expect(streams()).toHaveLength(2);
+  });
+});
+
+describe('fetch SSE parser', () => {
+  it('parses named JSON frames split across arbitrary stream chunks', async () => {
+    const chunks = [
+      'event: message_sta',
+      'rted\r\ndata: {"conversation_id":"one",\r\n',
+      'data: "model":"local"}\r\n\r\nevent: delta\n',
+      'data: {"text":"hello"}\n\n',
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    const frames = [];
+    for await (const frame of readSseJson(new Response(body)))
+      frames.push(frame);
+    expect(frames).toEqual([
+      {
+        event: 'message_started',
+        data: { conversation_id: 'one', model: 'local' },
+        id: undefined,
+      },
+      { event: 'delta', data: { text: 'hello' }, id: undefined },
+    ]);
+  });
+
+  it('retains SSE IDs and ignores comments', async () => {
+    const body = new TextEncoder().encode(
+      ': keepalive\n\nid: 42\nevent: done\ndata: {"status":"complete"}\n\n',
+    );
+    const frames = [];
+    for await (const frame of readSseJson(new Response(body)))
+      frames.push(frame);
+    expect(frames).toEqual([
+      { event: 'done', data: { status: 'complete' }, id: '42' },
+    ]);
   });
 });

@@ -1,5 +1,6 @@
 import type { components, paths } from './schema';
 import { apiUrl } from './url';
+import type { SseFrame } from './sse';
 
 export type ProblemDetails = components['schemas']['ProblemDetails'] & {
   instance?: string;
@@ -145,6 +146,33 @@ export type PromptAssistRequest = JsonBody<
 export type SuggestWorkflowRequest = JsonBody<
   Operation<'/api/v1/assistant/suggest', 'post'>
 >;
+export type AssistantConversationQuery = Params<
+  '/api/v1/assistant/conversations',
+  'get'
+>['query'];
+export type SendAssistantMessageRequest = JsonBody<
+  Operation<'/api/v1/assistant/conversations/{id}/messages', 'post'>
+>;
+export type AssistantStreamEvent =
+  | ({
+      event: 'message_started';
+    } & components['schemas']['AssistantMessageStartedEvent'])
+  | ({ event: 'delta' } & components['schemas']['AssistantDeltaEvent'])
+  | ({ event: 'tool_call' } & components['schemas']['AssistantToolCallEvent'])
+  | ({
+      event: 'tool_result';
+    } & components['schemas']['AssistantToolResultEvent'])
+  | ({
+      event: 'confirmation_required';
+    } & components['schemas']['AssistantConfirmationRequiredEvent'])
+  | ({ event: 'done' } & components['schemas']['AssistantTerminalEvent'])
+  | ({
+      event: 'awaiting_confirmation';
+    } & components['schemas']['AssistantAwaitingConfirmationEvent'])
+  | ({ event: 'error' } & components['schemas']['AssistantTerminalEvent']);
+type WithoutEvent<T> = T extends { event: unknown } ? Omit<T, 'event'> : never;
+type AssistantStreamPayload = WithoutEvent<AssistantStreamEvent>;
+export type AssistantStream = AsyncGenerator<SseFrame<AssistantStreamPayload>>;
 
 export const outputMediaUrl = (id: string) =>
   apiUrl('/api/v1/outputs/{id}', { id });
@@ -347,6 +375,65 @@ export function createApiClient(
         '/api/v1/assistant/suggest',
         { ...options, body },
         (response) => readExactIntegers(response, true),
+      ),
+    listAssistantConversations: (
+      query?: AssistantConversationQuery,
+      options?: RequestOptions,
+    ) =>
+      json('get', '/api/v1/assistant/conversations', {
+        ...options,
+        query,
+      }),
+    createAssistantConversation: (
+      body: JsonBody<Operation<'/api/v1/assistant/conversations', 'post'>>,
+      options?: RequestOptions,
+    ) =>
+      json('post', '/api/v1/assistant/conversations', {
+        ...options,
+        body,
+      }),
+    getAssistantConversation: (
+      id: string,
+      messageLimit = 100,
+      options?: RequestOptions,
+    ) =>
+      json('get', '/api/v1/assistant/conversations/{id}', {
+        ...options,
+        path: { id },
+        query: { message_limit: messageLimit },
+      }),
+    deleteAssistantConversation: (id: string, options?: RequestOptions) =>
+      request(
+        apiUrl('/api/v1/assistant/conversations/{id}', { id }),
+        { method: 'DELETE', signal: options?.signal },
+        async () => undefined,
+      ),
+    cancelAssistantConversation: (id: string, options?: RequestOptions) =>
+      request(
+        apiUrl('/api/v1/assistant/conversations/{id}/cancel', { id }),
+        { method: 'POST', signal: options?.signal },
+        async () => undefined,
+      ),
+    sendAssistantMessage: (
+      id: string,
+      body: SendAssistantMessageRequest,
+      options?: RequestOptions,
+    ) =>
+      request<AssistantStream>(
+        apiUrl('/api/v1/assistant/conversations/{id}/messages', { id }),
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream, application/problem+json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: options?.signal,
+        },
+        async (response) => {
+          const { readSseJson } = await import('./sse');
+          return readSseJson<AssistantStreamPayload>(response, options?.signal);
+        },
       ),
     listWorkflows: (options: RequestOptions = {}) =>
       json('get', '/api/v1/workflows', options),
