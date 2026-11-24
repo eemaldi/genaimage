@@ -412,6 +412,34 @@ async fn rejects_an_oversized_sse_event() {
 }
 
 #[tokio::test]
+async fn done_yields_buffered_tool_call_then_drops_hanging_body() {
+    let server = FakeLlmServer::start(
+        FakeLlmScript::default().with_events([
+            FakeLlmEvent::tool_calls([FakeToolCallDelta::new(0)
+                .id("call-done")
+                .name("inspect")
+                .arguments("{}")]),
+            FakeLlmEvent::Done,
+            FakeLlmEvent::Hang,
+        ]),
+    )
+    .await;
+    let mut stream = provider(&server)
+        .chat_stream(request())
+        .await
+        .expect("stream");
+
+    let first = stream.next().await.expect("tool call").expect("tool call");
+    assert!(matches!(first, ChatDelta::ToolCall(ref call) if call.id == "call-done"));
+    assert!(stream.next().await.is_none());
+    assert!(
+        server
+            .wait_for_stream_disconnect(Duration::from_secs(1))
+            .await
+    );
+}
+
+#[tokio::test]
 async fn dropping_stream_cancels_the_http_body_promptly() {
     let server =
         FakeLlmServer::start(FakeLlmScript::default().with_events([FakeLlmEvent::Hang])).await;

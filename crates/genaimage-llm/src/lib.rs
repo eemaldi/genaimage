@@ -1,7 +1,11 @@
 //! OpenAI-compatible HTTP adapter for local LLM servers.
 
 use std::{
-    collections::BTreeMap, error::Error as StdError, fmt, net::ToSocketAddrs, pin::Pin,
+    collections::{BTreeMap, VecDeque},
+    error::Error as StdError,
+    fmt,
+    net::ToSocketAddrs,
+    pin::Pin,
     time::Duration,
 };
 
@@ -428,53 +432,80 @@ fn encode_request(request: &ChatRequest) -> Result<Value> {
 
 type ByteStream =
     Pin<Box<dyn Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>> + Send>>;
+type SseStream = Pin<
+    Box<
+        dyn Stream<
+                Item = std::result::Result<
+                    eventsource_stream::Event,
+                    eventsource_stream::EventStreamError<TimedBodyError>,
+                >,
+            > + Send,
+    >,
+>;
+
+#[derive(Default)]
+struct SseLimitState {
+    event_bytes: usize,
+    line_bytes: usize,
+    pending_cr: bool,
+}
 
 fn with_idle_timeout(
     source: ByteStream,
     idle_timeout: Duration,
 ) -> impl Stream<Item = std::result::Result<bytes::Bytes, TimedBodyError>> {
     stream::unfold(
-        (Some(source.fuse()), 0usize, Vec::with_capacity(3)),
-        move |(source, mut event_bytes, mut separator)| async move {
+        (Some(source.fuse()), SseLimitState::default()),
+        move |(source, mut limit)| async move {
             let mut source = source?;
             match tokio::time::timeout(idle_timeout, source.next()).await {
                 Ok(Some(Ok(bytes))) => {
-                    if sse_event_exceeds_limit(&bytes, &mut event_bytes, &mut separator) {
+                    if sse_event_exceeds_limit(&bytes, &mut limit) {
                         return Some((
                             Err(TimedBodyError::EventTooLarge(MAX_SSE_EVENT_BYTES)),
-                            (None, event_bytes, separator),
+                            (None, limit),
                         ));
                     }
-                    Some((Ok(bytes), (Some(source), event_bytes, separator)))
+                    Some((Ok(bytes), (Some(source), limit)))
                 }
-                Ok(Some(Err(error))) => Some((
-                    Err(TimedBodyError::Request(error)),
-                    (None, event_bytes, separator),
-                )),
+                Ok(Some(Err(error))) => Some((Err(TimedBodyError::Request(error)), (None, limit))),
                 Ok(None) => None,
-                Err(_) => Some((
-                    Err(TimedBodyError::Idle(idle_timeout)),
-                    (None, event_bytes, separator),
-                )),
+                Err(_) => Some((Err(TimedBodyError::Idle(idle_timeout)), (None, limit))),
             }
         },
     )
 }
 
-fn sse_event_exceeds_limit(chunk: &[u8], event_bytes: &mut usize, separator: &mut Vec<u8>) -> bool {
+fn sse_event_exceeds_limit(chunk: &[u8], state: &mut SseLimitState) -> bool {
     for byte in chunk {
-        *event_bytes = event_bytes.saturating_add(1);
-        separator.push(*byte);
-        if separator.ends_with(b"\n\n")
-            || separator.ends_with(b"\r\r")
-            || separator.ends_with(b"\r\n\r\n")
-        {
-            *event_bytes = 0;
-            separator.clear();
-        } else if separator.len() > 3 {
-            separator.remove(0);
+        if state.pending_cr {
+            state.pending_cr = false;
+            if *byte == b'\n' {
+                continue;
+            }
         }
-        if *event_bytes > MAX_SSE_EVENT_BYTES {
+        match *byte {
+            b'\r' => {
+                state.event_bytes = state.event_bytes.saturating_add(1);
+                if state.line_bytes == 0 {
+                    state.event_bytes = 0;
+                }
+                state.line_bytes = 0;
+                state.pending_cr = true;
+            }
+            b'\n' => {
+                state.event_bytes = state.event_bytes.saturating_add(1);
+                if state.line_bytes == 0 {
+                    state.event_bytes = 0;
+                }
+                state.line_bytes = 0;
+            }
+            _ => {
+                state.event_bytes = state.event_bytes.saturating_add(1);
+                state.line_bytes = state.line_bytes.saturating_add(1);
+            }
+        }
+        if state.event_bytes > MAX_SSE_EVENT_BYTES {
             return true;
         }
     }
@@ -488,24 +519,48 @@ fn decode_chat_stream(
     api_key: Option<String>,
 ) -> ChatStream {
     let source = Box::pin(response.bytes_stream()) as ByteStream;
-    let events = with_idle_timeout(source, idle_timeout).eventsource();
-    let with_end = events.map(Some).chain(stream::once(async { None }));
-    let mut parser = ChatParser::new(model, api_key);
-    Box::pin(
-        with_end
-            .flat_map(move |event| {
-                let output = match event {
-                    Some(Ok(event)) => parser.process_event(&event.data),
-                    Some(Err(error)) => {
-                        parser.fail();
-                        vec![Err(parser.error(format!("malformed SSE response: {error}")))]
-                    }
-                    None => parser.finish(),
-                };
-                stream::iter(output)
-            })
-            .fuse(),
-    )
+    let events = Box::pin(with_idle_timeout(source, idle_timeout).eventsource()) as SseStream;
+    let state = DecodeChatState {
+        events: Some(events),
+        parser: ChatParser::new(model, api_key),
+        pending: VecDeque::new(),
+    };
+    Box::pin(stream::unfold(Some(state), |state| async move {
+        let mut state = state?;
+        loop {
+            if let Some(item) = state.pending.pop_front() {
+                return Some((item, Some(state)));
+            }
+            let Some(event) = state.events.as_mut()?.next().await else {
+                state.pending.extend(state.parser.finish());
+                state.events = None;
+                continue;
+            };
+            match event {
+                Ok(event) => state
+                    .pending
+                    .extend(state.parser.process_event(&event.data)),
+                Err(error) => {
+                    state.parser.fail();
+                    state.pending.push_back(Err(state
+                        .parser
+                        .error(format!("malformed SSE response: {error}"))));
+                }
+            }
+            if state.parser.ended {
+                state.events = None;
+            }
+            if state.pending.is_empty() && state.parser.ended {
+                return None;
+            }
+        }
+    }))
+}
+
+struct DecodeChatState {
+    events: Option<SseStream>,
+    parser: ChatParser,
+    pending: VecDeque<Result<ChatDelta>>,
 }
 
 #[derive(Debug)]
@@ -858,6 +913,22 @@ mod tests {
         assert_eq!(options.connect_timeout, Duration::from_secs(5));
         assert_eq!(options.first_byte_timeout, Duration::from_secs(60));
         assert_eq!(options.idle_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn sse_limiter_resets_on_mixed_logical_line_endings() {
+        for blank_line in [&b"\r\n\n"[..], &b"\n\r\n"[..]] {
+            let mut state = SseLimitState::default();
+            assert!(!sse_event_exceeds_limit(
+                &vec![b'x'; MAX_SSE_EVENT_BYTES - 10],
+                &mut state,
+            ));
+            assert!(!sse_event_exceeds_limit(blank_line, &mut state));
+            assert!(!sse_event_exceeds_limit(
+                &vec![b'x'; MAX_SSE_EVENT_BYTES - 10],
+                &mut state,
+            ));
+        }
     }
 
     #[test]
