@@ -18,9 +18,26 @@ pub(crate) struct SettingsState {
 struct Snapshot {
     desired: Arc<ResolvedConfig>,
     active: Arc<Harness>,
+    revision: String,
 }
 
 impl Snapshot {
+    fn check_revision(&self, condition: Option<&str>) -> Result<(), Problem> {
+        if condition.is_some_and(|condition| {
+            !condition
+                .split(',')
+                .map(str::trim)
+                .any(|tag| tag == "*" || tag == self.revision)
+        }) {
+            return Err(Problem::new(
+                StatusCode::PRECONDITION_FAILED,
+                "Settings changed since they were loaded.",
+                "Reload settings and review your changes before saving again.",
+            ));
+        }
+        Ok(())
+    }
+
     fn response(&self) -> SettingsResponse {
         let active = self.active.config().settings_values();
         let mut restart_required = Vec::new();
@@ -69,6 +86,7 @@ impl SettingsState {
             snapshot: RwLock::new(Snapshot {
                 desired: Arc::new(harness.config().clone()),
                 active: harness,
+                revision: new_revision(),
             }),
             writer: Mutex::new(()),
         }
@@ -82,24 +100,22 @@ impl SettingsState {
             .clone()
     }
 
-    pub(crate) fn get(&self) -> SettingsResponse {
-        self.snapshot
-            .read()
-            .expect("settings lock poisoned")
-            .response()
+    pub(crate) fn get(&self) -> (String, SettingsResponse) {
+        let snapshot = self.snapshot.read().expect("settings lock poisoned");
+        (snapshot.revision.clone(), snapshot.response())
     }
 
     pub(crate) fn propose(
         &self,
         patch: SettingsPatch,
-        probe: bool,
+        probe: Option<&str>,
+        if_match: Option<&str>,
     ) -> Result<SettingsUpdate, Problem> {
-        let desired = self
-            .snapshot
-            .read()
-            .expect("settings lock poisoned")
-            .desired
-            .clone();
+        let desired = {
+            let snapshot = self.snapshot.read().expect("settings lock poisoned");
+            snapshot.check_revision(if_match)?;
+            snapshot.desired.clone()
+        };
         let proposal = desired
             .propose_settings(patch.0)
             .map_err(invalid_settings)?;
@@ -111,9 +127,13 @@ impl SettingsState {
 
     /// Run the whole transaction on the blocking pool, including publishing the
     /// in-memory snapshot: disconnecting a client cannot interrupt a save.
-    pub(crate) fn save(&self, patch: SettingsPatch) -> Result<SettingsResponse, Problem> {
+    pub(crate) fn save(
+        &self,
+        patch: SettingsPatch,
+        if_match: Option<String>,
+    ) -> Result<(String, SettingsResponse), Problem> {
         let _writer = self.writer.lock().expect("settings writer lock poisoned");
-        let update = self.propose(patch, false)?;
+        let update = self.propose(patch, None, if_match.as_deref())?;
         if !update.has_edits() {
             return Ok(self.get());
         }
@@ -135,13 +155,15 @@ impl SettingsState {
         let snapshot = Snapshot {
             desired: Arc::new(desired),
             active: Arc::new(new_active),
+            revision: new_revision(),
         };
         let response = snapshot.response();
+        let revision = snapshot.revision.clone();
         *self.snapshot.write().expect("settings lock poisoned") = snapshot;
         active.events().publish(Event::SettingsChanged {
             settings: serde_json::to_value(&response).expect("settings are JSON values"),
         });
-        Ok(response)
+        Ok((revision, response))
     }
 }
 
@@ -168,4 +190,8 @@ pub(crate) fn save_failed() -> Problem {
         "The settings could not be saved.",
         "Check that the configuration file and its directory are writable, then try again.",
     )
+}
+
+fn new_revision() -> String {
+    format!("\"{}\"", uuid::Uuid::new_v4())
 }

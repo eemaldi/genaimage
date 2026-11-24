@@ -187,6 +187,39 @@ describe('portal API client', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it('round-trips the settings ETag and selects the probe service', async () => {
+    const body = { settings: {}, config_file: '/config', restart_required: [] };
+    const fetcher = mockFetch()
+      .mockResolvedValueOnce(
+        Response.json(body, { headers: { ETag: '"rev1"' } }),
+      )
+      .mockResolvedValueOnce(
+        Response.json(body, { headers: { ETag: '"rev2"' } }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ comfyui: 'not_configured', llm: 'ok' }),
+      );
+    const client = createApiClient(fetcher);
+    const snapshot = await client.getSettingsWithRevision();
+    expect(snapshot.etag).toBe('"rev1"');
+    await client.putSettingsWithRevision(
+      { 'llm.model': 'local' },
+      snapshot.etag,
+    );
+    expect(new Headers(fetcher.mock.calls[1][1]?.headers).get('If-Match')).toBe(
+      '"rev1"',
+    );
+    await client.testSettings({}, { service: 'llm', ifMatch: snapshot.etag });
+    expect(fetcher.mock.calls[2][0]).toBe('/api/v1/settings/test?service=llm');
+    expect(new Headers(fetcher.mock.calls[2][1]?.headers).get('If-Match')).toBe(
+      '"rev1"',
+    );
+    fetcher.mockResolvedValueOnce(Response.json(body));
+    await expect(client.getSettingsWithRevision()).rejects.toBeInstanceOf(
+      ApiResponseError,
+    );
+  });
+
   it('sends uploads as multipart and lets the browser set the boundary', async () => {
     const fetcher = mockFetch().mockResolvedValueOnce(
       Response.json({ id: 'upload-1' }, { status: 201 }),

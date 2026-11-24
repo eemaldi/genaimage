@@ -278,7 +278,7 @@ export interface paths {
         };
         /** @description Read effective settings. */
         get: operations["settings_read"];
-        /** @description Save sparse settings. */
+        /** @description Save sparse settings. If-Match is optional for older clients; use the GET ETag to prevent lost updates. */
         put: operations["settings_save"];
         post?: never;
         delete?: never;
@@ -297,7 +297,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Test proposed settings without saving them. */
+        /** @description Test proposed settings without saving them. If-Match is optional for older clients; use the GET ETag to test the loaded revision. */
         post: operations["settings_probe"];
         delete?: never;
         options?: never;
@@ -3362,6 +3362,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control"?: string;
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3436,7 +3437,10 @@ export interface operations {
     settings_save: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Current settings ETag */
+                "If-Match"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3449,6 +3453,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control"?: string;
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3484,6 +3489,15 @@ export interface operations {
             };
             /** @description Settings conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Settings revision mismatch */
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3559,6 +3573,7 @@ export interface operations {
             200: {
                 headers: {
                     "Cache-Control"?: string;
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -3616,8 +3631,14 @@ export interface operations {
     };
     settings_probe: {
         parameters: {
-            query?: never;
-            header?: never;
+            query?: {
+                /** @description Choose one service; omit to test both for backwards compatibility. */
+                service?: string;
+            };
+            header?: {
+                /** @description Current settings ETag */
+                "If-Match"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3655,6 +3676,15 @@ export interface operations {
             };
             /** @description Problem details */
             408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Settings revision mismatch */
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };

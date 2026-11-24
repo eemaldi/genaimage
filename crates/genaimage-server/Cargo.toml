@@ -27,6 +27,7 @@ percent-encoding = "2"
 reqwest = { workspace = true, features = ["stream"] }
 rust-embed = { version = "8", features = ["debug-embed"], optional = true }
 url.workspace = true
+uuid.workspace = true
 utoipa.workspace = true
 utoipa-axum = "0.2"
 serde.workspace = true

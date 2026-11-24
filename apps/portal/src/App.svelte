@@ -4,6 +4,11 @@
   import Dialog from './lib/ui/Dialog.svelte';
   import ToastRegion from './lib/ui/ToastRegion.svelte';
   import { matchHash } from './router';
+  import {
+    acceptNavigation,
+    initialiseNavigation,
+    navigateHash,
+  } from './navigation';
   import { createShortcutHandler, sections, shortcuts } from './shortcuts';
   import './styles/tokens.css';
   import './styles/ui.css';
@@ -17,6 +22,7 @@
     }
   }
 
+  initialiseNavigation();
   let route = $state(matchHash(window.location.hash));
   let navOpen = $state(false);
   let helpOpen = $state(false);
@@ -45,6 +51,7 @@
   }
 
   async function updateRoute() {
+    if (!acceptNavigation()) return;
     const next = matchHash(window.location.hash);
     const changed = next.path !== route.path;
     route = next;
@@ -58,7 +65,7 @@
   const keyboard = createShortcutHandler({
     navigate(path) {
       const hash = `#${path}`;
-      if (window.location.hash !== hash) window.location.hash = hash;
+      navigateHash(hash);
       if (route.path === path) {
         navOpen = false;
         focusMain();
@@ -68,6 +75,30 @@
       helpOpen = true;
     },
   });
+
+  function onDocumentClick(event: MouseEvent) {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.altKey ||
+      !(event.target instanceof Element)
+    )
+      return;
+    const link = event.target.closest('a');
+    const href = link?.getAttribute('href');
+    if (
+      !link ||
+      !href?.startsWith('#/') ||
+      link.hasAttribute('download') ||
+      (link.target && link.target !== '_self')
+    )
+      return;
+    event.preventDefault();
+    navigateHash(href);
+  }
 
   function onKeydown(event: KeyboardEvent) {
     if (event.target instanceof Node && header.contains(event.target))
@@ -92,6 +123,7 @@
   }
 </script>
 
+<svelte:document onclick={onDocumentClick} />
 <svelte:window
   onhashchange={updateRoute}
   onkeydown={onKeydown}

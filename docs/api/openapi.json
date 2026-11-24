@@ -4613,6 +4613,11 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -4702,6 +4707,11 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -4732,8 +4742,22 @@
         ]
       },
       "put": {
-        "description": "Save sparse settings.",
+        "description": "Save sparse settings. If-Match is optional for older clients; use the GET ETag to prevent lost updates.",
         "operationId": "settings_save",
+        "parameters": [
+          {
+            "description": "Current settings ETag",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4756,6 +4780,11 @@
             "description": "",
             "headers": {
               "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
                 "schema": {
                   "type": "string"
                 }
@@ -4801,6 +4830,16 @@
               }
             },
             "description": "Settings conflict"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Settings revision mismatch"
           },
           "413": {
             "content": {
@@ -4870,8 +4909,31 @@
     },
     "/api/v1/settings/test": {
       "post": {
-        "description": "Test proposed settings without saving them.",
+        "description": "Test proposed settings without saving them. If-Match is optional for older clients; use the GET ETag to test the loaded revision.",
         "operationId": "settings_probe",
+        "parameters": [
+          {
+            "description": "Choose one service; omit to test both for backwards compatibility.",
+            "in": "query",
+            "name": "service",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current settings ETag",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4922,6 +4984,16 @@
               }
             },
             "description": "Problem details"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Settings revision mismatch"
           },
           "413": {
             "content": {
