@@ -75,38 +75,53 @@ stderr for local failures in JSON mode.
 
 `genaimage completions <shell>` prints a completion script without starting the
 server or reading configuration. Supported shell names are `bash`, `zsh`,
-`fish`, `powershell` and `elvish`. For example, install completions as follows:
+`fish`, `powershell` and `elvish`. The commands below overwrite the same
+completion file on repeat runs; profile setup lines are guarded or added once.
 
-- **Bash** — append the script to `~/.bashrc` (or evaluate it for the current
-  session):
+- **Bash** — save the completion file and add one guarded source line to
+  `~/.bashrc`:
   ```sh
-  genaimage completions bash >> ~/.bashrc
-  # Current session only: eval "$(genaimage completions bash)"
+  mkdir -p "$HOME/.bash_completion.d"
+  genaimage completions bash > "$HOME/.bash_completion.d/genaimage"
+  touch "$HOME/.bashrc"
+  source_line='[ -r "$HOME/.bash_completion.d/genaimage" ] && . "$HOME/.bash_completion.d/genaimage"'
+  grep -qxF "$source_line" "$HOME/.bashrc" || printf '%s\n' "$source_line" >> "$HOME/.bashrc"
   ```
-- **Zsh** — save the completion file and add its directory to `fpath` before
-  running `compinit` in `~/.zshrc`:
+  For the current session only: `eval "$(genaimage completions bash)"`.
+- **Zsh** — save the completion file:
   ```sh
-  mkdir -p ~/.zfunc
-  genaimage completions zsh > ~/.zfunc/_genaimage
+  mkdir -p "$HOME/.zfunc"
+  genaimage completions zsh > "$HOME/.zfunc/_genaimage"
   ```
-  Add `fpath=(~/.zfunc $fpath)` and `autoload -Uz compinit && compinit` to
-  `~/.zshrc`.
-- **Fish** — save the script in Fish's completions directory:
+  In `~/.zshrc`, ensure `fpath=("$HOME/.zfunc" $fpath)` appears once before
+  your existing `compinit` initialisation. Add `autoload -Uz compinit && compinit`
+  once if you do not already initialise Zsh completions.
+- **Fish** — save the script in Fish's automatically loaded completions directory:
   ```fish
-  mkdir -p ~/.config/fish/completions
-  genaimage completions fish > ~/.config/fish/completions/genaimage.fish
+  mkdir -p "$HOME/.config/fish/completions"
+  genaimage completions fish > "$HOME/.config/fish/completions/genaimage.fish"
   ```
-- **PowerShell** — create the profile directory if needed, then append the
-  script to the profile:
+- **PowerShell** — keep the generated script separate from `$PROFILE` (it starts
+  with `using namespace`), then dot-source it from the profile only once:
   ```powershell
   New-Item -ItemType Directory -Force (Split-Path $PROFILE) | Out-Null
-  genaimage completions powershell >> $PROFILE
+  $completionFile = Join-Path $HOME 'genaimage-completions.ps1'
+  genaimage completions powershell > $completionFile
+  if (-not (Test-Path -LiteralPath $PROFILE)) {
+      New-Item -ItemType File -Path $PROFILE | Out-Null
+  }
+  $sourceLine = '. "$HOME\genaimage-completions.ps1"'
+  if (-not (Select-String -Path $PROFILE -SimpleMatch $sourceLine -Quiet)) {
+      Add-Content -Path $PROFILE -Value $sourceLine
+  }
   ```
 - **Elvish** — save the script in the library directory and add `use genaimage`
-  to `~/.config/elvish/rc.elv`:
+  to `~/.config/elvish/rc.elv` once:
   ```sh
-  mkdir -p ~/.config/elvish/lib
-  genaimage completions elvish > ~/.config/elvish/lib/genaimage.elv
+  mkdir -p "$HOME/.config/elvish/lib"
+  genaimage completions elvish > "$HOME/.config/elvish/lib/genaimage.elv"
+  touch "$HOME/.config/elvish/rc.elv"
+  grep -qxF 'use genaimage' "$HOME/.config/elvish/rc.elv" || printf '%s\n' 'use genaimage' >> "$HOME/.config/elvish/rc.elv"
   ```
 
 ## Server-backed commands
