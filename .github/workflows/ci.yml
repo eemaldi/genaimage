@@ -39,7 +39,7 @@ jobs:
         if: hashFiles('apps/portal/package.json') != ''
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: ${{ hashFiles('apps/portal/package-lock.json', 'apps/portal/npm-shrinkwrap.json') != '' && 'npm' || '' }}
           cache-dependency-path: |
             apps/portal/package-lock.json
@@ -63,6 +63,17 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js for the portal
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/portal/package-lock.json
+
+      - name: Build portal for measurement
+        working-directory: apps/portal
+        run: npm ci && npm run build
 
       - name: Run quick Criterion benchmarks
         run: cargo bench --locked -p genaimage-core --bench performance -- --quick
