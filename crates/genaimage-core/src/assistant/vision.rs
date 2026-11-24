@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    io::{Read, Write},
-    path::Path,
-};
+use std::{io::Read, path::Path};
 
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -11,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifacts::RunManifest,
+    assistant::PromptTemplates,
     extensions::{ChatContent, ChatDelta, ChatMessage, ChatRequest},
     llm_roles::LlmRoleBinding,
     media::blocking,
@@ -18,8 +15,8 @@ use crate::{
 };
 
 const MAX_VISION_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_REVIEW_PROMPT_BYTES: u64 = 64 * 1024;
 const MAX_MODEL_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const VISION_REVIEW_PROMPT_TEMPLATE: &str = "vision_review";
 const DEFAULT_REVIEW_PROMPT: &str = r#"Review the supplied generated image against the recorded generation prompt and parameters below.
 
 Return only one strict JSON object with exactly these fields:
@@ -100,7 +97,7 @@ impl VisionReviewService {
         let manifest = self.harness.open_run_manifest(&run_id).await?;
         let data_dir = self.harness.config().data_dir.clone();
         let manifest_run_id = run_id.clone();
-        let (bytes, prompt, media_type) = blocking(move || {
+        let (bytes, recorded_request, media_type) = blocking(move || {
             let mut bytes = Vec::new();
             media
                 .file
@@ -120,10 +117,10 @@ impl VisionReviewService {
                 return Err(HarnessError::MediaIntegrity);
             }
             let recorded_request = serde_json::to_string_pretty(&manifest.parameters)?;
-            let prompt = review_prompt(&data_dir, &recorded_request)?;
-            Ok((bytes, prompt, media_type))
+            Ok((bytes, recorded_request, media_type))
         })
         .await?;
+        let prompt = review_prompt(&data_dir, &recorded_request).await?;
 
         let request = ChatRequest {
             model: model.clone(),
@@ -197,9 +194,10 @@ fn supported_media_type(bytes: &[u8]) -> Result<&'static str> {
     }
 }
 
-fn review_prompt(data_dir: &Path, recorded_request: &str) -> Result<String> {
-    let path = data_dir.join("assistant/prompts/vision_review.md");
-    let template = load_or_create_prompt_template(&path, DEFAULT_REVIEW_PROMPT)?;
+async fn review_prompt(data_dir: &Path, recorded_request: &str) -> Result<String> {
+    let mut templates = PromptTemplates::new(data_dir);
+    templates.register_builtin(VISION_REVIEW_PROMPT_TEMPLATE, DEFAULT_REVIEW_PROMPT)?;
+    let template = templates.load(VISION_REVIEW_PROMPT_TEMPLATE).await?.content;
     if template.contains("{{run_prompt}}") {
         Ok(template.replace("{{run_prompt}}", recorded_request))
     } else {
@@ -209,67 +207,10 @@ fn review_prompt(data_dir: &Path, recorded_request: &str) -> Result<String> {
     }
 }
 
-fn load_or_create_prompt_template(path: &Path, initial_content: &str) -> Result<String> {
-    let directory = path.parent().ok_or_else(|| {
-        HarnessError::VisionReviewInput(format!(
-            "prompt template path '{}' has no parent directory",
-            path.display()
-        ))
-    })?;
-    fs::create_dir_all(directory)?;
-
-    for _ in 0..3 {
-        if let Some(template) = read_prompt_template(path)? {
-            return Ok(template);
-        }
-
-        let mut temporary = tempfile::Builder::new()
-            .prefix(".vision-review-prompt-")
-            .tempfile_in(directory)?;
-        temporary.write_all(initial_content.as_bytes())?;
-        temporary.as_file().sync_all()?;
-        match fs::hard_link(temporary.path(), path) {
-            Ok(()) => return Ok(initial_content.to_owned()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-
-    Err(HarnessError::VisionReviewInput(format!(
-        "prompt template '{}' changed repeatedly while it was being initialised",
-        path.display()
-    )))
-}
-
-fn read_prompt_template(path: &Path) -> Result<Option<String>> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if file.metadata()?.len() > MAX_REVIEW_PROMPT_BYTES {
-        return Err(HarnessError::VisionReviewInput(format!(
-            "prompt template '{}' exceeds the {} byte limit",
-            path.display(),
-            MAX_REVIEW_PROMPT_BYTES
-        )));
-    }
-    let mut template = String::new();
-    file.take(MAX_REVIEW_PROMPT_BYTES + 1)
-        .read_to_string(&mut template)?;
-    if template.len() as u64 > MAX_REVIEW_PROMPT_BYTES {
-        return Err(HarnessError::VisionReviewInput(format!(
-            "prompt template '{}' exceeds the {} byte limit",
-            path.display(),
-            MAX_REVIEW_PROMPT_BYTES
-        )));
-    }
-    Ok(Some(template))
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         io::Cursor,
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
@@ -670,49 +611,18 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn concurrent_prompt_initialisation_publishes_one_complete_template() {
+    #[tokio::test]
+    async fn missing_prompt_template_is_created_and_user_edit_is_preserved() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("assistant/prompts/vision_review.md");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(8));
-        let results = std::thread::scope(|scope| {
-            let mut tasks = Vec::new();
-            for index in 0..8 {
-                let path = path.clone();
-                let barrier = Arc::clone(&barrier);
-                tasks.push(scope.spawn(move || {
-                    barrier.wait();
-                    let initial = format!("template-{index}: {{{{run_prompt}}}}");
-                    load_or_create_prompt_template(&path, &initial).unwrap()
-                }));
-            }
-            tasks
-                .into_iter()
-                .map(|task| task.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-
-        let stored = fs::read_to_string(&path).unwrap();
-        assert!(results.iter().all(|result| result == &stored));
-        assert!(stored.starts_with("template-") && stored.ends_with("{{run_prompt}}"));
-        assert_eq!(
-            fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            1,
-            "temporary files must be removed after publication"
-        );
-    }
-
-    #[test]
-    fn missing_prompt_template_is_created_and_user_edit_is_preserved() {
-        let directory = tempfile::tempdir().unwrap();
-        let first = review_prompt(directory.path(), r#"{"prompt":"first"}"#).unwrap();
+        let first = review_prompt(directory.path(), r#"{"prompt":"first"}"#)
+            .await
+            .unwrap();
         assert!(first.contains("first"));
         let path = directory.path().join("assistant/prompts/vision_review.md");
         let default = fs::read_to_string(&path).unwrap();
         fs::write(&path, "custom: {{run_prompt}}").unwrap();
 
-        let second = review_prompt(directory.path(), "edited").unwrap();
+        let second = review_prompt(directory.path(), "edited").await.unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "custom: {{run_prompt}}");
         assert_eq!(second, "custom: edited");

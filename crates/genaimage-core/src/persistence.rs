@@ -1511,15 +1511,15 @@ mod submission_tests {
     use super::*;
 
     #[test]
-    fn migration_from_version_10_adds_output_annotations() {
+    fn migration_from_version_11_adds_output_annotations() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.sqlite3");
         let connection = Connection::open(&path).unwrap();
-        for migration in MIGRATIONS.iter().take(10) {
+        for migration in MIGRATIONS.iter().take(11) {
             connection.execute_batch(migration).unwrap();
         }
         connection
-            .pragma_update(None, "user_version", 10_i64)
+            .pragma_update(None, "user_version", 11_i64)
             .unwrap();
         drop(connection);
 
@@ -1529,7 +1529,7 @@ mod submission_tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         connection
             .prepare("SELECT id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response FROM output_annotations LIMIT 0")
             .unwrap();
