@@ -118,10 +118,11 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   for now, the URL is the server root. `--print` writes only that URL instead of
   opening a browser; with `--json`, either mode emits `{"url": "..."}`. Launchers
   receive the validated URL as one argument, without a shell, and their stdin,
-  stdout and stderr are redirected. If `BROWSER` is set, it names the executable
-  (arguments are not parsed); otherwise GenAImage uses the platform launcher.
-  GenAImage waits up to 500 ms for the launcher: a non-zero exit is a local
-  `browser_error` (exit `1`) with a `--print` hint, while a launcher still
+  stdout and stderr are redirected. On Linux and other Unix systems GenAImage
+  invokes `xdg-open` and leaves standard `BROWSER` handling (including command
+  lists and `%s` templates) to it; macOS uses `open`, and Windows uses
+  `rundll32`. GenAImage waits up to 500 ms for the launcher; a non-zero exit is
+  a local `browser_error` (exit `1`) with a `--print` hint, while a launcher still
   running after that is assumed to have opened the URL. The server must be
   running (otherwise exit `3`); non-loopback URLs are rejected (exit `5`).
 - **`doctor`** checks the server and ComfyUI. JSON is a `HealthResponse`:

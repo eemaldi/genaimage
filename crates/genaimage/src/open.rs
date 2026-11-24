@@ -68,12 +68,6 @@ async fn spawn_browser(url: &str) -> io::Result<()> {
 }
 
 fn browser_command(url: &str) -> io::Result<Command> {
-    if let Some(browser) = std::env::var_os("BROWSER").filter(|browser| !browser.is_empty()) {
-        let mut command = Command::new(browser);
-        command.arg(url);
-        return Ok(command);
-    }
-
     #[cfg(target_os = "windows")]
     {
         let mut command = Command::new("rundll32");

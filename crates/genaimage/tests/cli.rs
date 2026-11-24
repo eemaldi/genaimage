@@ -32,6 +32,18 @@ fn cli() -> Command {
     command
 }
 
+#[cfg(target_os = "linux")]
+fn use_fake_xdg_open(command: &mut Command, mode: &str) {
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-bin");
+    let mut path_entries = vec![fixture_dir];
+    if let Some(path) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&path));
+    }
+    command
+        .env("PATH", std::env::join_paths(path_entries).unwrap())
+        .env("GENAIMAGE_FAKE_XDG_OPEN_MODE", mode);
+}
+
 struct Server {
     origin: String,
     workflows: PathBuf,
@@ -375,32 +387,31 @@ async fn open_prints_the_server_root_after_a_health_check() {
     server.shutdown().await;
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
-async fn open_silences_launcher_output_and_uses_the_normalised_url() {
+async fn open_delegates_browser_specs_and_silences_launcher_output() {
     let server = Server::start().await;
     let expected = format!("{}/", server.origin.trim_end_matches('/'));
     let unnormalised = format!("{}/&calc&x/../", server.origin);
-    let launcher =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/check-browser-url.sh");
-    let mut command = cli();
-    command
-        .env("BROWSER", launcher)
-        .args(["--server", &unnormalised, "--json", "open"]);
+    for browser in ["false:echo", "echo %s"] {
+        let mut command = cli();
+        command.env("BROWSER", browser);
+        use_fake_xdg_open(&mut command, "success");
+        command.args(["--server", &unnormalised, "--json", "open"]);
 
-    let result = report(cli_output(command).await, 0);
-    assert_eq!(result, json!({"url": expected}));
+        let result = report(cli_output(command).await, 0);
+        assert_eq!(result, json!({"url": expected}));
+    }
     server.shutdown().await;
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn open_reports_a_failed_launcher_with_a_print_hint() {
     let server = Server::start().await;
     let mut command = cli();
-    command
-        .env("BROWSER", "false")
-        .args(["--server", &server.origin, "--json", "open"]);
+    use_fake_xdg_open(&mut command, "fail");
+    command.args(["--server", &server.origin, "--json", "open"]);
 
     let result = error(cli_output(command).await, 1);
     assert_eq!(result["kind"], "browser_error");
@@ -408,29 +419,13 @@ async fn open_reports_a_failed_launcher_with_a_print_hint() {
     server.shutdown().await;
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn open_does_not_interpret_the_browser_override_as_a_shell_command() {
-    let server = Server::start().await;
-    let mut command = cli();
-    command
-        .env("BROWSER", "true;false;true")
-        .args(["--server", &server.origin, "--json", "open"]);
-
-    let result = error(cli_output(command).await, 1);
-    assert_eq!(result["kind"], "browser_error");
-    server.shutdown().await;
-}
-
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn open_does_not_wait_for_a_slow_launcher() {
     let server = Server::start().await;
-    let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slow-browser.sh");
     let mut command = cli();
-    command
-        .env("BROWSER", launcher)
-        .args(["--server", &server.origin, "--json", "open"]);
+    use_fake_xdg_open(&mut command, "slow");
+    command.args(["--server", &server.origin, "--json", "open"]);
 
     let started = std::time::Instant::now();
     assert_eq!(
