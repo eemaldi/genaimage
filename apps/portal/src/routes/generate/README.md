@@ -11,7 +11,9 @@ Locked seeds use the entered integer; randomised seeds are chosen on review
 and live only in that snapshot. Edits invalidate the snapshot. Integers beyond
 JavaScript's safe range are kept as `bigint` and require exact JSON support in
 the browser. Whole-valued floats retain their JSON representation for enum
-matching. Steps and suggested options are control hints, not binding rules.
+matching. Browsers that cannot read the original JSON number token must be
+updated before reviewing or submitting; other portal pages remain available.
+Steps and suggested options are control hints, not binding rules.
 
 Reference images are previewed from the selected local file after upload. The
 server returns metadata but does not serve stored image bytes, so a reference

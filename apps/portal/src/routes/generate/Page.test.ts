@@ -1119,3 +1119,53 @@ test('round-trips signed zero from the manifest through a link and both request 
     expect(request?.body).toContain('"scale":-0.0');
   }
 });
+
+test('blocks review of whole-valued floats if revivers cannot read the original JSON token', async () => {
+  const parse = JSON.parse;
+  vi.spyOn(JSON, 'parse').mockImplementation((text, reviver) =>
+    parse(
+      text,
+      reviver &&
+        function (this: unknown, key, value: unknown) {
+          return reviver.call(this, key, value);
+        },
+    ),
+  );
+  const manifest = JSON.stringify({
+    ...workflow,
+    parameters: { Scale: parameter('number', { default: 'replace-me' }) },
+  }).replace('"replace-me"', '2.0');
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockImplementation(async () => new Response(manifest));
+  const client = createApiClient(fetcher);
+  fake.getWorkflow.mockImplementation(client.getWorkflow);
+  mount();
+  expect((await screen.findByRole('alert')).textContent).toContain(
+    'Your browser cannot read numbers exactly; update to a current Chromium, Firefox or Safari release.',
+  );
+  expect(
+    screen.queryByRole('button', { name: 'Review parameters' }),
+  ).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Submit run' })).toBeNull();
+  expect(fake.validateWorkflow).not.toHaveBeenCalled();
+  expect(fake.createRun).not.toHaveBeenCalled();
+  await expect(
+    client.getRecordedRun('run-1', { exactBindings: true }),
+  ).rejects.toThrow('cannot read numbers exactly');
+  await expect(client.getWorkflow('portrait')).resolves.toHaveProperty(
+    'parameters.Scale.default',
+    2,
+  );
+  await expect(
+    client.validateWorkflow('portrait', { parameters: { Scale: 2 } }),
+  ).rejects.toThrow('cannot read numbers exactly');
+  await expect(
+    client.createRun({ workflow: 'portrait', parameters: { Scale: 2 } }, 'key'),
+  ).rejects.toThrow('cannot read numbers exactly');
+  expect(fetcher.mock.calls.map(([, request]) => request?.method)).toEqual([
+    'GET',
+    'GET',
+    'GET',
+  ]);
+});

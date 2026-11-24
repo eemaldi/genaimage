@@ -152,7 +152,26 @@ async function readExactIntegers(response: Response, bindings = false) {
   return parseBindingJson(await response.text(), bindings);
 }
 
+class ExactNumberReadError extends Error {
+  constructor() {
+    super(
+      'Your browser cannot read numbers exactly; update to a current Chromium, Firefox or Safari release.',
+    );
+    this.name = 'ExactNumberReadError';
+  }
+}
+
+function requireExactNumberReads() {
+  let source: string | undefined;
+  JSON.parse('2.0', (_key, value: unknown, context?: { source?: string }) => {
+    source = context?.source;
+    return value;
+  });
+  if (source !== '2.0') throw new ExactNumberReadError();
+}
+
 export function parseBindingJson(text: string, bindings = true): unknown {
+  if (bindings) requireExactNumberReads();
   return JSON.parse(
     text,
     (_key, value: unknown, context?: { source?: string }) => {
@@ -170,10 +189,6 @@ export function parseBindingJson(text: string, bindings = true): unknown {
       ) {
         if (context?.source && /^-?\d+$/.test(context.source))
           return BigInt(context.source);
-        if (bindings && !context?.source)
-          throw new Error(
-            'This browser cannot read large JSON integers exactly.',
-          );
       }
       return value;
     },
@@ -265,6 +280,7 @@ export function createApiClient(
       return await read(response);
     } catch (error) {
       preserveAbort(error, init.signal);
+      if (error instanceof ExactNumberReadError) throw error;
       throw new ApiResponseError(guidance, error);
     }
   }
@@ -329,16 +345,18 @@ export function createApiClient(
         { ...options, path: { id } },
         options?.exactBindings ? readWorkflowBindings : undefined,
       ),
-    validateWorkflow: (
+    validateWorkflow: async (
       id: string,
       body: WorkflowValidationRequest,
       options?: RequestOptions,
-    ) =>
-      json('post', '/api/v1/workflows/{id}/validate', {
+    ) => {
+      requireExactNumberReads();
+      return json('post', '/api/v1/workflows/{id}/validate', {
         ...options,
         path: { id },
         body,
-      }),
+      });
+    },
     listRuns: (query?: RunQuery, options?: RequestOptions) =>
       json('get', '/api/v1/runs', { ...options, query }),
     getRun: (id: string, options?: RequestOptions) =>
@@ -353,16 +371,18 @@ export function createApiClient(
         { ...options, path: { id } },
         (response) => readExactIntegers(response, options?.exactBindings),
       ),
-    createRun: (
+    createRun: async (
       body: SubmitRunRequest,
       idempotencyKey: string,
       options?: RequestOptions,
-    ) =>
-      json('post', '/api/v1/runs', {
+    ) => {
+      requireExactNumberReads();
+      return json('post', '/api/v1/runs', {
         ...options,
         body,
         header: { 'Idempotency-Key': idempotencyKey },
-      }),
+      });
+    },
     rerunRun: (id: string, idempotencyKey: string, options?: RequestOptions) =>
       json('post', '/api/v1/runs/{id}/rerun', {
         ...options,
