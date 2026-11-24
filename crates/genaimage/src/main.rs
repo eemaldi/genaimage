@@ -172,7 +172,7 @@ async fn main() -> ExitCode {
         completions::generate(*shell);
         return ExitCode::SUCCESS;
     }
-    if let Some(command) = server_commands::Command::from_cli(&cli.command, &cli.server) {
+    if let Some(command) = server_commands::Command::from_cli(&cli.command) {
         let output = output::Output::new(cli.json);
         return match execute_server(&cli, command, output).await {
             Ok(outcome) => outcome.into(),

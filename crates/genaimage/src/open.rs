@@ -1,27 +1,28 @@
-use std::io;
-use std::process::Command;
+use std::{io, process::Stdio, time::Duration};
 
 use genaimage_api::client::Client;
 use serde::Serialize;
+use tokio::{
+    process::Command,
+    time::{sleep, Instant},
+};
 
 use crate::output::{Error, Output, Status};
+
+const LAUNCHER_EXIT_TIMEOUT: Duration = Duration::from_millis(500);
+const LAUNCHER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Serialize)]
 struct OpenResponse {
     url: String,
 }
 
-pub(crate) async fn run(
-    client: &Client,
-    output: Output,
-    base_url: &str,
-    print: bool,
-) -> Result<Status, Error> {
+pub(crate) async fn run(client: &Client, output: Output, print: bool) -> Result<Status, Error> {
     client.health().await?;
 
-    let url = format!("{}/", base_url.trim_end_matches('/'));
+    let url = client.base_url().as_str().to_owned();
     if !print {
-        spawn_browser(&url).map_err(|error| {
+        spawn_browser(&url).await.map_err(|error| {
             Error::Browser(format!(
                 "Could not open {url} in a browser: {error}. Open it manually, or use `genaimage open --print`."
             ))
@@ -39,27 +40,66 @@ pub(crate) async fn run(
     Ok(Status::Success)
 }
 
-#[cfg(target_os = "windows")]
-fn spawn_browser(url: &str) -> io::Result<()> {
-    Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn()
-        .map(|_| ())
+async fn spawn_browser(url: &str) -> io::Result<()> {
+    let mut command = browser_command(url)?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(false);
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + LAUNCHER_EXIT_TIMEOUT;
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "browser launcher exited with status {status}"
+                )))
+            };
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+        sleep(LAUNCHER_POLL_INTERVAL).await;
+    }
 }
 
-#[cfg(target_os = "macos")]
-fn spawn_browser(url: &str) -> io::Result<()> {
-    Command::new("open").arg(url).spawn().map(|_| ())
-}
+fn browser_command(url: &str) -> io::Result<Command> {
+    if let Some(browser) = std::env::var_os("BROWSER").filter(|browser| !browser.is_empty()) {
+        let mut command = Command::new(browser);
+        command.arg(url);
+        return Ok(command);
+    }
 
-#[cfg(all(unix, not(target_os = "macos")))]
-fn spawn_browser(url: &str) -> io::Result<()> {
-    Command::new("xdg-open").arg(url).spawn().map(|_| ())
-}
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", url]);
+        Ok(command)
+    }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
-fn spawn_browser(_url: &str) -> io::Result<()> {
-    Err(io::Error::other(
-        "no default-browser launcher is available on this platform",
-    ))
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        command.arg(url);
+        Ok(command)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        Ok(command)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        let _ = url;
+        Err(io::Error::other(
+            "no default-browser launcher is available on this platform",
+        ))
+    }
 }

@@ -375,6 +375,72 @@ async fn open_prints_the_server_root_after_a_health_check() {
     server.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn open_silences_launcher_output_and_uses_the_normalised_url() {
+    let server = Server::start().await;
+    let expected = format!("{}/", server.origin.trim_end_matches('/'));
+    let unnormalised = format!("{}/&calc&x/../", server.origin);
+    let launcher =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/check-browser-url.sh");
+    let mut command = cli();
+    command
+        .env("BROWSER", launcher)
+        .args(["--server", &unnormalised, "--json", "open"]);
+
+    let result = report(cli_output(command).await, 0);
+    assert_eq!(result, json!({"url": expected}));
+    server.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_reports_a_failed_launcher_with_a_print_hint() {
+    let server = Server::start().await;
+    let mut command = cli();
+    command
+        .env("BROWSER", "false")
+        .args(["--server", &server.origin, "--json", "open"]);
+
+    let result = error(cli_output(command).await, 1);
+    assert_eq!(result["kind"], "browser_error");
+    assert!(result["message"].as_str().unwrap().contains("--print"));
+    server.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_does_not_interpret_the_browser_override_as_a_shell_command() {
+    let server = Server::start().await;
+    let mut command = cli();
+    command
+        .env("BROWSER", "true;false;true")
+        .args(["--server", &server.origin, "--json", "open"]);
+
+    let result = error(cli_output(command).await, 1);
+    assert_eq!(result["kind"], "browser_error");
+    server.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_does_not_wait_for_a_slow_launcher() {
+    let server = Server::start().await;
+    let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slow-browser.sh");
+    let mut command = cli();
+    command
+        .env("BROWSER", launcher)
+        .args(["--server", &server.origin, "--json", "open"]);
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        report(cli_output(command).await, 0)["url"],
+        format!("{}/", server.origin.trim_end_matches('/'))
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn open_rejects_non_loopback_servers() {
     let mut command = cli();

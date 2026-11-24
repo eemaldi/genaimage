@@ -13,19 +13,16 @@ pub(crate) enum Command<'a> {
     Workflow(&'a WorkflowCommand),
     Presets(&'a str),
     ConfigShow,
-    Open { url: &'a str, print: bool },
+    Open { print: bool },
     Run(&'a crate::RunCommand),
     Jobs(&'a crate::JobsCommand),
 }
 
 impl<'a> Command<'a> {
-    pub(crate) fn from_cli(command: &'a crate::Command, server: &'a str) -> Option<Self> {
+    pub(crate) fn from_cli(command: &'a crate::Command) -> Option<Self> {
         match command {
             crate::Command::Doctor => Some(Self::Doctor),
-            crate::Command::Open { print } => Some(Self::Open {
-                url: server,
-                print: *print,
-            }),
+            crate::Command::Open { print } => Some(Self::Open { print: *print }),
             crate::Command::Workflow { command } => Some(Self::Workflow(command)),
             crate::Command::Presets { id } => Some(Self::Presets(id)),
             crate::Command::Config {
@@ -204,8 +201,8 @@ impl<'a> Command<'a> {
                     Ok(())
                 })?;
             }
-            Self::Open { url, print } => {
-                return crate::open::run(client, output, url, print).await;
+            Self::Open { print } => {
+                return crate::open::run(client, output, print).await;
             }
         }
         Ok(Status::Success)
