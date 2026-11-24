@@ -763,6 +763,25 @@ export interface components {
             error: string;
             path: string;
         };
+        /** @description The graph value an unbound optional parameter leaves in place. */
+        WorkflowInheritedInput: {
+            input: string;
+            node: string;
+            parameter: string;
+            source: components["schemas"]["WorkflowInheritedSource"];
+        };
+        /** @description The exact graph literal (JSON text), or a ComfyUI node output connection. */
+        WorkflowInheritedSource: {
+            json: string;
+            /** @enum {string} */
+            kind: "literal";
+        } | {
+            /** @enum {string} */
+            kind: "connection";
+            node: string;
+            /** Format: int64 */
+            output: number;
+        };
         /** @description A workflow catalogue and non-fatal discovery errors. */
         WorkflowListResponse: {
             diagnostics: components["schemas"]["WorkflowDiagnostic"][];
@@ -834,6 +853,8 @@ export interface components {
         };
         /** @description The result of validating bindings and checking backend node availability. */
         WorkflowValidationResponse: {
+            /** @description Graph inputs left untouched by binding, not submitted parameter values. */
+            inherited_inputs?: components["schemas"]["WorkflowInheritedInput"][];
             node_check: components["schemas"]["WorkflowNodeCheck"];
             parameter_errors: components["schemas"]["WorkflowParameterError"][];
             /** @description Opaque revision of the API graph and manifest that were validated. */

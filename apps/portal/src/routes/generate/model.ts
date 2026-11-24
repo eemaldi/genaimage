@@ -31,10 +31,10 @@ function scalar(value: unknown): Scalar | undefined {
 
 export function sameValue(left: unknown, right: unknown): boolean {
   return (
-    left === right ||
+    Object.is(left, right) ||
     (left instanceof BindingFloat &&
       right instanceof BindingFloat &&
-      left.value === right.value)
+      Object.is(left.value, right.value))
   );
 }
 

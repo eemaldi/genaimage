@@ -13,7 +13,7 @@ import type {
   ResyncSignal,
 } from '../../lib/api/events';
 import type { components } from '../../lib/api/schema';
-import { buildGenerateUrl, encodeFormState } from './share';
+import { buildGenerateUrl, encodeFormState, restoreFormState } from './share';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import {
@@ -24,7 +24,13 @@ import {
 } from '../../lib/api/client';
 import App from '../../App.svelte';
 import Page from './Page.svelte';
-import type { Parameter, Workflow } from './model';
+import {
+  initialField,
+  sameValue,
+  type Parameter,
+  type Workflow,
+} from './model';
+import { savePending } from './pending';
 
 const fake = vi.hoisted(() => ({
   listWorkflows: vi.fn<typeof api.listWorkflows>(),
@@ -129,6 +135,26 @@ beforeAll(async () => {
   await import('./Generate.svelte');
 });
 
+const inheritedInputs: components['schemas']['WorkflowInheritedInput'][] = [
+  {
+    parameter: 'Count',
+    node: '1',
+    input: 'value',
+    source: { kind: 'literal', json: '4' },
+  },
+  {
+    parameter: 'Reference',
+    node: '1',
+    input: 'value',
+    source: { kind: 'connection', node: '4', output: 0 },
+  },
+  ...['Style', 'Tiling', 'Reserved', 'Omitted'].map((parameter) => ({
+    parameter,
+    node: '1',
+    input: 'value',
+    source: { kind: 'literal' as const, json: 'null' },
+  })),
+];
 const available = { status: 'available', missing_classes: [] } as const;
 const time = '2026-11-24T12:00:00.000Z';
 const run: components['schemas']['RunResponse'] = {
@@ -165,6 +191,7 @@ beforeEach(() => {
     valid: true,
     revision: workflow.revision,
     parameter_errors: [],
+    inherited_inputs: inheritedInputs,
     node_check: { ...available, missing_classes: [] },
   });
   fake.createRun.mockResolvedValue(run);
@@ -278,9 +305,12 @@ test('renders the manifest widgets and groups without inventing missing defaults
   expect(within(review()).getByText(String(seed))).toBeTruthy();
   expect(within(review()).getByText('Count')).toBeTruthy();
   expect(within(review()).getByText('Tiling')).toBeTruthy();
+  expect(within(review()).getByText(/Inherited from workflow: 4/)).toBeTruthy();
   expect(
-    within(review()).getAllByText('Not set — not submitted'),
-  ).not.toHaveLength(0);
+    within(review()).getByText(
+      /Inherited from workflow: connected to node 4 output 0/,
+    ),
+  ).toBeTruthy();
 });
 
 test('attaches numeric and enum errors, accepts off-step values, and keeps cleared defaults explicit', async () => {
@@ -740,6 +770,7 @@ test('an edit during server validation prevents a stale response from enabling s
     valid: true,
     revision: workflow.revision,
     parameter_errors: [],
+    inherited_inputs: inheritedInputs,
     node_check: { ...available, missing_classes: [] },
   });
   await waitFor(() =>
@@ -811,7 +842,7 @@ test('opens Generate from the catalogue and distinguishes defaulted, declared an
   expect(panel.getByText('· Optional (default)')).toBeTruthy();
   expect(panel.getByText('· Optional (declared)')).toBeTruthy();
   expect(panel.getByText('· Required (declaration unavailable)')).toBeTruthy();
-  expect(panel.getByText('Not set — not submitted')).toBeTruthy();
+  expect(panel.getByText(/Inherited from workflow: null/)).toBeTruthy();
   expect(panel.getByText('(default)')).toBeTruthy();
   expect(panel.getByText(/image \(default\)/)).toBeTruthy();
   expect(panel.getByText(/image \(declared\)/)).toBeTruthy();
@@ -827,7 +858,7 @@ test('opens Generate from the catalogue and distinguishes defaulted, declared an
   expect(fake.createRun).not.toHaveBeenCalled();
 });
 
-test('recovers the exact submission after checking Jobs and after a reload', async () => {
+test('recovers the exact submission after Jobs and reload even when the workflow is gone', async () => {
   const uuid = vi.spyOn(crypto, 'randomUUID');
   fake.createRun.mockRejectedValueOnce(new TypeError('Lost response'));
   history.replaceState(null, '', '#/generate?workflow=portrait');
@@ -842,10 +873,19 @@ test('recovers the exact submission after checking Jobs and after a reload', asy
     await screen.findByRole('link', { name: 'check status in Jobs' }),
   );
   await screen.findByRole('heading', { name: 'Jobs' });
-  fake.getWorkflow.mockResolvedValue({ ...workflow, revision: 'new-revision' });
+  fake.getWorkflow.mockRejectedValue(
+    new ApiProblemError({
+      status: 404,
+      type: 'about:blank',
+      title: 'Workflow not found',
+      detail: 'The workflow was removed.',
+      recovery: 'Choose another workflow.',
+    }),
+  );
   location.hash = '#/generate?workflow=portrait';
   await screen.findByRole('heading', { name: 'Pending submission' });
   expect(screen.getByText(workflow.revision)).toBeTruthy();
+  await screen.findByText('Workflow not found');
   expect(fake.createRun).toHaveBeenCalledTimes(1);
   cleanup();
   render(App);
@@ -941,6 +981,7 @@ test('pins both requests and reloads a replacement workflow before allowing a ne
     revision: next.revision,
     valid: true,
     parameter_errors: [],
+    inherited_inputs: inheritedInputs,
     node_check: { ...available, missing_classes: [] },
   });
   await user.click(reviewButton());
@@ -980,4 +1021,101 @@ test('loads the replacement if the revision changes before validation', async ()
   expect(fake.getWorkflow).toHaveBeenCalledTimes(2);
   expect(fake.createRun).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Submit run' })).toBeNull();
+});
+
+test('dismisses an unpinned pending submission without a POST and unlocks editing', async () => {
+  savePending({
+    key: 'old-key',
+    version: '1',
+    body: {
+      workflow: 'portrait',
+      parameters: { Prompt: 'Previously submitted' },
+    },
+  });
+  const user = await load();
+  const prompt = control('Prompt');
+  expect(prompt.matches(':disabled')).toBe(true);
+  expect(
+    screen.queryByRole('button', { name: 'Retry with the same key' }),
+  ).toBeNull();
+  await user.click(
+    screen.getByRole('button', {
+      name: "I've checked Jobs — dismiss this pending submission",
+    }),
+  );
+  expect(prompt.matches(':disabled')).toBe(false);
+  expect(sessionStorage.length).toBe(0);
+  expect(fake.createRun).not.toHaveBeenCalled();
+  expect(fake.validateWorkflow).not.toHaveBeenCalled();
+});
+
+test('flags changed inherited inputs from a reviewed share link without submitting them', async () => {
+  const user = await applyAndReview();
+  const writeText = vi.spyOn(navigator.clipboard, 'writeText');
+  await user.click(screen.getByRole('button', { name: 'Copy share link' }));
+  const link = new URL(writeText.mock.calls[0][0]);
+  cleanup();
+  fake.validateWorkflow.mockResolvedValueOnce({
+    valid: true,
+    revision: workflow.revision,
+    parameter_errors: [],
+    node_check: { ...available, missing_classes: [] },
+    inherited_inputs: inheritedInputs.map((entry) =>
+      entry.parameter === 'Count'
+        ? { ...entry, source: { kind: 'literal', json: '5' } }
+        : entry,
+    ),
+  });
+  mount(link.hash.split('?')[1]);
+  await screen.findByLabelText('Prompt');
+  await user.click(reviewButton());
+  expect(
+    within(review()).getByText(/Inherited inputs differ from the saved link/),
+  ).toBeTruthy();
+  expect(
+    within(review()).getByText(
+      /Count: The saved link inherited 4.*current workflow inherits 5/,
+    ),
+  ).toBeTruthy();
+  await user.click(submitButton());
+  expect(fake.createRun.mock.lastCall?.[0].parameters).not.toHaveProperty(
+    'Count',
+  );
+  expect(fake.createRun.mock.lastCall?.[0].parameters).not.toHaveProperty(
+    'Reference',
+  );
+});
+
+test('round-trips signed zero from the manifest through a link and both request bodies', async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockImplementation(
+      async (_url, options) =>
+        new Response(
+          options?.method === 'GET'
+            ? '{"parameters":{"scale":{"kind":"number","default":-0.0}},"presets":{}}'
+            : '{}',
+        ),
+    );
+  const client = createApiClient(fetcher);
+  const details = await client.getWorkflow('portrait', { exactBindings: true });
+  const field = initialField(details.parameters.scale);
+  expect(sameValue(field.value, new BindingFloat(0))).toBe(false);
+  const hash = encodeFormState({
+    workflow: 'portrait',
+    fields: [['scale', field]],
+  });
+  const query = new URLSearchParams(hash.split('?')[1]);
+  expect(query.get('p')).toContain('["float","-0.0"]');
+  const restored = restoreFormState(details, query);
+  expect(restored.warnings).toEqual([]);
+  const value = restored.fields.get('scale')?.value;
+  expect(value).toBeInstanceOf(BindingFloat);
+  expect(Object.is((value as BindingFloat).value, -0)).toBe(true);
+  const parameters = { scale: value };
+  await client.validateWorkflow('portrait', { parameters });
+  await client.createRun({ workflow: 'portrait', parameters }, 'key');
+  for (const [, request] of fetcher.mock.calls.slice(1)) {
+    expect(request?.body).toContain('"scale":-0.0');
+  }
 });

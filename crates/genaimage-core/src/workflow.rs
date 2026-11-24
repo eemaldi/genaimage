@@ -302,6 +302,32 @@ impl LoadedWorkflow {
         Ok(errors)
     }
 
+    /// Optional inputs that binding leaves untouched in this loaded graph.
+    pub fn inherited_inputs<'a>(
+        &'a self,
+        preset: Option<&str>,
+        overrides: &BTreeMap<String, Value>,
+    ) -> Result<impl Iterator<Item = (&'a str, &'a ParameterDefinition, &'a Value)> + 'a> {
+        let preset = self.preset_values(preset)?;
+        let overridden: BTreeSet<_> = overrides.keys().cloned().collect();
+        Ok(self
+            .manifest
+            .parameters
+            .iter()
+            .filter_map(move |(name, definition)| {
+                if definition.required
+                    || definition.default.is_some()
+                    || overridden.contains(name)
+                    || preset.contains_key(name)
+                {
+                    return None;
+                }
+                // Loading checks that every parameter targets an existing, unique input.
+                let value = &self.workflow[&definition.node]["inputs"][&definition.input];
+                Some((name.as_str(), definition, value))
+            }))
+    }
+
     pub fn bind(
         &self,
         preset: Option<&str>,

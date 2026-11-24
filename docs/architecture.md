@@ -227,8 +227,10 @@ The workflows API is read-only apart from validation, which does not submit a ru
   The node status is `available`, `missing` (with `missing_classes`) or
   `unavailable` (with a reason); an unavailable or timed-out check is not valid.
   An unknown preset or malformed request returns problem details. Validation
-  neither uploads images nor submits generation. When `workflow_revision` is
-  supplied, validation checks it before contacting ComfyUI and returns the same
+  neither uploads images nor submits generation. `inherited_inputs` lists
+  optional parameters left unbound and their node inputs from that snapshot:
+  exact JSON literals or node output connections. These are not bindings. When
+  `workflow_revision` is supplied, validation checks it before contacting ComfyUI and returns the same
   workflow-changed problem as submission if the snapshot no longer matches.
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
@@ -712,7 +714,8 @@ that now have a default until the user resolves them. Preset-sourced values
 are explicit; restoration never applies the current preset behind the scenes.
 Links over 32 KiB of encoded fragment or 256 tuples are rejected. Opening a
 share link never submits a run. A different revision is shown as a notice;
-it does not itself block review.
+it does not itself block review. Links copied after validation can include `i`,
+containing reviewed inherited inputs for comparison at the next explicit review.
 The fragment contains clear-text parameter data: share only with intended
 recipients. Upload references only work where those uploads are stored.
 
@@ -733,8 +736,9 @@ can be retried explicitly with the same key; it is never retried automatically.
 The exact pending request and key stay in this tab’s session storage across
 navigation and reload until the server returns a run or definitively rejects
 the request. Jobs is the status-check fallback because there is no lookup by
-idempotency key. A pending request from an older portal without a pinned revision
-is retained for status checks but cannot be safely retried.
+idempotency key. Recovery stays available even if the workflow cannot be loaded.
+An older unpinned request cannot be retried; after checking Jobs, the user can
+explicitly dismiss it without submitting anything.
 Live output cards require both completed run status and indexed outputs.
 
 ### Accessibility checks

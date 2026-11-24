@@ -23,6 +23,14 @@ type Entry = [
   mode?: 'r' | 'l',
   chosen?: Encoded,
 ];
+// These descriptions are provenance only, never editor values or bindings.
+export type SharedInherited = [
+  name: string,
+  node: string,
+  input: string,
+  description: string,
+];
+
 type FormState = {
   workflow: string;
   version?: string;
@@ -30,11 +38,13 @@ type FormState = {
   preset?: string;
   modified?: boolean;
   fields: Iterable<[string, FieldState]>;
+  inherited?: readonly SharedInherited[];
   chosenSeeds?: Readonly<Record<string, Scalar>>;
 };
 
 function encodeValue(value: unknown): Encoded {
   if (value === undefined) return null;
+  if (Object.is(value, -0)) return ['float', '-0.0'];
   if (
     typeof value === 'bigint' ||
     (typeof value === 'number' && Number.isSafeInteger(value))
@@ -66,6 +76,7 @@ export function encodeFormState(state: FormState): string {
   if (state.revision !== undefined) query.set('wr', state.revision);
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
+  if (state.inherited?.length) query.set('i', JSON.stringify(state.inherited));
   const entries: Entry[] = [];
   for (const [name, field] of state.fields) {
     const source =
@@ -170,13 +181,16 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     warnings,
     differences,
     chosenSeeds,
+    inherited: [] as SharedInherited[],
     preset: '',
     modified: false,
     versionNotice: undefined as string | undefined,
     revisionNotice: undefined as string | undefined,
   };
   if (
-    !['v', 'p', 'wv', 'wr', 'preset', 'modified'].some((key) => query.has(key))
+    !['v', 'p', 'wv', 'wr', 'preset', 'modified', 'i'].some((key) =>
+      query.has(key),
+    )
   )
     return state;
   if (query.toString().length + '#/generate?'.length > maxFragment) {
@@ -188,6 +202,19 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
       message: 'This link uses an unsupported form state version.',
     });
     return state;
+  }
+  try {
+    const inherited: unknown = JSON.parse(query.get('i') ?? '[]');
+    if (Array.isArray(inherited) && inherited.length <= maxEntries) {
+      state.inherited = inherited.filter(
+        (entry): entry is SharedInherited =>
+          Array.isArray(entry) &&
+          entry.length === 4 &&
+          entry.every((part) => typeof part === 'string'),
+      );
+    }
+  } catch {
+    // Informational metadata cannot invalidate the shared bindings.
   }
   const oldVersion = query.get('wv');
   if (oldVersion !== null && oldVersion !== workflow.version)

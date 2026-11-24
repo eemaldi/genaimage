@@ -160,8 +160,7 @@ export function parseBindingJson(text: string, bindings = true): unknown {
         bindings &&
         typeof value === 'number' &&
         Number.isInteger(value) &&
-        context?.source &&
-        /[.eE]/.test(context.source)
+        (Object.is(value, -0) || /[.eE]/.test(context?.source ?? ''))
       )
         return new BindingFloat(value);
       if (
@@ -185,7 +184,7 @@ export function parseBindingJson(text: string, bindings = true): unknown {
 export class BindingFloat {
   constructor(readonly value: number) {}
   toString(): string {
-    const text = String(this.value);
+    const text = Object.is(this.value, -0) ? '-0' : String(this.value);
     return /[.eE]/.test(text) ? text : `${text}.0`;
   }
 }

@@ -3,7 +3,6 @@
   import { SvelteMap } from 'svelte/reactivity';
   import {
     api,
-    ApiHttpError,
     ApiProblemError,
     type SubmitRunRequest,
     BindingFloat,
@@ -13,15 +12,12 @@
   import ProblemDetails, {
     type Problem,
   } from '../../lib/ui/ProblemDetails.svelte';
-  import type { components } from '../../lib/api/schema';
-  import RunProgress from './RunProgress.svelte';
-  import { encodeFormState, restoreFormState } from './share';
   import {
-    clearPending,
-    loadPending,
-    savePending,
-    type PendingSubmission,
-  } from './pending';
+    encodeFormState,
+    restoreFormState,
+    type SharedInherited,
+  } from './share';
+  import type { PendingSubmission } from './pending';
   import Input from '../../lib/ui/Input.svelte';
   import Select from '../../lib/ui/Select.svelte';
   import ParameterField from './ParameterField.svelte';
@@ -38,7 +34,6 @@
     type Workflow,
   } from './model';
 
-  type Run = components['schemas']['RunResponse'];
   type Snapshot = {
     body: Readonly<SubmitRunRequest & { workflow_revision: string }>;
     rows: ReadonlyArray<{
@@ -50,6 +45,8 @@
       requirement: string;
       sharedDefault: boolean;
     }>;
+    inherited: Map<string, SharedInherited>;
+    inheritedChanges: string[];
     outputs: ReadonlyArray<{ node: string; kind: string }>;
     workflow: string;
     version: string;
@@ -61,7 +58,18 @@
     workflow,
     query,
     reloadWorkflow,
+    editingLocked,
+    accepted,
+    submit,
+    resetSubmission,
   }: {
+    editingLocked: boolean;
+    accepted: boolean;
+    submit: (
+      snapshot: PendingSubmission,
+      onRejected: (conflict?: Problem) => void,
+    ) => void;
+    resetSubmission: () => void;
     workflow: Workflow;
     query: URLSearchParams;
     reloadWorkflow: (problem: Problem, restored?: URLSearchParams) => void;
@@ -84,16 +92,6 @@
   const chosenSeeds = new SvelteMap(restored.chosenSeeds);
   let warnings = $state.raw(restored.warnings);
   let differences = $state.raw(restored.differences);
-  const recovered = untrack(() => {
-    try {
-      return { pending: loadPending(workflow.id) };
-    } catch (failure) {
-      return {
-        problem: problem(failure, 'Could not restore a pending submission'),
-      };
-    }
-  });
-  let pending = $state.raw<PendingSubmission | undefined>(recovered.pending);
   let shareMessage = $state('');
   let shareFallback = $state('');
   const uploadErrors = new SvelteMap<string, string>();
@@ -107,18 +105,9 @@
   let reviewErrors = $state.raw<Record<string, string>>({});
   let review = $state.raw<Snapshot>();
   let validationProblem = $state<Problem>();
-  let submissionProblem = $state<Problem | undefined>(recovered.problem);
   let validating = $state(false);
-  let submitting = $state(false);
-  let accepted = $state(false);
-  let run = $state.raw<Run>();
-  let editingLocked = $derived(submitting || !!pending || !!recovered.problem);
   let validation: AbortController | undefined;
-  let submission: AbortController | undefined;
-  onDestroy(() => {
-    validation?.abort();
-    submission?.abort();
-  });
+  onDestroy(() => validation?.abort());
   let reviewHeading = $state<HTMLElement>();
   let limit = $state<number>();
 
@@ -158,8 +147,7 @@
     review = undefined;
     reviewErrors = {};
     validationProblem = undefined;
-    submissionProblem = undefined;
-    accepted = false;
+    resetSubmission();
     shareFallback = '';
     shareMessage = '';
   }
@@ -203,6 +191,7 @@
       modified,
       fields,
       chosenSeeds: chosen,
+      inherited: review ? [...review.inherited.values()] : restored.inherited,
     });
   }
 
@@ -418,9 +407,46 @@
         await showFieldErrors(problems);
         return;
       }
+      const inherited = new SvelteMap<string, SharedInherited>();
+      for (const {
+        parameter,
+        node,
+        input,
+        source,
+      } of result.inherited_inputs ?? []) {
+        if (!fields.has(parameter) || Object.hasOwn(parameters, parameter))
+          continue;
+        const description =
+          source.kind === 'connection'
+            ? `connected to node ${source.node} output ${source.output}`
+            : source.json;
+        inherited.set(parameter, [parameter, node, input, description]);
+      }
+      if (
+        rows.some(
+          ({ name, value }) => value === undefined && !inherited.has(name),
+        )
+      ) {
+        validationProblem = {
+          title: 'The server did not report all inherited workflow inputs',
+          recovery: 'Update the local server and review the workflow again.',
+        };
+        return;
+      }
+      const inheritedChanges = restored.inherited.flatMap((previous) => {
+        const [name, node, input, description] = previous;
+        const current = inherited.get(name);
+        if (current && previous.every((part, index) => part === current[index]))
+          return [];
+        return [
+          `${name}: The saved link inherited ${description} (node ${node}, input ${input}). ${current ? `The current workflow inherits ${current[3]} (node ${current[1]}, input ${current[2]}).` : 'This input is no longer inherited.'}`,
+        ];
+      });
       review = {
         body,
         rows,
+        inherited,
+        inheritedChanges,
         outputs: workflow.outputs.map(({ node, kind, declared_kind }) => ({
           node,
           kind: `${kind}${presenceLabel(declared_kind)}`,
@@ -457,91 +483,12 @@
     }
   }
 
-  async function submitReview() {
-    if (submitting || accepted || recovered.problem) return;
-    const snapshot = pending ?? review;
-    if (!snapshot?.body.workflow_revision) return;
-    submitting = true;
-    submissionProblem = undefined;
-    const controller = new AbortController();
-    submission = controller;
-    try {
-      if (!pending) {
-        try {
-          savePending(snapshot);
-        } catch (failure) {
-          submissionProblem = problem(failure, 'Could not save a safe retry');
-          return;
-        }
-      }
-      pending = snapshot;
-      let result: Run;
-      try {
-        result = await api.createRun(snapshot.body, snapshot.key, {
-          signal: controller.signal,
-        });
-        if (
-          !result ||
-          typeof result.id !== 'string' ||
-          !result.id ||
-          typeof result.status !== 'string'
-        )
-          throw new Error('The server did not return a run.');
-      } catch (failure) {
-        if (controller.signal.aborted) return;
-        const status =
-          failure instanceof ApiProblemError || failure instanceof ApiHttpError
-            ? failure.status
-            : undefined;
-        const definitive =
-          status !== undefined &&
-          status >= 400 &&
-          status < 500 &&
-          status !== 408;
-        submissionProblem = problem(
-          failure,
-          definitive
-            ? 'Could not submit the run'
-            : 'The submission outcome is uncertain',
-        );
-        if (definitive) {
-          clearPending(snapshot);
-          pending = undefined;
-          if (workflowChanged(failure)) reloadChangedWorkflow(failure.problem);
-          else review = undefined;
-        } else if (failure instanceof ApiProblemError) {
-          const { run_id: id, instance } = failure.problem;
-          const runId =
-            typeof id === 'string' && id
-              ? id
-              : instance?.match(/^\/api\/v1\/runs\/([a-zA-Z0-9_-]+)$/)?.[1];
-          if (runId) {
-            pending = { ...snapshot, runId };
-            try {
-              savePending(pending);
-            } catch {
-              /* The original exact request is already stored. */
-            }
-          }
-        }
-        return;
-      }
-      if (controller.signal.aborted) return;
-      clearPending(snapshot);
-      pending = undefined;
-      run = result;
-      accepted = true;
-    } catch (failure) {
-      submissionProblem = problem(
-        failure,
-        'Could not update the pending submission',
-      );
-    } finally {
-      if (submission === controller) {
-        submitting = false;
-        submission = undefined;
-      }
-    }
+  function submitReview() {
+    if (!review || editingLocked || accepted) return;
+    submit(review, (conflict) => {
+      if (conflict) reloadChangedWorkflow(conflict);
+      else review = undefined;
+    });
   }
 </script>
 
@@ -676,8 +623,7 @@
 </div>
 {#if validating}<p role="status">Validating the workflow…</p>{/if}
 {#if validationProblem}<ProblemDetails problem={validationProblem} />{/if}
-{#if submissionProblem}<ProblemDetails problem={submissionProblem} />{/if}
-{#if review}
+{#if review && !editingLocked}
   <section class="review" aria-labelledby={`${uid}-review`}>
     <h3 id={`${uid}-review`} tabindex="-1" bind:this={reviewHeading}>
       Review parameters
@@ -689,20 +635,32 @@
         ? ' (modified)'
         : ''}
     </p>
+    {#if review.inheritedChanges.length}
+      <div role="status">
+        <p>Inherited inputs differ from the saved link.</p>
+        <ul>
+          {#each review.inheritedChanges as change, index (index)}<li>
+              {change}
+            </li>{/each}
+        </ul>
+      </div>
+    {/if}
     {#if review.rows.length}
       <dl>
         {#each review.rows as { name, value, source, random, image, requirement, sharedDefault } (name)}
+          {@const inherited = review.inherited.get(name)}
           <dt>
             {name}{random ? ' (randomised seed)' : ''}
             <span class="source">· {requirement}</span>
           </dt>
           <dd>
-            {#if image && typeof value === 'string'}<code>{value}</code>
-            {:else}{value === undefined
-                ? 'Not set — not submitted'
-                : value === ''
-                  ? '(empty text)'
-                  : String(value)}{/if}
+            {#if value === undefined && inherited}
+              Inherited from workflow: {inherited[3]}
+              <span class="source"
+                >(node {inherited[1]}, input {inherited[2]})</span
+              >
+            {:else if image && typeof value === 'string'}<code>{value}</code>
+            {:else}{value === '' ? '(empty text)' : String(value)}{/if}
             {#if source && value !== undefined}
               <span class="source"
                 >({sharedDefault ? 'shared default' : source})</span
@@ -721,52 +679,11 @@
         {/each}
       </ul>
     {/if}
-    {#if !accepted && !pending}
-      <Button variant="primary" onclick={submitReview} disabled={submitting}
-        >Submit run</Button
-      >
+    {#if !accepted && !editingLocked}
+      <Button variant="primary" onclick={submitReview}>Submit run</Button>
     {/if}
   </section>
 {/if}
-{#if pending}
-  <section class="review" aria-labelledby={`${uid}-pending`}>
-    <h3 id={`${uid}-pending`}>Pending submission</h3>
-    <p>
-      Workflow: <code>{pending.body.workflow}</code> · Reviewed version: {pending.version}
-    </p>
-    {#if pending.body.workflow_revision}<p>
-        Workflow revision: <code>{pending.body.workflow_revision}</code>
-      </p>{/if}
-    {#if !review && Object.keys(pending.body.parameters ?? {}).length}
-      <dl>
-        {#each Object.entries(pending.body.parameters ?? {}) as [name, value] (name)}
-          <dt>{name}</dt>
-          <dd>{value === '' ? '(empty text)' : String(value)}</dd>
-        {/each}
-      </dl>
-    {/if}
-    {#if submitting}<p role="status">Submitting the reviewed run…</p>
-    {:else}
-      <p>
-        The run may already exist. {#if pending.runId}<a
-            href={`#/runs/${encodeURIComponent(pending.runId)}`}
-            >Check the run details</a
-          > or
-        {/if}<a href="#/jobs">check status in Jobs</a>.
-      </p>
-      {#if pending.body.workflow_revision}
-        <p>Retrying here sends the identical request with the same key.</p>
-        <Button onclick={submitReview}>Retry with the same key</Button>
-      {:else}
-        <p>
-          This older request has no pinned revision and cannot safely be
-          retried.
-        </p>
-      {/if}
-    {/if}
-  </section>
-{/if}
-{#if run}{#key run.id}<RunProgress initial={run} />{/key}{/if}
 
 <style>
   .editor {

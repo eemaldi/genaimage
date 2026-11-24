@@ -7,6 +7,7 @@
   } from '../../lib/ui/ProblemDetails.svelte';
   import { navigateHash } from '../../navigation';
   import Form from './Form.svelte';
+  import Submission, { type SubmissionControls } from './Submission.svelte';
   import { workflowHref } from './model';
 
   let { query }: { query: URLSearchParams } = $props();
@@ -67,57 +68,72 @@
 
 {#if id}<p><a href={workflowHref('')}>Choose another workflow</a></p>{/if}
 {#if replacement}<ProblemDetails problem={replacement.problem} />{/if}
-{#await request.promise}
-  <p role="status">Loading {id ? 'workflow' : 'workflows'}…</p>
-{:then result}
-  {#if 'workflow' in result}
-    {#key `${queryKey}:${result.attempt}`}<Form
-        workflow={result.workflow}
-        query={replacement?.query ?? query}
-        {reloadWorkflow}
-      />{/key}
-  {:else}
-    {#if result.catalogue.workflows.length}
-      <form
-        onsubmit={(event) => {
-          event.preventDefault();
-          if (picked) navigateHash(workflowHref(picked));
-        }}
-      >
-        <Select
-          label="Workflow"
-          bind:value={picked}
-          options={[
-            { value: '', label: 'Choose a workflow' },
-            ...result.catalogue.workflows.map(({ id, name }) => ({
-              value: id,
-              label: `${name} (${id})`,
-            })),
-          ]}
-          required
-        />
-        <Button type="submit" variant="primary" disabled={!picked}
-          >Open workflow</Button
+{#snippet workflowContent(controls?: SubmissionControls)}
+  {#await request.promise}
+    <p role="status">Loading {id ? 'workflow' : 'workflows'}…</p>
+  {:then result}
+    {#if 'workflow' in result && controls}
+      {#key `${queryKey}:${result.attempt}`}<Form
+          workflow={result.workflow}
+          query={replacement?.query ?? query}
+          {reloadWorkflow}
+          {...controls}
+        />{/key}
+    {:else if 'catalogue' in result}
+      {#if result.catalogue.workflows.length}
+        <form
+          onsubmit={(event) => {
+            event.preventDefault();
+            if (picked) navigateHash(workflowHref(picked));
+          }}
         >
-      </form>
-    {:else}
-      <p>No workflows are available. Check the local workflow manifests.</p>
+          <Select
+            label="Workflow"
+            bind:value={picked}
+            options={[
+              { value: '', label: 'Choose a workflow' },
+              ...result.catalogue.workflows.map(({ id, name }) => ({
+                value: id,
+                label: `${name} (${id})`,
+              })),
+            ]}
+            required
+          />
+          <Button type="submit" variant="primary" disabled={!picked}
+            >Open workflow</Button
+          >
+        </form>
+      {:else}
+        <p>No workflows are available. Check the local workflow manifests.</p>
+      {/if}
+      {#if result.catalogue.diagnostics.length}
+        <p>
+          Some workflows could not be loaded. See the <a href="#/workflows"
+            >workflow catalogue</a
+          > for details.
+        </p>
+      {/if}
     {/if}
-    {#if result.catalogue.diagnostics.length}
-      <p>
-        Some workflows could not be loaded. See the <a href="#/workflows"
-          >workflow catalogue</a
-        > for details.
-      </p>
-    {/if}
-  {/if}
-{:catch error}
-  <ProblemDetails problem={loadProblem(error)} />
-  {#if replacement}<Button
-      onclick={() => reloadWorkflow(replacement!.problem, replacement!.query)}
-      >Retry loading workflow</Button
-    >{/if}
-{/await}
+  {:catch error}
+    <ProblemDetails problem={loadProblem(error)} />
+    {#if replacement}<Button
+        onclick={() => reloadWorkflow(replacement!.problem, replacement!.query)}
+        >Retry loading workflow</Button
+      >{/if}
+  {/await}
+{/snippet}
+
+{#if id}
+  {#key queryKey}
+    <Submission workflowId={id} {reloadWorkflow}>
+      {#snippet children(controls)}
+        {@render workflowContent(controls)}
+      {/snippet}
+    </Submission>
+  {/key}
+{:else}
+  {@render workflowContent()}
+{/if}
 
 <style>
   form {
