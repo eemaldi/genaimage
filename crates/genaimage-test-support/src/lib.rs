@@ -45,6 +45,7 @@ pub struct FakeComfyState {
     pub hang_submit_response: Arc<AtomicBool>,
     pub redirect_submit_response: Arc<AtomicBool>,
     pub prompt_calls: Arc<AtomicUsize>,
+    pub submitted_graph: Arc<Mutex<Option<Value>>>,
     pub upload_calls: Arc<AtomicUsize>,
     pub uploaded_image: Arc<Mutex<Option<Bytes>>>,
     pub reject_upload: Arc<AtomicBool>,
@@ -88,6 +89,7 @@ impl Default for FakeComfyState {
             hang_submit_response: Default::default(),
             redirect_submit_response: Default::default(),
             prompt_calls: Default::default(),
+            submitted_graph: Default::default(),
             upload_calls: Default::default(),
             uploaded_image: Default::default(),
             reject_upload: Default::default(),
@@ -247,6 +249,7 @@ async fn fake_upload(State(state): State<FakeComfyState>, mut multipart: Multipa
 
 async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {
     state.prompt_calls.fetch_add(1, Ordering::SeqCst);
+    *state.submitted_graph.lock().expect("graph lock") = Some(body["prompt"].clone());
     let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
     if !state.defer_prompt_admission.load(Ordering::SeqCst) {
         *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());

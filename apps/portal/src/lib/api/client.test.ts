@@ -69,6 +69,24 @@ describe('portal API client', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves resolved graph integrity and entity metadata', async () => {
+    const fetcher = mockFetch().mockResolvedValue(
+      new Response('{"seed":18446744073709551615}', {
+        headers: {
+          'X-Genaimage-Workflow-Integrity': 'verified',
+          ETag: '"abc"',
+        },
+      }),
+    );
+    await expect(
+      createApiClient(fetcher).getResolvedWorkflow('run'),
+    ).resolves.toEqual({
+      graph: { seed: 18446744073709551615n },
+      integrity: 'verified',
+      etag: '"abc"',
+    });
+  });
+
   it('distinguishes a successful response with invalid JSON from an HTTP error', async () => {
     const fetcher = mockFetch().mockResolvedValue(
       new Response('<html></html>'),

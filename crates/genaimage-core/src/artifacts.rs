@@ -40,6 +40,8 @@ pub struct RunManifest {
     pub prompt_id: String,
     pub client_id: String,
     pub workflow: WorkflowManifestRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_workflow_sha256: Option<String>,
     pub preset: Option<String>,
     pub parameters: Value,
     pub comfyui_base_url: String,
@@ -66,25 +68,27 @@ pub(crate) fn initialise_run_files(
     preset: Option<&str>,
     parameters: &Value,
     inputs: &[InputFileRecord],
-) -> Result<String> {
+) -> Result<(String, String)> {
     create_new_atomic(
         &output_dir.join("workflow-manifest.json"),
         &loaded.manifest_bytes,
     )?;
+    let resolved_workflow = serde_json::to_vec_pretty(&bound.workflow)?;
     create_new_atomic(
         &output_dir.join("resolved-workflow.json"),
-        serde_json::to_vec_pretty(&bound.workflow)?.as_slice(),
+        &resolved_workflow,
     )?;
     let preflight = serde_json::json!({
         "schema_version": 1,
         "workflow_manifest_path": loaded.manifest_path.display().to_string(),
+        "resolved_workflow_sha256": sha256_hex(&resolved_workflow),
         "preset": preset,
         "parameters": parameters,
         "source_inputs": inputs
     });
     let bytes = serde_json::to_vec_pretty(&preflight)?;
     create_new_atomic(&output_dir.join("preflight.json"), &bytes)?;
-    Ok(sha256_hex(&bytes))
+    Ok((sha256_hex(&bytes), sha256_hex(&resolved_workflow)))
 }
 
 pub(crate) async fn materialise_history(
@@ -158,6 +162,7 @@ pub(crate) async fn materialise_history(
             },
             manifest_path: workflow_manifest_path.display().to_string(),
         },
+        resolved_workflow_sha256: run.resolved_workflow_sha256.clone(),
         preset: read_preflight_field(&output_dir, "preset")?
             .and_then(|value| value.as_str().map(str::to_owned)),
         parameters: run.parameters.clone(),

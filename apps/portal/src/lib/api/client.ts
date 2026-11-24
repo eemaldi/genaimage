@@ -396,11 +396,14 @@ export function createApiClient(
     reconcileRuns: (options: RequestOptions = {}) =>
       json('post', '/api/v1/runs/reconcile', options),
     getResolvedWorkflow: (id: string, options?: RequestOptions) =>
-      json(
-        'get',
-        '/api/v1/runs/{id}/resolved-workflow',
-        { ...options, path: { id } },
-        readRecordedRun,
+      request(
+        apiUrl('/api/v1/runs/{id}/resolved-workflow', { id }),
+        options ?? {},
+        async (response) => ({
+          graph: await readRecordedRun(response),
+          integrity: response.headers.get('x-genaimage-workflow-integrity'),
+          etag: response.headers.get('etag'),
+        }),
       ),
     getRunManifest: (id: string, options?: RequestOptions) =>
       json('get', '/api/v1/runs/{id}/manifest', { ...options, path: { id } }),

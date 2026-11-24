@@ -421,8 +421,8 @@ and accepts 1–200. Errors use `application/problem+json` with a `recovery` hin
 | `GET /outputs/{id}/metadata` | Fetch the same metadata for one output, without transferring media bytes. |
 | `GET /outputs/{id}` | Stream the original file with a strong SHA-256 ETag, `Accept-Ranges: bytes` and `Cache-Control: public, max-age=31536000, immutable`. |
 | `GET /outputs/{id}/thumbnail?size=128` | Return a cached WebP thumbnail with a strong ETag. |
-| `GET /runs/{id}/manifest` | Stream the exact stored `run-manifest.json`, including its output and workflow checksums. Never reconstruct it on read. |
-| `GET /runs/{id}/resolved-workflow` | Stream the archived resolved graph as JSON. Its integrity is unverified because no digest was recorded; it must not be used as proof of what ran. |
+| `GET /runs/{id}/manifest` | Stream the exact stored `run-manifest.json`, including its output and workflow checksums. New manifests also include `resolved_workflow_sha256`; legacy manifests may omit it. Never reconstruct it on read. |
+| `GET /runs/{id}/resolved-workflow` | Stream the archived resolved graph as JSON. New runs verify its SHA-256 against the fingerprint pinned in the run record before submission; older archives are marked unverified. This does not independently prove what ComfyUI executed. |
 
 List responses contain `outputs` and `next_cursor` (null at the end). Pass the
 opaque cursor back unchanged with the same filters. Outputs are sorted newest

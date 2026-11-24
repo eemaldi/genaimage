@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
   import { api, ApiProblemError } from '../../lib/api/client';
   import { events, type EventEnvelope } from '../../lib/api/events';
   import type { components } from '../../lib/api/schema';
@@ -11,10 +10,10 @@
   } from '../../lib/ui/ProblemDetails.svelte';
   import { navigateHash } from '../../navigation';
   import StatusBadge from '../jobs/StatusBadge.svelte';
-  import type { Run } from '../jobs/run-model';
+  import { describeStatus, type Run } from '../jobs/run-model';
   import { formatRecordedValue } from '../gallery/parameter-diff';
   import Thumbnail from '../gallery/Thumbnail.svelte';
-  import { buildGenerateUrl } from './remix';
+  import { buildGenerateUrl, remixAvailable } from './remix';
 
   let { id }: { id: string } = $props();
   type Output = components['schemas']['OutputResponse'];
@@ -41,6 +40,8 @@
   let mismatch = $state(false);
   let pendingKey = $state<string>();
   let actionNotice = $state<string>();
+  let statusAnnouncement = $state('');
+  const eventLimit = 200;
   let heading: HTMLHeadingElement;
   let generation = 0;
   let inFlight = false;
@@ -91,7 +92,11 @@
       ),
   );
 
-  let resolved = $state.raw<unknown>();
+  let resolved = $state.raw<{
+    graph: unknown;
+    label: string;
+    etag?: string | null;
+  }>();
   let resolvedError = $state<Problem>();
   let resolvedLoading = $state(false);
   let connection = events.status;
@@ -181,10 +186,13 @@
     try {
       const record = await api.getRecordedRun(runId, { signal });
       if (signal.aborted || current !== generation) return;
+      if (run && run.status !== record.status) {
+        statusAnnouncement = `Run status changed to ${describeStatus(record.status).label}.${record.status === 'completed' ? ' Outputs are not yet confirmed.' : ''}`;
+      }
       run = record;
       loading = false;
       const requests = await Promise.allSettled([
-        api.listRunEvents(runId, { limit: 200 }, { signal }),
+        api.listRunEvents(runId, { limit: eventLimit }, { signal }),
         api.listOutputs(
           { run: runId, status: record.status, limit: 200 },
           { signal },
@@ -195,9 +203,9 @@
       if (signal.aborted || current !== generation) return;
       const [eventResult, outputResult, runResult, manifestResult] = requests;
       if (eventResult.status === 'fulfilled') {
-        const merged = new SvelteMap(timeline.map((item) => [item.id, item]));
-        for (const item of eventResult.value.events) merged.set(item.id, item);
-        timeline = [...merged.values()].sort((a, b) => a.id - b.id).slice(-500);
+        timeline = [...eventResult.value.events]
+          .sort((a, b) => a.id - b.id)
+          .slice(-eventLimit);
       }
       if (outputResult.status === 'fulfilled') {
         outputs = outputResult.value.outputs;
@@ -303,6 +311,7 @@
     actionError = undefined;
     mismatch = false;
     actionNotice = undefined;
+    statusAnnouncement = '';
     busy = false;
     open = false;
     showResolved = false;
@@ -370,8 +379,14 @@
         : run?.prompt_id;
     const prompt = promptId ? asObject(history?.[promptId])?.prompt : undefined;
     const recorded = Array.isArray(prompt) ? asObject(prompt[2]) : undefined;
+    resolved = undefined;
     if (recorded) {
-      resolved = recorded;
+      resolved = {
+        graph: recorded,
+        label: manifestVerified
+          ? 'ComfyUI history graph — recorded in a verified manifest; the graph is not independently verified.'
+          : 'ComfyUI history graph — manifest integrity unverified.',
+      };
       resolvedError = undefined;
       resolvedLoading = false;
       return;
@@ -381,12 +396,22 @@
     resolvedError = undefined;
     api
       .getResolvedWorkflow(runId, { signal: request.signal })
-      .then((graph) => {
-        if (!request.signal.aborted) resolved = graph;
+      .then((result) => {
+        if (!request.signal.aborted)
+          resolved = {
+            graph: result.graph,
+            etag: result.etag,
+            label:
+              result.integrity === 'verified'
+                ? 'Verified archive — SHA-256 matches the graph recorded before submission; execution is not independently verified.'
+                : 'Unverified archive — cannot confirm this is what ran',
+          };
       })
       .catch((reason: unknown) => {
-        if (!request.signal.aborted)
+        if (!request.signal.aborted) {
+          resolved = undefined;
           resolvedError = issue(reason, 'Could not load the resolved workflow');
+        }
       })
       .finally(() => {
         if (!request.signal.aborted) resolvedLoading = false;
@@ -431,6 +456,17 @@
       }
       sent = true;
       const result = await api.rerunRun(runId, key);
+      if (
+        !result ||
+        typeof result.id !== 'string' ||
+        !result.id.trim() ||
+        result.id.trim() !== result.id ||
+        result.id === runId ||
+        result.rerun_of !== runId
+      )
+        throw new Error(
+          'The server response did not identify a distinct re-run of this source.',
+        );
       try {
         sessionStorage.removeItem(storageKey(runId));
       } catch {
@@ -465,6 +501,9 @@
 </script>
 
 <h1 tabindex="-1" bind:this={heading}>Run detail</h1>
+<p class="sr-only" aria-live="polite" aria-atomic="true">
+  {statusAnnouncement}
+</p>
 {#if loading}<p role="status">Loading run…</p>{/if}
 {#if error}<ProblemDetails problem={error} /><Button onclick={refresh}
     >Reload run</Button
@@ -542,7 +581,9 @@
       {#each Object.entries(asObject(parameters) ?? {}) as [name, value] (name)}<div
         >
           <dt>{name === 'seed' ? 'Seed' : name}</dt>
-          <dd>{formatRecordedValue(value)}</dd>
+          <dd class="recorded-value" style="white-space: pre-wrap">
+            {formatRecordedValue(value)}
+          </dd>
         </div>{/each}
     </dl>
   {:else}<pre>{formatRecordedValue(parameters)}</pre>{/if}
@@ -561,15 +602,13 @@
   <h3>Resolved workflow</h3>
   <details bind:open={showResolved}>
     <summary>Show resolved workflow JSON</summary>
-    <p>
-      The graph comes from recorded ComfyUI history when available; the archived
-      fallback is unverified.
-    </p>
     {#if resolvedLoading}<p role="status">Loading workflow…</p>{/if}
     {#if resolvedError}<ProblemDetails problem={resolvedError} />{/if}
-    {#if showResolved && resolved !== undefined}<pre>{formatRecordedValue(
-          resolved,
-        )}</pre>{/if}
+    {#if showResolved && resolved !== undefined}
+      {#if resolved.etag}<p>Archive ETag: {resolved.etag}</p>{/if}
+      <p>{resolved.label}</p>
+      <pre>{formatRecordedValue(resolved.graph)}</pre>
+    {/if}
   </details>
   <h3>Known re-runs</h3>
   {#if relatives.length}<ul>
@@ -594,9 +633,7 @@
       >Load more outputs</Button
     >{/if}
   <h2>Event timeline</h2>
-  {#if timeline.length === 500}<p>
-      Showing the latest 500 recorded events.
-    </p>{/if}
+  <p>Showing the latest {eventLimit} recorded events.</p>
   {#if timeline.length}<ol>
       {#each timeline as event (event.id)}<li>
           <time datetime={event.created_at}>{event.created_at}</time> — {event.event_type}{#if event.message}:
@@ -629,17 +666,13 @@
     </p>
   {:else}<Button onclick={() => (open = true)} disabled={busy}>Re-run</Button
     >{/if}
-  {#if rerunUrl}<a href={rerunUrl}>Remix in Generate</a>
-    <p>
-      Only the workflow is preselected. Recorded parameters are not yet carried
-      across; review them before generating.
-    </p>
-  {/if}
+  {#if remixAvailable && rerunUrl}<a href={rerunUrl}>Remix in Generate</a
+    >{:else}<p>Remix will be available soon.</p>{/if}
   {#if manifestText}<Button onclick={download}>Download manifest</Button
     >{:else if manifestError}<p>Run manifest is unavailable.</p>{/if}
   {#if actionNotice}<p role="status">{actionNotice}</p>{/if}
   {#if actionError}<ProblemDetails problem={actionError} />{/if}
-  {#if mismatch && rerunUrl}<p>
+  {#if mismatch && remixAvailable && rerunUrl}<p>
       Use <a href={rerunUrl}>Remix</a> to review the current workflow instead.
     </p>{/if}
   <Dialog bind:open title="Confirm re-run" returnFocus={() => heading.focus()}>
@@ -663,7 +696,16 @@
         Preset and input details are not available in the run API until a
         manifest is recorded.
       </p>{/if}
-    <p><strong>Parameters:</strong> {formatRecordedValue(parameters)}</p>
+    <p><strong>Parameters:</strong></p>
+    {#if asObject(parameters)}<dl>
+        {#each Object.entries(asObject(parameters) ?? {}) as [name, value] (name)}<div
+          >
+            <dt>{name === 'seed' ? 'Seed' : name}</dt>
+            <dd class="recorded-value" style="white-space: pre-wrap">
+              {formatRecordedValue(value)}
+            </dd>
+          </div>{/each}
+      </dl>{:else}<pre>{formatRecordedValue(parameters)}</pre>{/if}
     {#if inputs.length}<p><strong>Input hashes:</strong></p>
       <ul>
         {#each inputs as input, index (index)}<li>
@@ -691,9 +733,21 @@
     margin: 0;
     overflow-wrap: anywhere;
   }
-  pre {
+  pre,
+  .recorded-value {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
   .outputs {
     display: grid;

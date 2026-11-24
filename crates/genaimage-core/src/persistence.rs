@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +82,8 @@ pub struct RunRecord {
     pub workflow_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_workflow_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerun_of: Option<String>,
     #[doc(hidden)]
@@ -867,6 +869,7 @@ const MIGRATION_8: &str = "
 ";
 const MIGRATION_9: &str =
     "CREATE INDEX IF NOT EXISTS runs_output_status_idx ON runs(status) WHERE status IN ('failed', 'cancelled');";
+const MIGRATION_10: &str = "ALTER TABLE runs ADD COLUMN resolved_workflow_sha256 TEXT;";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -877,6 +880,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_7,
     MIGRATION_8,
     MIGRATION_9,
+    MIGRATION_10,
 ];
 
 // The first version that must already contain each table before migration.
@@ -890,6 +894,7 @@ const EXPECTED_TABLES: [(&str, i64, &str); 6] = [
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
+    (10, "SELECT resolved_workflow_sha256 FROM runs LIMIT 0"),
     (
         8,
         "SELECT workflow_manifest_sha256, rerun_of, preflight_sha256 FROM runs LIMIT 0",
@@ -1076,13 +1081,21 @@ impl AsyncRunRepository {
             .await
     }
 
-    pub(crate) async fn record_preflight(&self, id: String, checksum: String) -> Result<()> {
+    pub(crate) async fn record_preflight(
+        &self,
+        id: String,
+        checksum: String,
+        resolved_checksum: String,
+    ) -> Result<()> {
         self.call(move |repo| {
             repo.guarded(|connection| {
-                connection.execute(
-                    "UPDATE runs SET preflight_sha256 = ?2 WHERE id = ?1 AND preflight_sha256 IS NULL",
-                    params![id, checksum],
+                let updated = connection.execute(
+                    "UPDATE runs SET preflight_sha256 = ?2, resolved_workflow_sha256 = ?3 WHERE id = ?1 AND preflight_sha256 IS NULL",
+                    params![id, checksum, resolved_checksum],
                 )?;
+                if updated != 1 {
+                    return Err(HarnessError::Database("Could not record the submission fingerprints.".into()));
+                }
                 Ok(())
             })
         })
@@ -1280,6 +1293,7 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         workflow_version: row.get("workflow_version")?,
         workflow_sha256: row.get("workflow_sha256")?,
         workflow_manifest_sha256: row.get("workflow_manifest_sha256")?,
+        resolved_workflow_sha256: row.get("resolved_workflow_sha256")?,
         rerun_of: row.get("rerun_of")?,
         preflight_sha256: row.get("preflight_sha256")?,
         generation_mode: parse_generation_mode(&row.get::<_, String>("generation_mode")?)

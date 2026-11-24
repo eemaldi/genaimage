@@ -276,13 +276,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Fetch the archived resolved workflow. Its integrity is unverified: the run record does not contain a digest of these bytes. */
+        /** @description Fetch the archived resolved workflow. New runs verify its SHA-256 against the pre-submission record; legacy archives are unverified. */
         get: operations["outputs_resolved_workflow"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
-        /** @description Fetch the archived resolved workflow. Its integrity is unverified: the run record does not contain a digest of these bytes. */
+        /** @description Fetch the archived resolved workflow. New runs verify its SHA-256 against the pre-submission record; legacy archives are unverified. */
         head: operations["outputs_resolved_workflow_head"];
         patch?: never;
         trace?: never;
@@ -3417,11 +3417,11 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Unverified archived resolved workflow */
+            /** @description Archived resolved workflow */
             200: {
                 headers: {
                     ETag?: string;
-                    /** @description Always unverified */
+                    /** @description verified or unverified */
                     "X-Genaimage-Workflow-Integrity"?: string;
                     [name: string]: unknown;
                 };
@@ -3432,6 +3432,9 @@ export interface operations {
             /** @description Not modified */
             304: {
                 headers: {
+                    ETag?: string;
+                    /** @description verified or unverified */
+                    "X-Genaimage-Workflow-Integrity"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -3533,11 +3536,11 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Unverified archived resolved workflow */
+            /** @description Archived resolved workflow */
             200: {
                 headers: {
                     ETag?: string;
-                    /** @description Always unverified */
+                    /** @description verified or unverified */
                     "X-Genaimage-Workflow-Integrity"?: string;
                     [name: string]: unknown;
                 };
@@ -3546,6 +3549,9 @@ export interface operations {
             /** @description Not modified */
             304: {
                 headers: {
+                    ETag?: string;
+                    /** @description verified or unverified */
+                    "X-Genaimage-Workflow-Integrity"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

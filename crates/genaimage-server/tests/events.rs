@@ -157,6 +157,7 @@ async fn filters_replay_and_live_events_by_run_id() {
             workflow_version: "v1".into(),
             workflow_sha256: "f".repeat(64),
             workflow_manifest_sha256: None,
+            resolved_workflow_sha256: None,
             rerun_of: None,
             preflight_sha256: None,
             generation_mode: Default::default(),

@@ -4717,7 +4717,7 @@
     },
     "/api/v1/runs/{id}/resolved-workflow": {
       "get": {
-        "description": "Fetch the archived resolved workflow. Its integrity is unverified: the run record does not contain a digest of these bytes.",
+        "description": "Fetch the archived resolved workflow. New runs verify its SHA-256 against the pre-submission record; legacy archives are unverified.",
         "operationId": "outputs_resolved_workflow",
         "parameters": [
           {
@@ -4750,7 +4750,7 @@
                 }
               }
             },
-            "description": "Unverified archived resolved workflow",
+            "description": "Archived resolved workflow",
             "headers": {
               "ETag": {
                 "schema": {
@@ -4758,7 +4758,7 @@
                 }
               },
               "X-Genaimage-Workflow-Integrity": {
-                "description": "Always unverified",
+                "description": "verified or unverified",
                 "schema": {
                   "type": "string"
                 }
@@ -4766,7 +4766,20 @@
             }
           },
           "304": {
-            "description": "Not modified"
+            "description": "Not modified",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Genaimage-Workflow-Integrity": {
+                "description": "verified or unverified",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -4864,7 +4877,7 @@
         ]
       },
       "head": {
-        "description": "Fetch the archived resolved workflow. Its integrity is unverified: the run record does not contain a digest of these bytes.",
+        "description": "Fetch the archived resolved workflow. New runs verify its SHA-256 against the pre-submission record; legacy archives are unverified.",
         "operationId": "outputs_resolved_workflow_head",
         "parameters": [
           {
@@ -4890,7 +4903,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Unverified archived resolved workflow",
+            "description": "Archived resolved workflow",
             "headers": {
               "ETag": {
                 "schema": {
@@ -4898,7 +4911,7 @@
                 }
               },
               "X-Genaimage-Workflow-Integrity": {
-                "description": "Always unverified",
+                "description": "verified or unverified",
                 "schema": {
                   "type": "string"
                 }
@@ -4906,7 +4919,20 @@
             }
           },
           "304": {
-            "description": "Not modified"
+            "description": "Not modified",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Genaimage-Workflow-Integrity": {
+                "description": "verified or unverified",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "description": "Problem details"

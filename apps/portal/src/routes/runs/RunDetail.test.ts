@@ -28,22 +28,39 @@ const fake = vi.hoisted(() => ({
   },
   listeners: new Map<string, (event: EventEnvelope) => void>(),
   navigate: vi.fn(),
+  subscriptions: 0,
 }));
 vi.mock('../../lib/api/client', async (original) => ({
   ...(await original<typeof import('../../lib/api/client')>()),
   api: fake.client,
 }));
 vi.mock('../../navigation', () => ({ navigateHash: fake.navigate }));
-vi.mock('../../lib/api/events', () => ({
-  events: {
-    status: writable('open'),
-    resync: writable<ResyncSignal | null>(null),
-    on: (type: string, listener: (event: EventEnvelope) => void) => {
-      fake.listeners.set(type, listener);
-      return () => fake.listeners.delete(type);
+vi.mock('../../lib/api/events', () => {
+  function tracked<T>(value: T) {
+    const store = writable(value);
+    return {
+      ...store,
+      subscribe: (listener: (value: T) => void) => {
+        fake.subscriptions++;
+        const unsubscribe = store.subscribe(listener);
+        return () => {
+          fake.subscriptions--;
+          unsubscribe();
+        };
+      },
+    };
+  }
+  return {
+    events: {
+      status: tracked('open'),
+      resync: tracked<ResyncSignal | null>(null),
+      on: (type: string, listener: (event: EventEnvelope) => void) => {
+        fake.listeners.set(type, listener);
+        return () => fake.listeners.delete(type);
+      },
     },
-  },
-}));
+  };
+});
 import { events } from '../../lib/api/events';
 
 const run: Run = {
@@ -104,7 +121,9 @@ beforeEach(() => {
   fake.client.getRecordedRun.mockResolvedValue(run);
   fake.client.getRun.mockResolvedValue(run);
   fake.client.getResolvedWorkflow.mockResolvedValue({
-    '7': { class_type: 'Sampler' },
+    graph: { '7': { class_type: 'Sampler' } },
+    integrity: 'verified',
+    etag: '"abc"',
   });
   fake.client.getRunManifestText.mockResolvedValue({
     text: manifest,
@@ -167,6 +186,9 @@ test('renders recorded provenance, outputs, relationships and lazy workflow JSON
   details.open = true;
   fireEvent(details, new Event('toggle'));
   expect(await screen.findByText(/Sampler/)).toBeTruthy();
+  expect(
+    screen.getByText(/ComfyUI history graph.*verified manifest/),
+  ).toBeTruthy();
   expect(fake.client.getResolvedWorkflow).not.toHaveBeenCalled();
 });
 
@@ -227,7 +249,7 @@ test('confirms a new run without mutating its source', async () => {
   );
 });
 
-test('offers Remix after a provenance mismatch', async () => {
+test('hides Remix after a provenance mismatch', async () => {
   fake.client.rerunRun.mockRejectedValue(
     new ApiProblemError({
       type: 'urn:genaimage:problem:rerun-mismatch',
@@ -242,9 +264,8 @@ test('offers Remix after a provenance mismatch', async () => {
   await user.click(screen.getByRole('button', { name: 'Re-run' }));
   await user.click(screen.getByRole('button', { name: 'Confirm re-run' }));
   expect(await screen.findByText('Restore the original files.')).toBeTruthy();
-  expect(
-    screen.getByRole('link', { name: 'Remix' }).getAttribute('href'),
-  ).toContain('#/generate?');
+  expect(screen.queryByRole('link', { name: /Remix/i })).toBeNull();
+  expect(screen.getByText('Remix will be available soon.')).toBeTruthy();
 });
 
 test('retains the same idempotency key after an uncertain result', async () => {
@@ -264,15 +285,10 @@ test('retains the same idempotency key after an uncertain result', async () => {
   );
 });
 
-test('offers a workflow-only Remix link until Generate is merged', async () => {
+test('hides Remix until Generate is merged', async () => {
   await start();
-  const href = screen
-    .getByRole('link', { name: 'Remix in Generate' })
-    .getAttribute('href');
-  expect(href).toBe('#/generate?workflow=landscape');
-  expect(
-    screen.getByText(/Recorded parameters are not yet carried across/),
-  ).toBeTruthy();
+  expect(screen.queryByRole('link', { name: /Remix/i })).toBeNull();
+  expect(screen.getByText('Remix will be available soon.')).toBeTruthy();
 });
 
 test('downloads exact manifest bytes', async () => {
@@ -425,6 +441,10 @@ test('fetches the archived workflow lazily when history has no graph', async () 
   details.open = true;
   fireEvent(details, new Event('toggle'));
   expect(await screen.findByText(/Sampler/)).toBeTruthy();
+  expect(
+    screen.getByText(/Verified archive.*recorded before submission/),
+  ).toBeTruthy();
+  expect(screen.getByText('Archive ETag: "abc"')).toBeTruthy();
   expect(fake.client.getResolvedWorkflow).toHaveBeenCalledTimes(1);
 });
 
@@ -464,4 +484,172 @@ test('marks unverified manifests and prevents misleading re-run confirmation', a
     screen.getByText('Manifest integrity could not be verified.'),
   ).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Re-run' })).toBeNull();
+});
+
+test('marks legacy archives and clears stale graphs when the next fetch fails', async () => {
+  fake.client.getRunManifestText.mockResolvedValue({
+    integrityVerified: true,
+    text: JSON.stringify({ preset: null, source_inputs: [] }),
+  });
+  fake.client.getResolvedWorkflow
+    .mockResolvedValueOnce({
+      graph: { old: 'Old graph' },
+      integrity: 'unverified',
+      etag: '"legacy"',
+    })
+    .mockRejectedValue(new Error('archive changed'));
+  render(RunDetail, { id: 'one' });
+  const details = (await screen.findByText('Show resolved workflow JSON'))
+    .parentElement as HTMLDetailsElement;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+  expect(await screen.findByText(/Old graph/)).toBeTruthy();
+  expect(
+    screen.getByText('Unverified archive — cannot confirm this is what ran'),
+  ).toBeTruthy();
+  (events.resync as ReturnType<typeof writable<ResyncSignal | null>>).set({
+    epoch: 9,
+    reason: { reason: 'cursor_unavailable' },
+  });
+  expect(await screen.findByText('archive changed')).toBeTruthy();
+  expect(screen.queryByText(/Old graph/)).toBeNull();
+  expect(
+    screen.queryByText('Unverified archive — cannot confirm this is what ran'),
+  ).toBeNull();
+});
+
+test.each([
+  { id: 'one', rerun_of: 'one' },
+  { id: 'new', rerun_of: 'other' },
+  { id: '', rerun_of: 'one' },
+])(
+  'keeps the same key when a successful response does not identify a re-run: %j',
+  async (invalid) => {
+    fake.client.rerunRun.mockResolvedValueOnce(invalid);
+    await start();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Re-run' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm re-run' }));
+    const retry = await screen.findByRole('button', {
+      name: 'Retry same request',
+    });
+    expect(fake.navigate).not.toHaveBeenCalled();
+    const key = fake.client.rerunRun.mock.calls[0][1];
+    expect(sessionStorage.getItem('genaimage.rerun.one')).toBe(key);
+    await user.click(retry);
+    await waitFor(() => expect(fake.client.rerunRun).toHaveBeenCalledTimes(2));
+    expect(fake.client.rerunRun.mock.calls[1][1]).toBe(key);
+    expect(fake.navigate).toHaveBeenCalledWith('#/runs/new?created=rerun');
+  },
+);
+
+test('replaces the bounded latest event window after a large resync', async () => {
+  const makeEvents = (first: number) =>
+    Array.from({ length: 200 }, (_, index) => ({
+      ...event,
+      id: first + index,
+      message: `Event ${first + index}`,
+    }));
+  fake.client.listRunEvents.mockResolvedValue({ events: makeEvents(51) });
+  await start();
+  expect(
+    screen.getByText('Showing the latest 200 recorded events.'),
+  ).toBeTruthy();
+  expect(screen.getByText(/Event 51$/)).toBeTruthy();
+  expect(screen.getByText(/Event 250$/)).toBeTruthy();
+  expect(fake.client.listRunEvents).toHaveBeenCalledWith(
+    'one',
+    { limit: 200 },
+    expect.anything(),
+  );
+  fake.client.listRunEvents.mockResolvedValue({ events: makeEvents(501) });
+  (events.resync as ReturnType<typeof writable<ResyncSignal | null>>).set({
+    epoch: 10,
+    reason: { reason: 'cursor_unavailable' },
+  });
+  expect(await screen.findByText(/Event 700$/)).toBeTruthy();
+  expect(screen.queryByText(/Event 250$/)).toBeNull();
+  expect(screen.getByText(/Event 501$/)).toBeTruthy();
+  expect(
+    within(document.querySelector('ol')!).getAllByRole('listitem'),
+  ).toHaveLength(200);
+});
+
+test('preserves prompt whitespace on the page and in the confirmation', async () => {
+  const prompt = 'First  line\nSecond   line';
+  fake.client.getRecordedRun.mockResolvedValue({
+    ...run,
+    parameters: { seed: 18446744073709551615n, prompt },
+  });
+  fake.client.getRunManifestText.mockResolvedValue({
+    text: manifest.replace('"Coast"', JSON.stringify(prompt)),
+    integrityVerified: true,
+  });
+  await start();
+  const value = [...document.querySelectorAll('.recorded-value')].find(
+    (item) => item.textContent === prompt,
+  ) as HTMLElement;
+  expect(value).toBeTruthy();
+  expect(getComputedStyle(value).whiteSpace).toBe('pre-wrap');
+  await userEvent.click(screen.getByRole('button', { name: 'Re-run' }));
+  const dialog = screen.getByRole('dialog');
+  const shown = [...dialog.querySelectorAll('.recorded-value')].find(
+    (item) => item.textContent === prompt,
+  ) as HTMLElement;
+  expect(shown).toBeTruthy();
+  expect(getComputedStyle(shown).whiteSpace).toBe('pre-wrap');
+});
+
+test('announces status changes politely and unsubscribes on unmount', async () => {
+  await start();
+  const region = document.querySelector('[aria-live="polite"]')!;
+  expect(region.textContent).toBe('');
+  fake.client.getRecordedRun.mockResolvedValue({ ...run, status: 'failed' });
+  (events.resync as ReturnType<typeof writable<ResyncSignal | null>>).set({
+    epoch: 11,
+    reason: { reason: 'cursor_unavailable' },
+  });
+  await waitFor(() =>
+    expect(region.textContent).toContain('Run status changed to Failed.'),
+  );
+  expect(fake.listeners.size).toBeGreaterThan(0);
+  expect(fake.subscriptions).toBeGreaterThan(0);
+  cleanup();
+  expect(fake.listeners.size).toBe(0);
+  expect(fake.subscriptions).toBe(0);
+});
+
+test('clears the history graph while switching to the archive source', async () => {
+  await start();
+  const details = screen.getByText('Show resolved workflow JSON')
+    .parentElement as HTMLDetailsElement;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+  expect(await screen.findByText(/Sampler/)).toBeTruthy();
+  let finish!: (value: unknown) => void;
+  fake.client.getResolvedWorkflow.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  fake.client.getRunManifestText.mockResolvedValue({
+    integrityVerified: true,
+    text: JSON.stringify({ preset: null, source_inputs: [] }),
+  });
+  (events.resync as ReturnType<typeof writable<ResyncSignal | null>>).set({
+    epoch: 12,
+    reason: { reason: 'cursor_unavailable' },
+  });
+  expect(await screen.findByText('Loading workflow…')).toBeTruthy();
+  expect(screen.queryByText(/Sampler/)).toBeNull();
+  finish({
+    graph: { replacement: 'New graph' },
+    integrity: 'verified',
+    etag: '"abc"',
+  });
+  expect(await screen.findByText(/New graph/)).toBeTruthy();
+  expect(
+    screen.getByText(/Verified archive.*recorded before submission/),
+  ).toBeTruthy();
 });

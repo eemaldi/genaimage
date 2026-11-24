@@ -1,5 +1,7 @@
 import type { Run } from '../jobs/run-model';
 
+export const remixAvailable = false;
+
 // TODO: Switch to generate/share.ts buildGenerateUrl after #45 merges. Until
 // then only the workflow is carried; no recorded parameters are prefilled.
 export function buildGenerateUrl(run: Run): string {

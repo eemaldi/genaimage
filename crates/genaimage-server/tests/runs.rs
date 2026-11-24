@@ -301,7 +301,7 @@ async fn rerun_refuses_migrated_completed_run_even_with_indexed_manifest() {
     db.execute_batch(
         "ALTER TABLE runs DROP COLUMN rerun_of;
         ALTER TABLE runs DROP COLUMN workflow_manifest_sha256;
-        ALTER TABLE runs DROP COLUMN preflight_sha256;
+        ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256;
         PRAGMA user_version = 7;",
     )
     .unwrap();
@@ -987,7 +987,7 @@ async fn rejected_deletion_rolls_back_but_lost_acknowledgement_stays_cancelling(
 }
 
 #[tokio::test]
-async fn resolved_workflow_is_available_for_active_runs_and_marked_unverified() {
+async fn resolved_workflow_verifies_submission_digest_and_supports_legacy_runs() {
     let api = ApiHarness::start().await;
     install_workflow(&api);
     let source = run(
@@ -996,27 +996,58 @@ async fn resolved_workflow_is_available_for_active_runs_and_marked_unverified() 
     )
     .await;
     let path = format!("{RUNS}/{}/resolved-workflow", source.id);
+    let record = api.core.repository().get(&source.id).unwrap();
+    let digest = record.resolved_workflow_sha256.as_ref().unwrap();
+    let graph_path = std::path::Path::new(&record.output_dir).join("resolved-workflow.json");
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-genaimage-workflow-integrity"],
+        "verified"
+    );
+    assert_eq!(response.headers()["etag"], format!("\"{digest}\""));
+    let graph: Value = response.json().await.unwrap();
+    assert_eq!(
+        graph,
+        *api.fake.submitted_graph.lock().unwrap().as_ref().unwrap()
+    );
+    api.fake.complete.store(true, Ordering::SeqCst);
+    let completed: RunResponse = api
+        .post_json(&format!("{RUNS}/{}/reconcile", source.id), &Value::Null)
+        .await;
+    assert_eq!(completed.status, RunStatus::Completed);
+    let manifest: Value = api
+        .get_json(&format!("{RUNS}/{}/manifest", source.id))
+        .await;
+    assert_eq!(manifest["resolved_workflow_sha256"], *digest);
+
+    std::fs::write(&graph_path, br#"{"different":{"class_type":"Changed"}}"#).unwrap();
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::CONFLICT).await;
+    assert!(problem.recovery.contains("resolved workflow"));
+
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "UPDATE runs SET resolved_workflow_sha256 = NULL WHERE id = ?1",
+        [&source.id],
+    )
+    .unwrap();
+    drop(db);
     let response = api.request(Method::GET, &path).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()["x-genaimage-workflow-integrity"],
         "unverified"
     );
-    let graph: Value = response.json().await.unwrap();
-    assert!(graph.is_object());
-    let record = api.core.repository().get(&source.id).unwrap();
-    std::fs::write(
-        std::path::Path::new(&record.output_dir).join("resolved-workflow.json"),
-        b"not json",
-    )
-    .unwrap();
-    let response = api.request(Method::GET, &path).send().await.unwrap();
-    ApiHarness::assert_problem(response, StatusCode::CONFLICT).await;
+    let legacy: Value = response.json().await.unwrap();
+    assert_eq!(legacy["different"]["class_type"], "Changed");
+
     let response = api
         .request(Method::GET, &format!("{RUNS}/missing/resolved-workflow"))
         .send()
         .await
         .unwrap();
-    ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    let problem = ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    assert!(!problem.recovery.contains("completion manifest"));
     api.shutdown().await;
 }
