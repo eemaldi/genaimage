@@ -120,7 +120,7 @@
       if (active) announcement = text;
     }, announcementInterval);
   }
-  function announceRun(run: Run, previous?: Run, report = true) {
+  function announceRun(run: Run, previous?: Run) {
     if (previous?.status === run.status) return;
     const labels: Partial<Record<Status, string>> = {
       completed: 'completed',
@@ -130,7 +130,7 @@
     };
     const label = labels[run.status];
     const key = `run:${run.id}`;
-    if (label && report) queueAnnouncement(key, `Run ${run.id} ${label}.`);
+    if (label) queueAnnouncement(key, `Run ${run.id} ${label}.`);
     else {
       pendingAnnouncements.delete(key);
       if (!pendingAnnouncements.size && !announcementOverflow) {
@@ -263,7 +263,7 @@
         for (const run of next) {
           const previous = runs.find((item) => item.id === run.id);
           if (
-            previous &&
+            !previous ||
             compareInstant(previous.updated_at, run.updated_at) <= 0
           )
             announceRun(run, previous);
@@ -356,7 +356,7 @@
             if (merged.length > runLimit) runsTruncated = true;
             runs = newestRuns(merged);
             if (runs.some((run) => run.id === event.run.id))
-              announceRun(event.run, previous, event.type !== 'run_progress');
+              announceRun(event.run, previous);
           }
         }
         if (event.type === 'run_completed') void loadOutputs();

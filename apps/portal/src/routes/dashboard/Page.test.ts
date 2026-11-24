@@ -528,3 +528,79 @@ it('drops an obsolete reconciliation announcement when the run starts in the sam
   await vi.advanceTimersByTimeAsync(500);
   expect(live.textContent?.trim()).toBe('');
 });
+
+it.each([
+  ['run_completed', 'completed'],
+  ['run_failed', 'failed'],
+  ['run_cancelled', 'cancelled'],
+] as const)(
+  'announces terminal state in progress before %s without duplicate announcements',
+  async (eventType, result) => {
+    fake.listRuns.mockResolvedValue({
+      runs: [makeRun('a', 'running')],
+      next_cursor: null,
+    });
+    const { container } = mount();
+    await screen.findByRole('link', { name: 'workflow-a' });
+    const live = container.querySelector('[aria-live="polite"]')!;
+    vi.useFakeTimers();
+    const observe = vi.fn();
+    const observer = new MutationObserver(observe);
+    observer.observe(live, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    emit('run_progress', { run: makeRun('a', result, '2026-01-01T10:01:00Z') });
+    emit(eventType, { run: makeRun('a', result, '2026-01-01T10:02:00Z') });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(live.textContent?.trim()).toBe(`Run a ${result}.`);
+    observe.mockClear();
+    emit(eventType, { run: makeRun('a', result, '2026-01-01T10:03:00Z') });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(observe).not.toHaveBeenCalled();
+    observer.disconnect();
+  },
+);
+
+it('announces new terminal runs from a resync snapshot and buffered events once', async () => {
+  let finish!: (value: unknown) => void;
+  fake.listRuns
+    .mockResolvedValueOnce({ runs: [], next_cursor: null })
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue({
+      runs: [makeRun('a', 'completed'), makeRun('b', 'failed')],
+      next_cursor: null,
+    });
+  const { container } = mount();
+  await screen.findByText(/No runs yet/);
+  const live = container.querySelector('[aria-live="polite"]')!;
+  expect(live.textContent?.trim()).toBe('');
+  vi.useFakeTimers();
+  const observe = vi.fn();
+  const observer = new MutationObserver(observe);
+  observer.observe(live, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  resync.set({ epoch: 1, reason: { reason: 'lagged', skipped: 1 } });
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  emit('run_progress', { run: makeRun('b', 'failed') });
+  emit('run_failed', { run: makeRun('b', 'failed') });
+  finish({ runs: [makeRun('a', 'completed')], next_cursor: null });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(live.textContent?.trim()).toBe('Run b failed. Run a completed.');
+  observe.mockClear();
+  emit('run_failed', { run: makeRun('b', 'failed') });
+  emit('run_completed', { run: makeRun('a', 'completed') });
+  resync.set({ epoch: 2, reason: { reason: 'lagged', skipped: 1 } });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(observe).not.toHaveBeenCalled();
+  observer.disconnect();
+});
