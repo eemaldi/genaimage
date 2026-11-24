@@ -157,6 +157,8 @@ pub struct WorkflowDiscovery {
     pub unresolvable_ids: BTreeSet<String>,
     /// API workflow files referenced by valid and invalid sidecars.
     pub referenced_workflow_paths: BTreeSet<PathBuf>,
+    /// Safe relative thumbnail references declared by discovered manifests.
+    pub referenced_thumbnail_paths: BTreeSet<PathBuf>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
@@ -318,6 +320,23 @@ impl Harness {
                 });
             }
             Ok(loaded) => {
+                if let Some(thumbnail) = loaded.manifest.thumbnail.as_deref() {
+                    let relative = Path::new(thumbnail);
+                    if !relative.as_os_str().is_empty()
+                        && relative.components().all(|component| {
+                            matches!(
+                                component,
+                                std::path::Component::Normal(_) | std::path::Component::CurDir
+                            )
+                        })
+                    {
+                        if let Some(directory) = path.parent() {
+                            discovery
+                                .referenced_thumbnail_paths
+                                .insert(directory.join(relative));
+                        }
+                    }
+                }
                 discovery
                     .referenced_workflow_paths
                     .insert(loaded.workflow_path.clone());
@@ -349,7 +368,7 @@ impl Harness {
                     error,
                 });
             }
-        })?;
+        });
         for id in &ambiguous {
             discovery.indexable_manifest_paths.remove(id);
         }
@@ -389,7 +408,7 @@ impl Harness {
                 }
             }
             _ => {}
-        })?;
+        });
         if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
             return Err(HarnessError::Workflow(format!(
                 "cannot resolve workflow id '{workflow}': invalid manifest '{}' declares it ({error}); select an explicit manifest path",
@@ -438,7 +457,7 @@ impl Harness {
                 invalid_matches.push((path.to_path_buf(), error));
             }
             _ => {}
-        })?;
+        });
         if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
             return Err(HarnessError::Workflow(format!(
                 "cannot resolve workflow id '{id}': invalid manifest '{}' declares it ({error})",
@@ -1976,34 +1995,82 @@ fn sidecar_declares_id(path: &Path, id: &str) -> bool {
         .is_some_and(|manifest| manifest.get("id").and_then(Value::as_str) == Some(id))
 }
 
-fn visit_workflows(
-    directory: &Path,
-    mut visitor: impl FnMut(&Path, Result<LoadedWorkflow>),
-) -> Result<()> {
-    visit_files(directory, &mut |path| {
-        if path
+fn visit_workflows(directory: &Path, mut visitor: impl FnMut(&Path, Result<LoadedWorkflow>)) {
+    visit_files(directory, &mut Vec::new(), &mut |path, error| {
+        if let Some(error) = error {
+            visitor(path, Err(error.into()));
+        } else if path
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.ends_with(".genaimage.json"))
         {
             visitor(path, LoadedWorkflow::load(path));
         }
-    })
+    });
 }
 
-fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path)) -> Result<()> {
-    if !directory.exists() {
-        return Ok(());
+fn visit_files(
+    directory: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    visitor: &mut dyn FnMut(&Path, Option<std::io::Error>),
+) {
+    let canonical = match fs::canonicalize(directory) {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && ancestors.is_empty() => {
+            return
+        }
+        Err(error) => {
+            visitor(directory, Some(error));
+            return;
+        }
+    };
+    if ancestors.contains(&canonical) {
+        visitor(
+            directory,
+            Some(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "workflow directory contains a symlink cycle",
+            )),
+        );
+        return;
     }
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            visit_files(&path, visitor)?;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            visitor(directory, Some(error));
+            return;
+        }
+    };
+    ancestors.push(canonical);
+    for result in entries {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                visitor(directory, Some(error));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(error) => {
+                visitor(&path, Some(error));
+                continue;
+            }
+        };
+        if kind.is_dir() {
+            visit_files(&path, ancestors, visitor);
+        } else if kind.is_symlink() {
+            match fs::metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => visit_files(&path, ancestors, visitor),
+                Ok(_) => visitor(&path, None),
+                Err(error) => visitor(&path, Some(error)),
+            }
         } else {
-            visitor(&path);
+            visitor(&path, None);
         }
     }
-    Ok(())
+    ancestors.pop();
 }
 
 #[cfg(test)]

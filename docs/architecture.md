@@ -203,15 +203,18 @@ The workflows API is read-only apart from validation, which does not submit a ru
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
   tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
-  manifests that cannot be loaded, including IDs `.` and `..` which browsers
-  normalise as URL path segments. The API does not generate detail URLs.
+  manifests and references that cannot be inspected, including IDs `.` and `..`
+  which browsers normalise as URL path segments. An unreadable directory makes
+  the catalogue incomplete; its diagnostic identifies the problem. The API does
+  not generate detail URLs.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
   constraints and UI hints, presets and outputs. The effective `required` and
   output `kind` remain available; `declared_required` and `declared_kind` are
   null when the manifest omitted those fields, otherwise they contain the
   declared value. Responses from older servers may omit these fields; the CLI
-  preserves that unknown state when serialising them. IDs are identifiers, not paths; URL-encode them as path
-  segments. An unknown ID returns 404 problem details.
+  preserves that unknown state when serialising them. IDs are identifiers, not
+  paths; URL-encode them as path segments. An unknown ID returns 404 problem
+  details.
   Duplicate IDs and invalid manifests claiming an ID must be fixed before that
   ID can be resolved.
 - `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
@@ -227,16 +230,17 @@ The workflows API is read-only apart from validation, which does not submit a ru
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
   paths return 404 problem details. A discovery index is built on the first
   thumbnail request and checked at most once per second by a shared revalidation
-  of directory, manifest and referenced workflow metadata; each catalogue list
-  forces an immediate rebuild. Unreadable workflow references are tracked as
-  metadata errors, so a broken workflow is diagnosed without hiding valid ones. A cache hit checks its own
-  manifest metadata and reads the current thumbnail safely; an edited manifest
-  is reloaded. Workflow-set changes, such as a newly added duplicate ID, can be
-  stale for up to one second plus the revalidation time. The detail endpoint
-  remains authoritative. Repeated changes during discovery fail rather than
-  publishing an inconsistent index. A settings change switches to the new
-  harness's index. On Unix, descriptor-relative no-follow
-  opens reject symlinks below the configured workflow root, whose own symlinks
+  of directory, manifest, workflow and thumbnail metadata; each catalogue list
+  forces an immediate rebuild. Metadata and directory traversal failures are
+  tracked and reported as diagnostics without hiding unrelated valid workflows.
+  A cache hit checks its own manifest metadata and reads the current thumbnail
+  safely; an edited manifest is reloaded. Workflow-set changes, such as a newly
+  added duplicate ID, can be stale for up to one second plus the revalidation
+  time. The detail endpoint
+  remains authoritative for discoverable entries. Repeated changes during
+  discovery produce a diagnostic and suppress unverified thumbnail entries. A
+  settings change switches to the new harness's index. On Unix, descriptor-relative
+  no-follow opens reject symlinks below the configured workflow root, whose own symlinks
   are trusted and resolved before it is pinned. Non-regular files are rejected
   without blocking on FIFOs. On other
   platforms containment is checked before and after opening on a best-effort

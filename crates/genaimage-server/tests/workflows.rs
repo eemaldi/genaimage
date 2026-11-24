@@ -40,6 +40,7 @@ fn install(api: &ApiHarness, thumbnail: Option<&str>) {
 async fn catalogue_and_details_include_metadata_and_discovery_errors() {
     let api = ApiHarness::start().await;
     install(&api, Some("image.png"));
+    std::fs::write(api.core.config().workflows.join("image.png"), b"image").unwrap();
     std::fs::write(
         api.core.config().workflows.join("invalid.genaimage.json"),
         "not json",
@@ -73,6 +74,120 @@ async fn catalogue_and_details_include_metadata_and_discovery_errors() {
     assert_eq!(details.parameters["steps"].step, Some(1.0));
     assert_eq!(details.presets["fast"]["seed"], 42);
     assert_eq!(details.outputs[0].node, "9");
+    api.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn broken_manifest_symlinks_do_not_hide_valid_workflows() {
+    let api = ApiHarness::start().await;
+    install(&api, Some("image.png"));
+    let dir = &api.core.config().workflows;
+    std::fs::write(dir.join("image.png"), b"image").unwrap();
+    std::os::unix::fs::symlink("loop.genaimage.json", dir.join("loop.genaimage.json")).unwrap();
+    std::os::unix::fs::symlink("missing.json", dir.join("dangling.genaimage.json")).unwrap();
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(list.workflows.len(), 1);
+    assert_eq!(list.workflows[0].id, "contract-workflow");
+    for name in ["loop.genaimage.json", "dangling.genaimage.json"] {
+        let diagnostic = list
+            .diagnostics
+            .iter()
+            .find(|item| item.path.ends_with(name))
+            .expect("broken symlink diagnostic");
+        assert!(!diagnostic.error.is_empty());
+    }
+    let response = api
+        .request(
+            Method::GET,
+            list.workflows[0].thumbnail_url.as_deref().unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/contract-workflow").await;
+    assert_eq!(details.id, "contract-workflow");
+    for name in ["loop.genaimage.json", "dangling.genaimage.json"] {
+        std::fs::remove_file(dir.join(name)).unwrap();
+    }
+    let repaired: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(repaired.workflows.len(), 1);
+    assert!(repaired.diagnostics.is_empty());
+    api.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn directory_cycle_and_unreadable_directory_are_nonfatal() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let api = ApiHarness::start().await;
+    install(&api, Some("image.png"));
+    let dir = &api.core.config().workflows;
+    std::fs::write(dir.join("image.png"), b"image").unwrap();
+    std::os::unix::fs::symlink(".", dir.join("cycle")).unwrap();
+    let inaccessible = dir.join("inaccessible");
+    std::fs::create_dir(&inaccessible).unwrap();
+    std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let restore = Restore(inaccessible.clone());
+    let inaccessible_is_denied = std::fs::read_dir(&inaccessible).is_err();
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(list.workflows.len(), 1);
+    assert!(list
+        .diagnostics
+        .iter()
+        .any(|item| item.path.ends_with("cycle") && item.error.contains("cycle")));
+    if inaccessible_is_denied {
+        assert!(list
+            .diagnostics
+            .iter()
+            .any(|item| item.path.ends_with("inaccessible")));
+    }
+    let response = api
+        .request(
+            Method::GET,
+            list.workflows[0].thumbnail_url.as_deref().unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/contract-workflow").await;
+    assert_eq!(details.id, "contract-workflow");
+    drop(restore);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn missing_thumbnail_is_a_nonfatal_diagnostic() {
+    let api = ApiHarness::start().await;
+    install(&api, Some("missing.png"));
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(list.workflows.len(), 1);
+    assert!(list
+        .diagnostics
+        .iter()
+        .any(|item| item.path.ends_with("missing.png")));
+    ApiHarness::assert_problem(
+        api.request(
+            Method::GET,
+            list.workflows[0].thumbnail_url.as_deref().unwrap(),
+        )
+        .send()
+        .await
+        .unwrap(),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/contract-workflow").await;
+    assert_eq!(details.id, "contract-workflow");
     api.shutdown().await;
 }
 
