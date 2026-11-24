@@ -1,10 +1,12 @@
+use std::process::ExitCode;
+
 use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError};
 use tracing_subscriber::EnvFilter;
 
-use crate::Cli;
+use crate::{output::Output, Cli};
 
-pub(crate) async fn execute(cli: &Cli) -> Result<(), HarnessError> {
+pub(crate) async fn execute(cli: &Cli) -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -14,6 +16,13 @@ pub(crate) async fn execute(cli: &Cli) -> Result<(), HarnessError> {
         .with_writer(std::io::stderr)
         .json()
         .init();
+    match start(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => Output::new(cli.json).report_local(&error),
+    }
+}
+
+async fn start(cli: &Cli) -> Result<(), HarnessError> {
     let harness = open_harness(cli).await?;
     genaimage_server::serve(genaimage_server::AppState::new(harness.into())).await?;
     Ok(())

@@ -159,7 +159,13 @@ async fn main() -> ExitCode {
             Err(error) => output.report(&error),
         };
     }
-    config_local::execute(&cli).await
+    match &cli.command {
+        Command::Serve => serve::execute(&cli).await,
+        Command::Config {
+            command: ConfigCommand::Init { force },
+        } => config_local::execute(&cli, *force),
+        _ => unreachable!("server-backed commands are dispatched first"),
+    }
 }
 
 async fn execute_server(

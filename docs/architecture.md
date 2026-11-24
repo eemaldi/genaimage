@@ -35,9 +35,10 @@ genaimage local config module -> genaimage-core (configuration only)
   module supplies the ComfyUI adapter factory, constructs the core harness and
   passes it to `genaimage-server`. The local configuration module uses core's
   example configuration and error types for `config init`, without opening a
-  harness. CI checks client source modules for direct references to the core,
-  adapter and server crates. See the [CLI reference](cli.md) for server selection
-  and output contracts.
+  harness. CI rejects client references to the core, adapter, server and local
+  modules; only `main.rs` may call the local dispatch functions, whose public
+  interfaces cannot expose local types. See the [CLI reference](cli.md) for
+  server selection and output contracts.
 - `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
   exposes an async `genaimage_api::client::Client` with the opt-in
   `client` feature (reqwest with rustls). The server uses the wire types

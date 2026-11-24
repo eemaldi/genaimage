@@ -2,34 +2,18 @@ use std::{path::PathBuf, process::ExitCode};
 
 use genaimage_core::{HarnessConfig, HarnessError};
 
-use crate::{output, Cli, Command, ConfigCommand};
+use crate::{output::Output, Cli};
 
-pub(crate) async fn execute(cli: &Cli) -> ExitCode {
-    let result = match &cli.command {
-        Command::Serve => crate::serve::execute(cli).await,
-        Command::Config {
-            command: ConfigCommand::Init { force },
-        } => {
-            if cli.workspace.is_some() {
-                Err(HarnessError::Configuration("--workspace is only supported by `genaimage serve`; use --config to choose where to write the example configuration".into()))
-            } else {
-                config_init(cli, *force)
-            }
-        }
-        _ => unreachable!("server-backed commands are dispatched first"),
+pub(crate) fn execute(cli: &Cli, force: bool) -> ExitCode {
+    let result = if cli.workspace.is_some() {
+        Err(HarnessError::Configuration("--workspace is only supported by `genaimage serve`; use --config to choose where to write the example configuration".into()))
+    } else {
+        config_init(cli, force)
     };
-    if let Err(error) = result {
-        if cli.json {
-            eprintln!(
-                "{}",
-                serde_json::json!({ "status": "error", "error": error.to_string() })
-            );
-        } else {
-            eprintln!("Error: {error}");
-        }
-        return output::Status::LocalFailure.into();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => Output::new(cli.json).report_local(&error),
     }
-    ExitCode::SUCCESS
 }
 
 fn config_init(cli: &Cli, force: bool) -> Result<(), HarnessError> {
