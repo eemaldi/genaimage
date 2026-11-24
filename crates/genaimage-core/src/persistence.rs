@@ -866,7 +866,7 @@ const MIGRATION_8: &str = "
     ALTER TABLE runs ADD COLUMN preflight_sha256 TEXT;
 ";
 const MIGRATION_9: &str =
-    "CREATE INDEX runs_output_status_idx ON runs(status) WHERE status IN ('failed', 'cancelled');";
+    "CREATE INDEX IF NOT EXISTS runs_output_status_idx ON runs(status) WHERE status IN ('failed', 'cancelled');";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
