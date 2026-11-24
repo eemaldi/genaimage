@@ -6,9 +6,10 @@ use common::{install_workflow, ApiHarness};
 use futures_util::StreamExt;
 use genaimage_api::{
     client::{AssistantEventStream, AssistantStreamEvent, Client, Error},
-    AssistantChatContent, AssistantConfirmationDecisionKind, AssistantConfirmationPreviewRequest,
-    AssistantConfirmationRequest, AssistantConversationDetailQuery, AssistantMessageRole,
-    AssistantMessageStatus, AssistantToolAuditQuery, AssistantToolConfirmationStatus,
+    AssistantChatContent, AssistantChatMessage, AssistantConfirmationDecisionKind,
+    AssistantConfirmationPreviewRequest, AssistantConfirmationRequest,
+    AssistantConversationDetailQuery, AssistantMessageRole, AssistantMessageStatus,
+    AssistantToolAuditQuery, AssistantToolCall, AssistantToolConfirmationStatus,
     CreateAssistantConversationRequest, SendAssistantMessageRequest,
 };
 use genaimage_test_support::{FakeLlmEvent, FakeLlmScript, FakeLlmServer, FakeToolCallDelta};
@@ -19,6 +20,7 @@ use url::{Host, Url};
 
 const MODEL: &str = "scenario-model";
 const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
+const SCENARIO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TerminalKind {
@@ -231,20 +233,117 @@ struct Scenario {
 struct PendingConfirmation {
     id: String,
     token: String,
+    tool: String,
+    tool_call_id: String,
+    arguments: Value,
+}
+
+#[derive(Clone, Debug)]
+enum ResolvedTurn {
+    Text(String),
+    Tool {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct ObservedToolCall {
+    conversation_id: String,
+    user_message_id: String,
+    id: String,
+    name: String,
+    arguments: Value,
+}
+
+#[derive(Clone, Debug)]
+struct ObservedToolResult {
+    conversation_id: String,
+    user_message_id: String,
+    call_id: String,
+    tool: String,
+    ok: bool,
+    result: Option<Value>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ObservedConfirmation {
+    id: String,
+    conversation_id: String,
+    user_message_id: String,
+    tool_call_id: String,
+    tool: String,
+    arguments: Value,
+    preview: Option<Value>,
+    token: String,
 }
 
 #[derive(Debug)]
 struct TerminalObservation {
     kind: TerminalKind,
     status: AssistantMessageStatus,
+    conversation_id: String,
+    user_message_id: String,
     message_id: Option<String>,
 }
 
 #[derive(Debug)]
 struct Observation {
     events: Vec<&'static str>,
-    confirmation: Option<PendingConfirmation>,
+    started_conversation_id: Option<String>,
+    started_user_message_id: Option<String>,
+    deltas: Vec<String>,
+    tool_calls: Vec<ObservedToolCall>,
+    tool_results: Vec<ObservedToolResult>,
+    confirmation: Option<ObservedConfirmation>,
+    terminal_confirmation_id: Option<String>,
     terminal: Option<TerminalObservation>,
+}
+
+impl Observation {
+    fn new() -> Self {
+        Self {
+            events: Vec::new(),
+            started_conversation_id: None,
+            started_user_message_id: None,
+            deltas: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            confirmation: None,
+            terminal_confirmation_id: None,
+            terminal: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct StreamRecord {
+    user_text: Option<String>,
+    turns: Vec<ResolvedTurn>,
+    tool_calls: Vec<ObservedToolCall>,
+    tool_results: Vec<ObservedToolResult>,
+    confirmation: Option<ObservedConfirmation>,
+    terminal_status: AssistantMessageStatus,
+    terminal_message_id: String,
+    continuation_call_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DecisionRecord {
+    confirmation_id: String,
+    decision: &'static str,
+    effective_arguments: Option<Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PersistedMessageSnapshot {
+    role: AssistantMessageRole,
+    status: AssistantMessageStatus,
+    content: Value,
+    tool_call_id: Option<String>,
+    error: Option<String>,
 }
 
 struct ScenarioHarness {
@@ -258,6 +357,8 @@ struct ScenarioHarness {
     pending: Option<PendingConfirmation>,
     last_confirmation: Option<PendingConfirmation>,
     latest_preview_token: Option<String>,
+    stream_records: Vec<StreamRecord>,
+    decisions: Vec<DecisionRecord>,
 }
 
 impl ScenarioHarness {
@@ -298,6 +399,8 @@ impl ScenarioHarness {
             pending: None,
             last_confirmation: None,
             latest_preview_token: None,
+            stream_records: Vec::new(),
+            decisions: Vec::new(),
         }
     }
 
@@ -334,13 +437,219 @@ impl ScenarioHarness {
             .collect()
     }
 
+    fn resolve_turns(&self, turns: &[ModelTurn]) -> Vec<ResolvedTurn> {
+        turns
+            .iter()
+            .map(|turn| match turn {
+                ModelTurn::Text(text) => ResolvedTurn::Text((*text).to_owned()),
+                ModelTurn::Tool {
+                    id,
+                    name,
+                    arguments,
+                } => ResolvedTurn::Tool {
+                    id: (*id).to_owned(),
+                    name: (*name).to_owned(),
+                    arguments: arguments.resolve(self),
+                },
+            })
+            .collect()
+    }
+
     fn set_scripts(&self, turns: &[ModelTurn]) {
         if !turns.is_empty() {
             self.llm.set_scripts(self.model_scripts(turns));
         }
     }
 
+    fn record_stream(
+        &mut self,
+        user_text: Option<&str>,
+        turns: &[ModelTurn],
+        continuation_call_id: Option<String>,
+        observation: Observation,
+    ) {
+        self.record_resolved_stream(
+            user_text,
+            self.resolve_turns(turns),
+            continuation_call_id,
+            observation,
+        );
+    }
+
+    fn record_resolved_stream(
+        &mut self,
+        user_text: Option<&str>,
+        resolved: Vec<ResolvedTurn>,
+        continuation_call_id: Option<String>,
+        observation: Observation,
+    ) {
+        self.assert_typed_stream(&resolved, continuation_call_id.as_deref(), &observation);
+        let terminal = observation.terminal.as_ref().expect("terminal event");
+        self.stream_records.push(StreamRecord {
+            user_text: user_text.map(str::to_owned),
+            turns: resolved,
+            tool_calls: observation.tool_calls,
+            tool_results: observation.tool_results,
+            confirmation: observation.confirmation,
+            terminal_status: terminal.status,
+            terminal_message_id: terminal
+                .message_id
+                .clone()
+                .expect("persisted terminal message ID"),
+            continuation_call_id,
+        });
+    }
+
+    fn assert_typed_stream(
+        &self,
+        turns: &[ResolvedTurn],
+        continuation_call_id: Option<&str>,
+        observation: &Observation,
+    ) {
+        let conversation_id = observation
+            .started_conversation_id
+            .as_deref()
+            .expect("message_started conversation ID");
+        let user_message_id = observation
+            .started_user_message_id
+            .as_deref()
+            .expect("message_started user message ID");
+        assert_eq!(conversation_id, self.conversation_id);
+        assert!(!user_message_id.is_empty());
+
+        let expected_calls = turns
+            .iter()
+            .filter_map(|turn| match turn {
+                ResolvedTurn::Tool {
+                    id,
+                    name,
+                    arguments,
+                } => Some((id, name, arguments)),
+                ResolvedTurn::Text(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observation.tool_calls.len(), expected_calls.len());
+        for (actual, (id, name, arguments)) in observation.tool_calls.iter().zip(expected_calls) {
+            assert_eq!(actual.conversation_id, conversation_id);
+            assert_eq!(actual.user_message_id, user_message_id);
+            assert_eq!(&actual.id, id);
+            assert_eq!(&actual.name, name);
+            assert_eq!(&actual.arguments, arguments);
+            validate_tool_result_shape(
+                &actual.name,
+                observation
+                    .tool_results
+                    .iter()
+                    .find(|r| r.call_id == actual.id),
+            );
+        }
+
+        let expected_deltas = turns
+            .iter()
+            .filter_map(|turn| match turn {
+                ResolvedTurn::Text(text) => Some(text.clone()),
+                ResolvedTurn::Tool { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observation.deltas, expected_deltas,
+            "scripted delta content"
+        );
+
+        for result in &observation.tool_results {
+            assert_eq!(result.conversation_id, conversation_id);
+            assert_eq!(result.user_message_id, user_message_id);
+            let linked = observation
+                .tool_calls
+                .iter()
+                .any(|call| call.id == result.call_id);
+            if continuation_call_id != Some(result.call_id.as_str()) {
+                assert!(
+                    linked,
+                    "tool result {} did not link to a call",
+                    result.call_id
+                );
+            } else if let Some(pending) = self.pending.as_ref() {
+                assert_eq!(pending.tool_call_id, result.call_id);
+                assert_eq!(pending.tool, result.tool);
+            }
+            validate_tool_result_shape(&result.tool, Some(result));
+            if result.ok {
+                let payload = result.result.as_ref().expect("successful result payload");
+                match result.tool.as_str() {
+                    "submit_run" => {
+                        let run_id = payload["run_id"].as_str().expect("submitted run ID");
+                        assert!(self.api.core.get_run(run_id).is_ok());
+                    }
+                    "run_status" => {
+                        let call = observation
+                            .tool_calls
+                            .iter()
+                            .find(|call| call.id == result.call_id)
+                            .expect("run_status call");
+                        assert_eq!(payload["run_id"], call.arguments["run_id"]);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(confirmation) = &observation.confirmation {
+            assert_eq!(confirmation.conversation_id, conversation_id);
+            assert_eq!(confirmation.user_message_id, user_message_id);
+            assert!(!confirmation.id.is_empty());
+            assert!(!confirmation.token.is_empty());
+            let call = observation
+                .tool_calls
+                .iter()
+                .find(|call| call.id == confirmation.tool_call_id)
+                .expect("confirmation must reference its tool call");
+            assert_eq!(confirmation.tool, call.name);
+            assert_eq!(confirmation.arguments, call.arguments);
+            let preview = confirmation.preview.as_ref().expect("submit preview");
+            assert_eq!(preview["workflow_id"], call.arguments["workflow_id"]);
+            assert_eq!(
+                preview["workflow_revision"],
+                call.arguments["workflow_revision"]
+            );
+            assert_eq!(preview["preset"], call.arguments["preset"]);
+            assert_eq!(
+                preview["parameters"]["seed"],
+                call.arguments["parameters"]["seed"]
+            );
+            assert_eq!(
+                preview["parameters"]["steps"],
+                call.arguments["parameters"]["steps"]
+            );
+        }
+        if let Some(confirmation_id) = observation.terminal_confirmation_id.as_deref() {
+            assert_eq!(
+                confirmation_id,
+                observation
+                    .confirmation
+                    .as_ref()
+                    .expect("terminal confirmation payload")
+                    .id
+            );
+        }
+        let terminal = observation.terminal.as_ref().expect("terminal event");
+        assert_eq!(terminal.conversation_id, conversation_id);
+        assert_eq!(terminal.user_message_id, user_message_id);
+        assert!(terminal
+            .message_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty()));
+    }
+
     async fn execute(&mut self, scenario: &Scenario) {
+        timeout(SCENARIO_TIMEOUT, self.execute_inner(scenario))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("scenario '{}' exceeded {SCENARIO_TIMEOUT:?}", scenario.name)
+            });
+    }
+
+    async fn execute_inner(&mut self, scenario: &Scenario) {
         assert_eq!(scenario.name, self.name);
         assert_eq!(scenario.supports_tools, self.supports_tools);
         for step in &scenario.steps {
@@ -387,11 +696,19 @@ impl ScenarioHarness {
             (Ok(stream), SendOutcome::Stream(expected)) => {
                 let observation = observe(stream).await;
                 expected.assert(&observation);
-                if let Some(pending) = observation.confirmation {
+                if let Some(confirmation) = observation.confirmation.as_ref() {
+                    let pending = PendingConfirmation {
+                        id: confirmation.id.clone(),
+                        token: confirmation.token.clone(),
+                        tool: confirmation.tool.clone(),
+                        tool_call_id: confirmation.tool_call_id.clone(),
+                        arguments: confirmation.arguments.clone(),
+                    };
                     self.latest_preview_token = Some(pending.token.clone());
                     self.last_confirmation = Some(pending.clone());
                     self.pending = Some(pending);
                 }
+                self.record_stream(Some(text), turns, None, observation);
             }
             (Err(error), SendOutcome::Problem(status, detail)) => {
                 assert_problem_detail(error, *status, detail);
@@ -444,7 +761,14 @@ impl ScenarioHarness {
             )
             .await
             .unwrap();
-        expected.assert(&observe(stream).await);
+        let observation = observe(stream).await;
+        expected.assert(&observation);
+        self.decisions.push(DecisionRecord {
+            confirmation_id: pending.id.clone(),
+            decision: "confirm",
+            effective_arguments: Some(pending.arguments.clone()),
+        });
+        self.record_stream(None, turns, Some(pending.tool_call_id.clone()), observation);
         self.pending = None;
         assert_eq!(
             self.api.fake.prompt_calls.load(Ordering::SeqCst),
@@ -467,14 +791,21 @@ impl ScenarioHarness {
                 &pending.id,
                 &AssistantConfirmationRequest {
                     decision: AssistantConfirmationDecisionKind::Edit,
-                    arguments: Some(arguments),
+                    arguments: Some(arguments.clone()),
                     reason: None,
                     preview_token: Some(token),
                 },
             )
             .await
             .unwrap();
-        expected.assert(&observe(stream).await);
+        let observation = observe(stream).await;
+        expected.assert(&observation);
+        self.decisions.push(DecisionRecord {
+            confirmation_id: pending.id.clone(),
+            decision: "edit",
+            effective_arguments: Some(arguments),
+        });
+        self.record_stream(None, turns, Some(pending.tool_call_id.clone()), observation);
         self.pending = None;
         assert_eq!(
             self.api.fake.prompt_calls.load(Ordering::SeqCst),
@@ -500,7 +831,14 @@ impl ScenarioHarness {
             )
             .await
             .unwrap();
-        expected.assert(&observe(stream).await);
+        let observation = observe(stream).await;
+        expected.assert(&observation);
+        self.decisions.push(DecisionRecord {
+            confirmation_id: pending.id.clone(),
+            decision: "reject",
+            effective_arguments: None,
+        });
+        self.record_stream(None, turns, Some(pending.tool_call_id.clone()), observation);
         self.pending = None;
         assert_eq!(self.api.fake.prompt_calls.load(Ordering::SeqCst), before);
     }
@@ -580,11 +918,7 @@ impl ScenarioHarness {
             .send_assistant_message(&self.conversation_id, &message(text))
             .await
             .unwrap();
-        let mut observation = Observation {
-            events: Vec::new(),
-            confirmation: None,
-            terminal: None,
-        };
+        let mut observation = Observation::new();
         record_event(
             &mut observation,
             timeout(STREAM_TIMEOUT, stream.next())
@@ -607,6 +941,12 @@ impl ScenarioHarness {
             .unwrap();
         finish_observation(&mut stream, &mut observation).await;
         expected.assert(&observation);
+        self.record_resolved_stream(
+            Some(text),
+            vec![ResolvedTurn::Text(partial.to_owned())],
+            None,
+            observation,
+        );
         assert!(self.llm.wait_for_stream_disconnect(STREAM_TIMEOUT).await);
         assert_eq!(self.api.fake.prompt_calls.load(Ordering::SeqCst), before);
     }
@@ -619,6 +959,101 @@ impl ScenarioHarness {
                 "a pending confirmation must not have submitted to ComfyUI"
             );
         }
+    }
+
+    fn expected_persisted_messages(&self) -> (Vec<PersistedMessageSnapshot>, Vec<(usize, String)>) {
+        let mut messages = Vec::new();
+        let mut terminal_ids = Vec::new();
+        for record in &self.stream_records {
+            if let Some(text) = &record.user_text {
+                messages.push(PersistedMessageSnapshot {
+                    role: AssistantMessageRole::User,
+                    status: AssistantMessageStatus::Complete,
+                    content: serde_json::to_value(AssistantChatMessage::User(vec![
+                        AssistantChatContent::Text(text.clone()),
+                    ]))
+                    .unwrap(),
+                    tool_call_id: None,
+                    error: None,
+                });
+            }
+            if let Some(call_id) = &record.continuation_call_id {
+                let result = record
+                    .tool_results
+                    .iter()
+                    .find(|result| &result.call_id == call_id)
+                    .expect("continuation tool result");
+                messages.push(tool_message_snapshot(result));
+            }
+            for turn in &record.turns {
+                match turn {
+                    ResolvedTurn::Tool {
+                        id,
+                        name,
+                        arguments,
+                    } => {
+                        let awaiting = record
+                            .confirmation
+                            .as_ref()
+                            .is_some_and(|confirmation| confirmation.tool_call_id == *id);
+                        messages.push(PersistedMessageSnapshot {
+                            role: AssistantMessageRole::Assistant,
+                            status: AssistantMessageStatus::Complete,
+                            content: serde_json::to_value(AssistantChatMessage::Assistant {
+                                text: String::new(),
+                                tool_calls: vec![AssistantToolCall {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    arguments: arguments.clone(),
+                                }],
+                            })
+                            .unwrap(),
+                            tool_call_id: None,
+                            error: None,
+                        });
+                        if !awaiting {
+                            let result = record
+                                .tool_results
+                                .iter()
+                                .find(|result| result.call_id == *id)
+                                .expect("automatic tool result");
+                            messages.push(tool_message_snapshot(result));
+                        }
+                    }
+                    ResolvedTurn::Text(text) => messages.push(PersistedMessageSnapshot {
+                        role: AssistantMessageRole::Assistant,
+                        status: record.terminal_status,
+                        content: serde_json::to_value(AssistantChatMessage::Assistant {
+                            text: text.clone(),
+                            tool_calls: Vec::new(),
+                        })
+                        .unwrap(),
+                        tool_call_id: None,
+                        error: None,
+                    }),
+                }
+            }
+            if record.terminal_status == AssistantMessageStatus::Failed
+                && matches!(record.turns.last(), Some(ResolvedTurn::Tool { .. }) | None)
+            {
+                messages.push(PersistedMessageSnapshot {
+                    role: AssistantMessageRole::Assistant,
+                    status: AssistantMessageStatus::Failed,
+                    content: serde_json::to_value(AssistantChatMessage::Assistant {
+                        text: String::new(),
+                        tool_calls: Vec::new(),
+                    })
+                    .unwrap(),
+                    tool_call_id: None,
+                    error: Some(
+                        "Assistant tool loop exceeded the maximum of 8 model steps for this turn."
+                            .into(),
+                    ),
+                });
+            }
+            terminal_ids.push((messages.len() - 1, record.terminal_message_id.clone()));
+        }
+        (messages, terminal_ids)
     }
 
     async fn assert_final(&self, expected: &ExpectedFinal) {
@@ -643,6 +1078,29 @@ impl ScenarioHarness {
             "{} persisted message sequence",
             self.name
         );
+        let (expected_snapshots, terminal_ids) = self.expected_persisted_messages();
+        let actual_snapshots = detail
+            .messages
+            .iter()
+            .map(|message| PersistedMessageSnapshot {
+                role: message.role,
+                status: message.status,
+                content: serde_json::to_value(&message.content).unwrap(),
+                tool_call_id: message.tool_call_id.clone(),
+                error: message.error.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual_snapshots, expected_snapshots,
+            "{} persisted message fields",
+            self.name
+        );
+        for (index, message_id) in terminal_ids {
+            assert_eq!(
+                detail.messages[index].id, message_id,
+                "terminal SSE message must be the persisted terminal message"
+            );
+        }
         let sequence = detail
             .messages
             .iter()
@@ -693,6 +1151,111 @@ impl ScenarioHarness {
             })
             .collect::<Vec<_>>();
         assert_eq!(actual_audit, expected.audits, "{} audit rows", self.name);
+        let known_calls = self
+            .stream_records
+            .iter()
+            .flat_map(|record| record.tool_calls.iter())
+            .map(|call| (call.id.as_str(), call))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let known_results = self
+            .stream_records
+            .iter()
+            .flat_map(|record| record.tool_results.iter())
+            .map(|result| (result.call_id.as_str(), result))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let confirmations = self
+            .stream_records
+            .iter()
+            .filter_map(|record| record.confirmation.as_ref())
+            .map(|confirmation| (confirmation.id.as_str(), confirmation))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for row in &audit {
+            let call = known_calls
+                .get(row.tool_call_id.as_str())
+                .expect("audit call must link to a scripted SSE call");
+            assert_eq!(row.tool, call.name);
+            assert_eq!(row.proposed_arguments, call.arguments);
+            match row.decision.as_str() {
+                "automatic" => {
+                    let result = known_results[call.id.as_str()];
+                    assert_eq!(row.validation_outcome, "valid");
+                    assert!(row.validation_error.is_none());
+                    assert_eq!(row.effective_arguments, Some(call.arguments.clone()));
+                    assert!(row.decided_by.is_none());
+                    assert_eq!(row.invocation_ok, Some(result.ok));
+                    assert_eq!(row.invocation_result, result.result);
+                    assert_eq!(row.invocation_error, result.error);
+                    assert!(row.confirmation_id.is_none());
+                }
+                "not_invoked" => {
+                    let result = known_results[call.id.as_str()];
+                    assert_eq!(row.validation_outcome, "invalid");
+                    assert_eq!(row.validation_error, result.error);
+                    assert_eq!(row.invocation_ok, Some(false));
+                    assert!(row.effective_arguments.is_none());
+                    assert!(row.decided_by.is_none());
+                    assert!(row.invocation_result.is_none());
+                    assert_eq!(row.invocation_error, result.error);
+                    assert!(row.confirmation_id.is_none());
+                }
+                "pending" => {
+                    let confirmation = confirmations
+                        .values()
+                        .find(|confirmation| confirmation.tool_call_id == call.id)
+                        .expect("pending confirmation");
+                    assert_eq!(
+                        row.confirmation_id.as_deref(),
+                        Some(confirmation.id.as_str())
+                    );
+                    assert_eq!(row.validation_outcome, "valid");
+                    assert!(row.validation_error.is_none());
+                    assert!(row.effective_arguments.is_none());
+                    assert!(row.decided_by.is_none());
+                    assert!(row.invocation_ok.is_none());
+                }
+                "invocation_started" | "invocation_succeeded" | "rejected" => {
+                    let confirmation_id = row
+                        .confirmation_id
+                        .as_deref()
+                        .expect("decision audit confirmation ID");
+                    let confirmation = confirmations[confirmation_id];
+                    assert_eq!(confirmation.tool_call_id, call.id);
+                    let decision = self
+                        .decisions
+                        .iter()
+                        .find(|decision| decision.confirmation_id == confirmation_id)
+                        .expect("decision record");
+                    assert_eq!(row.validation_outcome, "valid");
+                    assert!(row.validation_error.is_none());
+                    assert_eq!(row.effective_arguments, decision.effective_arguments);
+                    match row.decision.as_str() {
+                        "invocation_started" => {
+                            assert_eq!(row.decided_by.as_deref(), Some("user"));
+                            assert!(row.invocation_ok.is_none());
+                            assert!(row.invocation_result.is_none());
+                            assert!(row.invocation_error.is_none());
+                        }
+                        "rejected" => {
+                            assert_eq!(decision.decision, "reject");
+                            assert_eq!(row.decided_by.as_deref(), Some("user"));
+                            assert!(row.invocation_ok.is_none());
+                            assert!(row.invocation_result.is_none());
+                            assert!(row.invocation_error.is_none());
+                        }
+                        "invocation_succeeded" => {
+                            assert!(matches!(decision.decision, "confirm" | "edit"));
+                            assert_eq!(row.decided_by.as_deref(), Some("runtime"));
+                            let result = known_results[call.id.as_str()];
+                            assert_eq!(row.invocation_ok, Some(true));
+                            assert_eq!(row.invocation_result, result.result);
+                            assert_eq!(row.invocation_error, result.error);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                other => panic!("unexpected audit decision {other}"),
+            }
+        }
         assert_eq!(
             self.api.fake.prompt_calls.load(Ordering::SeqCst),
             expected.prompt_calls,
@@ -742,11 +1305,7 @@ async fn observe(stream: AssistantEventStream) -> Observation {
 
 async fn observe_with_timeout(stream: AssistantEventStream, deadline: Duration) -> Observation {
     let mut stream = stream;
-    let mut observation = Observation {
-        events: Vec::new(),
-        confirmation: None,
-        terminal: None,
-    };
+    let mut observation = Observation::new();
     finish_observation_with_timeout(&mut stream, &mut observation, deadline).await;
     observation
 }
@@ -779,24 +1338,93 @@ async fn finish_observation_with_timeout(
 
 fn record_event(observation: &mut Observation, event: AssistantStreamEvent) {
     match event {
-        AssistantStreamEvent::MessageStarted(_) => observation.events.push("message_started"),
-        AssistantStreamEvent::Delta(_) => observation.events.push("delta"),
-        AssistantStreamEvent::ToolCall(_) => observation.events.push("tool_call"),
-        AssistantStreamEvent::ToolResult(_) => observation.events.push("tool_result"),
+        AssistantStreamEvent::MessageStarted(event) => {
+            observation.events.push("message_started");
+            assert!(observation.started_conversation_id.is_none());
+            observation.started_conversation_id = Some(event.conversation_id);
+            observation.started_user_message_id = Some(event.user_message_id);
+            assert_eq!(event.model, MODEL);
+        }
+        AssistantStreamEvent::Delta(event) => {
+            observation.events.push("delta");
+            assert_eq!(
+                Some(&event.conversation_id),
+                observation.started_conversation_id.as_ref()
+            );
+            assert_eq!(
+                Some(&event.user_message_id),
+                observation.started_user_message_id.as_ref()
+            );
+            observation.deltas.push(event.text);
+        }
+        AssistantStreamEvent::ToolCall(event) => {
+            observation.events.push("tool_call");
+            assert_eq!(
+                Some(&event.conversation_id),
+                observation.started_conversation_id.as_ref()
+            );
+            assert_eq!(
+                Some(&event.user_message_id),
+                observation.started_user_message_id.as_ref()
+            );
+            observation.tool_calls.push(ObservedToolCall {
+                conversation_id: event.conversation_id,
+                user_message_id: event.user_message_id,
+                id: event.tool_call.id,
+                name: event.tool_call.name,
+                arguments: event.tool_call.arguments,
+            });
+        }
+        AssistantStreamEvent::ToolResult(event) => {
+            observation.events.push("tool_result");
+            assert_eq!(
+                Some(&event.conversation_id),
+                observation.started_conversation_id.as_ref()
+            );
+            assert_eq!(
+                Some(&event.user_message_id),
+                observation.started_user_message_id.as_ref()
+            );
+            observation.tool_results.push(ObservedToolResult {
+                conversation_id: event.conversation_id,
+                user_message_id: event.user_message_id,
+                call_id: event.tool_call_id,
+                tool: event.tool,
+                ok: event.ok,
+                result: event.result,
+                error: event.error,
+            });
+        }
         AssistantStreamEvent::ConfirmationRequired(event) => {
             observation.events.push("confirmation_required");
             assert_eq!(event.status, AssistantToolConfirmationStatus::Pending);
-            observation.confirmation = Some(PendingConfirmation {
+            assert_eq!(
+                Some(&event.conversation_id),
+                observation.started_conversation_id.as_ref()
+            );
+            observation.confirmation = Some(ObservedConfirmation {
                 id: event.confirmation_id,
+                conversation_id: event.conversation_id,
+                user_message_id: observation
+                    .started_user_message_id
+                    .clone()
+                    .expect("message_started before confirmation"),
+                tool_call_id: event.tool_call_id,
+                tool: event.tool,
+                arguments: event.arguments,
+                preview: event.preview,
                 token: event.preview_token,
             });
         }
         AssistantStreamEvent::AwaitingConfirmation(event) => {
             observation.events.push("awaiting_confirmation");
             assert_eq!(event.status, AssistantMessageStatus::AwaitingConfirmation);
+            observation.terminal_confirmation_id = Some(event.confirmation_id);
             observation.terminal = Some(TerminalObservation {
                 kind: TerminalKind::AwaitingConfirmation,
                 status: event.status,
+                conversation_id: event.conversation_id,
+                user_message_id: event.user_message_id,
                 message_id: Some(event.message_id),
             });
         }
@@ -805,6 +1433,8 @@ fn record_event(observation: &mut Observation, event: AssistantStreamEvent) {
             observation.terminal = Some(TerminalObservation {
                 kind: TerminalKind::Done,
                 status: event.status,
+                conversation_id: event.conversation_id,
+                user_message_id: event.user_message_id,
                 message_id: event.message_id,
             });
         }
@@ -813,9 +1443,74 @@ fn record_event(observation: &mut Observation, event: AssistantStreamEvent) {
             observation.terminal = Some(TerminalObservation {
                 kind: TerminalKind::Error,
                 status: event.status,
+                conversation_id: event.conversation_id,
+                user_message_id: event.user_message_id,
                 message_id: event.message_id,
             });
         }
+    }
+}
+
+fn tool_message_snapshot(result: &ObservedToolResult) -> PersistedMessageSnapshot {
+    let outcome = if result.ok {
+        json!({"ok": true, "result": result.result})
+    } else {
+        json!({"ok": false, "error": result.error})
+    };
+    PersistedMessageSnapshot {
+        role: AssistantMessageRole::Tool,
+        status: AssistantMessageStatus::Complete,
+        content: serde_json::to_value(AssistantChatMessage::Tool {
+            call_id: result.call_id.clone(),
+            result: outcome,
+        })
+        .unwrap(),
+        tool_call_id: Some(result.call_id.clone()),
+        error: None,
+    }
+}
+
+fn validate_tool_result_shape(tool: &str, observed: Option<&ObservedToolResult>) {
+    let Some(observed) = observed else {
+        return;
+    };
+    assert_eq!(observed.tool, tool);
+    if observed.ok {
+        assert!(observed.error.is_none());
+        let result = observed.result.as_ref().expect("successful result payload");
+        match tool {
+            "list_workflows" => {
+                assert!(result["workflows"].is_array());
+                assert!(result["truncated"].is_boolean());
+            }
+            "inspect_workflow" => {
+                assert_eq!(result["workflow_id"], "contract-workflow");
+                assert!(result["revision"].is_string());
+                assert!(result["parameters"].is_object());
+            }
+            "propose_run" => {
+                assert_eq!(result["workflow_id"], "contract-workflow");
+                assert!(result["workflow_revision"].is_string());
+                assert!(result["parameters"].is_object());
+                assert_eq!(result["issues"], json!([]));
+            }
+            "submit_run" => {
+                assert!(result["run_id"].as_str().is_some_and(|id| !id.is_empty()));
+                assert!(result["status"].is_string());
+            }
+            "run_status" => {
+                assert!(result["run_id"].as_str().is_some_and(|id| !id.is_empty()));
+                assert_eq!(result["status"], "completed");
+                assert!(result["outputs"].is_array());
+            }
+            other => panic!("unexpected tool result for {other}"),
+        }
+    } else {
+        assert!(observed.result.is_none());
+        assert!(observed
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty()));
     }
 }
 
@@ -1161,7 +1856,7 @@ async fn edit_uses_a_fresh_preview_token_and_exact_edited_values() {
                 arguments: edited.clone(),
             },
             Step::Edit {
-                arguments: edited,
+                arguments: edited.clone(),
                 turns: vec![ModelTurn::Text("edited run submitted")],
                 outcome: ExpectedStream::done(&["message_started", "tool_result", "delta", "done"]),
             },
@@ -1196,8 +1891,10 @@ async fn edit_uses_a_fresh_preview_token_and_exact_edited_values() {
         .unwrap()
         .clone()
         .unwrap();
-    assert_eq!(graph["3"]["inputs"]["seed"], json!(41));
-    assert_eq!(graph["3"]["inputs"]["steps"], json!(12));
+    assert_eq!(graph["3"]["inputs"]["seed"], edited["parameters"]["seed"]);
+    assert_eq!(graph["3"]["inputs"]["steps"], edited["parameters"]["steps"]);
+    let run = harness.api.core.list_runs(10).unwrap().pop().unwrap();
+    assert_eq!(run.parameters, edited["parameters"]);
 }
 
 #[tokio::test]
@@ -1394,6 +2091,16 @@ async fn live_ollama_stream_terminates_without_unconfirmed_submission() {
     if std::env::var("GENAIMAGE_LIVE_LLM").ok().as_deref() != Some("1") {
         return;
     }
+    let seconds = std::env::var("GENAIMAGE_LIVE_LLM_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(240);
+    timeout(Duration::from_secs(seconds), live_ollama_scenario())
+        .await
+        .unwrap_or_else(|_| panic!("live Ollama scenario exceeded {seconds} seconds"));
+}
+
+async fn live_ollama_scenario() {
     let base = std::env::var("GENAIMAGE_LIVE_LLM_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:11434/v1".into());
     loopback_url(&base);

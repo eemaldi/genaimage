@@ -82,7 +82,9 @@ cargo test -p genaimage-server --test assistant_scenarios \
   --no-default-features -- --ignored live_ollama_stream_terminates --nocapture
 ```
 
-The URL defaults to `http://127.0.0.1:11434/v1`. Set the text-model variable to
+The URL defaults to `http://127.0.0.1:11434/v1` and
+`GENAIMAGE_LIVE_LLM_TIMEOUT_SECONDS` defaults to 240. Increase the latter for a
+slow local model. Set the text-model variable to
 a model available in the local Ollama instance; a tool-capable Qwen-family
 model is a reasonable starting point. The vision-model variable is optional;
 when used, choose a locally available multimodal model such as an LLaVA-family
