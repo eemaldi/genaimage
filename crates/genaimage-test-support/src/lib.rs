@@ -5,7 +5,9 @@
 //! The default queue and history represent the most recently submitted prompt.
 
 mod api_fixture;
+mod fake_llm;
 pub use api_fixture::{install_contract_workflow, ApiFixture};
+pub use fake_llm::{FakeLlmEvent, FakeLlmScript, FakeLlmServer, FakeToolCallDelta};
 
 use axum::{
     body::Bytes,

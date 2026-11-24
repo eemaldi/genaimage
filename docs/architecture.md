@@ -22,6 +22,7 @@ genaimage serve module -> genaimage-server -> genaimage-api
         +-> genaimage-comfyui -> genaimage-core
         +-> genaimage-core
 genaimage local config module -> genaimage-core (configuration only)
+genaimage-llm -> genaimage-core (provider, not yet wired into the runtime)
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
@@ -30,6 +31,10 @@ genaimage local config module -> genaimage-core (configuration only)
   `ImageBackend` trait and has no HTTP or WebSocket client dependencies.
 - `genaimage-comfyui` implements `ImageBackend` over HTTP and WebSocket, mapping
   ComfyUI responses and progress events into core-owned types.
+- `genaimage-llm` implements `LlmProvider` for OpenAI-compatible local chat and
+  model-listing endpoints. It handles SSE text and tool-call streams, vision
+  data URLs and endpoint validation without moving assistant orchestration out
+  of core. It is not yet registered by the application runtime.
 - `genaimage` provides the scripted CLI. Its client modules use only the HTTP
   API through `genaimage-api` for GenAImage functionality. The isolated `serve`
   module supplies the ComfyUI adapter factory, constructs the core harness and
@@ -486,16 +491,19 @@ drain; dropping the fixture signals shutdown and applies a best-effort deadline.
 
 ## Providers, extensions and deployment
 
-The planned LLM provider uses an OpenAI-compatible API, with an explicitly
+`genaimage-llm` provides the OpenAI-compatible provider, with an explicitly
 configured endpoint and model. Ollama, llama.cpp and LM Studio are intended
-local options when their compatible APIs are enabled.
+local options when their compatible APIs are enabled. The assistant runtime
+remains planned, so the application does not yet register this provider or
+invoke it from the portal or CLI.
 
 The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 `AssistantTool` and `EventSink` contracts. The CLI serve module builds an `ExtensionRegistry`
 from the resolved ComfyUI settings using an adapter factory supplied by the CLI;
 core does not construct adapters. The registry looks up registered extensions by
-name without a fallback. Only the image backend is configured today; the LLM
-and tool contracts have no runtime implementation. These are compile-time
+name without a fallback. Only the image backend is configured today. The LLM
+provider implementation and fake server exist for later wiring, while the tool
+contracts and assistant runtime remain planned. These are compile-time
 extension points, not runtime plugin loading. Core lifecycle tests use a fake backend
 without connecting to ComfyUI; adapter contract tests still exercise the wire
 protocol against a fake server.
@@ -509,8 +517,9 @@ nodes or settings.
 Outbound endpoints default to loopback. Configuration permits explicitly
 allow-listed private hosts and Compose service names. The ComfyUI adapter
 validates and pins resolved addresses, rejects public addresses and disables
-redirects and proxies. The planned LLM adapter must enforce the same policy.
-Server binding is loopback-only even when an outbound host is allow-listed.
+redirects and proxies. The LLM adapter applies that endpoint and resolved-address
+policy too, and also disables redirects and proxies. Server binding is
+loopback-only even when an outbound host is allow-listed.
 
 ## Run and assistant flow
 

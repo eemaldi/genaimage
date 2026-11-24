@@ -4,6 +4,7 @@ members = [
   "crates/genaimage-api",
   "crates/genaimage-comfyui",
   "crates/genaimage-core",
+  "crates/genaimage-llm",
   "crates/genaimage-server",
   "crates/genaimage-test-support",
 ]
@@ -16,6 +17,7 @@ rust-version = "1.80"
 license = "MIT"
 
 [workspace.dependencies]
+base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
