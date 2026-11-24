@@ -943,6 +943,12 @@ const MIGRATION_12: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS output_annotations_output_created_idx
         ON output_annotations(output_id, created_at DESC, id DESC);
+    CREATE TRIGGER IF NOT EXISTS output_annotations_no_replace
+        BEFORE INSERT ON output_annotations
+        WHEN EXISTS (SELECT 1 FROM output_annotations WHERE id = NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
     CREATE TRIGGER IF NOT EXISTS output_annotations_no_update
         BEFORE UPDATE ON output_annotations
         BEGIN
@@ -1539,6 +1545,20 @@ mod submission_tests {
         assert!(connection
             .execute("DELETE FROM output_annotations", [])
             .is_err());
+        assert!(connection
+            .execute(
+                "INSERT OR REPLACE INTO output_annotations (id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response) VALUES (1, 'other', 'other', 'vision_review', 'other', '2026-01-01T00:00:01Z', 'replaced', 'replaced', '[]', 'replaced', '{}')",
+                [],
+            )
+            .is_err());
+        let stored: (String, String) = connection
+            .query_row(
+                "SELECT output_id, caption FROM output_annotations WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("out".to_owned(), "caption".to_owned()));
     }
 
     #[test]
