@@ -17,12 +17,11 @@ Current dependencies (arrows point to dependencies):
 
 ```text
 genaimage client modules -> genaimage-api
-      serve module -> genaimage-server -> genaimage-api
-          |                   |
-          +--------------> genaimage-core
-          |                   ^
-          +-> genaimage-comfyui
-      local config module -> genaimage-core (configuration only)
+genaimage serve module -> genaimage-server -> genaimage-api
+        |                       +-> genaimage-core
+        +-> genaimage-comfyui -> genaimage-core
+        +-> genaimage-core
+genaimage local config module -> genaimage-core (configuration only)
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
@@ -36,8 +35,9 @@ genaimage client modules -> genaimage-api
   module supplies the ComfyUI adapter factory, constructs the core harness and
   passes it to `genaimage-server`. The local configuration module uses core's
   example configuration and error types for `config init`, without opening a
-  harness. See the [CLI reference](cli.md) for server selection and output
-  contracts.
+  harness. CI checks client source modules for direct references to the core,
+  adapter and server crates. See the [CLI reference](cli.md) for server selection
+  and output contracts.
 - `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
   exposes an async `genaimage_api::client::Client` with the opt-in
   `client` feature (reqwest with rustls). The server uses the wire types
