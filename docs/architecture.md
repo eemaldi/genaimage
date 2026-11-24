@@ -146,11 +146,31 @@ shutdown starts, so a stalled upload cannot prevent draining.
 
 Core `LlmRoles` is the public gate for future assistant routes. `text()` and
 `vision()` return a role binding only for the exact configured model and never
-fall back to the other role. Known unsupported tools or vision capabilities are
-rejected before a provider call. `LlmRoleBinding::check_request` also rejects a
-mismatched model or request capability at the provider boundary. The settings
+fall back to the other role. A text binding requires a configured, reachable,
+listed model but does not itself require tools support; a vision binding still
+requires vision support. Capability metadata remains available for reporting.
+`LlmRoleBinding::check_request` rejects a mismatched model and known unsupported
+tools or vision capabilities before every provider call. The settings
 API never serialises the LLM API key; it exposes only `api_key_set` and accepts
 an explicit replacement or clear operation.
+
+`POST /api/v1/assistant/prompt` uses the exact configured text role for one
+request and returns editable proposals only. It never changes a workflow or
+prompt; the response reports `applied: false`. Expand, refine and negative modes
+return at most one proposal, while variations requests 1–8 values (four by
+default), drops empty or duplicate values and does not pad the result. Refine
+requires `instruction`. Negative mode uses optional `original` as the existing
+negative prompt and diff baseline; other modes diff against `prompt`. Empty,
+oversized or mode-invalid fields are rejected. The LLM stream is collected with
+a 64 KiB response ceiling and its strict JSON envelope is parsed without
+fabricating a proposal on failure. A malformed or failed provider response is
+502. The editable mode templates are `prompt_expand.md`,
+`prompt_refine.md`, `prompt_negative.md` and `prompt_variations.md` below the
+data directory's `assistant/prompts` directory; their exact names and SHA-256
+digests accompany the response. When `workflow_id` is supplied, only that
+workflow is loaded. Its description, tags and the named parameter's manifest
+hints are included in the model request; an unknown workflow is never replaced
+or substituted.
 
 The [settings API](setup.md#settings-api) uses core validation and atomic TOML
 persistence. The server serialises writes and publishes the saved configuration

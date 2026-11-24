@@ -45,6 +45,8 @@ chrono.workspace = true
 genaimage-api = { path = "../genaimage-api", features = ["client"] }
 genaimage-test-support = { path = "../genaimage-test-support" }
 image.workspace = true
+hex.workspace = true
+sha2.workspace = true
 rusqlite.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }

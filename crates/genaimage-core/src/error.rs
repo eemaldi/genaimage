@@ -44,6 +44,10 @@ pub enum HarnessError {
     #[error("{0}")]
     InvalidConversationRequest(String),
     #[error("{0}")]
+    InvalidPromptAssistRequest(String),
+    #[error("prompt assist provider response failed: {0}")]
+    PromptAssistProvider(String),
+    #[error("{0}")]
     ConversationConflict(String),
     #[error("assistant not configured: {0}")]
     AssistantNotConfigured(String),

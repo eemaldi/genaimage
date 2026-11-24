@@ -29,6 +29,7 @@ fn body_limit(path: &str, config: &SecurityConfig) -> usize {
         {
             crate::routes::conversations::ASSISTANT_MESSAGE_BODY_LIMIT
         }
+        "/api/v1/assistant/prompt" => crate::routes::prompt::PROMPT_ASSIST_BODY_LIMIT,
         "/api/v1/uploads" => config.max_upload_bytes,
         _ => DEFAULT_BODY_LIMIT,
     }

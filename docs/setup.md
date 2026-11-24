@@ -209,7 +209,7 @@ allowed_hosts = ["comfyui"]
 [llm]
 base_url = "http://ollama:11434/v1"
 allowed_hosts = ["ollama"]
-text_model = "your-explicit-tool-model"
+text_model = "your-explicit-text-model"
 vision_model = "your-explicit-vision-model"
 ```
 

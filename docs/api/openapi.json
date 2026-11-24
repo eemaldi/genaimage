@@ -1186,6 +1186,169 @@
         ],
         "type": "object"
       },
+      "PromptAssistMode": {
+        "description": "One prompt-assistance operation. Every result remains an unapplied proposal.",
+        "enum": [
+          "expand",
+          "refine",
+          "negative",
+          "variations"
+        ],
+        "type": "string"
+      },
+      "PromptAssistRequest": {
+        "additionalProperties": false,
+        "description": "Request prompt assistance without changing a workflow or generation value.",
+        "properties": {
+          "instruction": {
+            "description": "Required and non-blank for `refine`; at most 8,192 Unicode characters.",
+            "maxLength": 8192,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/PromptAssistMode"
+          },
+          "n": {
+            "description": "Number of variations to request, from 1 through 8. Defaults to 4 and is invalid for other modes.",
+            "maximum": 8,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "original": {
+            "description": "Existing negative prompt used only by `negative` mode as the diff baseline; at most 16,384 Unicode characters.",
+            "maxLength": 16384,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameter": {
+            "description": "Target parameter name within `workflow_id`, enabling its manifest hints in the LLM request.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "description": "The positive prompt, at most 16,384 Unicode characters.",
+            "maxLength": 16384,
+            "type": "string"
+          },
+          "workflow_id": {
+            "description": "Exact workflow ID whose description, tags and selected parameter hints are sent to the LLM.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "PromptAssistResponse": {
+        "description": "Prompt proposal response. `applied` is always false.",
+        "properties": {
+          "applied": {
+            "description": "Always `false`; accepting and applying a proposal is a separate client action.",
+            "example": false,
+            "type": "boolean"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/PromptAssistMode"
+          },
+          "model": {
+            "type": "string"
+          },
+          "proposal_count": {
+            "description": "Exact number of retained proposals after empty and duplicate values are removed.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/PromptProposal"
+            },
+            "type": "array"
+          },
+          "template": {
+            "$ref": "#/components/schemas/PromptTemplateReference"
+          }
+        },
+        "required": [
+          "proposals",
+          "proposal_count",
+          "model",
+          "mode",
+          "template",
+          "applied"
+        ],
+        "type": "object"
+      },
+      "PromptDiff": {
+        "properties": {
+          "op": {
+            "$ref": "#/components/schemas/PromptDiffOperation"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "text"
+        ],
+        "type": "object"
+      },
+      "PromptDiffOperation": {
+        "enum": [
+          "equal",
+          "insert",
+          "delete"
+        ],
+        "type": "string"
+      },
+      "PromptProposal": {
+        "properties": {
+          "diff": {
+            "items": {
+              "$ref": "#/components/schemas/PromptDiff"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "diff"
+        ],
+        "type": "object"
+      },
+      "PromptTemplateReference": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "sha256"
+        ],
+        "type": "object"
+      },
       "ReconcileOutcome": {
         "description": "What reconciliation established, independently of the run status.",
         "enum": [
@@ -3069,6 +3232,147 @@
               }
             },
             "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/prompt": {
+      "post": {
+        "description": "Create prompt proposals using the configured text model. The selected workflow is loaded by its exact ID and its description, tags and targeted parameter hints are included. Results are never applied: the client must separately present and explicitly accept a proposal. For negative mode, `original` is the existing negative prompt and the diff baseline; for every other mode the request `prompt` is the diff baseline.",
+        "operationId": "assistant_prompt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptAssistRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptAssistResponse"
+                }
+              }
+            },
+            "description": "Unapplied prompt proposals"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow not found"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid prompt-assist request"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Malformed or failed LLM response"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Assistant unavailable"
           }
         },
         "tags": [

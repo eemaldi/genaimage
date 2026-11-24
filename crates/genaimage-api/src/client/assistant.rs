@@ -10,7 +10,7 @@ use crate::{
     AssistantConversationListQuery, AssistantConversationListResponse,
     AssistantConversationResponse, AssistantDeltaEvent, AssistantMessageStartedEvent,
     AssistantTerminalEvent, AssistantToolCallEvent, CreateAssistantConversationRequest,
-    SendAssistantMessageRequest,
+    PromptAssistRequest, PromptAssistResponse, SendAssistantMessageRequest,
 };
 
 pub enum AssistantStreamEvent {
@@ -25,6 +25,17 @@ pub type AssistantEventStream =
     Pin<Box<dyn Stream<Item = Result<AssistantStreamEvent, Error>> + Send>>;
 
 impl Client {
+    /// Requests editable prompt proposals. The response never applies a value.
+    pub async fn prompt_assist(
+        &self,
+        body: &PromptAssistRequest,
+    ) -> Result<PromptAssistResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["assistant", "prompt"])?
+                .json(body),
+        )
+        .await
+    }
     pub async fn create_assistant_conversation(
         &self,
         body: &CreateAssistantConversationRequest,

@@ -2,6 +2,7 @@ pub(crate) mod conversations;
 mod events;
 mod health;
 mod outputs;
+pub(crate) mod prompt;
 mod runs;
 mod settings;
 mod uploads;
@@ -96,6 +97,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(conversations::send_message))
         .routes(routes!(conversations::cancel))
         .routes(routes!(conversations::delete))
+        .routes(routes!(prompt::assist))
         .routes(routes!(workflows::list))
         .routes(routes!(workflows::details))
         .routes(routes!(workflows::validate))
