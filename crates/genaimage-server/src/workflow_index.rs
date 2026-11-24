@@ -45,7 +45,17 @@ struct Entry {
     link: Option<Stamp>,
     target: Option<Stamp>,
 }
-type Fingerprint = BTreeMap<PathBuf, Entry>;
+#[derive(Debug, Eq, PartialEq)]
+struct ReferenceError {
+    kind: io::ErrorKind,
+    raw_os_error: Option<i32>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Fingerprint {
+    entries: BTreeMap<PathBuf, Entry>,
+    references: BTreeMap<PathBuf, Result<Entry, ReferenceError>>,
+}
 
 fn metadata(path: &Path, follow: bool) -> io::Result<Option<Metadata>> {
     match if follow {
@@ -69,7 +79,7 @@ fn entry(path: &Path) -> io::Result<Entry> {
     })
 }
 
-fn record_tree(path: &Path, entries: &mut Fingerprint) -> io::Result<()> {
+fn record_tree(path: &Path, entries: &mut BTreeMap<PathBuf, Entry>) -> io::Result<()> {
     let state = entry(path)?;
     let directory = state.target.as_ref().is_some_and(|stamp| stamp.directory);
     entries.insert(path.to_path_buf(), state);
@@ -111,10 +121,20 @@ fn fingerprint(
     let _ = probe;
     let mut entries = BTreeMap::new();
     record_tree(root, &mut entries)?;
-    for path in references {
-        entries.insert(path.clone(), entry(path)?);
-    }
-    Ok(entries)
+    let references = references
+        .iter()
+        .map(|path| {
+            let state = entry(path).map_err(|error| ReferenceError {
+                kind: error.kind(),
+                raw_os_error: error.raw_os_error(),
+            });
+            (path.clone(), state)
+        })
+        .collect();
+    Ok(Fingerprint {
+        entries,
+        references,
+    })
 }
 
 fn discover(harness: &Harness, probe: &ScanProbe) -> genaimage_core::Result<WorkflowDiscovery> {
@@ -167,7 +187,7 @@ impl WorkflowIndex {
                 let mut entries = BTreeMap::new();
                 for manifest in &discovery.manifests {
                     if let Some(path) = discovery.indexable_manifest_paths.get(&manifest.id) {
-                        let state = after.get(path).ok_or_else(|| {
+                        let state = after.entries.get(path).ok_or_else(|| {
                             HarnessError::Workflow(
                                 "Workflow disappeared during discovery; try again.".into(),
                             )
@@ -343,6 +363,26 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::atomic::Ordering;
     use tower::ServiceExt;
+
+    #[test]
+    fn reference_errors_are_fingerprinted_and_can_recover() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let parent = root.join("not-a-directory");
+        fs::write(&parent, b"file").unwrap();
+        let graph = parent.join("graph.json");
+        let references = BTreeSet::from([graph.clone()]);
+        let probe = ScanProbe::default();
+        let broken = fingerprint(root, &references, &probe).unwrap();
+        assert!(broken.references[&graph].is_err());
+        assert_eq!(broken, fingerprint(root, &references, &probe).unwrap());
+        fs::remove_file(&parent).unwrap();
+        fs::create_dir(&parent).unwrap();
+        fs::write(&graph, b"{}").unwrap();
+        let repaired = fingerprint(root, &references, &probe).unwrap();
+        assert!(repaired.references[&graph].is_ok());
+        assert_ne!(broken, repaired);
+    }
 
     #[tokio::test]
     async fn concurrent_thumbnail_requests_share_full_scans() {

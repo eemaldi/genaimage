@@ -77,6 +77,58 @@ async fn catalogue_and_details_include_metadata_and_discovery_errors() {
 }
 
 #[tokio::test]
+async fn broken_graph_reference_does_not_hide_valid_workflows() {
+    let api = ApiHarness::start().await;
+    install(&api, Some("image.png"));
+    let dir = &api.core.config().workflows;
+    std::fs::write(dir.join("image.png"), b"image").unwrap();
+    std::fs::write(dir.join("not-a-directory"), b"file").unwrap();
+    let mut broken: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("contract.genaimage.json")).unwrap())
+            .unwrap();
+    broken["id"] = json!("broken");
+    broken["workflow"] = json!("not-a-directory/graph.json");
+    std::fs::write(
+        dir.join("broken.genaimage.json"),
+        serde_json::to_vec(&broken).unwrap(),
+    )
+    .unwrap();
+
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(list.workflows.len(), 1);
+    assert_eq!(list.workflows[0].id, "contract-workflow");
+    assert_eq!(list.diagnostics.len(), 1);
+    assert!(list.diagnostics[0].path.ends_with("broken.genaimage.json"));
+    assert!(list.diagnostics[0]
+        .error
+        .contains("not-a-directory/graph.json"));
+    let response = api
+        .request(
+            Method::GET,
+            list.workflows[0].thumbnail_url.as_deref().unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap(), &b"image"[..]);
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/contract-workflow").await;
+    assert_eq!(details.id, "contract-workflow");
+
+    std::fs::remove_file(dir.join("not-a-directory")).unwrap();
+    std::fs::create_dir(dir.join("not-a-directory")).unwrap();
+    std::fs::copy(
+        dir.join("workflow.api.json"),
+        dir.join("not-a-directory/graph.json"),
+    )
+    .unwrap();
+    let repaired: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(repaired.workflows.len(), 2);
+    assert!(repaired.diagnostics.is_empty());
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn detail_reports_declared_and_effective_values_additively() {
     let api = ApiHarness::start().await;
     install(&api, None);

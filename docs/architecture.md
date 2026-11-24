@@ -228,7 +228,8 @@ The workflows API is read-only apart from validation, which does not submit a ru
   paths return 404 problem details. A discovery index is built on the first
   thumbnail request and checked at most once per second by a shared revalidation
   of directory, manifest and referenced workflow metadata; each catalogue list
-  forces an immediate rebuild. A cache hit checks its own
+  forces an immediate rebuild. Unreadable workflow references are tracked as
+  metadata errors, so a broken workflow is diagnosed without hiding valid ones. A cache hit checks its own
   manifest metadata and reads the current thumbnail safely; an edited manifest
   is reloaded. Workflow-set changes, such as a newly added duplicate ID, can be
   stale for up to one second plus the revalidation time. The detail endpoint
