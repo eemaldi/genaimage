@@ -7,6 +7,7 @@
   } from 'svelte/reactivity';
   import { api } from '../../lib/api/client';
   import { events } from '../../lib/api/events';
+  import { navigateHash } from '../../navigation';
   import Button from '../../lib/ui/Button.svelte';
   import Field from '../../lib/ui/Field.svelte';
   import ProblemDetails from '../../lib/ui/ProblemDetails.svelte';
@@ -109,7 +110,7 @@
       const value = String(data.get(key) ?? '').trim();
       if (value) params.set(key, value);
     }
-    window.location.hash = `#/gallery${params.size ? `?${params}` : ''}`;
+    navigateHash(`#/gallery${params.size ? `?${params}` : ''}`);
   }
 
   function toggle(output: Output) {

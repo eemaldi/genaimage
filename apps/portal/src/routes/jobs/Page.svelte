@@ -15,6 +15,7 @@
     type Problem,
   } from '../../lib/ui/ProblemDetails.svelte';
   import type { RouteProps } from '../../router';
+  import { navigateHash } from '../../navigation';
   import StatusBadge from './StatusBadge.svelte';
   import { createRunList } from './run-list';
   import { canCancel, isRunStatus, statuses, type Run } from './run-model';
@@ -257,7 +258,7 @@
   class="filters"
   onsubmit={(event) => {
     event.preventDefault();
-    window.location.hash = jobsHref(statusInput, workflowInput.trim());
+    navigateHash(jobsHref(statusInput, workflowInput.trim()));
   }}
 >
   <Select label="Status" bind:value={statusInput} {options} />

@@ -17,6 +17,7 @@ const fake = vi.hoisted(() => ({
   getSettingsWithRevision: vi.fn<typeof api.getSettingsWithRevision>(),
   putSettingsWithRevision: vi.fn<typeof api.putSettingsWithRevision>(),
   testSettings: vi.fn<typeof api.testSettings>(),
+  listOutputs: vi.fn<typeof api.listOutputs>(),
 }));
 vi.mock('../../lib/api/client', async (original) => ({
   ...(await original<typeof import('../../lib/api/client')>()),
@@ -84,6 +85,7 @@ function serverProblem() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  fake.listOutputs.mockResolvedValue({ outputs: [], next_cursor: null });
   window.history.replaceState(null, '', '#/settings');
 });
 afterEach(() => {
@@ -241,7 +243,114 @@ test('cancelling Back preserves jobs for the next Back traversal', async () => {
   expect(location.hash).toBe('#/jobs');
 });
 
-test('cancelling Back to an unmarked entry restores the settings URL and page', async () => {
+test('marked Back and Forward retain their direction when Back is cancelled', async () => {
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: fixture(),
+    etag: '"rev1"',
+  });
+  vi.spyOn(window, 'confirm')
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  history.replaceState(null, '', '#/jobs');
+  render(App);
+  await userEvent.click(screen.getByRole('link', { name: 'Settings' }));
+  await screen.findByLabelText('LLM URL');
+  history.back();
+  await screen.findByRole('heading', { name: 'Jobs' });
+  history.forward();
+  await screen.findByLabelText('LLM URL');
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
+  history.back();
+  await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(location.hash).toBe('#/settings'));
+  expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
+  history.back();
+  await screen.findByRole('heading', { name: 'Jobs' });
+});
+
+test('cancelling marked Back preserves forward history', async () => {
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: fixture(),
+    etag: '"rev1"',
+  });
+  vi.spyOn(window, 'confirm')
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  history.replaceState(null, '', '#/jobs');
+  render(App);
+  await userEvent.click(screen.getByRole('link', { name: 'Settings' }));
+  await screen.findByLabelText('LLM URL');
+  await userEvent.click(screen.getByRole('link', { name: 'Gallery' }));
+  await screen.findByRole('heading', { name: 'Gallery' });
+  history.back();
+  await screen.findByLabelText('LLM URL');
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
+  history.back();
+  await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(location.hash).toBe('#/settings'));
+  history.forward();
+  await screen.findByRole('heading', { name: 'Gallery' });
+  expect(location.hash).toBe('#/gallery');
+});
+
+test('cancelling marked Forward restores settings without losing Back', async () => {
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: fixture(),
+    etag: '"rev1"',
+  });
+  vi.spyOn(window, 'confirm')
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  history.replaceState(null, '', '#/jobs');
+  render(App);
+  await userEvent.click(screen.getByRole('link', { name: 'Settings' }));
+  await screen.findByLabelText('LLM URL');
+  await userEvent.click(screen.getByRole('link', { name: 'Gallery' }));
+  await screen.findByRole('heading', { name: 'Gallery' });
+  history.back();
+  await screen.findByLabelText('LLM URL');
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
+  history.forward();
+  await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(location.hash).toBe('#/settings'));
+  history.back();
+  await screen.findByRole('heading', { name: 'Jobs' });
+});
+
+test('cancelling a new link does not truncate forward history', async () => {
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: fixture(),
+    etag: '"rev1"',
+  });
+  vi.spyOn(window, 'confirm')
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  history.replaceState(null, '', '#/jobs');
+  render(App);
+  await userEvent.click(screen.getByRole('link', { name: 'Settings' }));
+  await screen.findByLabelText('LLM URL');
+  await userEvent.click(screen.getByRole('link', { name: 'Gallery' }));
+  await screen.findByRole('heading', { name: 'Gallery' });
+  history.back();
+  await screen.findByLabelText('LLM URL');
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
+  await userEvent.click(
+    screen.getByRole('link', { name: 'Assistant Planned' }),
+  );
+  expect(location.hash).toBe('#/settings');
+  history.forward();
+  await screen.findByRole('heading', { name: 'Gallery' });
+});
+
+test('cancelling on an unmarked entry preserves the hash and forward history', async () => {
   fake.getSettingsWithRevision.mockResolvedValue({
     settings: fixture(),
     etag: '"rev1"',
@@ -251,6 +360,9 @@ test('cancelling Back to an unmarked entry restores the settings URL and page', 
     .mockReturnValueOnce(true);
   history.pushState(null, '', '#/jobs');
   history.pushState(null, '', '#/settings?tab=paths');
+  history.pushState(null, '', '#/gallery');
+  history.back();
+  await waitFor(() => expect(location.hash).toBe('#/settings?tab=paths'));
   render(App);
   await screen.findByLabelText('LLM URL');
   await fireEvent.input(screen.getByLabelText('LLM URL'), {
@@ -259,13 +371,38 @@ test('cancelling Back to an unmarked entry restores the settings URL and page', 
   history.back();
   await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(location.hash).toBe('#/settings?tab=paths'));
+  expect(history.state).toBeNull();
   expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
   expect((screen.getByLabelText('LLM URL') as HTMLInputElement).value).toBe(
     'http://localhost:1234',
   );
+  const moved = new Promise<void>((resolve) =>
+    window.addEventListener('popstate', () => resolve(), { once: true }),
+  );
+  history.forward();
+  await moved;
+  expect(location.hash).toBe('#/settings?tab=paths');
+  history.forward();
+  await screen.findByRole('heading', { name: 'Gallery' });
+  expect(location.hash).toBe('#/gallery');
+});
+
+test('accepting an unmarked traversal never stamps the destination', async () => {
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: fixture(),
+    etag: '"rev1"',
+  });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  history.pushState(null, '', '#/jobs');
+  history.pushState(null, '', '#/settings');
+  render(App);
+  await screen.findByLabelText('LLM URL');
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:1234' },
+  });
   history.back();
   await screen.findByRole('heading', { name: 'Jobs' });
-  expect(location.hash).toBe('#/jobs');
+  expect(history.state).toBeNull();
 });
 
 test('probe revision conflict preserves edits and offers explicit review', async () => {
