@@ -9,8 +9,9 @@ use std::{path::Path, sync::Arc, time::Duration};
 use genaimage_api::ProblemDetails;
 use genaimage_comfyui::ComfyUiClient;
 use genaimage_core::{
-    EventEnvelope, EventSubscription, Harness, HarnessConfig, RunRecord, RunRequest,
+    EventEnvelope, EventSubscription, Harness, HarnessConfig, LlmRoles, RunRecord, RunRequest,
 };
+use genaimage_llm::{OpenAiCompatibleProvider, OpenAiCompatibleProviderOptions};
 use genaimage_server::{serve_on_listener, AppState};
 use genaimage_test_support::{
     install_contract_workflow, ApiFixture, FakeComfyServer, FakeComfyState,
@@ -77,8 +78,25 @@ impl ApiHarness {
         )
         .unwrap();
         let adapter = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
+        let llm_provider = (!config.llm.base_url.is_empty()).then(|| {
+            Arc::new(
+                OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+                    base_url: config.llm.base_url.clone(),
+                    api_key: config.llm.api_key.clone(),
+                    allowed_hosts: config.llm.allowed_hosts.clone(),
+                    connect_timeout: Duration::from_secs(config.llm.connect_timeout_secs),
+                    first_byte_timeout: Duration::from_secs(config.llm.request_timeout_secs),
+                    idle_timeout: Duration::from_secs(config.llm.idle_timeout_secs),
+                })
+                .unwrap(),
+            )
+        });
+        let llm_roles = LlmRoles::new(
+            &config.llm,
+            llm_provider.map(|provider| provider as Arc<dyn genaimage_core::LlmProvider>),
+        );
         let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
-        let state = AppState::new(core.clone());
+        let state = AppState::new(core.clone()).with_llm_roles(llm_roles);
         let shutdown = state.clone();
         let server_state = state.clone();
         let server = tokio::spawn(async move {

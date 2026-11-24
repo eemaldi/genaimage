@@ -20,7 +20,7 @@ use axum::{
     http::{HeaderName, Request},
     middleware, Router,
 };
-use genaimage_core::Harness;
+use genaimage_core::{Harness, LlmRoles};
 use tokio::task::JoinHandle;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::{
@@ -42,6 +42,7 @@ pub struct AppState {
     settings: Arc<settings::SettingsState>,
     portal_dev: Option<PortalDevProxy>,
     workflow_index: Arc<WorkflowIndexCache>,
+    llm_roles: LlmRoles,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
 }
@@ -69,12 +70,19 @@ impl Drop for MonitorRegistration {
 
 impl AppState {
     pub fn new(harness: Arc<Harness>) -> Self {
+        let llm_roles = LlmRoles::new(&harness.config().llm, None);
         Self {
             settings: Arc::new(settings::SettingsState::new(harness)),
             lifecycle: Arc::default(),
             portal_dev: None,
             workflow_index: Arc::default(),
+            llm_roles,
         }
+    }
+
+    pub fn with_llm_roles(mut self, llm_roles: LlmRoles) -> Self {
+        self.llm_roles = llm_roles;
+        self
     }
 
     /// Serve the portal through Vite instead of using embedded assets.
@@ -86,6 +94,10 @@ impl AppState {
     /// Snapshot the active harness once per request or background operation.
     pub fn harness(&self) -> Arc<Harness> {
         self.settings.harness()
+    }
+
+    pub fn llm_roles(&self) -> &LlmRoles {
+        &self.llm_roles
     }
 
     /// Starts graceful draining and notifies long-lived handlers. Idempotent.

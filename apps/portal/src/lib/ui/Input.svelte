@@ -15,6 +15,7 @@
     maxlength,
     autocomplete,
     readonly,
+    type = 'text',
     ...native
   }: FieldProps &
     NativeFieldProps & {
@@ -25,6 +26,7 @@
       maxlength?: number;
       autocomplete?: HTMLInputAttributes['autocomplete'];
       readonly?: boolean;
+      type?: HTMLInputAttributes['type'];
     } = $props();
 </script>
 
@@ -45,7 +47,7 @@
     {:else}
       <input
         class="ui-control"
-        type="text"
+        {type}
         {...native}
         {...field}
         bind:value

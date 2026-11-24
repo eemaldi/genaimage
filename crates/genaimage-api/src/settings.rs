@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::{HealthStatus, ImageBackendHealthReason};
+use crate::{HealthStatus, ImageBackendHealthReason, LlmModel};
 
 /// Sparse changes using dotted TOML keys. Omitted values remain unchanged.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -17,6 +17,10 @@ pub struct SettingsResponse {
     pub settings: BTreeMap<String, Setting>,
     /// Existing selected configuration file or the default target for a first save.
     pub config_file: String,
+    /// Whether a write-only LLM API key is configured. Its value is never returned.
+    pub api_key_set: bool,
+    /// Whether the environment owns the write-only LLM API key.
+    pub api_key_read_only: bool,
     /// Keys whose saved and active values differ.
     pub restart_required: Vec<String>,
 }
@@ -48,6 +52,10 @@ pub struct SettingsTestResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comfyui_reason: Option<ImageBackendHealthReason>,
     pub llm: HealthStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub llm_models: Vec<LlmModel>,
 }
 
 /// A field-specific validation issue for an invalid settings proposal.

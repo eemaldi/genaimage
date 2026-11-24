@@ -32,8 +32,24 @@ export const sections: { title: string; fields: Field[] }[] = [
     title: 'LLM',
     fields: [
       { key: 'llm.base_url', label: 'LLM URL' },
-      { key: 'llm.model', label: 'LLM model' },
+      { key: 'llm.text_model', label: 'Text model' },
+      { key: 'llm.vision_model', label: 'Vision model' },
       { key: 'llm.allowed_hosts', label: 'LLM allowed hosts', kind: 'hosts' },
+      {
+        key: 'llm.connect_timeout_secs',
+        label: 'Connect timeout (seconds)',
+        kind: 'number',
+      },
+      {
+        key: 'llm.request_timeout_secs',
+        label: 'Request timeout (seconds)',
+        kind: 'number',
+      },
+      {
+        key: 'llm.idle_timeout_secs',
+        label: 'Idle timeout (seconds)',
+        kind: 'number',
+      },
     ],
   },
   {

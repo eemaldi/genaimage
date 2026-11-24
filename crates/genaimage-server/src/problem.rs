@@ -28,6 +28,33 @@ impl Problem {
         }
     }
 
+    pub fn assistant_unavailable(error: genaimage_core::AssistantUnavailable) -> Self {
+        let recovery = match &error {
+            genaimage_core::AssistantUnavailable::NotConfigured { .. } => {
+                "Set llm.base_url and the requested model role in Settings, then restart."
+            }
+            genaimage_core::AssistantUnavailable::Unreachable { .. } => {
+                "Check that the local LLM service is running, then test the connection in Settings."
+            }
+            genaimage_core::AssistantUnavailable::ModelNotFound { .. } => {
+                "Choose a model returned by the LLM connection test."
+            }
+            genaimage_core::AssistantUnavailable::CapabilityUnsupported { .. } => {
+                "Choose a model with the required capability, or add an explicit reviewed capability override."
+            }
+        };
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string(), recovery)
+            .with_type("urn:genaimage:problem:assistant-unavailable")
+    }
+
+    pub fn invalid_llm_request(error: genaimage_core::HarnessError) -> Self {
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            error.to_string(),
+            "Use the model pinned by the selected LLM role and a model with the required tools or vision capability.",
+        )
+    }
+
     pub(crate) fn workflow_changed() -> Self {
         Self::new(
             StatusCode::CONFLICT,

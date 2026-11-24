@@ -31,7 +31,11 @@ function fixture(): Settings {
     'comfyui.request_timeout_seconds': 60,
     'comfyui.websocket_reconnect_seconds': 2,
     'llm.base_url': '',
-    'llm.model': 'local',
+    'llm.text_model': 'local',
+    'llm.vision_model': '',
+    'llm.connect_timeout_secs': 5,
+    'llm.request_timeout_secs': 60,
+    'llm.idle_timeout_secs': 30,
     'llm.allowed_hosts': [],
     'paths.state_database': '/state.sqlite3',
     'paths.workflows': '/workflows',
@@ -52,10 +56,10 @@ function fixture(): Settings {
       },
     ]),
   );
-  settings['llm.model'] = {
+  settings['llm.text_model'] = {
     value: 'local',
     source: 'env',
-    variable: 'GENAIMAGE_LLM_MODEL',
+    variable: 'GENAIMAGE_LLM_TEXT_MODEL',
     read_only: true,
   };
   settings['paths.runs'] = {
@@ -64,7 +68,13 @@ function fixture(): Settings {
     file: '/config.toml',
     read_only: false,
   };
-  return { settings, config_file: '/config.toml', restart_required: [] };
+  return {
+    settings,
+    config_file: '/config.toml',
+    api_key_set: false,
+    api_key_read_only: false,
+    restart_required: [],
+  };
 }
 async function start(settings = fixture()) {
   fake.getSettingsWithRevision.mockResolvedValue({ settings, etag: '"rev1"' });
@@ -100,13 +110,60 @@ test('shows sources and locks environment overrides', async () => {
   expect(screen.getByText(/Config file: \/config.toml/)).toBeTruthy();
   expect(
     screen.getByText(
-      /Environment variable GENAIMAGE_LLM_MODEL.*change or remove/,
+      /Environment variable GENAIMAGE_LLM_TEXT_MODEL.*change or remove/,
     ),
   ).toBeTruthy();
-  expect(screen.getByLabelText('LLM model').hasAttribute('readonly')).toBe(
+  expect(screen.getByLabelText('Text model').hasAttribute('readonly')).toBe(
     true,
   );
 });
+test('sets and clears the write-only LLM API key without displaying it', async () => {
+  const withKey = fixture();
+  withKey.api_key_set = true;
+  await start(withKey);
+  const input = screen.getByLabelText('New LLM API key') as HTMLInputElement;
+  expect(input.type).toBe('password');
+  expect(input.value).toBe('');
+  const saved = fixture();
+  saved.api_key_set = true;
+  fake.putSettingsWithRevision.mockResolvedValue({
+    settings: saved,
+    etag: '"rev2"',
+  });
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: saved,
+    etag: '"rev2"',
+  });
+  await userEvent.type(input, 'replacement-secret');
+  await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+  expect(fake.putSettingsWithRevision).toHaveBeenCalledWith(
+    { 'llm.api_key': 'replacement-secret' },
+    '"rev1"',
+  );
+  expect(screen.queryByText('replacement-secret')).toBeNull();
+});
+
+test('clears an existing LLM API key explicitly', async () => {
+  const withKey = fixture();
+  withKey.api_key_set = true;
+  await start(withKey);
+  const saved = fixture();
+  fake.putSettingsWithRevision.mockResolvedValue({
+    settings: saved,
+    etag: '"rev2"',
+  });
+  fake.getSettingsWithRevision.mockResolvedValue({
+    settings: saved,
+    etag: '"rev2"',
+  });
+  await userEvent.click(screen.getByLabelText('Clear saved LLM API key'));
+  await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+  expect(fake.putSettingsWithRevision).toHaveBeenCalledWith(
+    { 'llm.api_key': null },
+    '"rev1"',
+  );
+});
+
 test('blocks invalid URLs, numbers and paths and saves only valid edits', async () => {
   await start();
   const button = screen.getByRole('button', {
@@ -182,6 +239,31 @@ test('tests each service separately and probe errors do not block saving', async
   ).toBe(false);
   expect(fake.putSettingsWithRevision).not.toHaveBeenCalled();
 });
+test('shows probed model capability metadata', async () => {
+  await start();
+  fake.testSettings.mockResolvedValue({
+    comfyui: 'not_configured',
+    llm: 'ok',
+    llm_models: [
+      { id: 'tools-and-vision', supports_tools: true, supports_vision: true },
+      { id: 'text-only', supports_tools: true, supports_vision: false },
+    ],
+  });
+  await fireEvent.input(screen.getByLabelText('LLM URL'), {
+    target: { value: 'http://localhost:11434/v1' },
+  });
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Test LLM connection' }),
+  );
+  expect(await screen.findByText('Available models')).toBeTruthy();
+  expect(
+    screen.getByText(/tools-and-vision/).closest('li')!.textContent,
+  ).toMatch(/tools:\s+supported;\s+vision:\s+supported/);
+  expect(screen.getByText(/text-only/).closest('li')!.textContent).toMatch(
+    /tools:\s+supported;\s+vision:\s+not supported/,
+  );
+});
+
 test('saves then refetches and reports staged restart values', async () => {
   const initial = fixture();
   await start(initial);

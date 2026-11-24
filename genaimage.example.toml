@@ -11,9 +11,20 @@ websocket_reconnect_seconds = 2
 allowed_hosts = []
 
 [llm]
-base_url = "http://127.0.0.1:11434/v1"
-model = ""
+# An empty URL keeps the LLM and assistant disabled. To enable a typical local
+# Ollama OpenAI-compatible endpoint, set http://127.0.0.1:11434/v1.
+base_url = ""
+# api_key = "local-only-token" # Write-only in the settings API.
+text_model = ""
+vision_model = ""
 allowed_hosts = []
+connect_timeout_secs = 5
+request_timeout_secs = 60
+idle_timeout_secs = 30
+# Optional reviewed capability overrides, keyed by the exact model ID:
+# [llm.capabilities."model-id"]
+# tools = true
+# vision = false
 
 [paths]
 # Omitted data paths default under $XDG_DATA_HOME/genaimage (or ~/.local/share/genaimage).

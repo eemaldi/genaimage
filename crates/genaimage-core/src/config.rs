@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env, fmt, fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -88,12 +88,59 @@ impl Default for ComfyUiProfile {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LlmCapabilityOverride {
+    pub tools: Option<bool>,
+    pub vision: Option<bool>,
+}
+
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmConfig {
     pub base_url: String,
-    pub model: String,
+    #[serde(skip_serializing)]
+    pub api_key: Option<String>,
+    pub text_model: String,
+    pub vision_model: String,
     pub allowed_hosts: Vec<String>,
+    pub connect_timeout_secs: u64,
+    pub request_timeout_secs: u64,
+    pub idle_timeout_secs: u64,
+    pub capabilities: BTreeMap<String, LlmCapabilityOverride>,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key: None,
+            text_model: String::new(),
+            vision_model: String::new(),
+            allowed_hosts: Vec::new(),
+            connect_timeout_secs: 5,
+            request_timeout_secs: 60,
+            idle_timeout_secs: 30,
+            capabilities: BTreeMap::new(),
+        }
+    }
+}
+
+impl fmt::Debug for LlmConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LlmConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("text_model", &self.text_model)
+            .field("vision_model", &self.vision_model)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("connect_timeout_secs", &self.connect_timeout_secs)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("capabilities", &self.capabilities)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -209,6 +256,20 @@ impl HarnessConfig {
             None
         };
         let mut settings = settings::Metadata::new(target, source.as_deref());
+        if let Some(source) = source.as_deref() {
+            if source
+                .parse::<toml_edit::DocumentMut>()
+                .ok()
+                .and_then(|document| document.get("llm")?.as_table_like()?.get("model").cloned())
+                .is_some()
+            {
+                return Err(invalid(
+                    "llm.model",
+                    "<removed>",
+                    "the legacy llm.model key was removed; use llm.text_model and, when needed, llm.vision_model",
+                ));
+            }
+        }
         let mut config: Self = if let Some(source) = source {
             toml::from_str(&source).map_err(|e| HarnessError::Configuration(format!("config '{}' is invalid: {e}; use the documented [server], [comfyui], [llm] and [paths] keys; migrate legacy profiles explicitly (see docs/setup.md)", settings.target.display())))?
         } else {
@@ -278,9 +339,33 @@ impl HarnessConfig {
             "GENAIMAGE_COMFYUI_ALLOWED_HOSTS",
             config.comfyui.allowed_hosts
         );
+        if let Some(value) = env("GENAIMAGE_LLM_MODEL") {
+            return Err(invalid(
+                "GENAIMAGE_LLM_MODEL",
+                &value,
+                "the legacy variable was removed; use GENAIMAGE_LLM_TEXT_MODEL (and optionally GENAIMAGE_LLM_VISION_MODEL)",
+            ));
+        }
         text!("GENAIMAGE_LLM_URL", config.llm.base_url);
-        text!("GENAIMAGE_LLM_MODEL", config.llm.model);
+        if let Some(value) = env("GENAIMAGE_LLM_API_KEY") {
+            settings.mark_env("llm.api_key", "GENAIMAGE_LLM_API_KEY");
+            config.llm.api_key = (!value.is_empty()).then_some(value);
+        }
+        text!("GENAIMAGE_LLM_TEXT_MODEL", config.llm.text_model);
+        text!("GENAIMAGE_LLM_VISION_MODEL", config.llm.vision_model);
         hosts!("GENAIMAGE_LLM_ALLOWED_HOSTS", config.llm.allowed_hosts);
+        number!(
+            "GENAIMAGE_LLM_CONNECT_TIMEOUT_SECS",
+            config.llm.connect_timeout_secs
+        );
+        number!(
+            "GENAIMAGE_LLM_REQUEST_TIMEOUT_SECS",
+            config.llm.request_timeout_secs
+        );
+        number!(
+            "GENAIMAGE_LLM_IDLE_TIMEOUT_SECS",
+            config.llm.idle_timeout_secs
+        );
         path!("GENAIMAGE_STATE_DATABASE", config.paths.state_database);
         path!("GENAIMAGE_WORKFLOWS", config.paths.workflows);
         path!("GENAIMAGE_RUNS", config.paths.runs);
@@ -387,6 +472,15 @@ fn validate_fields(
         ));
     }
     errors.extend(comfyui.validate_base_url().err());
+    for (key, value) in [
+        ("llm.connect_timeout_secs", llm.connect_timeout_secs),
+        ("llm.request_timeout_secs", llm.request_timeout_secs),
+        ("llm.idle_timeout_secs", llm.idle_timeout_secs),
+    ] {
+        if value == 0 {
+            errors.push(invalid(key, "0", "use a positive timeout"));
+        }
+    }
     if !llm.base_url.is_empty() {
         errors.extend(validate_endpoint("llm.base_url", &llm.base_url, &llm.allowed_hosts).err());
     }
@@ -737,7 +831,7 @@ mod tests {
         assert_eq!(defaults.server.max_upload_bytes, 32 * 1024 * 1024);
         fs::write(
             temp.path().join(PROJECT_CONFIG),
-            "[server]\nport = 9999\nmax_upload_bytes = 123\n[llm]\nmodel = 'from-file'\n[paths]\nruns = 'file-runs'\n",
+            "[server]\nport = 9999\nmax_upload_bytes = 123\n[llm]\ntext_model = 'from-file'\n[paths]\nruns = 'file-runs'\n",
         )
         .unwrap();
         assert_eq!(
@@ -753,8 +847,13 @@ mod tests {
             ("GENAIMAGE_COMFYUI_REQUEST_TIMEOUT_SECONDS", "3".into()),
             ("GENAIMAGE_COMFYUI_WEBSOCKET_RECONNECT_SECONDS", "4".into()),
             ("GENAIMAGE_LLM_URL", "http://ollama:11434/v1".into()),
-            ("GENAIMAGE_LLM_MODEL", "explicit-model".into()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "explicit-text".into()),
+            ("GENAIMAGE_LLM_VISION_MODEL", "explicit-vision".into()),
+            ("GENAIMAGE_LLM_API_KEY", "secret-token".into()),
             ("GENAIMAGE_LLM_ALLOWED_HOSTS", "ollama".into()),
+            ("GENAIMAGE_LLM_CONNECT_TIMEOUT_SECS", "7".into()),
+            ("GENAIMAGE_LLM_REQUEST_TIMEOUT_SECS", "90".into()),
+            ("GENAIMAGE_LLM_IDLE_TIMEOUT_SECS", "31".into()),
             ("GENAIMAGE_STATE_DATABASE", "db.sqlite".into()),
             ("GENAIMAGE_WORKFLOWS", "wf".into()),
             ("GENAIMAGE_RUNS", "output".into()),
@@ -776,7 +875,12 @@ mod tests {
             (3, 4)
         );
         assert_eq!(config.llm.base_url, "http://ollama:11434/v1");
-        assert_eq!(config.llm.model, "explicit-model");
+        assert_eq!(config.llm.text_model, "explicit-text");
+        assert_eq!(config.llm.vision_model, "explicit-vision");
+        assert_eq!(config.llm.api_key.as_deref(), Some("secret-token"));
+        assert_eq!(config.llm.connect_timeout_secs, 7);
+        assert_eq!(config.llm.request_timeout_secs, 90);
+        assert_eq!(config.llm.idle_timeout_secs, 31);
         assert_eq!(config.llm.allowed_hosts, ["ollama"]);
         assert_eq!(config.state_database, temp.path().join("db.sqlite"));
         assert_eq!(config.workflows, temp.path().join("wf"));
@@ -795,6 +899,68 @@ mod tests {
                 && error.contains("invalid")
                 && error.contains("integer")
         );
+    }
+
+    #[test]
+    fn legacy_model_file_and_environment_are_rejected_actionably() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PROJECT_CONFIG),
+            "[llm]\nmodel = 'legacy'\n",
+        )
+        .unwrap();
+        let error = load(&temp, None, &values(&temp)).unwrap_err().to_string();
+        assert!(error.contains("llm.model"));
+        assert!(error.contains("llm.text_model"));
+        assert!(error.contains("llm.vision_model"));
+
+        fs::write(temp.path().join(PROJECT_CONFIG), "[llm]\n").unwrap();
+        let mut env = values(&temp);
+        env.retain(|(key, _)| *key != "GENAIMAGE_LLM_MODEL");
+        env.push(("GENAIMAGE_LLM_MODEL", "legacy".into()));
+        let legacy = load(&temp, None, &env).unwrap_err().to_string();
+        assert!(legacy.contains("GENAIMAGE_LLM_MODEL"));
+        assert!(legacy.contains("GENAIMAGE_LLM_TEXT_MODEL"));
+    }
+
+    #[test]
+    fn parses_role_capability_overrides_and_redacts_api_key() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PROJECT_CONFIG),
+            "[llm]\nbase_url = 'http://127.0.0.1:11434/v1'\napi_key = 'top-secret'\ntext_model = 'assistant'\nvision_model = 'review'\n[llm.capabilities.assistant]\ntools = true\nvision = false\n",
+        )
+        .unwrap();
+        let config = load(&temp, None, &values(&temp)).unwrap();
+        let capabilities = config.llm.capabilities.get("assistant").unwrap();
+        assert_eq!(capabilities.tools, Some(true));
+        assert_eq!(capabilities.vision, Some(false));
+        let debug = format!("{config:?}");
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!debug.contains("top-secret"));
+        assert!(!json.contains("top-secret"));
+        assert!(!config.settings_values().contains_key("llm.api_key"));
+    }
+
+    #[test]
+    fn validates_all_llm_timeouts() {
+        let temp = TempDir::new().unwrap();
+        for (variable, field) in [
+            (
+                "GENAIMAGE_LLM_CONNECT_TIMEOUT_SECS",
+                "llm.connect_timeout_secs",
+            ),
+            (
+                "GENAIMAGE_LLM_REQUEST_TIMEOUT_SECS",
+                "llm.request_timeout_secs",
+            ),
+            ("GENAIMAGE_LLM_IDLE_TIMEOUT_SECS", "llm.idle_timeout_secs"),
+        ] {
+            let mut env = values(&temp);
+            env.push((variable, "0".into()));
+            let error = load(&temp, None, &env).unwrap_err().to_string();
+            assert!(error.contains(field), "{error}");
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub(crate) struct SettingsState {
 struct Snapshot {
     desired: Arc<ResolvedConfig>,
     active: Arc<Harness>,
+    runtime_llm: Arc<genaimage_core::config::LlmConfig>,
     revision: String,
 }
 
@@ -39,7 +40,9 @@ impl Snapshot {
     }
 
     fn response(&self) -> SettingsResponse {
-        let active = self.active.config().settings_values();
+        let mut runtime_config = self.active.config().clone();
+        runtime_config.llm = self.runtime_llm.as_ref().clone();
+        let active = runtime_config.settings_values();
         let mut restart_required = Vec::new();
         let settings = self
             .desired
@@ -72,9 +75,25 @@ impl Snapshot {
                 )
             })
             .collect();
+        if self
+            .runtime_llm
+            .api_key
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            != self
+                .desired
+                .llm
+                .api_key
+                .as_deref()
+                .filter(|value| !value.is_empty())
+        {
+            restart_required.push("llm.api_key".into());
+        }
         SettingsResponse {
             settings,
             config_file: self.desired.settings_file().to_string_lossy().into_owned(),
+            api_key_set: self.desired.llm_api_key_set(),
+            api_key_read_only: self.desired.llm_api_key_read_only(),
             restart_required,
         }
     }
@@ -85,6 +104,7 @@ impl SettingsState {
         Self {
             snapshot: RwLock::new(Snapshot {
                 desired: Arc::new(harness.config().clone()),
+                runtime_llm: Arc::new(harness.config().llm.clone()),
                 active: harness,
                 revision: new_revision(),
             }),
@@ -152,9 +172,16 @@ impl SettingsState {
             HarnessError::InvalidSetting { key, reason, .. } => invalid_settings(vec![SettingIssue { key, reason }]),
             _ => save_failed(),
         })?;
+        let runtime_llm = self
+            .snapshot
+            .read()
+            .expect("settings lock poisoned")
+            .runtime_llm
+            .clone();
         let snapshot = Snapshot {
             desired: Arc::new(desired),
             active: Arc::new(new_active),
+            runtime_llm,
             revision: new_revision(),
         };
         let response = snapshot.response();

@@ -55,7 +55,7 @@ const healthy = {
   hints: {
     self: 'Start GenAImage.',
     image_backend: 'Start ComfyUI and check Settings.',
-    llm: 'LLM integration is planned.',
+    llm: 'Set llm.base_url and a text model in Settings.',
   },
 };
 const makeRun = (
@@ -105,7 +105,9 @@ describe('dashboard', () => {
     expect(within(cards[1]).getByText('OK')).toBeTruthy();
     expect(within(cards[2]).getByText('Not configured')).toBeTruthy();
     expect(
-      within(cards[2]).getByText('LLM integration is planned.'),
+      within(cards[2]).getByText(
+        'Set llm.base_url and a text model in Settings.',
+      ),
     ).toBeTruthy();
     status.set('open');
     await waitFor(() => expect(fake.health).toHaveBeenCalledTimes(2));

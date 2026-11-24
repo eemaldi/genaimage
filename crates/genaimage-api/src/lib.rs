@@ -20,6 +20,12 @@ pub struct HealthResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_backend_reason: Option<ImageBackendHealthReason>,
     pub llm: HealthStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_text: Option<LlmRoleHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_vision: Option<LlmRoleHealth>,
     /// Recovery guidance for services; absent on older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hints: Option<HealthHints>,
@@ -39,6 +45,22 @@ pub enum HealthStatus {
     Ok,
     Unavailable,
     NotConfigured,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct LlmRoleHealth {
+    pub status: HealthStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct LlmModel {
+    pub id: String,
+    pub supports_tools: bool,
+    pub supports_vision: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]

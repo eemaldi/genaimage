@@ -486,6 +486,32 @@
           "llm": {
             "$ref": "#/components/schemas/HealthStatus"
           },
+          "llm_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "llm_text": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LlmRoleHealth"
+              }
+            ]
+          },
+          "llm_vision": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LlmRoleHealth"
+              }
+            ]
+          },
           "self": {
             "$ref": "#/components/schemas/HealthStatus"
           }
@@ -511,6 +537,48 @@
           "timeout"
         ],
         "type": "string"
+      },
+      "LlmModel": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "supports_tools": {
+            "type": "boolean"
+          },
+          "supports_vision": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "supports_tools",
+          "supports_vision"
+        ],
+        "type": "object"
+      },
+      "LlmRoleHealth": {
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
       },
       "OutputListResponse": {
         "properties": {
@@ -1041,6 +1109,14 @@
       "SettingsResponse": {
         "description": "Effective settings for the next start, including values already applied live.",
         "properties": {
+          "api_key_read_only": {
+            "description": "Whether the environment owns the write-only LLM API key.",
+            "type": "boolean"
+          },
+          "api_key_set": {
+            "description": "Whether a write-only LLM API key is configured. Its value is never returned.",
+            "type": "boolean"
+          },
           "config_file": {
             "description": "Existing selected configuration file or the default target for a first save.",
             "type": "string"
@@ -1065,6 +1141,8 @@
         "required": [
           "settings",
           "config_file",
+          "api_key_set",
+          "api_key_read_only",
           "restart_required"
         ],
         "type": "object"
@@ -1087,6 +1165,18 @@
           },
           "llm": {
             "$ref": "#/components/schemas/HealthStatus"
+          },
+          "llm_models": {
+            "items": {
+              "$ref": "#/components/schemas/LlmModel"
+            },
+            "type": "array"
+          },
+          "llm_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

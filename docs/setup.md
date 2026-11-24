@@ -139,13 +139,25 @@ saved settings). An optional `If-Match` header rejects stale revisions with
 or pass `?service=comfyui` or `?service=llm` to test only that service; the
 unselected status is `not_configured`. Environment-overridden endpoints use
 their effective values. Testing does not save settings or change the running
-adapter. The probes run concurrently with a two-second budget each. The LLM probe sends an unauthenticated `GET` to `{base}/models`,
-or `/v1/models` if the URL has no base path. It reports `ok` for an HTTP 2xx
-response, `unavailable` if the probe fails, and `not_configured` if
-`llm.base_url` is unset or empty. Both probes pin validated loopback addresses
-and never follow redirects or use proxies. The API accepts only loopback URLs
-for new endpoints and for probes; configure allow-listed private/Compose hosts
-via the file or environment instead.
+adapter. The LLM test uses the configured provider, including its API key and
+timeouts, lists the models at `{base_url}/models`, and returns capability
+metadata for every model. It does not follow redirects or use proxies. API-key
+values are never returned: settings GET reports only `api_key_set` and settings
+PUT accepts a new non-empty string or `null` to clear the key. Capability
+probes are cached for 30 seconds; a connection test refreshes the cache
+explicitly. ComfyUI remains live-checked, while a configured LLM change waits
+for restart.
+
+`llm.base_url` defaults to an empty value so the remainder of GenAImage works
+without an LLM. To enable the assistant, set it to the OpenAI-compatible root;
+the documented local default is `http://127.0.0.1:11434/v1`, select exact
+`text_model` and optional `vision_model` IDs, and test the connection. The text
+role must support tools and the vision role must support vision. A model can be
+overridden in `[llm.capabilities."<model>"]`, but GenAImage never substitutes
+the other role. Both probes pin validated addresses. The API accepts only
+loopback URLs for new endpoints and probes; configure allow-listed private or
+Compose hosts through the file or environment. Public endpoints are never
+permitted.
 
 ### Environment overrides
 
@@ -160,8 +172,13 @@ comma-separated; an empty value clears the list.
 | `comfyui.request_timeout_seconds` | `GENAIMAGE_COMFYUI_REQUEST_TIMEOUT_SECONDS` |
 | `comfyui.websocket_reconnect_seconds` | `GENAIMAGE_COMFYUI_WEBSOCKET_RECONNECT_SECONDS` |
 | `comfyui.allowed_hosts` | `GENAIMAGE_COMFYUI_ALLOWED_HOSTS` |
-| `llm.base_url`, `llm.model` | `GENAIMAGE_LLM_URL`, `GENAIMAGE_LLM_MODEL` |
+| `llm.base_url` | `GENAIMAGE_LLM_URL` |
+| `llm.api_key` | `GENAIMAGE_LLM_API_KEY` |
+| `llm.text_model`, `llm.vision_model` | `GENAIMAGE_LLM_TEXT_MODEL`, `GENAIMAGE_LLM_VISION_MODEL` |
 | `llm.allowed_hosts` | `GENAIMAGE_LLM_ALLOWED_HOSTS` |
+| `llm.connect_timeout_secs` | `GENAIMAGE_LLM_CONNECT_TIMEOUT_SECS` |
+| `llm.request_timeout_secs` | `GENAIMAGE_LLM_REQUEST_TIMEOUT_SECS` |
+| `llm.idle_timeout_secs` | `GENAIMAGE_LLM_IDLE_TIMEOUT_SECS` |
 | `paths.state_database`, `paths.workflows` | `GENAIMAGE_STATE_DATABASE`, `GENAIMAGE_WORKFLOWS` |
 | `paths.runs`, `paths.uploads` | `GENAIMAGE_RUNS`, `GENAIMAGE_UPLOADS` |
 | One-time legacy state claim | `GENAIMAGE_CLAIM_LEGACY_STATE=1` |
@@ -177,7 +194,8 @@ allowed_hosts = ["comfyui"]
 [llm]
 base_url = "http://ollama:11434/v1"
 allowed_hosts = ["ollama"]
-model = "your-explicit-model"
+text_model = "your-explicit-tool-model"
+vision_model = "your-explicit-vision-model"
 ```
 
 Allow-listing never permits public addresses. The ComfyUI adapter resolves all
@@ -191,7 +209,9 @@ uses the same address validation and pinning, restricted to loopback.
 Back up the old file and data. Replace `active_profile` and `[profiles.<name>]`
 with `[comfyui]`, copying the selected profile's `base_url`, timeout and
 reconnect settings. Remove `GENAIMAGE_PROFILE`; set `GENAIMAGE_COMFYUI_URL` or
-edit `[comfyui]` instead. Remove the retired `paths.characters` key. Unknown
+edit `[comfyui]` instead. Remove the retired `paths.characters` key. Replace the
+retired `llm.model` with `llm.text_model` and optionally `llm.vision_model`; the old key and
+`GENAIMAGE_LLM_MODEL` fail with migration guidance. Unknown
 and old keys are rejected rather than ignored.
 
 The new defaults do not move existing data. **Keep the original database and
