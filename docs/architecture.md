@@ -8,8 +8,8 @@ available today; planned components and budgets are not yet guarantees.
 
 GenAImage is a thin, fast, local glue layer between an operator, a local LLM
 and ComfyUI. ComfyUI generates images; GenAImage owns the workflow manifests,
-explicit parameter binding, run queue, reconciliation, provenance and, in the
-planned architecture, the assistant tool runtime and self-hosted web portal.
+explicit parameter binding, run queue, reconciliation, provenance and the
+self-hosted web portal. The assistant tool runtime is planned.
 
 ## Workspace crates
 
@@ -55,16 +55,18 @@ genaimage local config module -> genaimage-core (configuration only)
   URL parsers treat them as path navigation.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows, runs, outputs, uploads, settings and live events. The
-  embedded Svelte portal is planned.
+  Svelte portal shell is embedded when the default `portal` feature is enabled.
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
 The CLI uses the loopback API; the browser portal will use the same API. The
-portal scaffold in `apps/portal` is a Svelte 5, TypeScript and Vite application
-with hash routes and placeholder pages. It has no feature or API client yet.
-During development Vite binds to loopback and proxies `/api` to port 8190;
-see [portal development](../README.md#portal-development). Built assets are not
-embedded or served by the Rust server yet ([#40](https://github.com/eemaldi/genaimage/issues/40)).
+portal in `apps/portal` uses Svelte 5, TypeScript, Vite and hash routing. Page
+features and the API client are still being built. The default binary embeds
+`apps/portal/dist` at compile time, including Brotli and gzip sidecars created
+with Node's built-in zlib at portal build time. No Node process is needed at
+runtime. API-only builds disable the `portal` feature with
+`--no-default-features`; the OpenAPI example deliberately uses this mode.
+
 The server uses the core and local adapters rather than reimplementing run
 orchestration or assistant logic.
 
@@ -93,6 +95,21 @@ callers must provide the intended port.
   records unconfirmed submissions as `unknown_submission`, rolls back
   cancellations that were not sent, and records attempted but unconfirmed
   cancellations for reconciliation.
+
+The portal handles non-API `GET` and `HEAD` requests. Unknown UI paths fall
+back to `index.html`, served with `Cache-Control: no-cache`. Vite's hashed
+`/assets/` files are immutable for one year. Static responses vary on
+`Accept-Encoding` and retain the original media type when compressed.
+`/api` and `/api/*` never fall back to the portal, even outside `/api/v1`.
+
+`genaimage serve --portal-dev-url <url>` replaces embedded serving with an
+HTTP proxy to an explicit loopback Vite origin. `localhost` resolves only to
+pinned loopback addresses; outbound system proxies and redirect following are
+disabled. It forwards UI GET/HEAD requests and selected headers, not browser
+credentials or WebSocket upgrades. Vite injects styles during development, so
+proxied UI responses allow inline styles only; neither mode allows inline
+scripts. Open Vite directly for HMR; Vite's own API proxy targets port 8190.
+See [portal development](../README.md#portal-development).
 
 The server accepts `127.0.0.1:<port>`, `localhost:<port>` and `[::1]:<port>`
 Host headers for its actual port, plus the configured bind IP when it is a
@@ -211,7 +228,7 @@ The workflows API is read-only apart from validation, which does not submit a ru
 The versioned [OpenAPI 3.1 contract](api/openapi.json) is served at
 `GET /api/v1/openapi.json`. Server routes and the contract are registered
 together with `utoipa-axum`; regenerate it with
-`cargo run -p genaimage-server --example openapi`. CI checks for drift,
+`cargo run -p genaimage-server --no-default-features --example openapi`. CI checks for drift,
 structural errors and coverage through the actual router. The SSE response describes event names and links
 to the `EventEnvelope` and `ResyncEvent` schemas. Portal API integration is planned.
 

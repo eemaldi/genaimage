@@ -5,8 +5,8 @@ image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
 and the [architecture](docs/architecture.md). The loopback server offers a health
 endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
-A portal scaffold is available for development; embedding, feature pages and
-LLM assistance are planned.
+The server embeds the Svelte portal shell. Feature pages, API integration and
+LLM assistance are still being built.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.
@@ -19,8 +19,8 @@ or replace ComfyUI, models, weights, or custom nodes.
 `genaimage` is the Rust command-line application for scripts and reproducible
 operation. `genaimage serve` starts the local HTTP server. Health, workflow,
 preset, settings, run, job and `open` commands use that server.
-`genaimage open --print` prints the server root URL; the embedded portal is
-planned. Shell completion scripts are local and do not need a running server.
+`genaimage open` opens the server root (the portal in default builds);
+`--print` prints its URL. Shell completion scripts do not need a running server.
 See the [CLI reference](docs/cli.md) for shell installation, server selection,
 image uploads and JSON.
 
@@ -43,13 +43,15 @@ binds to loopback only.
 - A working local ComfyUI installation and server, normally at
   `http://127.0.0.1:8188`.
 - Rust 1.80 or newer with `cargo`.
+- Node.js 24 and npm for building the embedded portal from source.
 - Python 3.11 or newer for repository checks.
 
 ## Quick start
 
-Create project configuration, then start the loopback server:
+Build the portal, create project configuration, then start the loopback server:
 
 ```bash
+(cd apps/portal && npm ci && npm run build)
 cp genaimage.example.toml genaimage.toml
 cargo run -p genaimage -- serve
 ```
@@ -60,8 +62,9 @@ From a separate terminal, check its health:
 cargo run -p genaimage -- doctor
 ```
 
-The server starts without ComfyUI. Health reports the image backend as
-`unavailable` until it responds.
+Open `http://127.0.0.1:3000/` to view the embedded portal. The server starts
+without ComfyUI. Health reports the image backend as `unavailable` until it
+responds.
 
 List and inspect the bundled workflow examples:
 
@@ -99,11 +102,14 @@ cargo run -p genaimage -- open --print
 cargo run -p genaimage -- completions bash
 ```
 
-Install the CLI binary:
+Install the CLI and server binary after building the portal:
 
 ```bash
 cargo install --locked --path crates/genaimage
 ```
+
+For an API-only source build without Node.js or portal assets, pass
+`--no-default-features` to `cargo run`, `cargo build` or `cargo install`.
 
 ## HTTP API
 
@@ -111,7 +117,7 @@ The local API publishes its [OpenAPI 3.1 contract](docs/api/openapi.json) at
 `GET /api/v1/openapi.json`. Regenerate the checked-in contract after API changes:
 
 ```bash
-cargo run -p genaimage-server --example openapi
+cargo run -p genaimage-server --no-default-features --example openapi
 ```
 
 The routes and contract are registered together; CI checks the generated
@@ -153,31 +159,31 @@ python3 scripts/ci_check.py
 ```
 
 The command verifies repository links and skill mirrors, formats and lints the
-Rust workspace, runs Rust tests, and checks the Python skill helpers. It also
-installs locked portal dependencies, checks generated API types, and runs portal
-lint, type-check, tests and build; those steps require Node.js 24 and npm.
+Rust workspace, runs Rust tests, and checks the Python skill helpers. It installs
+locked portal dependencies, checks generated API types, and runs portal lint,
+type-check, tests and the build **before** compiling Rust. The portal steps
+require Node.js 24 and npm.
 
 ### Portal development
 
-The Svelte 5 portal scaffold contains placeholder pages only; it cannot yet
-operate the harness. Run the server on the proxy's port in one terminal and
-the Vite server in another:
+The Svelte 5 portal still contains placeholder pages. For hot module replacement
+(HMR), run the server on the port configured in Vite's `/api` proxy and open
+the loopback URL printed by Vite:
 
 ```bash
-GENAIMAGE_SERVER_PORT=8190 cargo run -p genaimage -- serve
+GENAIMAGE_SERVER_PORT=8190 cargo run -p genaimage --no-default-features -- serve
 # Separate terminal:
 cd apps/portal
 npm ci
 npm run dev
 ```
 
-Open the loopback URL printed by Vite. Its `/api` proxy targets
-`http://127.0.0.1:8190`; the normal server default remains port 3000.
-Routes use URL fragments, including query strings such as
-`#/generate?workflow=example`. `npm run lint`, `npm test` and `npm run build`
-check the scaffold. Embedding the built portal in the server is planned in
-[#40](https://github.com/eemaldi/genaimage/issues/40); the design system and
-feature pages are also future work.
+To see the development UI on the GenAImage origin instead, start GenAImage
+with `serve --portal-dev-url http://127.0.0.1:5173`. GenAImage still handles
+`/api` locally. Its UI proxy forwards HTTP GET/HEAD, not WebSocket upgrades;
+refresh manually or open Vite directly for HMR. The flag works without the
+embedded portal feature. Routes use URL fragments, such as
+`#/generate?workflow=example`.
 
 ## Project agent and skills
 

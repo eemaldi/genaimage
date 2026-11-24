@@ -193,7 +193,7 @@ def rust_tokens(source):
 def check_cli_client_boundary():
     source = ROOT / "crates" / "genaimage" / "src"
     local_modules = {
-        "serve": "pub ( crate ) async fn execute ( cli : & Cli ) -> ExitCode {".split(),
+        "serve": "pub ( crate ) async fn execute ( cli : & Cli , portal_dev_url : Option < & str > ) -> ExitCode {".split(),
         "config_local": "pub ( crate ) fn execute ( cli : & Cli , force : bool ) -> ExitCode {".split(),
     }
     forbidden = {"genaimage_core", "genaimage_comfyui", "genaimage_server"}
@@ -335,16 +335,32 @@ def main():
             print(f"CI check failed: {label}", file=sys.stderr)
             return 1
 
-    commands = [
+    commands = []
+    if portal_present:
+        commands.extend(
+            [
+                ("Portal dependencies", ["npm", "ci"], portal),
+                ("Portal API types", [sys.executable, "scripts/generate_portal_types.py", "--check"], ROOT),
+                ("Portal linting", ["npm", "run", "lint"], portal),
+                ("Portal tests", ["npm", "test"], portal),
+                ("Portal build", ["npm", "run", "build"], portal),
+            ]
+        )
+    else:
+        print("==> Portal checks skipped; Rust checks use --no-default-features", flush=True)
+
+    # The standard checkout exercises the embedded portal, including in debug tests.
+    feature_flags = [] if portal_present else ["--no-default-features"]
+    commands.extend([
         ("Rust formatting", ["cargo", "fmt", "--all", "--", "--check"], ROOT),
         (
             "Rust linting",
-            ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+            ["cargo", "clippy", "--workspace", "--all-targets", "--locked", *feature_flags, "--", "-D", "warnings"],
             ROOT,
         ),
         (
             "Rust tests",
-            ["cargo", "test", "--workspace", "--all-targets", "--locked"],
+            ["cargo", "test", "--workspace", "--all-targets", "--locked", *feature_flags],
             ROOT,
         ),
         (
@@ -376,20 +392,7 @@ def main():
             ],
             ROOT,
         ),
-    ]
-    if portal_present:
-        commands.extend(
-            [
-                ("Portal dependencies", ["npm", "ci"], portal),
-                ("Portal API types", [sys.executable, "scripts/generate_portal_types.py", "--check"], ROOT),
-                ("Portal linting", ["npm", "run", "lint"], portal),
-                ("Portal tests", ["npm", "test"], portal),
-                ("Portal build", ["npm", "run", "build"], portal),
-            ]
-        )
-    else:
-        print("==> Portal checks skipped (apps/portal/package.json not found)", flush=True)
-
+    ])
     for label, command, cwd in commands:
         if not run_command(label, command, cwd):
             print(f"CI command failed: {label}", file=sys.stderr)

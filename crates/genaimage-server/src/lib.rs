@@ -1,6 +1,7 @@
 //! The loopback HTTP adapter for GenAImage.
 
 mod listener;
+mod portal;
 mod problem;
 mod routes;
 mod security;
@@ -27,6 +28,7 @@ use tower_http::{
 use tracing::Level;
 
 pub use listener::{serve, serve_on_listener};
+pub use portal::PortalDevProxy;
 pub use problem::Problem;
 pub use routes::openapi;
 
@@ -35,6 +37,7 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 #[derive(Clone)]
 pub struct AppState {
     settings: Arc<settings::SettingsState>,
+    portal_dev: Option<PortalDevProxy>,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
 }
@@ -52,7 +55,14 @@ impl AppState {
         Self {
             settings: Arc::new(settings::SettingsState::new(harness)),
             lifecycle: Arc::default(),
+            portal_dev: None,
         }
+    }
+
+    /// Serve the portal through Vite instead of using embedded assets.
+    pub fn with_portal_dev(mut self, proxy: PortalDevProxy) -> Self {
+        self.portal_dev = Some(proxy);
+        self
     }
 
     /// Snapshot the active harness once per request or background operation.
@@ -119,6 +129,7 @@ pub fn build_app(state: AppState, port: u16) -> Router {
     };
     let (router, _) = routes::router_and_openapi();
     router
+        .fallback(portal::fallback)
         .with_state(state)
         .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(security, security::protect))

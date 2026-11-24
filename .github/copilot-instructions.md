@@ -6,10 +6,10 @@ They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
 loopback server currently serves health, workflows, runs, outputs, uploads,
-settings, live events and an OpenAPI contract; the embedded Svelte portal is
-planned. Keep generation orchestration, run state,
-provenance and the planned assistant runtime in the core, and ComfyUI transport
-in its adapter. CLI client commands use `genaimage-api`; only the isolated
+settings, live events, an OpenAPI contract and the embedded Svelte portal shell.
+Portal page features are still being built. Keep generation orchestration, run
+state, provenance and the planned assistant runtime in the core, and ComfyUI
+transport in its adapter. CLI client commands use `genaimage-api`; only the isolated
 `serve` module wires the core, adapter and server. Local `config init` uses core
 configuration and error types without opening a harness.
 
@@ -25,8 +25,10 @@ default to loopback, with explicitly allow-listed private or Compose hosts as
 the only exceptions. Keep documentation and user-facing text in
 English (UK), and respect the performance budgets in ADR 0001.
 
-Regenerate the API contract with `cargo run -p genaimage-server --example openapi`;
-portal types are checked when the portal exists. Run `python3 scripts/ci_check.py` locally. Project-local skills under
-`.agents/skills/` are mirrored identically under `.claude/skills/`; keep both
+Regenerate the API contract with `cargo run -p genaimage-server --no-default-features --example openapi`;
+CI checks generated portal types. Build `apps/portal` before default Cargo builds
+or use `--no-default-features` for API-only builds. Run `python3 scripts/ci_check.py`
+locally. Project-local skills under `.agents/skills/` are mirrored identically
+under `.claude/skills/`; keep both
 copies aligned. Keep this file and [AGENTS.md](../AGENTS.md) aligned when
 project direction or tooling changes.
