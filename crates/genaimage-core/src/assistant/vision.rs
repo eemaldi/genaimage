@@ -2,7 +2,6 @@ use std::{
     fs,
     io::{Read, Write},
     path::Path,
-    sync::Arc,
 };
 
 use chrono::{DateTime, Utc};
@@ -12,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifacts::RunManifest,
-    extensions::{ChatContent, ChatDelta, ChatMessage, ChatRequest, LlmProvider},
+    extensions::{ChatContent, ChatDelta, ChatMessage, ChatRequest},
+    llm_roles::LlmRoleBinding,
     media::blocking,
     Harness, HarnessError, Result,
 };
@@ -68,38 +68,21 @@ struct VisionResponse {
 #[derive(Clone)]
 pub struct VisionReviewService {
     harness: Harness,
-    provider: Arc<dyn LlmProvider>,
-    vision_model: Option<String>,
 }
 
 impl VisionReviewService {
-    /// `vision_model` must be the explicitly configured vision model. Pass
-    /// `None` when configuration has no vision model; no text-model fallback
-    /// is performed.
-    pub fn new(
-        harness: Harness,
-        provider: Arc<dyn LlmProvider>,
-        vision_model: Option<String>,
-    ) -> Self {
-        Self {
-            harness,
-            provider,
-            vision_model,
-        }
+    pub fn new(harness: Harness) -> Self {
+        Self { harness }
     }
 
-    /// Review an indexed output using one vision chat request and append one
-    /// annotation. A failed or malformed model response stores nothing.
-    pub async fn review_output(&self, output_id: &str) -> Result<OutputAnnotation> {
-        let model = self
-            .vision_model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            .ok_or_else(|| HarnessError::VisionReviewUnavailable {
-                reason: "no vision model is configured".to_owned(),
-            })?
-            .to_owned();
+    /// Review an indexed output with the exact vision role binding selected by
+    /// the caller. A failed or malformed model response stores nothing.
+    pub async fn review_output(
+        &self,
+        binding: &LlmRoleBinding,
+        output_id: &str,
+    ) -> Result<OutputAnnotation> {
+        let model = binding.model().to_owned();
 
         let repository = self.harness.repository().as_async();
         let indexed = repository.output(output_id).await?;
@@ -153,7 +136,8 @@ impl VisionReviewService {
             ])],
             tools: Vec::new(),
         };
-        let mut stream = self.provider.chat_stream(request).await?;
+        binding.check_request(&request)?;
+        let mut stream = binding.provider().chat_stream(request).await?;
         let mut raw_response = String::new();
         while let Some(delta) = stream.next().await {
             match delta? {
@@ -288,7 +272,7 @@ mod tests {
     use std::{
         io::Cursor,
         path::{Path, PathBuf},
-        sync::Mutex,
+        sync::{Arc, Mutex},
     };
 
     use futures_util::stream;
@@ -300,19 +284,32 @@ mod tests {
     use crate::{
         artifacts::{InputFileRecord, RunManifest, WorkflowManifestRecord},
         async_trait,
-        extensions::{ChatStream, LlmModel},
+        config::LlmConfig,
+        extensions::{ChatStream, LlmModel, LlmProvider},
         image_backend::{
             BackendHealth, EventMonitor, HistorySnapshot, OutputReference, PromptResponse,
             QueueSnapshot, UploadResponse,
         },
         persistence::{NewRun, OutputRecord},
         workflow::GenerationMode,
-        HarnessConfig, ImageBackend, RunStatus,
+        HarnessConfig, ImageBackend, LlmRoles, RunStatus,
     };
 
     const REVIEW_RESPONSE: &str = r#"{"caption":"A lighthouse above the sea","adherence_critique":"The image follows the coastal setting and dawn light.","tags":["coast","dawn","lighthouse"]}"#;
     const MALFORMED_RESPONSE: &str =
         r#"{"caption":"A lighthouse","adherence_critique":"Fine","tags":[],"unexpected":true}"#;
+
+    async fn vision_binding(provider: Arc<dyn LlmProvider>) -> LlmRoleBinding {
+        let config = LlmConfig {
+            base_url: "http://127.0.0.1:3001".into(),
+            vision_model: "vision-test".into(),
+            ..LlmConfig::default()
+        };
+        LlmRoles::new(&config, Some(provider))
+            .vision()
+            .await
+            .unwrap()
+    }
 
     #[derive(Clone)]
     struct FakeLlm {
@@ -549,13 +546,13 @@ mod tests {
             .map(|path| fs::read(path).unwrap())
             .collect();
         let provider = FakeLlm::new(REVIEW_RESPONSE);
-        let service = VisionReviewService::new(
-            fixture.harness.clone(),
-            Arc::new(provider.clone()),
-            Some("vision-test".to_owned()),
-        );
+        let binding = vision_binding(Arc::new(provider.clone())).await;
+        let service = VisionReviewService::new(fixture.harness.clone());
 
-        let annotation = service.review_output(&fixture.output_id).await.unwrap();
+        let annotation = service
+            .review_output(&binding, &fixture.output_id)
+            .await
+            .unwrap();
 
         assert!(annotation.id > 0);
         assert_eq!(annotation.kind, "vision_review");
@@ -604,13 +601,13 @@ mod tests {
     #[tokio::test]
     async fn malformed_json_is_rejected_without_storing_an_annotation() {
         let fixture = fixture().await;
-        let service = VisionReviewService::new(
-            fixture.harness.clone(),
-            Arc::new(FakeLlm::new(MALFORMED_RESPONSE)),
-            Some("vision-test".to_owned()),
-        );
+        let binding = vision_binding(Arc::new(FakeLlm::new(MALFORMED_RESPONSE))).await;
+        let service = VisionReviewService::new(fixture.harness.clone());
 
-        let error = service.review_output(&fixture.output_id).await.unwrap_err();
+        let error = service
+            .review_output(&binding, &fixture.output_id)
+            .await
+            .unwrap_err();
 
         assert!(matches!(error, HarnessError::VisionReviewResponse(_)));
         assert!(service
@@ -622,17 +619,18 @@ mod tests {
 
     #[tokio::test]
     async fn missing_vision_model_is_unavailable_without_a_provider_request() {
-        let fixture = fixture().await;
         let provider = FakeLlm::new(REVIEW_RESPONSE);
-        let service =
-            VisionReviewService::new(fixture.harness.clone(), Arc::new(provider.clone()), None);
+        let config = LlmConfig {
+            base_url: "http://127.0.0.1:3001".into(),
+            ..LlmConfig::default()
+        };
+        let roles = LlmRoles::new(&config, Some(Arc::new(provider.clone())));
 
-        let error = service.review_output(&fixture.output_id).await.unwrap_err();
+        let error = roles.vision().await.unwrap_err();
 
         assert!(matches!(
             error,
-            HarnessError::VisionReviewUnavailable { ref reason }
-                if reason == "no vision model is configured"
+            crate::AssistantUnavailable::NotConfigured { .. }
         ));
         assert!(provider.requests.lock().unwrap().is_empty());
     }
@@ -640,13 +638,16 @@ mod tests {
     #[tokio::test]
     async fn reviews_are_append_only_and_listed_newest_first() {
         let fixture = fixture().await;
-        let service = VisionReviewService::new(
-            fixture.harness.clone(),
-            Arc::new(FakeLlm::new(REVIEW_RESPONSE)),
-            Some("vision-test".to_owned()),
-        );
-        let first = service.review_output(&fixture.output_id).await.unwrap();
-        let second = service.review_output(&fixture.output_id).await.unwrap();
+        let binding = vision_binding(Arc::new(FakeLlm::new(REVIEW_RESPONSE))).await;
+        let service = VisionReviewService::new(fixture.harness.clone());
+        let first = service
+            .review_output(&binding, &fixture.output_id)
+            .await
+            .unwrap();
+        let second = service
+            .review_output(&binding, &fixture.output_id)
+            .await
+            .unwrap();
 
         let annotations = service
             .annotations_for_output(&fixture.output_id)

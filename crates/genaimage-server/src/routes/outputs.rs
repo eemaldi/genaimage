@@ -12,7 +12,7 @@ use axum::{
 use genaimage_api as api;
 use genaimage_core::{
     media::{MediaFile, OutputListQuery, ThumbnailSize},
-    HarnessError,
+    HarnessError, OutputAnnotation, VisionReviewService,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -117,6 +117,99 @@ pub(super) async fn metadata(
         .await
         .map(|output| Json(output_response(output)))
         .map_err(problem)
+}
+
+#[utoipa::path(
+    post, path = "/outputs/{id}/review",
+    operation_id = "outputs_review",
+    tag = "outputs",
+    description = "Review an indexed output with the configured vision model. The stored result is a model-opinion annotation and does not alter generation provenance.",
+    params(("id" = String, Path, description = "Output ID")),
+    responses(
+        (status = 200, body = api::OutputAnnotationResponse),
+        (status = 400, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn review(
+    State(state): State<AppState>,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Json<api::OutputAnnotationResponse>, Problem> {
+    let id = parse_id(path)?;
+    let harness = state.harness();
+    harness
+        .repository()
+        .as_async()
+        .output(&id)
+        .await
+        .map_err(review_problem)?;
+    let binding = state
+        .llm_roles()
+        .vision()
+        .await
+        .map_err(Problem::assistant_unavailable)?;
+    VisionReviewService::new(harness.as_ref().clone())
+        .review_output(&binding, &id)
+        .await
+        .map(annotation_response)
+        .map(Json)
+        .map_err(review_problem)
+}
+
+#[utoipa::path(
+    get, path = "/outputs/{id}/annotations",
+    operation_id = "outputs_annotations",
+    tag = "outputs",
+    description = "List up to 100 stored model-opinion annotations for an output, newest first.",
+    params(("id" = String, Path, description = "Output ID")),
+    responses(
+        (status = 200, body = api::OutputAnnotationListResponse),
+        (status = 400, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn annotations(
+    State(state): State<AppState>,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Json<api::OutputAnnotationListResponse>, Problem> {
+    let id = parse_id(path)?;
+    let annotations = VisionReviewService::new(state.harness().as_ref().clone())
+        .annotations_for_output(&id)
+        .await
+        .map_err(review_problem)?;
+    Ok(Json(api::OutputAnnotationListResponse {
+        annotations: annotations.into_iter().map(annotation_response).collect(),
+    }))
+}
+
+fn annotation_response(annotation: OutputAnnotation) -> api::OutputAnnotationResponse {
+    api::OutputAnnotationResponse {
+        id: annotation.id,
+        output_id: annotation.output_id,
+        run_id: annotation.run_id,
+        kind: annotation.kind,
+        model: annotation.model,
+        created_at: annotation.created_at,
+        caption: annotation.caption,
+        adherence_critique: annotation.adherence_critique,
+        tags: annotation.tags,
+        prompt: annotation.prompt,
+        raw_response: annotation.raw_response,
+    }
 }
 
 #[utoipa::path(
@@ -509,6 +602,52 @@ fn workflow_problem(error: HarnessError) -> Problem {
             "Check local run storage and the server logs.",
         ),
     }
+}
+
+fn review_problem(error: HarnessError) -> Problem {
+    let (status, recovery) = match &error {
+        HarnessError::OutputNotFound => (
+            StatusCode::NOT_FOUND,
+            "Use an output ID returned by the outputs API.",
+        ),
+        HarnessError::RunNotFound { .. } | HarnessError::ManifestNotFound => (
+            StatusCode::NOT_FOUND,
+            "Use an output from a run with a recorded completion manifest.",
+        ),
+        HarnessError::VisionReviewUnavailable { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Configure and verify the explicit vision model in Settings.",
+        ),
+        HarnessError::VisionReviewImageTooLarge { .. } => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Use an indexed PNG, JPEG or WebP no larger than 20 MiB.",
+        ),
+        HarnessError::VisionReviewUnsupportedImage(_) => (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Use an indexed PNG, JPEG or WebP; GenAImage never transcodes it for review.",
+        ),
+        HarnessError::VisionReviewInput(_) | HarnessError::Configuration(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Correct the editable review prompt and use the pinned vision model.",
+        ),
+        HarnessError::VisionReviewResponse(_) => (
+            StatusCode::BAD_GATEWAY,
+            "The vision model did not return the required review JSON; edit the review prompt or choose another reviewed model.",
+        ),
+        HarnessError::Backend { backend, .. } if backend == "llm" => (
+            StatusCode::BAD_GATEWAY,
+            "Check the local LLM service and test its connection in Settings.",
+        ),
+        _ => {
+            tracing::error!(%error, "Vision review API request failed");
+            return Problem::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The server could not review the stored output.",
+                "Check local storage and the server logs.",
+            );
+        }
+    };
+    Problem::new(status, error.to_string(), recovery)
 }
 
 fn problem(error: HarnessError) -> Problem {
