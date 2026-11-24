@@ -6,6 +6,7 @@ mod problem;
 mod routes;
 mod security;
 mod settings;
+mod workflow_index;
 
 use std::{
     collections::HashSet,
@@ -27,6 +28,7 @@ use tower_http::{
     trace::{DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
+use workflow_index::WorkflowIndexCache;
 
 pub use listener::{serve, serve_on_listener};
 pub use portal::PortalDevProxy;
@@ -39,6 +41,7 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 pub struct AppState {
     settings: Arc<settings::SettingsState>,
     portal_dev: Option<PortalDevProxy>,
+    workflow_index: Arc<WorkflowIndexCache>,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
 }
@@ -70,6 +73,7 @@ impl AppState {
             settings: Arc::new(settings::SettingsState::new(harness)),
             lifecycle: Arc::default(),
             portal_dev: None,
+            workflow_index: Arc::default(),
         }
     }
 

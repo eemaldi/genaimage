@@ -164,6 +164,67 @@ fn error(output: Output, code: i32) -> Value {
 }
 
 #[tokio::test]
+async fn workflow_inspect_json_preserves_unknown_declarations_from_old_server() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let response = json!({
+        "schema_version": 2, "id": "old", "version": "1", "title": "Old",
+        "workflow": "api.json", "parameters": {
+            "seed": {"node":"1", "input":"seed", "kind":"seed", "required":false, "description":""}
+        }, "presets": {}, "outputs": [{"node":"2", "kind":"image"}]
+    })
+    .to_string();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let count = stream.read(&mut request).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..count]).starts_with("GET /api/v1/workflows/old ")
+        );
+        let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let mut command = cli();
+    command.args(["--server", &origin, "--json", "workflow", "inspect", "old"]);
+    let output = report(cli_output(command).await, 0);
+    server.await.unwrap();
+    assert!(output["parameters"]["seed"]
+        .get("declared_required")
+        .is_none());
+    assert!(output["outputs"][0].get("declared_kind").is_none());
+}
+
+#[tokio::test]
+async fn workflow_list_reports_reserved_dot_ids_with_recovery() {
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    let source = server.workflows.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    for (name, id) in [("dot", "."), ("dotdot", "..")] {
+        manifest["id"] = json!(id);
+        fs::write(
+            server.workflows.join(format!("{name}.genaimage.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    let output = report(server.cli(&["--json", "workflow", "list"]).await, 0);
+    assert_eq!(output["workflows"].as_array().unwrap().len(), 1);
+    let diagnostics = output["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 2);
+    for diagnostic in diagnostics {
+        assert!(diagnostic["error"]
+            .as_str()
+            .unwrap()
+            .contains("choose a different ID"));
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn workflows_are_discovered_inspected_and_validated_by_id() {
     let server = Server::start().await;
     install_contract_workflow(&server.workflows);

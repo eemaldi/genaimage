@@ -67,6 +67,76 @@ async fn rerun_rejects_override_body_without_consuming_key_and_accepts_loader_fr
     api.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn submissions_and_reruns_reject_incomplete_workflow_discovery() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let source = run(
+        submit(&api, "original", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let root = &api.core.config().workflows;
+    let hidden = root.join("inaccessible");
+    std::fs::create_dir(&hidden).unwrap();
+    std::fs::copy(
+        root.join("contract.genaimage.json"),
+        hidden.join("duplicate.genaimage.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        root.join("workflow.api.json"),
+        hidden.join("workflow.api.json"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let restore = Restore(hidden.clone());
+    if std::fs::read_dir(&hidden).is_err() {
+        let denied = submit(&api, "blocked-submit", &request()).await;
+        let problem = ApiHarness::assert_problem(denied, StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert!(problem
+            .detail
+            .contains("cannot resolve workflow ID 'contract-workflow' unambiguously"));
+        assert!(problem.detail.contains("inaccessible"));
+        assert!(problem.recovery.contains("permissions"));
+        let endpoint = format!("{RUNS}/{}/rerun", source.id);
+        let denied = api
+            .request(Method::POST, &endpoint)
+            .header("Idempotency-Key", "blocked-rerun")
+            .send()
+            .await
+            .unwrap();
+        let problem = ApiHarness::assert_problem(denied, StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert!(problem
+            .detail
+            .contains("cannot resolve workflow ID 'contract-workflow' unambiguously"));
+        assert!(problem.recovery.contains("permissions"));
+        assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+        drop(restore);
+        std::fs::remove_file(hidden.join("duplicate.genaimage.json")).unwrap();
+        let response = api
+            .request(Method::POST, &endpoint)
+            .header("Idempotency-Key", "blocked-rerun")
+            .send()
+            .await
+            .unwrap();
+        let rerun = run(response, StatusCode::CREATED).await;
+        assert_eq!(rerun.rerun_of.as_deref(), Some(source.id.as_str()));
+        assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
+    } else {
+        drop(restore);
+    }
+    api.shutdown().await;
+}
+
 #[tokio::test]
 async fn rerun_refuses_a_replaced_comfyui_side_file_without_a_binding() {
     let api = ApiHarness::start().await;

@@ -23,6 +23,12 @@ pub enum HarnessError {
     },
     #[error("workflow validation failed: {0}")]
     Workflow(String),
+    #[error("cannot resolve workflow ID '{id}' unambiguously: workflow directory or entry '{}' could not be inspected ({reason}); fix permissions or repair the path and retry", path.display())]
+    WorkflowDiscoveryIncomplete {
+        id: String,
+        path: PathBuf,
+        reason: String,
+    },
     #[error("ComfyUI request failed: {0}")]
     ComfyUi(String),
     #[error("{backend} request failed: {message}")]

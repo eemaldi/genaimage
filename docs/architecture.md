@@ -52,7 +52,8 @@ genaimage local config module -> genaimage-core (configuration only)
   handling, not automatic reconnection. Run submissions require a
   caller-supplied idempotency key and are never retried by the client.
   Workflow IDs `.` and `..` cannot be used in client URL paths because HTTP
-  URL parsers treat them as path navigation.
+  URL parsers treat them as path navigation; catalogue discovery reports them
+  as invalid and asks for a different ID.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows, runs, outputs, uploads, settings and live events. The
   Svelte portal shell is embedded when the default `portal` feature is enabled.
@@ -202,15 +203,22 @@ The workflows API is read-only apart from validation, which does not submit a ru
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
   tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
-  manifests that cannot be loaded. For IDs `.` and `..`, `thumbnail_url` is
-  null because browsers normalise those URL path segments. The API does not
-  generate a detail URL for any ID; callers using dot-segment IDs need an HTTP
-  client that preserves the literal request path.
+  manifests and references that cannot be inspected, including IDs `.` and `..`
+  which browsers normalise as URL path segments. An unreadable directory or
+  manifest makes the catalogue incomplete; its diagnostic identifies the problem.
+  The API does not generate detail URLs.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
-  constraints and UI hints, presets and outputs. IDs are identifiers, not paths;
-  URL-encode them as path segments. An unknown ID returns 404 problem details.
+  constraints and UI hints, presets and outputs. The effective `required` and
+  output `kind` remain available; `declared_required` and `declared_kind` are
+  null when the manifest omitted those fields, otherwise they contain the
+  declared value. Responses from older servers may omit these fields; the CLI
+  preserves that unknown state when serialising them. IDs are identifiers, not
+  paths; URL-encode them as path segments. An unknown ID returns 404 problem
+  details.
   Duplicate IDs and invalid manifests claiming an ID must be fixed before that
-  ID can be resolved.
+  ID can be resolved. If directory traversal or manifest reading cannot establish
+  uniqueness, detail, validation, submission and rerun refuse the ID with a hint
+  to repair the path or its permissions.
 - `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
   `preset` and `parameters` (an object of overrides). Preset values are overridden
   by parameters and manifest defaults fill remaining values. It returns `valid`,
@@ -222,8 +230,21 @@ The workflows API is read-only apart from validation, which does not submit a ru
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
-  paths return 404 problem details. On Unix, descriptor-relative no-follow
-  opens reject symlinks below the configured workflow root, whose own symlinks
+  paths return 404 problem details. A discovery index is built on the first
+  thumbnail request and checked at most once per second by a shared revalidation
+  of directory, manifest, workflow and thumbnail metadata; each catalogue list
+  forces an immediate rebuild. Metadata and directory traversal failures are
+  tracked and reported as diagnostics without hiding unrelated valid workflows.
+  A cache hit checks its own manifest metadata and reads the current thumbnail
+  safely; an edited manifest is reloaded. Workflow-set changes, such as a newly
+  added duplicate or an inaccessible directory, can be stale for up to one
+  second plus the revalidation time. A revalidation that cannot establish
+  uniqueness makes thumbnail requests fail until the path is repaired. The
+  detail endpoint checks traversal immediately. Repeated changes during
+  discovery produce a diagnostic and suppress unverified thumbnail entries;
+  the next revalidation rebuilds an unstable index rather than reusing it. A
+  settings change switches to the new harness's index. On Unix, descriptor-relative
+  no-follow opens reject symlinks below the configured workflow root, whose own symlinks
   are trusted and resolved before it is pinned. Non-regular files are rejected
   without blocking on FIFOs. On other
   platforms containment is checked before and after opening on a best-effort
@@ -698,3 +719,32 @@ These are target budgets to measure as the planned components are delivered:
 | Binary size | < 25 MB |
 | Portal initial JavaScript | < 150 KB gzip |
 | p95 non-ComfyUI API latency | < 20 ms |
+
+### Workflow catalogue timing
+
+The catalogue uses one list request, filters an in-memory search index, and
+loads only declared thumbnails lazily. `npm --prefix apps/portal test --
+--run src/routes/workflows/catalogue.test.ts` measures the time from resolving
+an in-memory fake list response to Svelte's completed DOM update for 100 cards
+in jsdom; it logs the elapsed time and enforces a 1,500 ms regression bound.
+A focused local run measured 88.3 ms (100 cards, no thumbnails, warm process).
+This deliberately loose bound accommodates shared CI machines and is not proof
+of the 100 ms local-server target: jsdom has no layout or image loading and the
+measurement excludes server discovery, network transfer and browser paint.
+For an end-to-end local measurement, a release `genaimage serve` served 100
+copies of the bundled text-to-image manifest and API workflow with unique IDs,
+without thumbnails. In the integrated Electron 43 / Chromium 150 browser,
+navigate from Dashboard to Workflows; record the workflow list resource's
+`startTime` and use a `MutationObserver` to detect 100 cards, then two
+`requestAnimationFrame` callbacks as a paint approximation. With the app and
+filesystem cache warm, after one warm-up navigation, five request-to-paint
+samples were 36.5, 35.2, 42.4, 37.7 and 30.0 ms (median 36.5 ms). This is a
+local observation, not a guarantee for other hardware, larger manifests,
+thumbnail decoding or cold caches.
+
+The detail API normalises omitted parameter defaults and explicit null to the
+same value; the portal cannot distinguish those source-manifest cases. The JSON
+client cannot represent integers outside JavaScript’s safe range exactly; the detail page marks them as unavailable
+instead of presenting rounded values as exact. Validation checks defaults
+without overrides; it is not an approval or a guarantee that later
+user-supplied values are valid.

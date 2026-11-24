@@ -471,6 +471,10 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::BAD_REQUEST,
             "Check the runs API request fields and try again.",
         ),
+        HarnessError::WorkflowDiscoveryIncomplete { .. } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Fix the workflow directory permissions or repair the path, then retry with the same idempotency key.",
+        ),
         HarnessError::Workflow(_) | HarnessError::InvalidPath { .. } => (
             StatusCode::UNPROCESSABLE_ENTITY,
             "Check the configured workflow ID, preset and parameter bindings.",

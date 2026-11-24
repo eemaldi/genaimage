@@ -26,8 +26,8 @@ use crate::{
     },
     uploads::{detected_type, UploadMetadata, UploadStore},
     workflow::{
-        BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError, ParameterKind,
-        WorkflowManifest,
+        read_regular_file, BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError,
+        ParameterKind, WorkflowManifest,
     },
     Event, EventBus, HarnessError, Result,
 };
@@ -151,7 +151,33 @@ fn transition_task_error(error: tokio::task::JoinError) -> HarnessError {
 #[derive(Debug, Default)]
 pub struct WorkflowDiscovery {
     pub manifests: Vec<WorkflowManifest>,
+    /// Paths of unique, valid IDs safe to resolve from this discovery snapshot.
+    pub indexable_manifest_paths: BTreeMap<String, PathBuf>,
+    /// IDs blocked by duplicates or invalid manifests in this snapshot.
+    pub unresolvable_ids: BTreeSet<String>,
+    /// API workflow files referenced by valid and invalid sidecars.
+    pub referenced_workflow_paths: BTreeSet<PathBuf>,
+    /// Safe relative thumbnail references declared by discovered manifests.
+    pub referenced_thumbnail_paths: BTreeSet<PathBuf>,
+    /// Failures that prevent an authoritative uniqueness check.
+    pub traversal_failures: Vec<WorkflowTraversalFailure>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkflowTraversalFailure {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+impl WorkflowTraversalFailure {
+    pub fn for_id(&self, id: &str) -> HarnessError {
+        HarnessError::WorkflowDiscoveryIncomplete {
+            id: id.to_owned(),
+            path: self.path.clone(),
+            reason: self.reason.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -300,13 +326,92 @@ impl Harness {
 
     pub fn discover_workflows(&self) -> Result<WorkflowDiscovery> {
         let mut discovery = WorkflowDiscovery::default();
+        let mut ambiguous = BTreeSet::new();
         visit_workflows(&self.config.workflows, |path, workflow| match workflow {
-            Ok(loaded) => discovery.manifests.push(loaded.manifest),
-            Err(error) => discovery.diagnostics.push(WorkflowDiagnostic {
-                path: path.to_path_buf(),
-                error,
-            }),
-        })?;
+            WorkflowVisit::Incomplete(error) => {
+                discovery.traversal_failures.push(WorkflowTraversalFailure {
+                    path: path.to_path_buf(),
+                    reason: error.to_string(),
+                });
+                discovery.diagnostics.push(WorkflowDiagnostic {
+                    path: path.to_path_buf(),
+                    error: error.into(),
+                });
+            }
+            WorkflowVisit::Diagnostic(error) => {
+                discovery.diagnostics.push(WorkflowDiagnostic {
+                    path: path.to_path_buf(),
+                    error: error.into(),
+                });
+            }
+            WorkflowVisit::Manifest(Ok(loaded))
+                if matches!(loaded.manifest.id.as_str(), "." | "..") =>
+            {
+                discovery.diagnostics.push(WorkflowDiagnostic {
+                    path: path.to_path_buf(),
+                    error: HarnessError::Workflow(format!(
+                        "workflow id '{}' is a reserved URL path segment; choose a different ID",
+                        loaded.manifest.id
+                    )),
+                });
+            }
+            WorkflowVisit::Manifest(Ok(loaded)) => {
+                if let Some(thumbnail) = loaded.manifest.thumbnail.as_deref() {
+                    let relative = Path::new(thumbnail);
+                    if !relative.as_os_str().is_empty()
+                        && relative.components().all(|component| {
+                            matches!(
+                                component,
+                                std::path::Component::Normal(_) | std::path::Component::CurDir
+                            )
+                        })
+                    {
+                        if let Some(directory) = path.parent() {
+                            discovery
+                                .referenced_thumbnail_paths
+                                .insert(directory.join(relative));
+                        }
+                    }
+                }
+                discovery
+                    .referenced_workflow_paths
+                    .insert(loaded.workflow_path.clone());
+                let id = loaded.manifest.id.clone();
+                if discovery
+                    .indexable_manifest_paths
+                    .insert(id.clone(), path.to_path_buf())
+                    .is_some()
+                {
+                    ambiguous.insert(id);
+                }
+                discovery.manifests.push(loaded.manifest);
+            }
+            WorkflowVisit::Manifest(Err(error)) => {
+                if let Some(source) = sidecar_source(path) {
+                    if let Some(id) = source.get("id").and_then(Value::as_str) {
+                        ambiguous.insert(id.to_owned());
+                    }
+                    if let Some(workflow) = source.get("workflow").and_then(Value::as_str) {
+                        discovery.referenced_workflow_paths.insert(
+                            path.parent()
+                                .unwrap_or_else(|| Path::new("."))
+                                .join(workflow),
+                        );
+                    }
+                }
+                discovery.diagnostics.push(WorkflowDiagnostic {
+                    path: path.to_path_buf(),
+                    error,
+                });
+            }
+        });
+        for id in &ambiguous {
+            discovery.indexable_manifest_paths.remove(id);
+        }
+        discovery.unresolvable_ids = ambiguous;
+        discovery
+            .traversal_failures
+            .sort_by(|left, right| left.path.cmp(&right.path));
         discovery
             .manifests
             .sort_by(|left, right| left.id.cmp(&right.id));
@@ -333,16 +438,26 @@ impl Harness {
         let mut matches = Vec::new();
         let mut invalid_matches = Vec::new();
         let mut skipped = false;
+        let mut incomplete = Vec::new();
         visit_workflows(&self.config.workflows, |path, result| match result {
-            Ok(loaded) if loaded.manifest.id == workflow => matches.push(loaded),
-            Err(error) => {
+            WorkflowVisit::Incomplete(error) => incomplete.push(WorkflowTraversalFailure {
+                path: path.to_path_buf(),
+                reason: error.to_string(),
+            }),
+            WorkflowVisit::Manifest(Ok(loaded)) if loaded.manifest.id == workflow => {
+                matches.push(*loaded)
+            }
+            WorkflowVisit::Manifest(Err(error)) => {
                 skipped = true;
                 if sidecar_declares_id(path, workflow) {
                     invalid_matches.push((path.to_path_buf(), error));
                 }
             }
             _ => {}
-        })?;
+        });
+        if let Some(failure) = incomplete.iter().min_by_key(|failure| &failure.path) {
+            return Err(failure.for_id(workflow));
+        }
         if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
             return Err(HarnessError::Workflow(format!(
                 "cannot resolve workflow id '{workflow}': invalid manifest '{}' declares it ({error}); select an explicit manifest path",
@@ -385,13 +500,23 @@ impl Harness {
     pub fn load_workflow_by_id(&self, id: &str) -> Result<Option<LoadedWorkflow>> {
         let mut matches = Vec::new();
         let mut invalid_matches = Vec::new();
+        let mut incomplete = Vec::new();
         visit_workflows(&self.config.workflows, |path, result| match result {
-            Ok(loaded) if loaded.manifest.id == id => matches.push(loaded),
-            Err(error) if sidecar_declares_id(path, id) => {
+            WorkflowVisit::Incomplete(error) => incomplete.push(WorkflowTraversalFailure {
+                path: path.to_path_buf(),
+                reason: error.to_string(),
+            }),
+            WorkflowVisit::Manifest(Ok(loaded)) if loaded.manifest.id == id => {
+                matches.push(*loaded)
+            }
+            WorkflowVisit::Manifest(Err(error)) if sidecar_declares_id(path, id) => {
                 invalid_matches.push((path.to_path_buf(), error));
             }
             _ => {}
-        })?;
+        });
+        if let Some(failure) = incomplete.iter().min_by_key(|failure| &failure.path) {
+            return Err(failure.for_id(id));
+        }
         if let Some((path, error)) = invalid_matches.iter().min_by_key(|(path, _)| path) {
             return Err(HarnessError::Workflow(format!(
                 "cannot resolve workflow id '{id}': invalid manifest '{}' declares it ({error})",
@@ -839,7 +964,10 @@ impl Harness {
             }
             let loaded = self
                 .load_workflow_by_id(&request.workflow)
-                .map_err(|_| WORKFLOW_MISMATCH)?
+                .map_err(|error| match error {
+                    error @ HarnessError::WorkflowDiscoveryIncomplete { .. } => error,
+                    _ => WORKFLOW_MISMATCH,
+                })?
                 .ok_or(WORKFLOW_MISMATCH)?;
             if loaded.manifest.version != run.workflow_version
                 || loaded.workflow_sha256 != run.workflow_sha256
@@ -1918,41 +2046,124 @@ fn read_manifest_path(output_dir: &Path) -> Result<PathBuf> {
         })
 }
 
-fn sidecar_declares_id(path: &Path, id: &str) -> bool {
-    fs::read(path)
+fn sidecar_source(path: &Path) -> Option<Value> {
+    read_regular_file(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+}
+
+fn sidecar_declares_id(path: &Path, id: &str) -> bool {
+    sidecar_source(path)
         .is_some_and(|manifest| manifest.get("id").and_then(Value::as_str) == Some(id))
 }
 
-fn visit_workflows(
-    directory: &Path,
-    mut visitor: impl FnMut(&Path, Result<LoadedWorkflow>),
-) -> Result<()> {
-    visit_files(directory, &mut |path| {
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".genaimage.json"))
-        {
-            visitor(path, LoadedWorkflow::load(path));
-        }
-    })
+enum WorkflowVisit {
+    Manifest(Result<Box<LoadedWorkflow>>),
+    Diagnostic(std::io::Error),
+    Incomplete(std::io::Error),
 }
 
-fn visit_files(directory: &Path, visitor: &mut dyn FnMut(&Path)) -> Result<()> {
-    if !directory.exists() {
-        return Ok(());
+enum FileVisit {
+    File,
+    Diagnostic(std::io::Error),
+    Incomplete(std::io::Error),
+}
+
+fn visit_workflows(directory: &Path, mut visitor: impl FnMut(&Path, WorkflowVisit)) {
+    visit_files(directory, &mut Vec::new(), &mut |path, visit| match visit {
+        FileVisit::Incomplete(error) => visitor(path, WorkflowVisit::Incomplete(error)),
+        FileVisit::Diagnostic(error) => visitor(path, WorkflowVisit::Diagnostic(error)),
+        FileVisit::File
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".genaimage.json")) =>
+        {
+            match LoadedWorkflow::load(path) {
+                Err(HarnessError::Io(error)) => visitor(path, WorkflowVisit::Incomplete(error)),
+                result => visitor(path, WorkflowVisit::Manifest(result.map(Box::new))),
+            }
+        }
+        FileVisit::File => {}
+    });
+}
+
+fn broken_symlink(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
     }
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            visit_files(&path, visitor)?;
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+        return true;
+    }
+    false
+}
+
+fn visit_files(
+    directory: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    visitor: &mut dyn FnMut(&Path, FileVisit),
+) {
+    let canonical = match fs::canonicalize(directory) {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && ancestors.is_empty() => {
+            return
+        }
+        Err(error) => {
+            visitor(directory, FileVisit::Incomplete(error));
+            return;
+        }
+    };
+    if ancestors.contains(&canonical) {
+        visitor(
+            directory,
+            FileVisit::Diagnostic(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "workflow directory contains a symlink cycle",
+            )),
+        );
+        return;
+    }
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            visitor(directory, FileVisit::Incomplete(error));
+            return;
+        }
+    };
+    ancestors.push(canonical);
+    for result in entries {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                visitor(directory, FileVisit::Incomplete(error));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(error) => {
+                visitor(&path, FileVisit::Incomplete(error));
+                continue;
+            }
+        };
+        if kind.is_dir() {
+            visit_files(&path, ancestors, visitor);
+        } else if kind.is_symlink() {
+            match fs::metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => visit_files(&path, ancestors, visitor),
+                Ok(_) => visitor(&path, FileVisit::File),
+                Err(error) if broken_symlink(&error) => {
+                    visitor(&path, FileVisit::Diagnostic(error))
+                }
+                Err(error) => visitor(&path, FileVisit::Incomplete(error)),
+            }
         } else {
-            visitor(&path);
+            visitor(&path, FileVisit::File);
         }
     }
-    Ok(())
+    ancestors.pop();
 }
 
 #[cfg(test)]
