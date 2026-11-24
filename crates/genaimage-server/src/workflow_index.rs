@@ -183,10 +183,15 @@ fn is_manifest(path: &Path) -> bool {
         .is_some_and(|name| name.ends_with(".genaimage.json"))
 }
 
+#[cfg(test)]
+type DiscoveryHook = Box<dyn Fn() + Send + Sync>;
+
 #[derive(Clone, Default)]
 struct ScanProbe {
     #[cfg(test)]
     scans: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    after_discovery: Arc<std::sync::Mutex<Option<DiscoveryHook>>>,
 }
 
 fn fingerprint(root: &Path, references: &BTreeSet<PathBuf>, probe: &ScanProbe) -> Fingerprint {
@@ -288,8 +293,9 @@ struct IndexedWorkflow {
 pub(crate) struct WorkflowIndex {
     entries: BTreeMap<String, IndexedWorkflow>,
     blocked: BTreeSet<String>,
+    traversal_failure: Option<genaimage_core::orchestrator::WorkflowTraversalFailure>,
     references: BTreeSet<PathBuf>,
-    fingerprint: Fingerprint,
+    fingerprint: Option<Fingerprint>,
 }
 
 impl WorkflowIndex {
@@ -310,6 +316,10 @@ impl WorkflowIndex {
                 probe,
             );
             let mut discovery = discover(&harness, probe);
+            #[cfg(test)]
+            if let Some(hook) = probe.after_discovery.lock().unwrap().as_ref() {
+                hook();
+            }
             let after = fingerprint(
                 &harness.config().workflows,
                 &Self::references(&discovery),
@@ -357,8 +367,9 @@ impl WorkflowIndex {
                     Self {
                         entries,
                         blocked: discovery.unresolvable_ids.clone(),
+                        traversal_failure: discovery.traversal_failures.first().cloned(),
                         references: Self::references(&discovery),
-                        fingerprint: after,
+                        fingerprint: (before == after).then_some(after),
                     },
                     discovery,
                 );
@@ -368,6 +379,15 @@ impl WorkflowIndex {
     }
 
     pub(crate) fn source(&self, id: &str) -> genaimage_core::Result<Option<ThumbnailSource>> {
+        if self.fingerprint.is_none() {
+            return Err(HarnessError::Workflow(
+                "Workflow files changed during discovery; retry when the catalogue is stable."
+                    .into(),
+            ));
+        }
+        if let Some(failure) = &self.traversal_failure {
+            return Err(failure.for_id(id));
+        }
         if self.blocked.contains(id) {
             return Err(HarnessError::Workflow(format!("workflow id '{id}' is ambiguous or claimed by an invalid manifest; inspect the catalogue diagnostics and resolve duplicates")));
         }
@@ -451,8 +471,10 @@ impl WorkflowIndexCache {
                 .map(|state| state.index.clone());
             let index = match old {
                 Some(old)
-                    if fingerprint(&harness.config().workflows, &old.references, &cache.probe)
-                        == old.fingerprint =>
+                    if old.fingerprint.as_ref().is_some_and(|fingerprint_before| {
+                        fingerprint(&harness.config().workflows, &old.references, &cache.probe)
+                            == *fingerprint_before
+                    }) =>
                 {
                     old
                 }
@@ -523,6 +545,59 @@ mod tests {
         let repaired = fingerprint(root, &references, &probe);
         assert!(repaired.references[&graph].is_ok());
         assert_ne!(broken, repaired);
+    }
+
+    #[tokio::test]
+    async fn final_attempt_change_forces_a_full_rebuild_on_revalidation() {
+        let fixture = ApiFixture::start(5, ServerConfig::default().max_upload_bytes).await;
+        let workspace = fixture.workspace.path();
+        let config =
+            HarnessConfig::load_with(workspace, Some(&fixture.config_path), workspace, |key| {
+                (key == "HOME").then(|| workspace.display().to_string())
+            })
+            .unwrap();
+        install_contract_workflow(&config.workflows);
+        let graph_path = config.workflows.join("workflow.api.json");
+        let graph = fs::read(&graph_path).unwrap();
+        let mut later: Value = serde_json::from_slice(
+            &fs::read(config.workflows.join("contract.genaimage.json")).unwrap(),
+        )
+        .unwrap();
+        later["id"] = json!("later");
+        let later_path = config.workflows.join("later.genaimage.json");
+        let backend = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
+        let harness = Arc::new(Harness::new_async(config, backend).await.unwrap());
+        let cache = Arc::new(WorkflowIndexCache::default());
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = count.clone();
+        *cache.probe.after_discovery.lock().unwrap() = Some(Box::new(move || {
+            match calls.fetch_add(1, Ordering::SeqCst) {
+                0 | 1 => {
+                    let mut bytes = graph.clone();
+                    bytes.extend(vec![b' '; calls.load(Ordering::SeqCst)]);
+                    fs::write(&graph_path, bytes).unwrap();
+                }
+                2 => fs::write(&later_path, serde_json::to_vec(&later).unwrap()).unwrap(),
+                _ => {}
+            }
+        }));
+        let first = cache.list(harness.clone()).await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(first.manifests.len(), 1);
+        assert!(first
+            .diagnostics
+            .iter()
+            .any(|item| item.error.to_string().contains("changed during discovery")));
+        {
+            let mut snapshot = cache.snapshot.write().unwrap();
+            let snapshot = snapshot.as_mut().unwrap();
+            assert!(snapshot.index.fingerprint.is_none());
+            assert!(snapshot.index.source("contract-workflow").is_err());
+            snapshot.checked = Instant::now() - Duration::from_secs(2);
+        }
+        let index = cache.get(harness).await.unwrap();
+        assert!(index.fingerprint.is_some());
+        assert!(index.source("later").unwrap().is_some());
     }
 
     #[tokio::test]
@@ -600,12 +675,13 @@ mod tests {
                 },
             )]),
             blocked: BTreeSet::new(),
+            traversal_failure: None,
             references: BTreeSet::new(),
-            fingerprint: Fingerprint {
+            fingerprint: Some(Fingerprint {
                 entries: BTreeMap::new(),
                 references: BTreeMap::new(),
                 issues: Vec::new(),
-            },
+            }),
         };
         assert!(fallback.source("workflow-0").unwrap().is_some());
         state

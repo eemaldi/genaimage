@@ -66,8 +66,10 @@ loader still accept them for direct, non-catalogue use. `title` defaults to an
 empty string. Optional `description`, `tags` (a list of strings), `category`
 and `thumbnail` (a string reference) are descriptive metadata; they do not
 affect generation. Discovery reports broken links, inaccessible directories
-and unreadable references as non-fatal diagnostics; an inaccessible directory
-can leave the catalogue incomplete. The workflows API serves a declared
+and unreadable references as non-fatal diagnostics. An inaccessible directory
+or unreadable manifest leaves the catalogue incomplete, and authoritative ID
+resolution refuses to proceed until uniqueness can be established. The workflows
+API serves a declared
 thumbnail only when it is a supported image within the manifest directory; see
 [the API description](architecture.md#local-http-server) for restrictions.
 

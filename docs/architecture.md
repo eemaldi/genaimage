@@ -204,9 +204,9 @@ The workflows API is read-only apart from validation, which does not submit a ru
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
   tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
   manifests and references that cannot be inspected, including IDs `.` and `..`
-  which browsers normalise as URL path segments. An unreadable directory makes
-  the catalogue incomplete; its diagnostic identifies the problem. The API does
-  not generate detail URLs.
+  which browsers normalise as URL path segments. An unreadable directory or
+  manifest makes the catalogue incomplete; its diagnostic identifies the problem.
+  The API does not generate detail URLs.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
   constraints and UI hints, presets and outputs. The effective `required` and
   output `kind` remain available; `declared_required` and `declared_kind` are
@@ -216,7 +216,9 @@ The workflows API is read-only apart from validation, which does not submit a ru
   paths; URL-encode them as path segments. An unknown ID returns 404 problem
   details.
   Duplicate IDs and invalid manifests claiming an ID must be fixed before that
-  ID can be resolved.
+  ID can be resolved. If directory traversal or manifest reading cannot establish
+  uniqueness, detail, validation, submission and rerun refuse the ID with a hint
+  to repair the path or its permissions.
 - `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
   `preset` and `parameters` (an object of overrides). Preset values are overridden
   by parameters and manifest defaults fill remaining values. It returns `valid`,
@@ -235,10 +237,12 @@ The workflows API is read-only apart from validation, which does not submit a ru
   tracked and reported as diagnostics without hiding unrelated valid workflows.
   A cache hit checks its own manifest metadata and reads the current thumbnail
   safely; an edited manifest is reloaded. Workflow-set changes, such as a newly
-  added duplicate ID, can be stale for up to one second plus the revalidation
-  time. The detail endpoint
-  remains authoritative for discoverable entries. Repeated changes during
-  discovery produce a diagnostic and suppress unverified thumbnail entries. A
+  added duplicate or an inaccessible directory, can be stale for up to one
+  second plus the revalidation time. A revalidation that cannot establish
+  uniqueness makes thumbnail requests fail until the path is repaired. The
+  detail endpoint checks traversal immediately. Repeated changes during
+  discovery produce a diagnostic and suppress unverified thumbnail entries;
+  the next revalidation rebuilds an unstable index rather than reusing it. A
   settings change switches to the new harness's index. On Unix, descriptor-relative
   no-follow opens reject symlinks below the configured workflow root, whose own symlinks
   are trusted and resolved before it is pinned. Non-regular files are rejected

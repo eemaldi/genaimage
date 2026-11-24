@@ -133,11 +133,33 @@ async fn directory_cycle_and_unreadable_directory_are_nonfatal() {
     let dir = &api.core.config().workflows;
     std::fs::write(dir.join("image.png"), b"image").unwrap();
     std::os::unix::fs::symlink(".", dir.join("cycle")).unwrap();
+    let initial: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(initial.workflows.len(), 1);
     let inaccessible = dir.join("inaccessible");
     std::fs::create_dir(&inaccessible).unwrap();
+    std::fs::copy(
+        dir.join("contract.genaimage.json"),
+        inaccessible.join("duplicate.genaimage.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        dir.join("workflow.api.json"),
+        inaccessible.join("workflow.api.json"),
+    )
+    .unwrap();
     std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o000)).unwrap();
     let restore = Restore(inaccessible.clone());
     let inaccessible_is_denied = std::fs::read_dir(&inaccessible).is_err();
+    if inaccessible_is_denied {
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let response = api
+            .request(Method::GET, "/api/v1/workflows/contract-workflow/thumbnail")
+            .send()
+            .await
+            .unwrap();
+        let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+        assert!(problem.detail.contains("inaccessible"));
+    }
     let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     assert_eq!(list.workflows.len(), 1);
     assert!(list
@@ -150,18 +172,103 @@ async fn directory_cycle_and_unreadable_directory_are_nonfatal() {
             .iter()
             .any(|item| item.path.ends_with("inaccessible")));
     }
+    if inaccessible_is_denied {
+        for (method, path, body) in [
+            (Method::GET, "/api/v1/workflows/contract-workflow", None),
+            (
+                Method::GET,
+                "/api/v1/workflows/contract-workflow/thumbnail",
+                None,
+            ),
+            (
+                Method::POST,
+                "/api/v1/workflows/contract-workflow/validate",
+                Some(json!({})),
+            ),
+        ] {
+            let mut request = api.request(method, path);
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            let problem = ApiHarness::assert_problem(
+                request.send().await.unwrap(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .await;
+            assert!(problem
+                .detail
+                .contains("cannot resolve workflow ID 'contract-workflow' unambiguously"));
+            assert!(problem.detail.contains("inaccessible"));
+            assert!(problem.detail.contains("fix permissions"));
+        }
+    } else {
+        let response = api
+            .request(Method::GET, "/api/v1/workflows/contract-workflow")
+            .send()
+            .await
+            .unwrap();
+        ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    }
+    drop(restore);
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    let duplicate = api
+        .request(Method::GET, "/api/v1/workflows/contract-workflow")
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(duplicate, StatusCode::INTERNAL_SERVER_ERROR).await;
+    assert!(problem.detail.contains("ambiguous"));
+    std::fs::remove_file(inaccessible.join("duplicate.genaimage.json")).unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let response = api
-        .request(
-            Method::GET,
-            list.workflows[0].thumbnail_url.as_deref().unwrap(),
-        )
+        .request(Method::GET, "/api/v1/workflows/contract-workflow/thumbnail")
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let details: WorkflowDetails = api.get_json("/api/v1/workflows/contract-workflow").await;
     assert_eq!(details.id, "contract-workflow");
+    api.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unreadable_manifest_blocks_authoritative_resolution() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    let api = ApiHarness::start().await;
+    install(&api, Some("image.png"));
+    let dir = &api.core.config().workflows;
+    std::fs::write(dir.join("image.png"), b"image").unwrap();
+    let hidden = dir.join("unreadable.genaimage.json");
+    std::fs::copy(dir.join("contract.genaimage.json"), &hidden).unwrap();
+    std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let restore = Restore(hidden.clone());
+    if std::fs::read(&hidden).is_err() {
+        let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+        assert_eq!(list.workflows.len(), 1);
+        assert!(list
+            .diagnostics
+            .iter()
+            .any(|item| item.path.ends_with("unreadable.genaimage.json")));
+        for path in [
+            "/api/v1/workflows/contract-workflow",
+            "/api/v1/workflows/contract-workflow/thumbnail",
+        ] {
+            let response = api.request(Method::GET, path).send().await.unwrap();
+            let problem =
+                ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+            assert!(problem.detail.contains("unreadable.genaimage.json"));
+            assert!(problem.detail.contains("fix permissions"));
+        }
+    }
     drop(restore);
+    std::fs::remove_file(hidden).unwrap();
     api.shutdown().await;
 }
 
