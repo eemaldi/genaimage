@@ -20,6 +20,7 @@ export type MessageItem =
       model?: string;
       status: components['schemas']['AssistantMessageStatus'] | 'streaming';
       error?: string;
+      notice?: string;
       createdAt?: string;
     }
   | {

@@ -105,9 +105,67 @@ it('renders streamed deltas and completes only from done', async () => {
   expect(await screen.findByText('Hello')).toBeTruthy();
   expect(screen.queryByText('Assistant reply complete.')).toBeNull();
   terminal.resolve();
-  await waitFor(() =>
-    expect(api.getAssistantConversation).toHaveBeenCalledTimes(2),
+  await waitFor(() => expect(screen.getAllByText('Hello')).not.toHaveLength(0));
+  expect(api.getAssistantConversation).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ['done', 'failed', undefined],
+  ['awaiting_confirmation', 'complete', undefined],
+  ['error', 'complete', 'Keep this reason.'],
+] as const)(
+  'treats contradictory %s payload status as an interrupted protocol error',
+  async (event, status, error) => {
+    vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
+      (async function* () {
+        yield {
+          event,
+          data: {
+            conversation_id: 'one',
+            user_message_id: 'u',
+            message_id: 'a',
+            model: 'local',
+            status,
+            error,
+          },
+        } as never;
+      })(),
+    );
+    const user = userEvent.setup();
+    await user.type(await startWithSelection(), 'Hi');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(
+      (await screen.findAllByText(new RegExp(`Protocol error: ${event}`)))[0],
+    ).toBeTruthy();
+    expect(screen.queryByText('Assistant reply complete.')).toBeNull();
+    if (error)
+      expect(screen.getAllByText(/Keep this reason/)).not.toHaveLength(0);
+    expect(api.getAssistantConversation).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('keeps an error reason visible for the error terminal event', async () => {
+  vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
+    (async function* () {
+      yield {
+        event: 'error',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'u',
+          message_id: 'a',
+          model: 'local',
+          status: 'cancelled',
+          error: 'Stopped by the configured provider.',
+        },
+      } as never;
+    })(),
   );
+  const user = userEvent.setup();
+  await user.type(await startWithSelection(), 'Hi');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(
+    screen.getAllByText('Stopped by the configured provider.'),
+  ).not.toHaveLength(0);
 });
 
 it('Stop cancels and aborts the active fetch', async () => {
@@ -190,6 +248,103 @@ it('shows an unterminated stream as interrupted rather than complete', async () 
     ),
   ).toBeTruthy();
   expect(screen.queryByText('Assistant reply complete.')).toBeNull();
+});
+
+it('marks a completed server reply as reloaded after an interrupted connection', async () => {
+  const persisted: Detail = {
+    ...detail('one'),
+    messages: [
+      {
+        id: 'persisted-assistant',
+        conversation_id: 'one',
+        created_at: '2026-01-01T00:00:01Z',
+        seq: 2,
+        role: 'assistant',
+        model: 'local',
+        status: 'complete',
+        content: {
+          assistant: { text: 'Server-confirmed answer.', tool_calls: [] },
+        },
+      },
+    ],
+  };
+  vi.mocked(api.getAssistantConversation)
+    .mockResolvedValueOnce(detail('one'))
+    .mockResolvedValueOnce(persisted);
+  vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
+    (async function* () {
+      yield {
+        event: 'delta',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'persisted-user',
+          text: 'Partial',
+        },
+      };
+    })(),
+  );
+  const user = userEvent.setup();
+  await user.type(await startWithSelection(), 'Hi');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(await screen.findByText('Server-confirmed answer.')).toBeTruthy();
+  expect(
+    screen.getAllByText('Connection interrupted — reloaded from the server'),
+  ).not.toHaveLength(0);
+  expect(screen.queryByText('Partial')).toBeNull();
+});
+
+it('keeps the local interrupted state when authoritative reload fails', async () => {
+  vi.mocked(api.getAssistantConversation)
+    .mockResolvedValueOnce(detail('one'))
+    .mockRejectedValueOnce(new Error('Reload unavailable.'));
+  vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
+    (async function* () {
+      yield {
+        event: 'delta',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'u',
+          text: 'Local partial answer.',
+        },
+      };
+    })(),
+  );
+  const user = userEvent.setup();
+  await user.type(await startWithSelection(), 'Hi');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(await screen.findByText('Local partial answer.')).toBeTruthy();
+  expect(
+    (
+      await screen.findAllByText(
+        'The response was interrupted before a terminal event arrived.',
+      )
+    )[0],
+  ).toBeTruthy();
+  expect(
+    await screen.findByText('Could not load this conversation'),
+  ).toBeTruthy();
+});
+
+it('keeps the local interrupted state when the persisted reply is missing', async () => {
+  vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
+    (async function* () {
+      yield {
+        event: 'delta',
+        data: { conversation_id: 'one', user_message_id: 'u', text: 'Unsaved' },
+      };
+    })(),
+  );
+  const user = userEvent.setup();
+  await user.type(await startWithSelection(), 'Hi');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(await screen.findByText('Unsaved')).toBeTruthy();
+  expect(
+    (
+      await screen.findAllByText(
+        'The response was interrupted before a terminal event arrived.',
+      )
+    )[0],
+  ).toBeTruthy();
 });
 
 it('ignores a stale stream after switching conversations', async () => {

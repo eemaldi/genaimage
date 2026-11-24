@@ -146,7 +146,10 @@
     await reloadConversation(id);
   }
 
-  async function reloadConversation(id: string) {
+  async function reloadConversation(
+    id: string,
+    recovery?: { assistantAfterSeq: number; notice: string },
+  ): Promise<boolean> {
     const current = ++generation;
     detailLoading = true;
     try {
@@ -158,8 +161,28 @@
         id !== selectedId ||
         lifecycle.signal.aborted
       )
-        return;
+        return false;
       const persisted = messageItems(detail);
+      if (recovery) {
+        const candidate = persisted.find(
+          (item) =>
+            item.kind === 'message' &&
+            item.role === 'assistant' &&
+            item.seq > recovery.assistantAfterSeq,
+        );
+        if (
+          !candidate ||
+          candidate.kind !== 'message' ||
+          ![
+            'complete',
+            'awaiting_confirmation',
+            'cancelled',
+            'failed',
+          ].includes(candidate.status)
+        )
+          return false;
+        candidate.notice = recovery.notice;
+      }
       const persistedIds = new Set(persisted.map(({ id }) => id));
       const transient = items.filter(
         (item) =>
@@ -169,14 +192,16 @@
       );
       items = [...persisted, ...transient];
       await scrollTranscript();
+      return true;
     } catch (error) {
       if (
         lifecycle.signal.aborted ||
         current !== generation ||
         id !== selectedId
       )
-        return;
+        return false;
       problem = asProblem(error, 'Could not load this conversation');
+      return false;
     } finally {
       if (current === generation) detailLoading = false;
     }
@@ -279,6 +304,7 @@
     ];
     let terminal = false;
     let cancelled = false;
+    let protocolError = false;
     try {
       const stream = await api.sendAssistantMessage(
         conversationId,
@@ -333,34 +359,50 @@
             },
           ];
         } else if (streamEvent.event === 'done') {
-          terminal = true;
-          updateAssistant(assistantId, (item) => ({
-            ...item,
-            status:
-              streamEvent.status === 'complete'
-                ? 'complete'
-                : streamEvent.status,
-          }));
-          announcement = 'Assistant reply complete.';
+          if (streamEvent.status !== 'complete') {
+            protocolError = true;
+            streamNotice = `Protocol error: done reported ${streamEvent.status}.`;
+          } else {
+            terminal = true;
+            updateAssistant(assistantId, (item) => ({
+              ...item,
+              status: 'complete',
+              error: undefined,
+            }));
+            announcement = 'Assistant reply complete.';
+          }
           break;
         } else if (streamEvent.event === 'awaiting_confirmation') {
-          terminal = true;
-          updateAssistant(assistantId, (item) => ({
-            ...item,
-            status: 'awaiting_confirmation',
-          }));
-          streamNotice = 'Waiting for your confirmation';
-          announcement = 'Waiting for your confirmation.';
+          if (streamEvent.status !== 'awaiting_confirmation') {
+            protocolError = true;
+            streamNotice = `Protocol error: awaiting_confirmation reported ${streamEvent.status}.`;
+          } else {
+            terminal = true;
+            updateAssistant(assistantId, (item) => ({
+              ...item,
+              status: 'awaiting_confirmation',
+              error: undefined,
+            }));
+            streamNotice = 'Waiting for your confirmation';
+            announcement = 'Waiting for your confirmation.';
+          }
           break;
         } else if (streamEvent.event === 'error') {
-          terminal = true;
-          updateAssistant(assistantId, (item) => ({
-            ...item,
-            status: streamEvent.status,
-            error: streamEvent.error ?? 'The assistant reply failed.',
-          }));
-          streamNotice = streamEvent.error ?? 'The assistant reply failed.';
-          announcement = 'Assistant reply failed.';
+          if (!['failed', 'cancelled'].includes(streamEvent.status)) {
+            protocolError = true;
+            streamNotice =
+              `Protocol error: error reported ${streamEvent.status}. ${streamEvent.error ?? ''}`.trim();
+          } else {
+            terminal = true;
+            const reason = streamEvent.error ?? 'The assistant reply failed.';
+            updateAssistant(assistantId, (item) => ({
+              ...item,
+              status: streamEvent.status,
+              error: reason,
+            }));
+            streamNotice = reason;
+            announcement = reason;
+          }
           break;
         }
       }
@@ -378,18 +420,31 @@
         cancelled ||= controller.signal.aborted;
         if (streamController === controller) streamController = undefined;
         if (!terminal) {
-          streamNotice = cancelled
-            ? 'The reply was stopped before completion.'
-            : streamNotice ||
-              'The response was interrupted before a terminal event arrived.';
+          const interruptedNotice = protocolError
+            ? streamNotice
+            : cancelled
+              ? 'The reply was stopped before completion.'
+              : streamNotice ||
+                'The response was interrupted before a terminal event arrived.';
+          streamNotice = interruptedNotice;
           updateAssistant(assistantId, (item) => ({
             ...item,
             status: 'failed',
-            error: streamNotice,
+            error: interruptedNotice,
           }));
-          announcement = streamNotice;
+          announcement = interruptedNotice;
+          if (!protocolError) {
+            const recovered = await reloadConversation(conversationId, {
+              assistantAfterSeq: seq,
+              notice: 'Connection interrupted — reloaded from the server',
+            });
+            if (recovered) {
+              streamNotice =
+                'Connection interrupted — reloaded from the server';
+              announcement = streamNotice;
+            }
+          }
         }
-        await reloadConversation(conversationId);
       }
     }
   }
@@ -543,13 +598,16 @@
                   />{:else if item.status === 'streaming'}<span
                     aria-hidden="true">…</span
                   >{/if}
-                {#if item.status === 'awaiting_confirmation'}
-                  <p class="message-state">Waiting for your confirmation</p>
-                {:else if item.error || item.status === 'failed' || item.status === 'cancelled'}
+                {#if item.error}
+                  <p class="message-state error-text">{item.error}</p>
+                {:else if item.status === 'failed' || item.status === 'cancelled'}
                   <p class="message-state error-text">
-                    {item.error ?? 'The reply did not complete.'}
+                    The reply did not complete.
                   </p>
+                {:else if item.status === 'awaiting_confirmation'}
+                  <p class="message-state">Waiting for your confirmation</p>
                 {/if}
+                {#if item.notice}<p class="message-state">{item.notice}</p>{/if}
               </article>
             {:else if item.kind === 'tool_call'}
               <ToolCallCard
