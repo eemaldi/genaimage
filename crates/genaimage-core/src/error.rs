@@ -33,6 +33,12 @@ pub enum HarnessError {
     RunNotFound { run_id: String },
     #[error("this idempotency key already belongs to a different request")]
     IdempotencyConflict,
+    #[error("{0}")]
+    RerunMismatch(&'static str),
+    #[error("The source run has no submission-time workflow manifest fingerprint.")]
+    RerunMissingManifest,
+    #[error("The workflow references a ComfyUI-side file that GenAImage cannot verify (node '{node}', input '{input}').")]
+    RerunUnverifiedMedia { node: String, input: &'static str },
     #[error("the server is shutting down")]
     ShuttingDown,
     #[error("the cancellation request was not sent: {0}")]

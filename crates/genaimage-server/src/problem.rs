@@ -32,6 +32,11 @@ impl Problem {
         Self::new(error.status(), error.body_text(), recovery)
     }
 
+    pub(crate) fn with_type(mut self, problem_type: &str) -> Self {
+        self.details.problem_type = problem_type.into();
+        self
+    }
+
     pub(crate) fn with_errors(mut self, errors: Vec<SettingError>) -> Self {
         self.details.errors = errors;
         self

@@ -10,7 +10,7 @@ use axum::{
 use genaimage_api as api;
 use genaimage_core::{
     orchestrator::{ReconcileOutcome, ReconcileResult},
-    HarnessError, RunRecord, RunRequest, RunStatus,
+    Harness, HarnessError, KeyedSubmission, RunRecord, RunRequest, RunStatus,
 };
 
 use crate::{AppState, Problem};
@@ -42,6 +42,74 @@ pub(super) async fn submit(
     headers: HeaderMap,
     body: Result<Json<api::SubmitRunRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, Problem> {
+    let key = idempotency_key(&headers)?;
+    let Json(body) = body.map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Send application/json with a workflow ID and any explicit parameter bindings.",
+        )
+    })?;
+    let deadline = state.lifecycle.deadline.clone();
+    let harness = state.harness();
+    let submission = {
+        let harness = harness.clone();
+        async move {
+            harness
+                .submit_keyed_until(
+                    key,
+                    RunRequest {
+                        workflow: body.workflow,
+                        preset: body.preset,
+                        parameters: body.parameters,
+                        version: body.version,
+                    },
+                    &deadline,
+                )
+                .await
+        }
+    };
+    submit_and_monitor(state, harness, submission, StatusCode::ACCEPTED).await
+}
+
+#[utoipa::path(
+    post, path = "/runs/{id}/rerun",
+    operation_id = "runs_rerun",
+    tag = "runs",
+    description = "Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. Send an empty request body.",
+    params(("id" = String, Path, description = "Source run ID"), ("Idempotency-Key" = String, Header, description = "Required unique key, 1–128 visible ASCII characters excluding commas")),
+    responses(
+        (status = 201, description = "New run created", body = api::RunResponse, headers(("Location" = String, description = "New run URL"))),
+        (status = 200, description = "Idempotent replay (current state of the new run)", body = api::RunResponse, headers(("Location" = String, description = "New run URL"))),
+        (status = 400, description = "Non-empty request body, invalid key or invalid path", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Source run not found", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Fingerprint mismatch or idempotency key conflict", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn rerun(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    let key = idempotency_key(&headers)?;
+    let id = parse_id(id)?;
+    let deadline = state.lifecycle.deadline.clone();
+    let harness = state.harness();
+    let submission = {
+        let harness = harness.clone();
+        async move { harness.rerun_until(key, id, &deadline).await }
+    };
+    submit_and_monitor(state, harness, submission, StatusCode::CREATED).await
+}
+
+fn idempotency_key(headers: &HeaderMap) -> Result<String, Problem> {
     let mut keys = headers.get_all("idempotency-key").iter();
     let key = keys
         .next()
@@ -56,29 +124,20 @@ pub(super) async fn submit(
             "A single valid Idempotency-Key header is required.",
             "Send a unique key of 1–128 visible ASCII characters (excluding commas), and keep it for retries."));
     };
-    let Json(body) = body.map_err(|error| {
-        Problem::new(
-            error.status(),
-            error.body_text(),
-            "Send application/json with a workflow ID and any explicit parameter bindings.",
-        )
-    })?;
-    let key = key.to_owned();
-    let harness = state.harness();
+    Ok(key.to_owned())
+}
+
+async fn submit_and_monitor(
+    state: AppState,
+    harness: std::sync::Arc<Harness>,
+    submission: impl std::future::Future<Output = genaimage_core::Result<KeyedSubmission>>
+        + Send
+        + 'static,
+    created_status: StatusCode,
+) -> Result<impl IntoResponse, Problem> {
     let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        let result = harness
-            .submit_keyed_until(
-                key,
-                RunRequest {
-                    workflow: body.workflow,
-                    preset: body.preset,
-                    parameters: body.parameters,
-                    version: body.version,
-                },
-                &task_state.lifecycle.deadline,
-            )
-            .await?;
+        let result = submission.await?;
         if !result.replayed
             && matches!(result.run.status, RunStatus::Queued | RunStatus::Cancelling)
         {
@@ -90,7 +149,7 @@ pub(super) async fn submit(
     let status = if result.replayed {
         StatusCode::OK
     } else {
-        StatusCode::ACCEPTED
+        created_status
     };
     let location = format!("/api/v1/runs/{}", result.run.id);
     Ok((
@@ -390,6 +449,20 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::CONFLICT,
             "Use the original request with this key, or a fresh key for a distinct run.",
         ),
+        HarnessError::RerunUnverifiedMedia { .. } | HarnessError::RerunMissingManifest => {
+            let recovery = if matches!(error, HarnessError::RerunMissingManifest) {
+                "Use Remix to review the saved parameters and submit a new run."
+            } else {
+                "Bind the ComfyUI-side file as an image upload parameter where supported, or use Remix to review the workflow and submit a new run."
+            };
+            return Problem::new(StatusCode::CONFLICT, error.to_string(), recovery)
+                .with_type("urn:genaimage:problem:rerun-mismatch");
+        }
+        HarnessError::RerunMismatch(_) => return Problem::new(
+            StatusCode::CONFLICT,
+            error.to_string(),
+            "Restore the original workflow and input files, or use Remix to review the current workflow and select the inputs again.",
+        ).with_type("urn:genaimage:problem:rerun-mismatch"),
         HarnessError::RunConflict(_) => (
             StatusCode::CONFLICT,
             "Reconcile the run and review its status before requesting cancellation again.",
@@ -430,6 +503,7 @@ fn run_response(run: RunRecord) -> api::RunResponse {
         workflow_id: run.workflow_id,
         workflow_version: run.workflow_version,
         workflow_sha256: run.workflow_sha256,
+        rerun_of: run.rerun_of,
         status: api_status(run.status),
         parameters: run.parameters,
         error: run.error,

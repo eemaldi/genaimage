@@ -234,6 +234,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{id}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. Send an empty request body. */
+        post: operations["runs_rerun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings": {
         parameters: {
             query?: never;
@@ -601,6 +618,8 @@ export interface components {
             node_warnings?: unknown;
             parameters: unknown;
             prompt_id: string;
+            /** @description The source run ID when this run was created by a re-run. */
+            rerun_of?: string | null;
             status: components["schemas"]["RunStatus"];
             /** Format: date-time */
             updated_at: string;
@@ -3048,6 +3067,135 @@ export interface operations {
             };
             /** @description Problem details */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    runs_rerun: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required unique key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description Source run ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Idempotent replay (current state of the new run) */
+            200: {
+                headers: {
+                    /** @description New run URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResponse"];
+                };
+            };
+            /** @description New run created */
+            201: {
+                headers: {
+                    /** @description New run URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResponse"];
+                };
+            };
+            /** @description Non-empty request body, invalid key or invalid path */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Source run not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Fingerprint mismatch or idempotency key conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

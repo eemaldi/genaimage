@@ -339,6 +339,154 @@ async fn records_verified_bytes_and_backend_filename_without_reuploading_on_repl
     api.shutdown().await;
 }
 
+async fn rerun(api: &ApiHarness, id: &str, key: Option<&str>) -> Response {
+    let request = api.request(Method::POST, &format!("/api/v1/runs/{id}/rerun"));
+    let request = match key {
+        Some(key) => request.header("Idempotency-Key", key),
+        None => request,
+    };
+    request.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn rerun_preserves_upload_and_seed_and_monitors_the_new_run_only() {
+    let api = ApiHarness::start().await;
+    install_image_workflow(&api);
+    let upload = store_png(&api).await;
+    api.fake.complete.store(true, Ordering::SeqCst);
+    let first: RunResponse = submit(&api, "original", &upload.upload_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let source_path = format!("/api/v1/runs/{}", first.id);
+    let source: RunResponse = api
+        .post_json(&format!("{source_path}/reconcile"), &Value::Null)
+        .await;
+    assert_eq!(source.status, RunStatus::Completed);
+    let before: Value = api.get_json(&source_path).await;
+    let original_manifest: Value = api.get_json(&format!("{source_path}/manifest")).await;
+    let mut events = api.subscribe();
+    let (a, b) = tokio::join!(
+        rerun(&api, &first.id, Some("rerun")),
+        rerun(&api, &first.id, Some("rerun"))
+    );
+    let (created, replay) = if a.status() == StatusCode::CREATED {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(replay.status(), StatusCode::OK);
+    let location = created.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        replay.headers()[reqwest::header::LOCATION],
+        location.as_str()
+    );
+    let created: RunResponse = created.json().await.unwrap();
+    assert_eq!(location, format!("/api/v1/runs/{}", created.id));
+    assert_eq!(replay.json::<RunResponse>().await.unwrap().id, created.id);
+    assert_eq!(created.rerun_of.as_deref(), Some(first.id.as_str()));
+    assert_ne!(created.id, first.id);
+    assert_ne!(created.prompt_id, first.prompt_id);
+    assert_eq!(created.parameters, first.parameters);
+    assert_eq!(created.parameters["seed"], 42);
+    assert_eq!(created.parameters["reference"], upload.upload_id);
+    ApiHarness::await_event(&mut events, std::time::Duration::from_secs(5), |envelope| {
+        matches!(&envelope.event, genaimage_core::Event::RunCompleted { run } if run.id == created.id)
+    }).await;
+    let manifest: Value = api.get_json(&format!("{location}/manifest")).await;
+    assert_eq!(manifest["rerun_of"], first.id);
+    assert_eq!(
+        manifest["source_inputs"],
+        original_manifest["source_inputs"]
+    );
+    assert_eq!(manifest["preset"], "fast");
+    assert_eq!(api.get_json::<Value>(&source_path).await, before);
+    assert_eq!(
+        api.get_json::<Value>(&format!("{source_path}/manifest"))
+            .await,
+        original_manifest
+    );
+    ApiHarness::assert_problem(
+        rerun(&api, &created.id, Some("rerun")).await,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    ApiHarness::assert_problem(
+        rerun(&api, &first.id, Some("original")).await,
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(api.fake.upload_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn rerun_refuses_changed_workflow_bindings_or_input_without_sending_a_prompt() {
+    let api = ApiHarness::start().await;
+    install_image_workflow(&api);
+    let upload = store_png(&api).await;
+    let first: RunResponse = submit(&api, "original", &upload.upload_id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let workflows = &api.core.config().workflows;
+    let graph = workflows.join("workflow.api.json");
+    let sidecar = api
+        .core
+        .load_workflow_by_id("contract-workflow")
+        .unwrap()
+        .unwrap()
+        .manifest_path;
+    let image = api.core.config().uploads.join(&upload.sha256).join("image");
+    for (path, kind) in [(graph, "graph"), (sidecar, "bindings"), (image, "image")] {
+        let original = std::fs::read(&path).unwrap();
+        let changed = if kind == "image" {
+            let mut bytes = original.clone();
+            *bytes.last_mut().unwrap() ^= 1;
+            bytes
+        } else {
+            let mut doc: Value = serde_json::from_slice(&original).unwrap();
+            if kind == "graph" {
+                doc["9"]["inputs"]["filename_prefix"] = json!("changed");
+            } else {
+                doc["presets"]["fast"]["steps"] = json!(11);
+            }
+            serde_json::to_vec(&doc).unwrap()
+        };
+        std::fs::write(&path, changed).unwrap();
+        let response = rerun(&api, &first.id, Some("not-reserved")).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response.headers()[reqwest::header::CONTENT_TYPE],
+            "application/problem+json"
+        );
+        let problem: genaimage_api::ProblemDetails = response.json().await.unwrap();
+        assert_eq!(problem.problem_type, "urn:genaimage:problem:rerun-mismatch");
+        assert!(problem.recovery.contains("Remix"));
+        std::fs::write(path, original).unwrap();
+    }
+    ApiHarness::assert_problem(rerun(&api, &first.id, None).await, StatusCode::BAD_REQUEST).await;
+    ApiHarness::assert_problem(
+        rerun(&api, "run-missing", Some("not-reserved")).await,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(api.fake.upload_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        rerun(&api, &first.id, Some("not-reserved")).await.status(),
+        StatusCode::CREATED
+    );
+    api.shutdown().await;
+}
+
 #[tokio::test]
 async fn unknown_ids_are_reported_per_parameter_without_reserving_the_key() {
     let api = ApiHarness::start().await;

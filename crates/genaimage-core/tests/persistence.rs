@@ -17,6 +17,8 @@ fn new_run() -> NewRun {
         workflow_id: "workflow".into(),
         workflow_version: "1".into(),
         workflow_sha256: "hash".into(),
+        workflow_manifest_sha256: None,
+        rerun_of: None,
         generation_mode: GenerationMode::Generic,
         status: RunStatus::Queued,
         parameters: json!({}),
@@ -72,7 +74,7 @@ fn unversioned_legacy_database_is_migrated_without_losing_runs() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     assert_eq!(
         conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))

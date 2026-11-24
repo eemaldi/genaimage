@@ -264,6 +264,7 @@ and a recovery hint.
 
 | Method and path (under `/api/v1`) | Behaviour |
 | --- | --- |
+| `POST /runs/{id}/rerun` | Create a distinct run using verified source provenance. Returns 201 and the new run snapshot and `Location`. |
 | `POST /runs` | Submit one explicit run. Returns 202 and its run snapshot without waiting for generation. `Location` identifies the run. |
 | `GET /runs` | List matching run snapshots, newest first. |
 | `GET /runs/{id}` | Return the current persisted run snapshot. |
@@ -342,9 +343,31 @@ are inconclusive. Success requires valid output references and either positive
 completion status or a legacy outputs-only entry. `not_found` means absent from queue
 and history after the settle window. ComfyUI cannot prove absence, so very late
 admission is still possible and a later reconcile can adopt the original run.
-Jobs requires explicit confirmation after `not_found` and only offers the
-separate run when server-side rerun support is available. Neither reconcile
-endpoint resubmits a prompt.
+Jobs requires explicit confirmation after `not_found` before calling the
+separate re-run endpoint. A definitive rejection requires fresh reconciliation
+and confirmation before another attempt. An ambiguous response does not reopen
+that action. Neither reconcile endpoint resubmits a prompt.
+
+Re-run takes no request body or `Content-Type` header. It shares the submission
+key namespace with `POST /runs`; the key identifies the operation and source
+run ID, not the source's current status. The first call returns 201 with a
+`RunResponse` (including `rerun_of`) and a `Location` pointing to the new run.
+A replay returns 200 with the new run's current state and the same `Location`,
+without verifying or submitting again. The source is never updated by re-run.
+Errors use `application/problem+json`: 400 for a non-empty body or an invalid
+or missing key, 404 for an unknown source, and 409 for a key already bound to
+a different request
+(all `about:blank`). Unverifiable or changed provenance returns 409 with type
+`urn:genaimage:problem:rerun-mismatch` and guidance to restore the original
+files or use Remix. Neither a 404 nor a fingerprint conflict consumes a key.
+
+Any source status is eligible if provenance is verifiable, including
+`unknown_submission`. The Jobs UI must reconcile an unknown submission and
+only offer **Submit as new run** after `not_found`; the API does not enforce
+this UI policy. A fresh key can create a second backend job if the first one
+was accepted. For an uncertain HTTP result, keep the same key to check the
+new run. As for regular submission, a created run may itself be failed or
+unconfirmed; inspect its `status` rather than treating 201 as generation success.
 
 List responses contain `runs` and `next_cursor` (null at the end). Pass `cursor`
 back unchanged with the same filters. Ordering is descending by creation time,
@@ -534,6 +557,30 @@ without submitting or reconciling the run.
 SQLite holds operational queue and event state. Portable run manifests record
 resolved inputs, workflow, identifiers, outputs and checksums; preserve them
 across reconnects and migrations.
+
+Re-run uses the source's recorded workflow ID and version, preset reference,
+resolved parameters (including seed) and image references. The core verifies
+the graph and manifest SHA-256 and all recorded input hashes against the exact
+snapshots it will bind and send; it never reloads unchecked replacements. New
+runs store the workflow manifest and preflight fingerprints in SQLite and
+archive the manifest bytes used for binding. A re-run records `rerun_of` in the
+new run and its completed manifest. Legacy runs without a submission-time
+manifest fingerprint remain readable but cannot be exactly re-run, even with
+an indexed completion manifest. Use Remix to review their saved parameters and
+submit a new run.
+
+Known file-backed ComfyUI loaders (including `LoadImage` and `LoadImageMask`)
+must have their file slot bound to a verified upload. A literal ComfyUI-side
+filename or a link supplying an unverified path returns 409: changing a file at
+that path does not change the workflow hash. Bind supported image inputs as
+`image_upload` parameters, or use Remix to review the workflow and submit a new
+run. Re-run copies and verifies all recorded inputs into private temporary
+files before sending any, then uploads them one at a time from those same
+snapshots. Ordinary submissions verify and upload references one at a time.
+Local inputs retain their filenames in the private snapshots, so path-only
+image backends can upload the exact recorded bytes on both submit and re-run.
+The checks do not cover model weights or behaviour inside arbitrary custom
+nodes, so identical output is not guaranteed.
 
 The state database uses versioned, transactional SQLite migrations, WAL,
 foreign-key enforcement, a ten-second busy timeout and `synchronous=NORMAL`.

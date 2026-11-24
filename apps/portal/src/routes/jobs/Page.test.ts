@@ -9,7 +9,11 @@ import {
 import userEvent from '@testing-library/user-event';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { ApiProblemError, type api } from '../../lib/api/client';
+import {
+  ApiNetworkError,
+  ApiProblemError,
+  type api,
+} from '../../lib/api/client';
 import type {
   ConnectionStatus,
   EventEnvelope,
@@ -261,6 +265,91 @@ test('requires a not-found outcome and explicit review before creating a new run
     ).toBeNull(),
   );
 });
+
+function rerunProblem(status: number, type = 'about:blank') {
+  return new ApiProblemError({
+    status,
+    type,
+    title: 'Re-run error',
+    detail: 'Could not re-run.',
+    recovery: 'Check Jobs.',
+  });
+}
+
+async function rejectRerun(error: Error) {
+  const unknown = { ...original, status: 'unknown_submission' as const };
+  await start(unknown);
+  client.reconcileRun.mockResolvedValue({ ...unknown, outcome: 'not_found' });
+  await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Submit as new run' }),
+  );
+  client.getRun.mockResolvedValue(unknown);
+  client.rerunRun.mockRejectedValueOnce(error);
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Confirm new run' }),
+  );
+  return unknown;
+}
+
+test.each([
+  [
+    'fingerprint mismatch',
+    rerunProblem(409, 'urn:genaimage:problem:rerun-mismatch'),
+  ],
+  ['definitive rejection', rerunProblem(422)],
+])(
+  'allows another confirmed attempt after fresh reconciliation on %s',
+  async (_label, error) => {
+    const unknown = await rejectRerun(error);
+    await screen.findByText(/No new run was created/);
+    expect(
+      screen.queryByRole('button', { name: 'Submit as new run' }),
+    ).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Submit as new run' }),
+    );
+    expect(client.rerunRun).toHaveBeenCalledTimes(1);
+    client.rerunRun.mockResolvedValueOnce({
+      ...unknown,
+      id: 'run-new',
+      status: 'queued',
+    });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Confirm new run' }),
+    );
+    await screen.findByRole('link', { name: 'View new run' });
+    expect(client.rerunRun).toHaveBeenCalledTimes(2);
+    expect(client.rerunRun.mock.calls[1][1]).not.toBe(
+      client.rerunRun.mock.calls[0][1],
+    );
+  },
+);
+
+test.each([
+  [
+    'network failure',
+    new ApiNetworkError(
+      'Could not verify the request.',
+      new Error('Connection lost'),
+    ),
+  ],
+  ['timeout', rerunProblem(408)],
+  ['server failure', rerunProblem(502)],
+])(
+  'keeps a new submission blocked after an ambiguous %s',
+  async (_label, error) => {
+    await rejectRerun(error);
+    await screen.findByText(/A new run was not confirmed/);
+    await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
+    await screen.findByText(/Reconciliation did not find the prompt/);
+    expect(
+      screen.queryByRole('button', { name: 'Submit as new run' }),
+    ).toBeNull();
+    expect(client.rerunRun).toHaveBeenCalledTimes(1);
+  },
+);
 
 test('refetches for an unseen matching progress revision and coalesces repeats', async () => {
   const query = new URLSearchParams('status=running');

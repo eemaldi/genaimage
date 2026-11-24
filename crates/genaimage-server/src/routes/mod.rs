@@ -93,6 +93,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(runs::list, runs::submit))
         .routes(routes!(runs::reconcile_all))
         .routes(routes!(runs::get_run))
+        .routes(routes!(runs::rerun))
         .routes(routes!(runs::events))
         .routes(routes!(runs::cancel))
         .routes(routes!(runs::reconcile))

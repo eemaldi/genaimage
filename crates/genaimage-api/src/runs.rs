@@ -44,6 +44,9 @@ pub struct RunResponse {
     pub workflow_id: String,
     pub workflow_version: String,
     pub workflow_sha256: String,
+    /// The source run ID when this run was created by a re-run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
     pub status: RunStatus,
     pub parameters: Value,
     pub error: Option<String>,

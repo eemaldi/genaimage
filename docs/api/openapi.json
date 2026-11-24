@@ -847,6 +847,13 @@
           "prompt_id": {
             "type": "string"
           },
+          "rerun_of": {
+            "description": "The source run ID when this run was created by a re-run.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "status": {
             "$ref": "#/components/schemas/RunStatus"
           },
@@ -4233,6 +4240,173 @@
             "description": "Problem details"
           },
           "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/v1/runs/{id}/rerun": {
+      "post": {
+        "description": "Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. Send an empty request body.",
+        "operationId": "runs_rerun",
+        "parameters": [
+          {
+            "description": "Source run ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required unique key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "Idempotent replay (current state of the new run)",
+            "headers": {
+              "Location": {
+                "description": "New run URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            },
+            "description": "New run created",
+            "headers": {
+              "Location": {
+                "description": "New run URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Non-empty request body, invalid key or invalid path"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Source run not found"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Fingerprint mismatch or idempotency key conflict"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -111,6 +111,8 @@ fn run_persistence(c: &mut Criterion) {
                     workflow_id: "benchmark.workflow".to_owned(),
                     workflow_version: "1".to_owned(),
                     workflow_sha256: "benchmark".to_owned(),
+                    workflow_manifest_sha256: None,
+                    rerun_of: None,
                     generation_mode: GenerationMode::Generic,
                     status: RunStatus::Queued,
                     parameters: json!({"prompt": "benchmark prompt", "steps": 12}),

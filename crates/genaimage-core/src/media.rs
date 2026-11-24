@@ -153,7 +153,7 @@ impl Harness {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
     tokio::task::spawn_blocking(work)
@@ -161,7 +161,7 @@ async fn blocking<T: Send + 'static>(
         .map_err(std::io::Error::other)?
 }
 
-fn open_stored(root: &Path, path: &Path) -> Result<File> {
+pub(crate) fn open_stored(root: &Path, path: &Path) -> Result<File> {
     path.strip_prefix(root)
         .ok()
         .and_then(|path| open_regular_beneath(root, root, path))
@@ -182,9 +182,16 @@ fn verified_output(output: &OutputRecord, root: &Path, data: &Path) -> Result<Me
 
 // Snapshot the verified bytes into a private, unnamed file. An open source
 // descriptor alone would not protect streaming against later in-place edits.
-fn snapshot(mut source: File, data: &Path, limit: Option<u64>) -> Result<MediaFile> {
+fn snapshot(source: File, data: &Path, limit: Option<u64>) -> Result<MediaFile> {
     fs::create_dir_all(data)?;
-    let mut file = tempfile::tempfile_in(data)?;
+    copy_snapshot(source, tempfile::tempfile_in(data)?, limit)
+}
+
+pub(crate) fn copy_snapshot(
+    mut source: File,
+    mut file: File,
+    limit: Option<u64>,
+) -> Result<MediaFile> {
     let mut hash = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     let mut len = 0;
