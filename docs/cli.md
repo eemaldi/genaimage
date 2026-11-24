@@ -15,9 +15,12 @@ operate locally without making API requests.
 | `-h`, `--help` | Show help for the CLI or the selected command. |
 | `-V`, `--version` | Show the CLI version (at the top level). |
 
-Server-backed commands reject `--workspace` and `--config`. Pass those
-options to `genaimage serve` and select that instance with `--server`.
-`GENAIMAGE_CONFIG` is read by `serve`, not by API client commands.
+Server-backed commands reject `--workspace`, `--config`, and a set
+`GENAIMAGE_CONFIG` (even if empty) with exit code `1`. Pass local options or
+set `GENAIMAGE_CONFIG` when running `genaimage serve`, then unset the variable
+for client commands and select that instance with `--server`. The retired
+`GENAIMAGE_PROFILE` is also rejected; unset it and migrate the old profile to
+`[comfyui]` in the server configuration.
 
 ## Exit codes and output
 

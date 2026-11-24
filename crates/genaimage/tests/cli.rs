@@ -92,8 +92,6 @@ impl Server {
             .current_dir(cwd.path())
             .args(["--server", &self.origin])
             .args(args);
-        // Ported commands must not read the CLI's local configuration.
-        command.env("GENAIMAGE_CONFIG", cwd.path().join("does-not-exist.toml"));
         cli_output(command).await
     }
 
@@ -726,6 +724,51 @@ async fn server_commands_reject_explicit_local_selectors() {
         json!(destination)
     );
     assert!(destination.is_file());
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn server_commands_reject_legacy_selector_environment_variables() {
+    let server = Server::start().await;
+    let config = server._workspace.path().join("elsewhere.toml");
+    write(&config, "[server]\nport = 4321\n");
+    let expected = error(
+        server
+            .cli(&[
+                "--json",
+                "config",
+                "show",
+                "--config",
+                config.to_str().unwrap(),
+            ])
+            .await,
+        1,
+    );
+    for value in [config.to_str().unwrap(), ""] {
+        let mut command = cli();
+        command.env("GENAIMAGE_CONFIG", value).args([
+            "--server",
+            &server.origin,
+            "config",
+            "show",
+            "--json",
+        ]);
+        assert_eq!(error(cli_output(command).await, 1), expected);
+    }
+    let mut command = cli();
+    command.env("GENAIMAGE_PROFILE", "other").args([
+        "--server",
+        &server.origin,
+        "config",
+        "show",
+        "--json",
+    ]);
+    let result = error(cli_output(command).await, 1);
+    assert_eq!(result["kind"], "input_error");
+    assert!(result["message"]
+        .as_str()
+        .unwrap()
+        .contains("migrate the selected profile"));
     server.shutdown().await;
 }
 

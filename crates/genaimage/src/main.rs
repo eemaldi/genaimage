@@ -190,8 +190,14 @@ async fn execute_server(
     command: server_commands::Command<'_>,
     output: output::Output,
 ) -> Result<output::Status, output::Error> {
-    if cli.workspace.is_some() || cli.config.is_some() {
-        return Err(output::Error::Input("--workspace and --config cannot select a workspace for a server-backed command. Pass them to `genaimage serve` and select that instance with --server.".into()));
+    if cli.workspace.is_some()
+        || cli.config.is_some()
+        || std::env::var_os("GENAIMAGE_CONFIG").is_some()
+    {
+        return Err(output::Error::Input("--workspace, --config and GENAIMAGE_CONFIG are only for selecting the server's workspace or configuration. Pass the options (or set GENAIMAGE_CONFIG) when running `genaimage serve`, unset GENAIMAGE_CONFIG for this command, and select the server with --server.".into()));
+    }
+    if std::env::var_os("GENAIMAGE_PROFILE").is_some() {
+        return Err(output::Error::Input("GENAIMAGE_PROFILE is no longer supported. Unset it, migrate the selected profile to [comfyui] in the configuration used by `genaimage serve`, and select the server with --server.".into()));
     }
     let client = Client::with_base_url(&cli.server)?;
     command.execute(&client, output).await
