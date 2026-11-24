@@ -51,7 +51,7 @@ impl Client {
 
 const BOM: &[u8] = "\u{feff}".as_bytes();
 
-fn with_safe_preamble<E>(
+pub(super) fn with_safe_preamble<E>(
     source: impl Stream<Item = Result<Bytes, E>>,
 ) -> impl Stream<Item = Result<Bytes, E>> {
     let body = stream::unfold(

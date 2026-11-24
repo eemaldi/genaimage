@@ -24,6 +24,11 @@ pub(crate) struct SecurityConfig {
 // Keep this routing decision alongside new endpoints, before their handlers read a body.
 fn body_limit(path: &str, config: &SecurityConfig) -> usize {
     match path {
+        path if path.starts_with("/api/v1/assistant/conversations/")
+            && path.ends_with("/messages") =>
+        {
+            crate::routes::conversations::ASSISTANT_MESSAGE_BODY_LIMIT
+        }
         "/api/v1/uploads" => config.max_upload_bytes,
         _ => DEFAULT_BODY_LIMIT,
     }

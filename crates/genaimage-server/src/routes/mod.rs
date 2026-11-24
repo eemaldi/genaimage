@@ -1,3 +1,4 @@
+pub(crate) mod conversations;
 mod events;
 mod health;
 mod outputs;
@@ -32,6 +33,10 @@ struct UploadBody {
 
 #[derive(OpenApi)]
 #[openapi(components(schemas(
+    genaimage_api::AssistantDeltaEvent,
+    genaimage_api::AssistantMessageStartedEvent,
+    genaimage_api::AssistantTerminalEvent,
+    genaimage_api::AssistantToolCallEvent,
     genaimage_api::EventEnvelope,
     genaimage_api::ResyncEvent,
     genaimage_api::ThumbnailSizeSchema
@@ -86,6 +91,11 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(openapi_endpoint))
         .routes(routes!(health::health))
         .routes(routes!(events::events))
+        .routes(routes!(conversations::list, conversations::create))
+        .routes(routes!(conversations::get))
+        .routes(routes!(conversations::send_message))
+        .routes(routes!(conversations::cancel))
+        .routes(routes!(conversations::delete))
         .routes(routes!(workflows::list))
         .routes(routes!(workflows::details))
         .routes(routes!(workflows::validate))

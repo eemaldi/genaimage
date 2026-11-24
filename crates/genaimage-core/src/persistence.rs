@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -274,7 +274,7 @@ impl RunRepository {
     }
 
     // The ownership check and each write share a transaction, including the first run.
-    fn guarded<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn guarded<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(identity) = &self.identity {
@@ -286,7 +286,10 @@ impl RunRepository {
     }
 
     // A read snapshot keeps the ownership check and results consistent without blocking writers.
-    fn guarded_read<T>(&self, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn guarded_read<T>(
+        &self,
+        operation: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
         let mut connection = self.connection()?;
         if let Some(identity) = &self.identity {
             let transaction =
@@ -298,6 +301,10 @@ impl RunRepository {
         } else {
             operation(&connection)
         }
+    }
+
+    pub fn conversation_store(&self) -> crate::assistant::ConversationStore {
+        crate::assistant::ConversationStore::from_repository(self.clone())
     }
 
     pub fn insert(&self, run: &NewRun) -> Result<RunRecord> {
@@ -890,6 +897,35 @@ const MIGRATION_8: &str = "
 const MIGRATION_9: &str =
     "CREATE INDEX IF NOT EXISTS runs_output_status_idx ON runs(status) WHERE status IN ('failed', 'cancelled');";
 const MIGRATION_10: &str = "ALTER TABLE runs ADD COLUMN resolved_workflow_sha256 TEXT;";
+const MIGRATION_11: &str = r#"
+    CREATE TABLE IF NOT EXISTS assistant_conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        model TEXT NOT NULL,
+        system_prompt_template TEXT NOT NULL,
+        system_prompt_sha256 TEXT NOT NULL,
+        system_prompt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS assistant_conversations_updated_id_idx
+        ON assistant_conversations(updated_at, id);
+    CREATE TABLE IF NOT EXISTS assistant_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq > 0),
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+        content_json TEXT NOT NULL,
+        model TEXT,
+        status TEXT NOT NULL CHECK (status IN ('complete', 'cancelled', 'failed')),
+        error TEXT,
+        tool_call_id TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(conversation_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS assistant_messages_conversation_seq_idx
+        ON assistant_messages(conversation_id, seq);
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -901,16 +937,19 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_8,
     MIGRATION_9,
     MIGRATION_10,
+    MIGRATION_11,
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 6] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 8] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
     ("genaimage_database_identity", 3, "SELECT singleton, workspace, backend, endpoint FROM genaimage_database_identity LIMIT 0"),
     ("run_media", 7, "SELECT run_id, manifest_sha256, tags_json FROM run_media LIMIT 0"),
     ("run_submission_keys", 4, "SELECT key, fingerprint, run_id FROM run_submission_keys LIMIT 0"),
+    ("assistant_conversations", 11, "SELECT id, title, created_at, updated_at, model, system_prompt_template, system_prompt_sha256, system_prompt FROM assistant_conversations LIMIT 0"),
+    ("assistant_messages", 11, "SELECT id, conversation_id, seq, role, content_json, model, status, error, tool_call_id, created_at FROM assistant_messages LIMIT 0"),
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
@@ -1013,6 +1052,44 @@ fn inspect_settings_database_rejects_an_unrelated_sqlite_schema() {
         database_matches_settings(&path, "workspace", "ComfyUI", "http://localhost:8188/").is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[cfg(test)]
+#[test]
+fn migrates_version_ten_without_losing_existing_state() {
+    let root = tempfile::Builder::new()
+        .prefix(".migration-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let path = root.path().join("state.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .unwrap();
+    for migration in MIGRATIONS.iter().take(SCHEMA_VERSION as usize - 1) {
+        connection.execute_batch(migration).unwrap();
+    }
+    connection
+        .execute_batch("CREATE TABLE migration_sentinel (value TEXT); INSERT INTO migration_sentinel VALUES ('kept');")
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+        .unwrap();
+    drop(connection);
+
+    let repository = RunRepository::open(&path).unwrap();
+    repository
+        .guarded_read(|connection| {
+            let value: String = connection
+                .query_row("SELECT value FROM migration_sentinel", [], |row| row.get(0))?;
+            assert_eq!(value, "kept");
+            let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, SCHEMA_VERSION);
+            connection.prepare("SELECT id, model FROM assistant_conversations LIMIT 0")?;
+            connection.prepare("SELECT conversation_id, content_json, tool_call_id FROM assistant_messages LIMIT 0")?;
+            Ok(())
+        })
+        .unwrap();
 }
 
 fn migrate(connection: &mut Connection, path: &Path) -> Result<()> {

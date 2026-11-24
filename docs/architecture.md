@@ -512,10 +512,18 @@ The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 `AssistantTool` and `EventSink` contracts. The CLI serve module builds an `ExtensionRegistry`
 from the resolved ComfyUI settings using an adapter factory supplied by the CLI;
 core does not construct adapters. The registry looks up registered extensions by
-name without a fallback. Only the image backend is configured today. The LLM
-provider implementation and fake server exist for later wiring, while the tool
-contracts and assistant runtime remain planned. These are compile-time
-extension points, not runtime plugin loading. Core lifecycle tests use a fake backend
+name without a fallback. Only the image backend and LLM provider are configured
+today; tool contracts remain planned. The LLM provider implementation and fake
+server are available, while the core conversation store and service persist
+bounded, immutable message history, snapshot an explicit creation model and
+prompt, expose a token stream, and retain cancelled or failed partial assistant
+messages. The server resolves the configured text role for every conversation
+request and uses its current model for each turn, recording that model on the
+assistant message. Its HTTP and SSE routes stream text and tool proposals only;
+assistant tool execution remains planned. Editable prompt files live below the
+configured data directory under `assistant/prompts`. These are compile-time
+extension points, not runtime plugin loading. Core lifecycle
+tests use a fake backend
 without connecting to ComfyUI; adapter contract tests still exercise the wire
 protocol against a fake server.
 

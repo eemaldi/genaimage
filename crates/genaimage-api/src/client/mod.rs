@@ -1,8 +1,10 @@
 //! Async HTTP client for the loopback GenAImage server (requires the `client` feature).
 
+mod assistant;
 mod events;
 mod media;
 
+pub use assistant::{AssistantEventStream, AssistantStreamEvent};
 pub use events::{EventStream, EventsQuery, StreamEvent};
 pub use media::{HeadEndpoint, OutputRequest};
 
@@ -63,6 +65,8 @@ pub enum Error {
     EventStream(#[from] eventsource_stream::EventStreamError<reqwest::Error>),
     #[error("Invalid JSON in a GenAImage event: {0}")]
     EventJson(#[from] serde_json::Error),
+    #[error("Unknown assistant SSE event {0:?}.")]
+    UnknownAssistantEvent(String),
 }
 
 /// A reusable client and connection pool. Cloning shares that pool.

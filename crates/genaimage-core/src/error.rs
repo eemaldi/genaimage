@@ -39,6 +39,14 @@ pub enum HarnessError {
     Database(String),
     #[error("run '{run_id}' was not found")]
     RunNotFound { run_id: String },
+    #[error("assistant conversation '{conversation_id}' was not found")]
+    ConversationNotFound { conversation_id: String },
+    #[error("{0}")]
+    InvalidConversationRequest(String),
+    #[error("{0}")]
+    ConversationConflict(String),
+    #[error("assistant not configured: {0}")]
+    AssistantNotConfigured(String),
     #[error("this idempotency key already belongs to a different request")]
     IdempotencyConflict,
     #[error("{0}")]

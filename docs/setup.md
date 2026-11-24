@@ -24,7 +24,7 @@ health reports the image backend as `unavailable` until it responds. Server
 logs are structured JSON on stderr; set `RUST_LOG` to control verbosity.
 Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
-Health, events, workflows, runs, outputs, uploads and settings are available.
+Health, events, workflows, runs, outputs, uploads, settings and assistant conversations are available.
 The [OpenAPI 3.1 contract](api/openapi.json) is also served at
 `GET /api/v1/openapi.json`. Open `http://127.0.0.1:3000/` for the embedded
 portal. The assistant page is planned.
@@ -75,9 +75,9 @@ files; explicit and current-directory selections do not inspect an unselected
 workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
-see `genaimage.example.toml`. The `serve` command uses `[server]`. LLM
-inference is planned. The settings connectivity test can check an explicitly
-configured LLM URL, but it does not start a service or select a model.
+see `genaimage.example.toml`. The `serve` command uses `[server]`. The settings
+connectivity test can check an explicitly configured LLM URL, but it does not
+start a service or select a model.
 The server bind host is restricted to loopback regardless of outbound settings.
 
 State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`,
@@ -91,6 +91,21 @@ either then requires its original settings or a separate database.
 The uploads API stores reference images in the configured uploads directory.
 The CLI continues to upload explicit local input files directly to ComfyUI.
 XDG directories must be absolute.
+
+Assistant conversations use the workspace state database. On the first
+conversation creation, GenAImage writes the editable default system prompt to
+`$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/assistant/prompts/system.md`.
+Edit this regular UTF-8 text file to change the prompt used by subsequently
+created conversations. Each conversation retains an exact prompt snapshot and
+SHA-256 digest, so later file edits do not change an existing conversation.
+If the configured text model changes after a conversation was created, new
+turns use the explicit current text model and each assistant message records
+the model used; the conversation's original model remains visible as its
+creation model. The assistant HTTP and SSE contract is in the OpenAPI document.
+Image turns use standard base64 strings for PNG, JPEG or WebP content and are
+limited to 20 MiB of decoded bytes per image. Stored conversation reads return
+the same base64 representation. SSE failure events contain safe summaries and
+may omit `message_id` when terminal persistence did not succeed.
 
 ### Settings API
 

@@ -813,6 +813,7 @@ dependencies = [
 name = "genaimage-api"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "eventsource-stream",
@@ -851,6 +852,7 @@ dependencies = [
  "criterion",
  "fs2",
  "futures-core",
+ "futures-util",
  "hex",
  "image",
  "jsonschema",
@@ -890,6 +892,7 @@ name = "genaimage-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "futures-util",
  "genaimage-api",
