@@ -201,6 +201,57 @@ pub(super) async fn thumbnail(
 }
 
 #[utoipa::path(
+    get, path = "/runs/{id}/resolved-workflow",
+    operation_id = "outputs_resolved_workflow",
+    tag = "outputs",
+    description = "Fetch the archived resolved workflow. New runs verify its SHA-256 against the pre-submission record; legacy archives are unverified.",
+    params(("id" = String, Path, description = "Run ID"), ("If-None-Match" = Option<String>, Header)),
+    responses(
+        (status = 200, description = "Archived resolved workflow", body = Object, headers(("ETag" = String), ("X-Genaimage-Workflow-Integrity" = String, description = "verified or unverified"))),
+        (status = 304, description = "Not modified", headers(("ETag" = String), ("X-Genaimage-Workflow-Integrity" = String, description = "verified or unverified"))),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn resolved_workflow(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+    headers: HeaderMap,
+) -> Result<Response, Problem> {
+    let file = state
+        .harness()
+        .open_resolved_workflow(&parse_id(id)?)
+        .await
+        .map_err(workflow_problem)?;
+    let integrity = if file.integrity_verified {
+        "verified"
+    } else {
+        "unverified"
+    };
+    let mut response = respond(
+        file.media,
+        "application/json",
+        REVALIDATE,
+        false,
+        None,
+        &headers,
+    )
+    .await?;
+    response.headers_mut().insert(
+        "x-genaimage-workflow-integrity",
+        axum::http::HeaderValue::from_static(integrity),
+    );
+    Ok(response)
+}
+
+#[utoipa::path(
     get, path = "/runs/{id}/manifest",
     operation_id = "outputs_manifest",
     tag = "outputs",
@@ -438,6 +489,26 @@ fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem>
 fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
     id.map(|Path(id)| id)
         .map_err(|error| Problem::invalid_path(error, "Use an ID returned by the API."))
+}
+
+fn workflow_problem(error: HarnessError) -> Problem {
+    match error {
+        HarnessError::RunNotFound { .. } => Problem::new(
+            StatusCode::NOT_FOUND,
+            error.to_string(),
+            "Use a run ID returned by the runs API.",
+        ),
+        HarnessError::MediaIntegrity => Problem::new(
+            StatusCode::CONFLICT,
+            "The archived resolved workflow or its submission record could not be verified.",
+            "Restore the original resolved workflow and submission record from a trusted copy.",
+        ),
+        _ => Problem::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "The server could not read the archived resolved workflow.",
+            "Check local run storage and the server logs.",
+        ),
+    }
 }
 
 fn problem(error: HarnessError) -> Problem {

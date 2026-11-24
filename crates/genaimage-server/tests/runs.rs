@@ -54,6 +54,53 @@ async fn assert_workflow_changed(response: Response) {
 }
 
 #[tokio::test]
+async fn run_revision_uses_recorded_fingerprints_not_current_files() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let original: WorkflowDetails = api.get_json(WORKFLOW).await;
+    let mut body = request();
+    body["workflow_revision"] = json!(original.revision);
+    let submitted = run(
+        submit(&api, "recorded-revision", &body).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    assert_eq!(submitted.workflow_revision, original.revision);
+
+    let path = api.core.config().workflows.join("workflow.api.json");
+    let mut graph: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    graph["9"]["inputs"]["filename_prefix"] = json!("changed");
+    std::fs::write(&path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let current: WorkflowDetails = api.get_json(WORKFLOW).await;
+    assert_eq!(current.version, original.version);
+    assert_ne!(current.revision, original.revision);
+    let saved: RunResponse = api.get_json(&format!("{RUNS}/{}", submitted.id)).await;
+    assert_eq!(saved.workflow_revision, original.revision);
+    let listed: RunListResponse = api.get_json(RUNS).await;
+    assert_eq!(listed.runs[0].workflow_revision, original.revision);
+
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "UPDATE runs SET workflow_manifest_sha256 = NULL WHERE id = ?1",
+        [&submitted.id],
+    )
+    .unwrap();
+    drop(db);
+    let legacy: Value = api.get_json(&format!("{RUNS}/{}", submitted.id)).await;
+    assert!(legacy.get("workflow_revision").is_none());
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "UPDATE runs SET workflow_manifest_sha256 = 'invalid' WHERE id = ?1",
+        [&submitted.id],
+    )
+    .unwrap();
+    drop(db);
+    let invalid: Value = api.get_json(&format!("{RUNS}/{}", submitted.id)).await;
+    assert!(invalid.get("workflow_revision").is_none());
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn graph_replacement_blocks_pinned_submit_and_validate_before_backend_io() {
     let api = ApiHarness::start().await;
     install_workflow(&api);
@@ -301,7 +348,7 @@ async fn rerun_refuses_migrated_completed_run_even_with_indexed_manifest() {
     db.execute_batch(
         "ALTER TABLE runs DROP COLUMN rerun_of;
         ALTER TABLE runs DROP COLUMN workflow_manifest_sha256;
-        ALTER TABLE runs DROP COLUMN preflight_sha256;
+        ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256;
         PRAGMA user_version = 7;",
     )
     .unwrap();
@@ -983,5 +1030,103 @@ async fn rejected_deletion_rolls_back_but_lost_acknowledgement_stays_cancelling(
         "absence from queue and history does not confirm cancellation"
     );
     assert_eq!(api.fake.delete_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn resolved_workflow_verifies_submission_digest_and_supports_legacy_runs() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let workflows = &api.core.config().workflows;
+    let graph_path = workflows.join("workflow.api.json");
+    let mut graph: Value = serde_json::from_slice(&std::fs::read(&graph_path).unwrap()).unwrap();
+    graph["9"]["inputs"]["images"] = json!(["3", 0]);
+    std::fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let manifest_path = workflows.join("contract.genaimage.json");
+    let mut workflow_manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    workflow_manifest["parameters"]["images"] =
+        json!({"node":"9", "input":"images", "kind":"string"});
+    workflow_manifest["parameters"]["prefix"] =
+        json!({"node":"9", "input":"filename_prefix", "kind":"string"});
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec(&workflow_manifest).unwrap(),
+    )
+    .unwrap();
+    let workflow: WorkflowDetails = api.get_json(WORKFLOW).await;
+    let mut body = request();
+    body["workflow_revision"] = json!(workflow.revision);
+    let validation: Value = api.post_json(&format!("{WORKFLOW}/validate"), &json!({"workflow_revision": body["workflow_revision"], "preset": "fast", "parameters": {"seed": 99}})).await;
+    assert_eq!(validation["valid"], true);
+    assert_eq!(validation["revision"], body["workflow_revision"]);
+    assert_eq!(
+        validation["inherited_inputs"],
+        json!([
+            {"parameter":"images", "node":"9", "input":"images", "source":{"kind":"connection", "node":"3", "output":0}},
+            {"parameter":"prefix", "node":"9", "input":"filename_prefix", "source":{"kind":"literal", "json":"\"genaimage\""}},
+        ])
+    );
+    let source = run(
+        submit(&api, "workflow-read", &body).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let path = format!("{RUNS}/{}/resolved-workflow", source.id);
+    let record = api.core.repository().get(&source.id).unwrap();
+    let digest = record.resolved_workflow_sha256.as_ref().unwrap();
+    let graph_path = std::path::Path::new(&record.output_dir).join("resolved-workflow.json");
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-genaimage-workflow-integrity"],
+        "verified"
+    );
+    assert_eq!(response.headers()["etag"], format!("\"{digest}\""));
+    let graph: Value = response.json().await.unwrap();
+    assert_eq!(
+        graph,
+        *api.fake.submitted_graph.lock().unwrap().as_ref().unwrap()
+    );
+    assert_eq!(graph["9"]["inputs"]["images"], json!(["3", 0]));
+    assert_eq!(graph["9"]["inputs"]["filename_prefix"], "genaimage");
+    api.fake.complete.store(true, Ordering::SeqCst);
+    let completed: RunResponse = api
+        .post_json(&format!("{RUNS}/{}/reconcile", source.id), &Value::Null)
+        .await;
+    assert_eq!(completed.status, RunStatus::Completed);
+    let manifest: Value = api
+        .get_json(&format!("{RUNS}/{}/manifest", source.id))
+        .await;
+    assert_eq!(manifest["resolved_workflow_sha256"], *digest);
+
+    std::fs::write(&graph_path, br#"{"different":{"class_type":"Changed"}}"#).unwrap();
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::CONFLICT).await;
+    assert!(problem.recovery.contains("resolved workflow"));
+
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "UPDATE runs SET resolved_workflow_sha256 = NULL WHERE id = ?1",
+        [&source.id],
+    )
+    .unwrap();
+    drop(db);
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-genaimage-workflow-integrity"],
+        "unverified"
+    );
+    let legacy: Value = response.json().await.unwrap();
+    assert_eq!(legacy["different"]["class_type"], "Changed");
+
+    let response = api
+        .request(Method::GET, &format!("{RUNS}/missing/resolved-workflow"))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    assert!(!problem.recovery.contains("completion manifest"));
     api.shutdown().await;
 }

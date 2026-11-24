@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { BindingFloat } from '../../lib/api/client';
   import Button from '../../lib/ui/Button.svelte';
   import Field from '../../lib/ui/Field.svelte';
@@ -42,6 +43,15 @@
     uploadStatus: (message?: string) => void;
   } = $props();
 
+  let preserveMultiline = $state(
+    untrack(
+      () => typeof field.value === 'string' && /[\r\n]/.test(field.value),
+    ),
+  );
+  $effect(() => {
+    if (typeof field.value === 'string' && /[\r\n]/.test(field.value))
+      preserveMultiline = true;
+  });
   let needed = $derived(parameter.required);
   let hint = $derived(
     [
@@ -236,6 +246,7 @@
           id={`${id}-custom`}
           label={`${name} custom value`}
           {error}
+          multiline={preserveMultiline}
           bind:value={() => String(field.value ?? ''), edit}
         />
       {/if}
@@ -278,7 +289,7 @@
       {error}
       required={needed}
       placeholder={parameter.placeholder ?? undefined}
-      multiline={parameter.widget === 'textarea'}
+      multiline={parameter.widget === 'textarea' || preserveMultiline}
       bind:value={() => String(field.value ?? ''), edit}
     />
   {/if}

@@ -57,6 +57,11 @@ pub struct MediaFile {
     pub len: u64,
 }
 
+pub struct StoredResolvedWorkflow {
+    pub media: MediaFile,
+    pub integrity_verified: bool,
+}
+
 pub struct StoredRunManifest {
     pub media: MediaFile,
     pub integrity_verified: bool,
@@ -133,6 +138,37 @@ impl Harness {
             Ok(StoredRunManifest {
                 media: manifest,
                 integrity_verified,
+            })
+        })
+        .await
+    }
+
+    /// Verify the archived graph against the digest captured before submission.
+    pub async fn open_resolved_workflow(&self, id: &str) -> Result<StoredResolvedWorkflow> {
+        let run = self.repository().as_async().get(id).await?;
+        let path = PathBuf::from(&run.output_dir).join("resolved-workflow.json");
+        let root = self.config().runs.clone();
+        let data = self.config().data_dir.clone();
+        blocking(move || {
+            let expected = run.resolved_workflow_sha256;
+            let file = open_stored(&root, &path)?;
+            let mut workflow = snapshot(file, &data, Some(MAX_SOURCE_BYTES))?;
+            if expected
+                .as_ref()
+                .is_some_and(|digest| digest != &workflow.sha256)
+            {
+                return Err(HarnessError::MediaIntegrity);
+            }
+            let json: serde_json::Value =
+                serde_json::from_reader(BufReader::new(&mut workflow.file))
+                    .map_err(|_| HarnessError::MediaIntegrity)?;
+            if !json.is_object() {
+                return Err(HarnessError::MediaIntegrity);
+            }
+            workflow.file.rewind()?;
+            Ok(StoredResolvedWorkflow {
+                media: workflow,
+                integrity_verified: expected.is_some(),
             })
         })
         .await

@@ -39,6 +39,7 @@ type FormState = {
   modified?: boolean;
   fields: Iterable<[string, FieldState]>;
   inherited?: readonly SharedInherited[];
+  unverifiedSource?: boolean;
   chosenSeeds?: Readonly<Record<string, Scalar>>;
 };
 
@@ -74,6 +75,7 @@ export function encodeFormState(state: FormState): string {
   const query = new URLSearchParams({ workflow: state.workflow, v: format });
   if (state.version !== undefined) query.set('wv', state.version);
   if (state.revision !== undefined) query.set('wr', state.revision);
+  if (state.unverifiedSource) query.set('unverified_source', '1');
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
   if (state.inherited?.length) query.set('i', JSON.stringify(state.inherited));
@@ -116,7 +118,8 @@ export function buildGenerateUrl(run: {
     v: format,
     wv: run.workflow_version,
   });
-  if (run.workflow_revision != null) query.set('wr', run.workflow_revision);
+  if (run.workflow_revision) query.set('wr', run.workflow_revision);
+  else query.set('unverified_source', '1');
   const entries =
     run.parameters &&
     typeof run.parameters === 'object' &&
@@ -186,11 +189,19 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     modified: false,
     versionNotice: undefined as string | undefined,
     revisionNotice: undefined as string | undefined,
+    unverifiedSource: query.get('unverified_source') === '1',
   };
   if (
-    !['v', 'p', 'wv', 'wr', 'preset', 'modified', 'i'].some((key) =>
-      query.has(key),
-    )
+    ![
+      'v',
+      'p',
+      'wv',
+      'wr',
+      'preset',
+      'modified',
+      'i',
+      'unverified_source',
+    ].some((key) => query.has(key))
   )
     return state;
   if (query.toString().length + '#/generate?'.length > maxFragment) {

@@ -503,12 +503,14 @@ fn problem(error: HarnessError) -> Problem {
 }
 
 fn run_response(run: RunRecord) -> api::RunResponse {
+    let workflow_revision = run.workflow_revision();
     api::RunResponse {
         id: run.id,
         prompt_id: run.prompt_id,
         workflow_id: run.workflow_id,
         workflow_version: run.workflow_version,
         workflow_sha256: run.workflow_sha256,
+        workflow_revision,
         rerun_of: run.rerun_of,
         status: api_status(run.status),
         parameters: run.parameters,

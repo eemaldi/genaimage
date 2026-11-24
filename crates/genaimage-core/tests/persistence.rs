@@ -74,13 +74,34 @@ fn unversioned_legacy_database_is_migrated_without_losing_runs() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
             .unwrap(),
         "wal"
     );
+}
+
+#[test]
+fn migrates_version_nine_runs_without_inventing_a_graph_digest() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("state.sqlite3");
+    let repository = RunRepository::open(&path).unwrap();
+    repository.insert(&new_run()).unwrap();
+    drop(repository);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; PRAGMA user_version=9;",
+    )
+    .unwrap();
+    drop(conn);
+    let migrated = RunRepository::open(&path).unwrap();
+    assert!(migrated
+        .get("run")
+        .unwrap()
+        .resolved_workflow_sha256
+        .is_none());
 }
 
 #[test]

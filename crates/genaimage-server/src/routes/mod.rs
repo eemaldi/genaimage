@@ -98,6 +98,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(runs::cancel))
         .routes(routes!(runs::reconcile))
         .routes(routes!(outputs::manifest))
+        .routes(routes!(outputs::resolved_workflow))
         .routes(routes!(outputs::list))
         .routes(routes!(outputs::metadata))
         .routes(routes!(outputs::original))

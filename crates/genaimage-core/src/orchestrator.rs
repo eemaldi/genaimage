@@ -1115,7 +1115,7 @@ impl Harness {
                 &source_inputs,
             )
         };
-        let (run, preflight) = if let Some((key, fingerprint)) = keyed {
+        let (run, (preflight, resolved_checksum)) = if let Some((key, fingerprint)) = keyed {
             let run = match repository
                 .reserve_submission(key, fingerprint, new_run)
                 .await?
@@ -1161,7 +1161,7 @@ impl Harness {
             )
         };
         repository
-            .record_preflight(run.id.clone(), preflight)
+            .record_preflight(run.id.clone(), preflight, resolved_checksum)
             .await?;
         repository
             .record_event(

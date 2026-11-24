@@ -421,7 +421,8 @@ and accepts 1–200. Errors use `application/problem+json` with a `recovery` hin
 | `GET /outputs/{id}/metadata` | Fetch the same metadata for one output, without transferring media bytes. |
 | `GET /outputs/{id}` | Stream the original file with a strong SHA-256 ETag, `Accept-Ranges: bytes` and `Cache-Control: public, max-age=31536000, immutable`. |
 | `GET /outputs/{id}/thumbnail?size=128` | Return a cached WebP thumbnail with a strong ETag. |
-| `GET /runs/{id}/manifest` | Stream the exact stored `run-manifest.json`, including its output and workflow checksums. Never reconstruct it on read. |
+| `GET /runs/{id}/manifest` | Stream the exact stored `run-manifest.json`, including its output and workflow checksums. New manifests also include `resolved_workflow_sha256`; legacy manifests may omit it. Never reconstruct it on read. |
+| `GET /runs/{id}/resolved-workflow` | Stream the archived resolved graph as JSON. New runs verify its SHA-256 against the fingerprint pinned in the run record before submission; older archives are marked unverified. This does not independently prove what ComfyUI executed. |
 
 List responses contain `outputs` and `next_cursor` (null at the end). Pass the
 opaque cursor back unchanged with the same filters. Outputs are sorted newest
@@ -722,9 +723,15 @@ recipients. Upload references only work where those uploads are stored.
 `apps/portal/src/routes/generate/share.ts` exports `encodeFormState(state)`
 and `buildGenerateUrl(run)`; both return the full route hash, not an origin.
 Remix should pass `await api.getRecordedRun(id, { exactBindings: true })`
-to `buildGenerateUrl` to keep exact numeric values. A run response does not identify source provenance, so
-Remix imports recorded parameters as user values and locks recorded seeds.
-The editor restores and validates them against the current manifest.
+to `buildGenerateUrl` to keep exact numeric values. A run response does not identify
+the parameter value sources, so Remix imports recorded parameters as user values
+and locks recorded seeds.
+The editor restores and validates them against the current manifest. Run responses
+include `workflow_revision` when the original graph and sidecar fingerprints
+are recorded; Remix carries it as `wr` and warns if the current revision differs,
+even when the workflow version is unchanged. For legacy runs without those
+fingerprints, `unverified_source=1` preserves a warning that the source cannot
+be verified, including when the restored form is shared or reloaded.
 
 On review, the server validates the concrete parameter snapshot pinned to the
 loaded workflow revision. If validation or submission reports that revision
