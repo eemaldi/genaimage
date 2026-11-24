@@ -153,6 +153,28 @@ it.each([true, false])(
   },
 );
 
+it.each([undefined, -1])(
+  'wraps Tab at an editing host (explicit tabindex: %s)',
+  async (editorTabIndex) => {
+    const user = userEvent.setup();
+    render(Fixture, { kind: 'editor', editorTabIndex });
+    await user.click(screen.getByRole('button', { name: 'Open example' }));
+    const close = screen.getByRole('button', { name: 'Close' });
+    const editor = screen.getByRole('textbox', { name: 'Prompt editor' });
+    expect(document.activeElement).toBe(close);
+    await user.tab();
+    expect(document.activeElement).toBe(
+      editorTabIndex === undefined ? editor : close,
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(
+      editorTabIndex === undefined ? editor : close,
+    );
+  },
+);
+
 it('automatically activates tabs with roving focus, wrapping and Home/End', async () => {
   const user = userEvent.setup();
   render(Fixture, { kind: 'tabs' });

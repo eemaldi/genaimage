@@ -7,14 +7,16 @@
   let {
     kind,
     checkedRadio,
+    editorTabIndex,
   }: {
-    kind: 'dialog' | 'radio' | 'tabs' | 'tooltip' | 'tooltip-edges';
+    kind: 'dialog' | 'radio' | 'editor' | 'tabs' | 'tooltip' | 'tooltip-edges';
     checkedRadio?: boolean;
+    editorTabIndex?: number;
   } = $props();
   let open = $state(false);
 </script>
 
-{#if kind === 'dialog' || kind === 'radio'}
+{#if kind === 'dialog' || kind === 'radio' || kind === 'editor'}
   <Button onclick={() => (open = true)}>Open example</Button>
   <Dialog bind:open title="Example" description="An example dialog">
     <Button disabled>Disabled</Button>
@@ -23,6 +25,15 @@
         ><input type="radio" name="quality" checked={checkedRadio} /> Draft</label
       >
       <label><input type="radio" name="quality" /> Final</label>
+    {:else if kind === 'editor'}
+      <div
+        role="textbox"
+        aria-label="Prompt editor"
+        contenteditable="true"
+        tabindex={editorTabIndex}
+      >
+        <span contenteditable="true">Edit the prompt</span>
+      </div>
     {:else}
       <Button>Last action</Button>
     {/if}

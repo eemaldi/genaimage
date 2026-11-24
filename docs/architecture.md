@@ -575,19 +575,22 @@ Escape. Focus should land on Dashboard’s `main`. In the UI test fixture at
 `apps/portal/src/lib/ui/Fixture.test.svelte`, render `kind="radio"` with and
 without `checkedRadio`; Tab must wrap after the final group and Shift+Tab from
 Close must reach the checked or first radio. Render `kind="tooltip-edges"` and
-Tab to both triggers; each bubble must stay within the viewport.
+Tab to both triggers; each bubble must stay within the viewport. With
+`kind="editor"`, Tab from Close must reach the editor and the following Tab
+must wrap to Close. With `editorTabIndex: -1`, Tab must skip the editor.
 To mount either fixture without adding browser tooling, open the Vite dev
 portal and run this in its DevTools console. Reload before changing fixtures.
 
 ```js
-const kind = 'radio'; // Or 'tooltip-edges'.
+const kind = 'radio'; // Or 'editor' or 'tooltip-edges'.
 const checkedRadio = true; // Also try false for the radio fixture.
 const svelte = performance.getEntriesByType('resource').find(({ name }) =>
   new URL(name).pathname.endsWith('/deps/svelte.js'));
 const { mount } = await import(svelte.name);
+const editorTabIndex = undefined; // Also try -1 for the editor fixture.
 const { default: Fixture } = await import('/src/lib/ui/Fixture.test.svelte');
 document.querySelector('#app').hidden = true;
-mount(Fixture, { target: document.body, props: { kind, checkedRadio } });
+mount(Fixture, { target: document.body, props: { kind, checkedRadio, editorTabIndex } });
 ```
 
 ## Performance budgets

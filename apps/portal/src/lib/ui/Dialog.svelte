@@ -47,6 +47,20 @@
     );
   }
 
+  const editable =
+    '[contenteditable=""], [contenteditable="true" i], [contenteditable="plaintext-only" i]';
+
+  function isTabStop(element: HTMLElement) {
+    if (element.tabIndex >= 0) return true;
+    if (element.hasAttribute('tabindex') || !element.matches(editable))
+      return false;
+    // Implicit editing hosts are in the native order even when tabIndex is -1.
+    const ancestor = element.parentElement?.closest(
+      `${editable}, [contenteditable="false" i]`,
+    );
+    return !ancestor?.matches(editable);
+  }
+
   function groupedRadio(element: Element | null): element is HTMLInputElement {
     return (
       element instanceof HTMLInputElement &&
@@ -61,7 +75,7 @@
       dialog.querySelectorAll<HTMLElement>(
         'button, a[href], input, select, textarea, summary, [tabindex], [contenteditable]',
       ),
-    ).filter((el) => el.tabIndex >= 0 && isAvailable(el));
+    ).filter((el) => isTabStop(el) && isAvailable(el));
     const radios = candidates.filter(groupedRadio);
     function stopFor(element: Element | null) {
       if (!groupedRadio(element)) return element;
@@ -70,7 +84,8 @@
       );
       return group.find((radio) => radio.checked) ?? group[0];
     }
-    const order = (element: HTMLElement) => element.tabIndex || Infinity;
+    const order = (element: HTMLElement) =>
+      element.tabIndex > 0 ? element.tabIndex : Infinity;
     const stops = candidates
       .filter((el) => stopFor(el) === el)
       .sort((a, b) => order(a) - order(b));
