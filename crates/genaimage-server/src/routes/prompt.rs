@@ -13,7 +13,7 @@ use genaimage_core::{
 
 use crate::{AppState, Problem};
 
-pub(crate) const PROMPT_ASSIST_BODY_LIMIT: usize = 64 * 1024;
+pub(crate) const PROMPT_ASSIST_BODY_LIMIT: usize = 512 * 1024;
 
 #[utoipa::path(
     post, path = "/assistant/prompt",

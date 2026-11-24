@@ -254,12 +254,6 @@ impl LlmRoles {
             })?;
         let (supports_tools, supports_vision) = self.capabilities(probed);
         match role {
-            LlmRole::Text if !supports_tools => {
-                return Err(AssistantUnavailable::CapabilityUnsupported {
-                    model: model.to_owned(),
-                    capability: LlmCapability::Tools,
-                })
-            }
             LlmRole::Vision if !supports_vision => {
                 return Err(AssistantUnavailable::CapabilityUnsupported {
                     model: model.to_owned(),
@@ -470,9 +464,9 @@ impl LlmRoles {
         let Some(probed) = models.iter().find(|candidate| candidate.id == model) else {
             return self.unavailable_role(role, format!("Model '{model}' was not found."));
         };
-        let (tools, vision) = self.capabilities(probed);
+        let (_, vision) = self.capabilities(probed);
         let capability = match role {
-            LlmRole::Text => (!tools).then_some("tools"),
+            LlmRole::Text => None,
             LlmRole::Vision => (!vision).then_some("vision"),
         };
         if let Some(capability) = capability {
@@ -537,8 +531,8 @@ const fn role_name(role: LlmRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::async_trait;
     use crate::extensions::{ChatStream, LlmModel};
+    use crate::{async_trait, ToolDefinition};
     use std::sync::atomic::AtomicUsize;
 
     #[derive(Clone, Default)]
@@ -568,7 +562,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_role_capabilities_before_chat_and_prefers_overrides() {
+    async fn text_binds_without_tools_while_request_checks_and_overrides_stay_strict() {
         let provider = Arc::new(FakeProvider {
             models: vec![
                 LlmModel {
@@ -588,13 +582,27 @@ mod tests {
         debug_config.api_key = Some("roles-debug-secret".into());
         let roles = LlmRoles::new(&debug_config, Some(provider.clone()));
         assert!(!format!("{roles:?}").contains("roles-debug-secret"));
-        assert!(matches!(
-            roles.text().await,
-            Err(AssistantUnavailable::CapabilityUnsupported {
-                capability: LlmCapability::Tools,
-                ..
-            })
-        ));
+        let text = roles.text().await.unwrap();
+        assert_eq!(text.model(), "text");
+        let tool_free_request = ChatRequest {
+            model: "text".into(),
+            messages: vec![ChatMessage::User(vec![ChatContent::Text("hello".into())])],
+            tools: vec![],
+        };
+        assert!(text.check_request(&tool_free_request).is_ok());
+        let tools_request = ChatRequest {
+            model: "text".into(),
+            messages: vec![],
+            tools: vec![ToolDefinition {
+                name: "review".into(),
+                description: "Review a proposal".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }],
+        };
+        let error = text.check_request(&tools_request).unwrap_err();
+        assert!(matches!(error, HarnessError::Configuration(_)));
+        let error = error.to_string();
+        assert!(error.contains("text") && error.contains("tools"));
         assert!(matches!(
             roles.vision().await,
             Err(AssistantUnavailable::CapabilityUnsupported {

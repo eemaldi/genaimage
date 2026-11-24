@@ -260,6 +260,16 @@ async fn prompt_and_instruction_limits_are_rejected_as_unprocessable() {
 }
 
 #[tokio::test]
+async fn maximum_length_four_byte_refine_request_reaches_validation() {
+    let (api, llm) = configured(FakeLlmScript::text_chunks([r#"{"proposals":["refined"]}"#])).await;
+    let mut body = request(PromptAssistMode::Refine, &"🦀".repeat(16 * 1024));
+    body.instruction = Some("🦀".repeat(8 * 1024));
+    let response = client(&api).prompt_assist(&body).await.unwrap();
+    assert_eq!(response.proposals[0].text, "refined");
+    assert_eq!(llm.chat_request_count(), 1);
+}
+
+#[tokio::test]
 async fn edited_mode_template_is_used_and_its_hash_is_recorded() {
     let (api, llm) = configured(FakeLlmScript::text_chunks([r#"{"proposals":["first"]}"#])).await;
     let client = client(&api);

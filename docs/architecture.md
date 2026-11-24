@@ -146,9 +146,11 @@ shutdown starts, so a stalled upload cannot prevent draining.
 
 Core `LlmRoles` is the public gate for future assistant routes. `text()` and
 `vision()` return a role binding only for the exact configured model and never
-fall back to the other role. Known unsupported tools or vision capabilities are
-rejected before a provider call. `LlmRoleBinding::check_request` also rejects a
-mismatched model or request capability at the provider boundary. The settings
+fall back to the other role. A text binding requires a configured, reachable,
+listed model but does not itself require tools support; a vision binding still
+requires vision support. Capability metadata remains available for reporting.
+`LlmRoleBinding::check_request` rejects a mismatched model and known unsupported
+tools or vision capabilities before every provider call. The settings
 API never serialises the LLM API key; it exposes only `api_key_set` and accepts
 an explicit replacement or clear operation.
 
