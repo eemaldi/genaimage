@@ -106,7 +106,8 @@ back to `index.html`, served with `Cache-Control: no-cache`. Vite's hashed
 HTTP proxy to an explicit loopback Vite origin. `localhost` resolves only to
 pinned loopback addresses; outbound system proxies and redirect following are
 disabled. It forwards UI GET/HEAD requests and selected headers, not browser
-credentials or WebSocket upgrades. Vite injects styles during development, so
+credentials or WebSocket upgrades. Hop-by-hop headers, including those named
+by `Connection`, are not forwarded in either direction. Vite injects styles during development, so
 proxied UI responses allow inline styles only; neither mode allows inline
 scripts. Open Vite directly for HMR; Vite's own API proxy targets port 8190.
 See [portal development](../README.md#portal-development).

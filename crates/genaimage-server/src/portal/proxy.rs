@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Duration,
@@ -7,13 +8,42 @@ use std::{
 use axum::{
     body::Body,
     extract::Request,
-    http::{header, Method, StatusCode},
+    http::{header, HeaderMap, HeaderName, Method, StatusCode},
     response::{IntoResponse, Response},
 };
 use url::{Host, Url};
 
 use super::{api_not_found, is_api_path, DevPortalResponse};
 use crate::Problem;
+
+fn forward_headers(source: &HeaderMap, allowed: &[HeaderName]) -> HeaderMap {
+    let nominated: HashSet<_> = source
+        .get_all(header::CONNECTION)
+        .iter()
+        .flat_map(|value| value.as_bytes().split(|&byte| byte == b','))
+        .filter_map(|token| HeaderName::from_bytes(token.trim_ascii()).ok())
+        .collect();
+    source
+        .iter()
+        .filter(|(name, _)| {
+            allowed.contains(name)
+                && !nominated.contains(*name)
+                && !matches!(
+                    name.as_str(),
+                    "connection"
+                        | "keep-alive"
+                        | "proxy-authenticate"
+                        | "proxy-authorization"
+                        | "proxy-connection"
+                        | "te"
+                        | "trailer"
+                        | "transfer-encoding"
+                        | "upgrade"
+                )
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
 
 /// An explicitly configured Vite development origin, restricted to loopback.
 #[derive(Clone, Debug)]
@@ -79,17 +109,18 @@ impl PortalDevProxy {
         if is_api_path(url.path()) {
             return api_not_found();
         }
-        let mut upstream = self.client.request(request.method().clone(), url);
-        for key in [
-            header::ACCEPT,
-            header::ACCEPT_ENCODING,
-            header::IF_NONE_MATCH,
-            header::IF_MODIFIED_SINCE,
-        ] {
-            for value in request.headers().get_all(&key) {
-                upstream = upstream.header(&key, value);
-            }
-        }
+        let upstream = self
+            .client
+            .request(request.method().clone(), url)
+            .headers(forward_headers(
+                request.headers(),
+                &[
+                    header::ACCEPT,
+                    header::ACCEPT_ENCODING,
+                    header::IF_NONE_MATCH,
+                    header::IF_MODIFIED_SINCE,
+                ],
+            ));
         let upstream = match upstream.send().await {
             Ok(response) => response,
             Err(error) => {
@@ -103,20 +134,19 @@ impl PortalDevProxy {
             }
         };
         let mut response = Response::builder().status(upstream.status());
-        for key in [
-            header::CONTENT_TYPE,
-            header::CONTENT_ENCODING,
-            header::CONTENT_LENGTH,
-            header::VARY,
-            header::CACHE_CONTROL,
-            header::ETAG,
-            header::LAST_MODIFIED,
-            header::LOCATION,
-        ] {
-            for value in upstream.headers().get_all(&key) {
-                response = response.header(&key, value);
-            }
-        }
+        *response.headers_mut().expect("valid Vite response status") = forward_headers(
+            upstream.headers(),
+            &[
+                header::CONTENT_TYPE,
+                header::CONTENT_ENCODING,
+                header::CONTENT_LENGTH,
+                header::VARY,
+                header::CACHE_CONTROL,
+                header::ETAG,
+                header::LAST_MODIFIED,
+                header::LOCATION,
+            ],
+        );
         let body = if request.method() == Method::HEAD {
             Body::empty()
         } else {

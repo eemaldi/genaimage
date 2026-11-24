@@ -493,7 +493,7 @@ fn portal_dev_url_accepts_only_loopback_http_origins() {
 }
 
 #[tokio::test]
-async fn portal_proxy_serves_vite_without_forwarding_api_or_browser_credentials() {
+async fn portal_proxy_filters_hop_by_hop_headers_and_keeps_api_local() {
     use axum::routing::get;
     use genaimage_server::PortalDevProxy;
 
@@ -502,14 +502,33 @@ async fn portal_proxy_serves_vite_without_forwarding_api_or_browser_credentials(
     let vite = Router::new().fallback(get(move |request: axum::extract::Request| async move {
         let headers = request.headers();
         assert_eq!(headers[header::HOST], format!("localhost:{}", addr.port()));
-        assert!(!headers.contains_key(header::COOKIE));
-        (
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::SET_COOKIE, "unexpected=value"),
-            ],
-            request.uri().to_string(),
-        )
+        assert_eq!(headers[header::ACCEPT], "text/javascript");
+        for blocked in [
+            header::COOKIE,
+            header::IF_NONE_MATCH,
+            header::IF_MODIFIED_SINCE,
+            header::ACCEPT_ENCODING,
+            header::CONNECTION,
+            header::TE,
+        ] {
+            assert!(!headers.contains_key(&blocked), "forwarded {blocked}");
+        }
+        let mut response = Response::builder();
+        for (name, value) in [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::SET_COOKIE, "unexpected=value"),
+            (header::CONNECTION, "eTaG , CACHE-Control"),
+            (header::CONNECTION, "Vary"),
+            (header::ETAG, "\"test\""),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::VARY, "Accept-Encoding"),
+            (header::PROXY_AUTHENTICATE, "Basic realm=local"),
+        ] {
+            response = response.header(name, value);
+        }
+        response
+            .body(Body::from(request.uri().to_string()))
+            .unwrap()
     }));
     let server = tokio::spawn(async move { axum::serve(listener, vite).await.unwrap() });
     let workspace = TempDir::new().unwrap();
@@ -526,6 +545,13 @@ async fn portal_proxy_serves_vite_without_forwarding_api_or_browser_credentials(
             Request::get("/src/main.ts?t=123")
                 .header(header::HOST, "127.0.0.1:4567")
                 .header(header::COOKIE, "browser=value")
+                .header(header::CONNECTION, "If-None-Match, IF-Modified-Since")
+                .header(header::CONNECTION, " Accept-Encoding ")
+                .header(header::IF_NONE_MATCH, "\"test\"")
+                .header(header::IF_MODIFIED_SINCE, "Tue, 24 Nov 2026 12:00:00 GMT")
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .header(header::ACCEPT, "text/javascript")
+                .header(header::TE, "trailers")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -533,7 +559,19 @@ async fn portal_proxy_serves_vite_without_forwarding_api_or_browser_credentials(
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[header::CONTENT_TYPE], "text/javascript");
-    assert!(!response.headers().contains_key(header::SET_COOKIE));
+    for blocked in [
+        header::SET_COOKIE,
+        header::CONNECTION,
+        header::ETAG,
+        header::CACHE_CONTROL,
+        header::VARY,
+        header::PROXY_AUTHENTICATE,
+    ] {
+        assert!(
+            !response.headers().contains_key(&blocked),
+            "forwarded {blocked}"
+        );
+    }
     assert_eq!(
         to_bytes(response.into_body(), 1024).await.unwrap(),
         "/src/main.ts?t=123"
