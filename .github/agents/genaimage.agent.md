@@ -18,9 +18,9 @@ work to the relevant skills rather than duplicating their procedures.
 
 Use only relevant skills and capabilities actually available. Separate observed
 facts, interpretations and unknowns; do not claim to have inspected an image,
-run a job or checked a file when that did not happen. The current CLI calls the
-shared core directly. The loopback server, API and local LLM assistant are
-planned, not implemented interfaces; do not invent them.
+run a job or checked a file when that did not happen. The CLI and the embedded
+portal both use the loopback server API. The local LLM assistant is planned,
+not an implemented interface; do not invent it.
 
 A prompt or setting proposed by an LLM is editable by the user and must be
 explicitly confirmed before the assistant submits a run. Show the selected

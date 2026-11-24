@@ -1,6 +1,6 @@
 ---
 name: comfyui-harness-operation
-description: Operate the local GenAImage CLI safely with explicit workflow bindings, job control, reconciliation and provenance; distinguish the planned local API from current capabilities.
+description: Operate the local GenAImage CLI safely with explicit workflow bindings, job control, reconciliation and provenance; use the portal and the local API, and distinguish planned assistant features from current capabilities.
 ---
 
 # ComfyUI harness operation
@@ -85,10 +85,17 @@ source upload paths and hashes, ComfyUI IDs and history, output files and
 checksums. Run records and outputs must not overwrite previous files; create new
 versions instead. Do not invent missing provenance.
 
-## Planned API
+## Portal and API
 
-ADR 0001 describes a future loopback-only Rust server and local API, a thin CLI
-client and a local LLM assistant runtime in the shared core. These are planned,
-not current interfaces: do not invent endpoints, commands or availability.
-The same explicit binding, confirmation, reconciliation and provenance rules
-apply when they are implemented.
+`genaimage serve` exposes the loopback API (see `docs/api/openapi.json`). It
+also serves the embedded portal at `/`, which has dashboard, generate, jobs,
+gallery, workflows, run detail and settings pages. Generate shows the fully
+resolved values for review and pins the submission to the reviewed
+`workflow_revision`. Run detail re-runs a run through the server's
+provenance-checked `POST /api/v1/runs/{id}/rerun`, which never alters the
+source run.
+
+The local LLM assistant runtime and the portal assistant page are planned, not
+current interfaces. Do not invent endpoints, commands or availability for them.
+The same rules on explicit binding, confirmation, reconciliation and provenance
+will apply to them once they are implemented.

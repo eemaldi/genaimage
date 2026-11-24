@@ -27,7 +27,7 @@ Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 Health, events, workflows, runs, outputs, uploads and settings are available.
 The [OpenAPI 3.1 contract](api/openapi.json) is also served at
 `GET /api/v1/openapi.json`. Open `http://127.0.0.1:3000/` for the embedded
-portal shell; feature pages and API integration are still being built.
+portal. The assistant page is planned.
 
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.

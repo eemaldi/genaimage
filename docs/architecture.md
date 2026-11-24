@@ -60,9 +60,10 @@ genaimage local config module -> genaimage-core (configuration only)
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
-The CLI uses the loopback API; the browser portal will use the same API. The
-portal in `apps/portal` uses Svelte 5, TypeScript, Vite and hash routing. Page
-features and the API client are still being built. The default binary embeds
+The CLI and the browser portal use the same loopback API. The portal in
+`apps/portal` uses Svelte 5, TypeScript, Vite and hash routing, with a typed
+API client and one shared event stream. The assistant page is planned. The
+default binary embeds
 `apps/portal/dist` at compile time, including Brotli and gzip sidecars created
 with Node's built-in zlib at portal build time. No Node process is needed at
 runtime. API-only builds disable the `portal` feature with
