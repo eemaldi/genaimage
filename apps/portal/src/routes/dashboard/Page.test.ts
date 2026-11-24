@@ -152,9 +152,9 @@ it('merges live runs into the snapshot and links unknown submissions to reconcil
   });
   await screen.findByText(/Unknown submissions need reconciliation/);
   expect(
-    screen
-      .getByText('Run a needs reconciliation. Go to Jobs.')
-      .getAttribute('aria-live'),
+    (
+      await screen.findByText('Run a needs reconciliation. Go to Jobs.')
+    ).getAttribute('aria-live'),
   ).toBe('polite');
   expect(
     screen.getByText('Needs reconciliation', { selector: 'strong' }),
@@ -400,4 +400,131 @@ it('does not re-probe for the health event delivered after its matching response
   });
   await vi.advanceTimersByTimeAsync(10_000);
   expect(fake.health).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ['run_completed', 'completed'],
+  ['run_failed', 'failed'],
+  ['run_cancelled', 'cancelled'],
+] as const)(
+  'announces %s transitions but not initial state or progress',
+  async (eventType, result) => {
+    fake.listRuns.mockResolvedValue({
+      runs: [makeRun('a', 'queued'), makeRun('old', result)],
+      next_cursor: null,
+    });
+    const { container } = mount();
+    await screen.findByRole('link', { name: 'workflow-a' });
+    const live = container.querySelector('[aria-live="polite"]')!;
+    expect(live.textContent?.trim()).toBe('');
+    vi.useFakeTimers();
+    emit('run_progress', {
+      run: makeRun('a', 'running', '2026-01-01T10:01:00Z'),
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(live.textContent?.trim()).toBe('');
+    emit(eventType, { run: makeRun('a', result, '2026-01-01T10:02:00Z') });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(live.textContent?.trim()).toBe(`Run a ${result}.`);
+    emit(eventType, { run: makeRun('a', result, '2026-01-01T10:03:00Z') });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(live.textContent?.trim()).toBe(`Run a ${result}.`);
+  },
+);
+
+it('coalesces a burst of run transitions into one concise announcement', async () => {
+  fake.listRuns.mockResolvedValue({
+    runs: ['a', 'b', 'c'].map((id) => makeRun(id, 'queued')),
+    next_cursor: null,
+  });
+  const { container } = mount();
+  await screen.findByRole('link', { name: 'workflow-a' });
+  const live = container.querySelector('[aria-live="polite"]')!;
+  vi.useFakeTimers();
+  emit('run_completed', {
+    run: makeRun('a', 'completed', '2026-01-01T10:01:00Z'),
+  });
+  emit('run_failed', { run: makeRun('b', 'failed', '2026-01-01T10:01:00Z') });
+  emit('run_failed', { run: makeRun('c', 'failed', '2026-01-01T10:01:00Z') });
+  emit('run_cancelled', {
+    run: makeRun('c', 'cancelled', '2026-01-01T10:02:00Z'),
+  });
+  await vi.advanceTimersByTimeAsync(399);
+  expect(live.textContent?.trim()).toBe('');
+  await vi.advanceTimersByTimeAsync(1);
+  expect(live.textContent?.trim()).toBe(
+    'Run a completed. Run b failed. 1 more update. Check Jobs and service health.',
+  );
+});
+
+it('announces health transitions after initial load and coalesces service changes', async () => {
+  const { container } = mount();
+  await screen.findByText('Not configured');
+  const live = container.querySelector('[aria-live="polite"]')!;
+  expect(live.textContent?.trim()).toBe('');
+  vi.useFakeTimers();
+  fake.health.mockResolvedValue({
+    ...healthy,
+    image_backend: 'unavailable',
+    image_backend_reason: 'probe_failed',
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'Refresh health' }));
+  await vi.waitFor(() => expect(screen.getByText('Unavailable')).toBeTruthy());
+  await vi.advanceTimersByTimeAsync(400);
+  expect(live.textContent?.trim()).toBe('ComfyUI is unavailable.');
+  fake.health.mockResolvedValue({ ...healthy, llm: 'ok' });
+  await fireEvent.click(screen.getByRole('button', { name: 'Refresh health' }));
+  await vi.waitFor(() => expect(screen.queryByText('Unavailable')).toBeNull());
+  await vi.advanceTimersByTimeAsync(400);
+  expect(live.textContent?.trim()).toBe(
+    'ComfyUI is available again. LLM is available again.',
+  );
+});
+
+it('announces status changes discovered on resync without announcing initial snapshots', async () => {
+  fake.listRuns
+    .mockResolvedValueOnce({
+      runs: [makeRun('a', 'queued')],
+      next_cursor: null,
+    })
+    .mockResolvedValue({
+      runs: [makeRun('a', 'completed', '2026-01-01T10:01:00Z')],
+      next_cursor: null,
+    });
+  const { container } = mount();
+  await screen.findByRole('link', { name: 'workflow-a' });
+  const live = container.querySelector('[aria-live="polite"]')!;
+  expect(live.textContent?.trim()).toBe('');
+  resync.set({ epoch: 1, reason: { reason: 'lagged', skipped: 1 } });
+  expect(await screen.findByText('Run a completed.')).toBeTruthy();
+});
+
+it('cancels queued announcements when the dashboard unmounts', async () => {
+  fake.listRuns.mockResolvedValue({
+    runs: [makeRun('a', 'queued')],
+    next_cursor: null,
+  });
+  mount();
+  await screen.findByRole('link', { name: 'workflow-a' });
+  vi.useFakeTimers();
+  emit('run_failed', { run: makeRun('a', 'failed', '2026-01-01T10:01:00Z') });
+  cleanup();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it('drops an obsolete reconciliation announcement when the run starts in the same burst', async () => {
+  fake.listRuns.mockResolvedValue({
+    runs: [makeRun('a', 'queued')],
+    next_cursor: null,
+  });
+  const { container } = mount();
+  await screen.findByRole('link', { name: 'workflow-a' });
+  const live = container.querySelector('[aria-live="polite"]')!;
+  vi.useFakeTimers();
+  emit('run_unknown_submission', {
+    run: makeRun('a', 'unknown_submission', '2026-01-01T10:01:00Z'),
+  });
+  emit('run_started', { run: makeRun('a', 'running', '2026-01-01T10:02:00Z') });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(live.textContent?.trim()).toBe('');
 });

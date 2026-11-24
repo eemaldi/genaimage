@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import {
     api,
@@ -22,6 +22,7 @@
   type HealthObservation = 'ok' | 'unavailable' | 'unknown';
   const runLimit = 50;
   const healthEventInterval = 5_000;
+  const announcementInterval = 400;
   const statuses: { value: Status; label: string }[] = [
     { value: 'created', label: 'Created' },
     { value: 'submitting', label: 'Submitting' },
@@ -95,9 +96,73 @@
       )
       .slice(0, runLimit);
   }
-  function announceRun(run: Run, previous?: Run) {
-    if (run.status === 'unknown_submission' && previous?.status !== run.status)
-      announcement = `Run ${run.id} needs reconciliation. Go to Jobs.`;
+  const pendingAnnouncements = new SvelteMap<string, string>();
+  let announcementOverflow = 0;
+  let announcementTimer: ReturnType<typeof setTimeout> | undefined;
+  function queueAnnouncement(key: string, message: string) {
+    if (
+      pendingAnnouncements.has(key) ||
+      pendingAnnouncements.size < runLimit + 3
+    )
+      pendingAnnouncements.set(key, message);
+    else announcementOverflow++;
+    announcementTimer ??= setTimeout(async () => {
+      announcementTimer = undefined;
+      const messages = [...pendingAnnouncements.values()];
+      const remaining = Math.max(0, messages.length - 2) + announcementOverflow;
+      const text = remaining
+        ? `${messages.slice(0, 2).join(' ')} ${remaining} more ${remaining === 1 ? 'update' : 'updates'}. Check Jobs and service health.`
+        : messages.join(' ');
+      pendingAnnouncements.clear();
+      announcementOverflow = 0;
+      announcement = '';
+      await tick();
+      if (active) announcement = text;
+    }, announcementInterval);
+  }
+  function announceRun(run: Run, previous?: Run, report = true) {
+    if (previous?.status === run.status) return;
+    const labels: Partial<Record<Status, string>> = {
+      completed: 'completed',
+      failed: 'failed',
+      cancelled: 'cancelled',
+      unknown_submission: 'needs reconciliation. Go to Jobs',
+    };
+    const label = labels[run.status];
+    const key = `run:${run.id}`;
+    if (label && report) queueAnnouncement(key, `Run ${run.id} ${label}.`);
+    else {
+      pendingAnnouncements.delete(key);
+      if (!pendingAnnouncements.size && !announcementOverflow) {
+        clearTimeout(announcementTimer);
+        announcementTimer = undefined;
+      }
+    }
+  }
+  function announceHealth(previous: Health | null, current: Health) {
+    if (!previous) return;
+    const services = [
+      { name: 'GenAImage', before: previous.self, after: current.self },
+      {
+        name: 'ComfyUI',
+        before: previous.image_backend,
+        after: current.image_backend,
+      },
+      { name: 'LLM', before: previous.llm, after: current.llm },
+    ];
+    for (const service of services) {
+      if (service.before === service.after) continue;
+      const labels: Record<Health['self'], string> = {
+        ok: 'available again',
+        unavailable: 'unavailable',
+        not_configured: 'not configured',
+      };
+      const label = labels[service.after] ?? service.after;
+      queueAnnouncement(
+        `health:${service.name}`,
+        `${service.name} is ${label}.`,
+      );
+    }
   }
   function mergeRun(list: Run[], run: Run, allowEqual = false): Run[] {
     const existing = list.find((item) => item.id === run.id);
@@ -161,6 +226,7 @@
     try {
       const result = await api.health({ signal: controller.signal });
       if (!active || controller.signal.aborted) return;
+      announceHealth(health, result);
       health = result;
       healthError = null;
       if (pendingHealth && matchesHealth(pendingHealth)) pendingHealth = null;
@@ -189,19 +255,21 @@
       );
       if (!active || controller.signal.aborted) return;
       let list = page.runs;
-      for (const run of buffered.values()) {
-        const previous = list.find((item) => item.id === run.id);
-        const merged = mergeRun(list, run);
-        if (
-          merged !== list &&
-          newestRuns(merged).some((item) => item.id === run.id)
-        )
-          announceRun(run, previous);
-        list = merged;
-      }
+      for (const run of buffered.values()) list = mergeRun(list, run);
       runsTruncated =
         Boolean(page.next_cursor) || bufferOverflow || list.length > runLimit;
-      runs = newestRuns(list);
+      const next = newestRuns(list);
+      if (runs) {
+        for (const run of next) {
+          const previous = runs.find((item) => item.id === run.id);
+          if (
+            previous &&
+            compareInstant(previous.updated_at, run.updated_at) <= 0
+          )
+            announceRun(run, previous);
+        }
+      }
+      runs = next;
       runsError = null;
     } catch (error) {
       if (!active || controller.signal.aborted) return;
@@ -288,7 +356,7 @@
             if (merged.length > runLimit) runsTruncated = true;
             runs = newestRuns(merged);
             if (runs.some((run) => run.id === event.run.id))
-              announceRun(event.run, previous);
+              announceRun(event.run, previous, event.type !== 'run_progress');
           }
         }
         if (event.type === 'run_completed') void loadOutputs();
@@ -341,6 +409,8 @@
       outputController?.abort();
       window.clearInterval(timer);
       clearTimeout(healthTimer);
+      clearTimeout(announcementTimer);
+      pendingAnnouncements.clear();
       document.removeEventListener('visibilitychange', visible);
       stops.forEach((stop) => stop());
     };
@@ -449,6 +519,7 @@
   {:else if !outputs.length}<p>No outputs yet.</p>
   {:else}<ul class="outputs">
       {#each outputs as output (output.id)}<li>
+          <!-- Gallery #47 will select this output from the query parameter. -->
           <a
             href={`#/gallery?output=${encodeURIComponent(output.id)}`}
             aria-label={`View ${output.source_filename} in Gallery`}
