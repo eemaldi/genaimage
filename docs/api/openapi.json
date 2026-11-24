@@ -1292,6 +1292,77 @@
         ],
         "type": "object"
       },
+      "WorkflowInheritedInput": {
+        "description": "The graph value an unbound optional parameter leaves in place.",
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "parameter": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/WorkflowInheritedSource"
+          }
+        },
+        "required": [
+          "parameter",
+          "node",
+          "input",
+          "source"
+        ],
+        "type": "object"
+      },
+      "WorkflowInheritedSource": {
+        "description": "The exact graph literal (JSON text), or a ComfyUI node output connection.",
+        "oneOf": [
+          {
+            "properties": {
+              "json": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "literal"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "json",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "connection"
+                ],
+                "type": "string"
+              },
+              "node": {
+                "type": "string"
+              },
+              "output": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "node",
+              "output",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "WorkflowListResponse": {
         "description": "A workflow catalogue and non-fatal discovery errors.",
         "properties": {
@@ -1563,6 +1634,13 @@
       "WorkflowValidationResponse": {
         "description": "The result of validating bindings and checking backend node availability.",
         "properties": {
+          "inherited_inputs": {
+            "description": "Graph inputs left untouched by binding, not submitted parameter values.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowInheritedInput"
+            },
+            "type": "array"
+          },
           "node_check": {
             "$ref": "#/components/schemas/WorkflowNodeCheck"
           },

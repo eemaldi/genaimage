@@ -1,7 +1,20 @@
 <script lang="ts">
   import type { RouteProps } from '../../router';
-  let { params: _params, query: _query }: RouteProps = $props();
+  import ProblemDetails from '../../lib/ui/ProblemDetails.svelte';
+  let { query }: RouteProps = $props();
+  const generate = import('./Generate.svelte');
 </script>
 
 <h1>Generate</h1>
-<p>This page is planned and not yet available.</p>
+{#await generate}
+  <p role="status">Loading the generate page…</p>
+{:then { default: Generate }}
+  <Generate {query} />
+{:catch}
+  <ProblemDetails
+    problem={{
+      title: 'Could not load the generate page',
+      recovery: 'Reload the page to try again.',
+    }}
+  />
+{/await}

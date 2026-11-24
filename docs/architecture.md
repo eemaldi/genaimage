@@ -227,8 +227,10 @@ The workflows API is read-only apart from validation, which does not submit a ru
   The node status is `available`, `missing` (with `missing_classes`) or
   `unavailable` (with a reason); an unavailable or timed-out check is not valid.
   An unknown preset or malformed request returns problem details. Validation
-  neither uploads images nor submits generation. When `workflow_revision` is
-  supplied, validation checks it before contacting ComfyUI and returns the same
+  neither uploads images nor submits generation. `inherited_inputs` lists
+  optional parameters left unbound and their node inputs from that snapshot:
+  exact JSON literals or node output connections. These are not bindings. When
+  `workflow_revision` is supplied, validation checks it before contacting ComfyUI and returns the same
   workflow-changed problem as submission if the snapshot no longer matches.
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
@@ -690,6 +692,54 @@ loaded results. The gallery reads recorded run parameters with the typed client'
 supplies the original token. Values that cannot be read exactly are shown
 separately from identical fields and differences. Dialogs leave focus traversal
 inside native audio and video controls to the browser.
+
+### Generate share links and Remix
+
+`#/generate?workflow=<id>` opens an empty editor with manifest defaults.
+Versioned share links add `v=2`, `wv` (workflow version), optional `wr`
+(workflow revision), optional `preset` and `modified=1`, and `p` (URL-encoded
+JSON). The `p` value is an array of
+`[name, source, value, seedMode?, chosenSeed?]` tuples. Sources are `d`
+(default), `p` (preset), `u` (user) and `n` (no source). Text and booleans
+use JSON scalars; `null` explicitly means unset, `['int','<decimal>']` and
+`['float','<decimal>']` preserve numeric type, and `['draft','<text>']`
+retains invalid editor text. Seed modes are `l` (locked) and `r` (randomise).
+A randomised field can include its concrete reviewed seed as `chosenSeed`;
+it is visible and reused at the next explicit review unless the user requests
+another seed. Upload values are `sha256:<digest>` strings, not file contents.
+Shared editor links include defaults and explicitly unset fields. Restoration
+keeps changed defaults as linked, reports per-field differences even for the
+same workflow version, and blocks review on missing fields or unset fields
+that now have a default until the user resolves them. Preset-sourced values
+are explicit; restoration never applies the current preset behind the scenes.
+Links over 32 KiB of encoded fragment or 256 tuples are rejected. Opening a
+share link never submits a run. A different revision is shown as a notice;
+it does not itself block review. Links copied after validation can include `i`,
+containing reviewed inherited inputs for comparison at the next explicit review.
+The fragment contains clear-text parameter data: share only with intended
+recipients. Upload references only work where those uploads are stored.
+
+`apps/portal/src/routes/generate/share.ts` exports `encodeFormState(state)`
+and `buildGenerateUrl(run)`; both return the full route hash, not an origin.
+Remix should pass `await api.getRecordedRun(id, { exactBindings: true })`
+to `buildGenerateUrl` to keep exact numeric values. A run response does not identify source provenance, so
+Remix imports recorded parameters as user values and locks recorded seeds.
+The editor restores and validates them against the current manifest.
+
+On review, the server validates the concrete parameter snapshot pinned to the
+loaded workflow revision. If validation or submission reports that revision
+has changed, Generate reloads the workflow, shows differences against the
+retained field values where possible, and requires a fresh review. Submit sends
+those parameters and the reviewed revision explicitly, not a preset for the
+server to expand, and uses one idempotency key for the lifetime of that snapshot. An uncertain request
+can be retried explicitly with the same key; it is never retried automatically.
+The exact pending request and key stay in this tab’s session storage across
+navigation and reload until the server returns a run or definitively rejects
+the request. Jobs is the status-check fallback because there is no lookup by
+idempotency key. Recovery stays available even if the workflow cannot be loaded.
+An older unpinned request cannot be retried; after checking Jobs, the user can
+explicitly dismiss it without submitting anything.
+Live output cards require both completed run status and indexed outputs.
 
 ### Accessibility checks
 

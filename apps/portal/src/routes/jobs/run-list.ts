@@ -28,7 +28,7 @@ type List = {
 export const pageSize = 25;
 
 // Date.parse truncates the fractional precision used by the durable timestamps.
-function compareTime(a: string, b: string) {
+export function compareTime(a: string, b: string) {
   const subMilliseconds = (time: string) =>
     (time.match(/\.\d{3}(\d+)/)?.[1] ?? '').padEnd(6, '0');
   return (

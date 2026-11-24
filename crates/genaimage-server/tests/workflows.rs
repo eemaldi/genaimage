@@ -404,6 +404,64 @@ async fn detail_reports_declared_and_effective_values_additively() {
 }
 
 #[tokio::test]
+async fn pinned_validation_lists_only_unbound_optional_graph_inputs() {
+    let api = ApiHarness::start().await;
+    install(&api, None);
+    let dir = &api.core.config().workflows;
+    let graph_path = dir.join("workflow.api.json");
+    let mut graph: Value = serde_json::from_slice(&std::fs::read(&graph_path).unwrap()).unwrap();
+    graph["9"]["inputs"]["images"] = json!(["3", 0]);
+    graph["9"]["inputs"]["defaulted"] = json!(42);
+    std::fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let manifest_path = dir.join("contract.genaimage.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["parameters"]["prefix"] =
+        json!({"node":"9", "input":"filename_prefix", "kind":"string"});
+    manifest["parameters"]["images"] = json!({"node":"9", "input":"images", "kind":"string"});
+    manifest["parameters"]["defaulted"] =
+        json!({"node":"9", "input":"defaulted", "kind":"integer", "default":7});
+    manifest["presets"]["with-prefix"] = json!({"seed":42, "steps":10, "prefix":"preset"});
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/contract-workflow").await;
+    let path = "/api/v1/workflows/contract-workflow/validate";
+    let result: Value = api
+        .post_json(
+            path,
+            &json!({"workflow_revision":details.revision,"preset":"fast"}),
+        )
+        .await;
+    assert_eq!(result["revision"], json!(details.revision));
+    assert_eq!(result["valid"], true);
+    assert_eq!(
+        result["inherited_inputs"],
+        json!([
+            {"parameter":"images","node":"9","input":"images","source":{"kind":"connection","node":"3","output":0}},
+            {"parameter":"prefix","node":"9","input":"filename_prefix","source":{"kind":"literal","json":"\"genaimage\""}},
+        ])
+    );
+    let result: Value = api.post_json(path, &json!({"workflow_revision":details.revision,"preset":"with-prefix","parameters":{"images":"explicit"}})).await;
+    assert_eq!(result["valid"], true);
+    assert!(result.get("inherited_inputs").is_none());
+    graph["9"]["inputs"]["filename_prefix"] = json!("changed");
+    std::fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let response = api
+        .request(Method::POST, path)
+        .json(&json!({"workflow_revision":details.revision,"preset":"fast"}))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-changed",
+    )
+    .await;
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn validates_parameters_presets_and_missing_nodes_without_submission() {
     let api = ApiHarness::start().await;
     install(&api, None);

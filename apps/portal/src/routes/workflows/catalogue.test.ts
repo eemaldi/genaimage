@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event';
 import { tick } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import App from '../../App.svelte';
-import { api, ApiProblemError } from '../../lib/api/client';
+import { api, ApiProblemError, createApiClient } from '../../lib/api/client';
 import type { components } from '../../lib/api/schema';
 import Page from './Page.svelte';
 import { mockNativeDialog } from '../../test/dialog';
@@ -264,6 +264,36 @@ it('shows manifest values, validation and navigates to Generate with the exact I
   );
   await user.click(screen.getByRole('button', { name: 'Use this workflow' }));
   expect(window.location.hash).toBe('#/generate?workflow=one+%26+two');
+});
+
+it('shows backend node status without JSON reviver source support', async () => {
+  const parse = JSON.parse;
+  vi.spyOn(JSON, 'parse').mockImplementation((text, reviver) =>
+    parse(
+      text,
+      reviver &&
+        function (this: unknown, key, value: unknown) {
+          return reviver.call(this, key, value);
+        },
+    ),
+  );
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+    Response.json({
+      ...result,
+      node_check: { status: 'missing', missing_classes: ['KSampler'] },
+    }),
+  );
+  vi.spyOn(api, 'getWorkflow').mockResolvedValue(detail);
+  vi.spyOn(api, 'validateWorkflow').mockImplementation(
+    createApiClient(fetcher).validateWorkflow,
+  );
+  window.location.hash = '#/workflows/one%20%26%20two';
+  render(App);
+  expect(await screen.findByText('Missing nodes: KSampler')).toBeTruthy();
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+    '/api/v1/workflows/one%20%26%20two/validate',
+    expect.objectContaining({ method: 'POST', body: '{}' }),
+  );
 });
 
 it('renders duplicate IDs from discovery without crashing', async () => {

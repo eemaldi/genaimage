@@ -184,7 +184,27 @@ pub struct WorkflowValidationResponse {
     pub revision: Option<String>,
     pub valid: bool,
     pub parameter_errors: Vec<WorkflowParameterError>,
+    /// Graph inputs left untouched by binding, not submitted parameter values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherited_inputs: Vec<WorkflowInheritedInput>,
     pub node_check: WorkflowNodeCheck,
+}
+
+/// The graph value an unbound optional parameter leaves in place.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct WorkflowInheritedInput {
+    pub parameter: String,
+    pub node: String,
+    pub input: String,
+    pub source: WorkflowInheritedSource,
+}
+
+/// The exact graph literal (JSON text), or a ComfyUI node output connection.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowInheritedSource {
+    Literal { json: String },
+    Connection { node: String, output: u64 },
 }
 
 /// A parameter binding failure.

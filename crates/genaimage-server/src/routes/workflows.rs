@@ -15,9 +15,9 @@ use axum::{
     Json,
 };
 use genaimage_api::{
-    WorkflowDetails, WorkflowDiagnostic, WorkflowListResponse, WorkflowNodeCheck,
-    WorkflowNodeCheckStatus, WorkflowParameterError, WorkflowSummary, WorkflowValidationRequest,
-    WorkflowValidationResponse,
+    WorkflowDetails, WorkflowDiagnostic, WorkflowInheritedInput, WorkflowInheritedSource,
+    WorkflowListResponse, WorkflowNodeCheck, WorkflowNodeCheckStatus, WorkflowParameterError,
+    WorkflowSummary, WorkflowValidationRequest, WorkflowValidationResponse,
 };
 use genaimage_core::{Harness, HarnessError, LoadedWorkflow};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -243,6 +243,36 @@ pub(super) async fn validate(
             reason: error.reason,
         })
         .collect();
+    let inherited_inputs = workflow
+        .inherited_inputs(request.preset.as_deref(), &request.parameters)
+        .map_err(|error| {
+            Problem::new(
+                StatusCode::BAD_REQUEST,
+                error.to_string(),
+                "Select a preset declared by this workflow.",
+            )
+        })?
+        .map(|(name, definition, value)| {
+            let connection = value.as_array().and_then(|parts| match parts.as_slice() {
+                [node, output] => Some((node.as_str()?, output.as_u64()?)),
+                _ => None,
+            });
+            WorkflowInheritedInput {
+                parameter: name.to_owned(),
+                node: definition.node.clone(),
+                input: definition.input.clone(),
+                source: match connection {
+                    Some((node, output)) => WorkflowInheritedSource::Connection {
+                        node: node.to_owned(),
+                        output,
+                    },
+                    None => WorkflowInheritedSource::Literal {
+                        json: value.to_string(),
+                    },
+                },
+            }
+        })
+        .collect();
     let node_check = match tokio::time::timeout(
         NODE_CHECK_DEADLINE,
         harness.missing_workflow_nodes(&workflow.workflow),
@@ -274,6 +304,7 @@ pub(super) async fn validate(
         valid: parameter_errors.is_empty()
             && node_check.status == WorkflowNodeCheckStatus::Available,
         parameter_errors,
+        inherited_inputs,
         node_check,
     }))
 }

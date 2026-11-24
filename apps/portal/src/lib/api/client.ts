@@ -148,22 +148,93 @@ export const workflowThumbnailUrl = (id: string) =>
   apiUrl('/api/v1/workflows/{id}/thumbnail', { id });
 
 // Read the original token before JSON number rounding can change a seed.
-async function readRecordedRun(response: Response) {
+async function readExactIntegers(response: Response, bindings = false) {
+  return parseBindingJson(await response.text(), bindings);
+}
+
+class ExactNumberReadError extends Error {
+  constructor() {
+    super(
+      'Your browser cannot read numbers exactly; update to a current Chromium, Firefox or Safari release.',
+    );
+    this.name = 'ExactNumberReadError';
+  }
+}
+
+function requireExactNumberReads() {
+  let source: string | undefined;
+  JSON.parse('2.0', (_key, value: unknown, context?: { source?: string }) => {
+    source = context?.source;
+    return value;
+  });
+  if (source !== '2.0') throw new ExactNumberReadError();
+}
+
+export function parseBindingJson(text: string, bindings = true): unknown {
+  if (bindings) requireExactNumberReads();
   return JSON.parse(
-    await response.text(),
+    text,
     (_key, value: unknown, context?: { source?: string }) => {
+      if (
+        bindings &&
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        (Object.is(value, -0) || /[.eE]/.test(context?.source ?? ''))
+      )
+        return new BindingFloat(value);
       if (
         typeof value === 'number' &&
         Number.isInteger(value) &&
-        !Number.isSafeInteger(value) &&
-        context?.source &&
-        /^-?\d+$/.test(context.source)
+        !Number.isSafeInteger(value)
       ) {
-        return BigInt(context.source);
+        if (context?.source && /^-?\d+$/.test(context.source))
+          return BigInt(context.source);
       }
       return value;
     },
   );
+}
+
+// A whole-valued float and an integer are distinct serde_json enum values.
+export class BindingFloat {
+  constructor(readonly value: number) {}
+  toString(): string {
+    const text = Object.is(this.value, -0) ? '-0' : String(this.value);
+    return /[.eE]/.test(text) ? text : `${text}.0`;
+  }
+}
+
+async function readWorkflowBindings(response: Response) {
+  const details: components['schemas']['WorkflowDetails'] =
+    (await readExactIntegers(
+      response,
+      true,
+    )) as components['schemas']['WorkflowDetails'];
+  for (const parameter of Object.values(details.parameters)) {
+    for (const key of ['minimum', 'maximum', 'step'] as const) {
+      const value: unknown = parameter[key];
+      if (value instanceof BindingFloat) parameter[key] = value.value;
+      else if (typeof value === 'bigint') parameter[key] = Number(value);
+    }
+  }
+  return details;
+}
+
+export function supportsExactNumberWrites(): boolean {
+  return typeof (JSON as JsonWithRaw).rawJSON === 'function';
+}
+
+type JsonWithRaw = JSON & { rawJSON?: (source: string) => unknown };
+export function stringifyBindingJson(value: unknown): string {
+  return JSON.stringify(value, writeBindingNumber);
+}
+
+function writeBindingNumber(_key: string, value: unknown): unknown {
+  if (typeof value !== 'bigint' && !(value instanceof BindingFloat))
+    return value;
+  const raw = (JSON as JsonWithRaw).rawJSON;
+  if (!raw) throw new Error('This browser cannot send exact JSON numbers.');
+  return raw(value.toString());
 }
 
 /** Pages share `api`; inject fetch via this factory in tests. No request is retried. */
@@ -209,6 +280,7 @@ export function createApiClient(
       return await read(response);
     } catch (error) {
       preserveAbort(error, init.signal);
+      if (error instanceof ExactNumberReadError) throw error;
       throw new ApiResponseError(guidance, error);
     }
   }
@@ -235,7 +307,7 @@ export function createApiClient(
       body = form;
     } else if (options.body !== undefined) {
       headers.set('Content-Type', 'application/json');
-      body = JSON.stringify(options.body);
+      body = stringifyBindingJson(options.body);
     }
     return request(
       apiUrl(path, options.path, options.query),
@@ -263,39 +335,54 @@ export function createApiClient(
       json('get', '/api/v1/health', options),
     listWorkflows: (options: RequestOptions = {}) =>
       json('get', '/api/v1/workflows', options),
-    getWorkflow: (id: string, options?: RequestOptions) =>
-      json('get', '/api/v1/workflows/{id}', { ...options, path: { id } }),
-    validateWorkflow: (
+    getWorkflow: (
+      id: string,
+      options?: RequestOptions & { exactBindings?: boolean },
+    ) =>
+      json(
+        'get',
+        '/api/v1/workflows/{id}',
+        { ...options, path: { id } },
+        options?.exactBindings ? readWorkflowBindings : undefined,
+      ),
+    validateWorkflow: async (
       id: string,
       body: WorkflowValidationRequest,
-      options?: RequestOptions,
-    ) =>
-      json('post', '/api/v1/workflows/{id}/validate', {
+      options?: RequestOptions & { exactNumbers?: boolean },
+    ) => {
+      if (options?.exactNumbers) requireExactNumberReads();
+      return json('post', '/api/v1/workflows/{id}/validate', {
         ...options,
         path: { id },
         body,
-      }),
+      });
+    },
     listRuns: (query?: RunQuery, options?: RequestOptions) =>
       json('get', '/api/v1/runs', { ...options, query }),
     getRun: (id: string, options?: RequestOptions) =>
       json('get', '/api/v1/runs/{id}', { ...options, path: { id } }),
-    getRecordedRun: (id: string, options?: RequestOptions) =>
+    getRecordedRun: (
+      id: string,
+      options?: RequestOptions & { exactBindings?: boolean },
+    ) =>
       json(
         'get',
         '/api/v1/runs/{id}',
         { ...options, path: { id } },
-        readRecordedRun,
+        (response) => readExactIntegers(response, options?.exactBindings),
       ),
-    createRun: (
+    createRun: async (
       body: SubmitRunRequest,
       idempotencyKey: string,
       options?: RequestOptions,
-    ) =>
-      json('post', '/api/v1/runs', {
+    ) => {
+      requireExactNumberReads();
+      return json('post', '/api/v1/runs', {
         ...options,
         body,
         header: { 'Idempotency-Key': idempotencyKey },
-      }),
+      });
+    },
     rerunRun: (id: string, idempotencyKey: string, options?: RequestOptions) =>
       json('post', '/api/v1/runs/{id}/rerun', {
         ...options,
