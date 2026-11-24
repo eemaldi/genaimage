@@ -189,12 +189,48 @@ class CliBoundaryTests(unittest.TestCase):
         config.write_text(config.read_text() + 'fn indirect() { crate::serve::execute(&cli); }')
         self.assertTrue(any('only main' in error for error in ci_check.check_cli_client_boundary()))
 
+    def test_client_source_includes_and_include_aliases_are_rejected(self):
+        client = self.source / 'open.rs'
+        for source in [
+            'include!("serve.rs");',
+            'std::include!(concat!("serve", ".rs"));',
+            'include_str!(r#"config_local.rs"#);',
+            'include_bytes!("serve.rs");',
+            'use std::include as alias; alias!("serve.rs");',
+            'include_str!("ordinary.txt");',
+        ]:
+            with self.subTest(source=source):
+                client.write_text(source)
+                self.assertTrue(any('include' in error for error in ci_check.check_cli_client_boundary()))
+        client.unlink()
+        main = self.source / 'main.rs'
+        main.write_text(main.read_text() + 'include!("serve.rs");')
+        self.assertTrue(any('include' in error for error in ci_check.check_cli_client_boundary()))
+
+    def test_client_path_attributes_are_rejected(self):
+        client = self.source / 'completions.rs'
+        for source in [
+            '#[path = "serve.rs"] mod alias;',
+            '#[path /* comment */ = r#"config_local.rs"#] mod alias;',
+            '#[cfg_attr(feature = "x", path = "serve.rs")] mod alias;',
+            '#![path = "serve.rs"]',
+        ]:
+            with self.subTest(source=source):
+                client.write_text(source)
+                self.assertTrue(any('path attribute' in error for error in ci_check.check_cli_client_boundary()))
+        client.write_text('#[allow(unused)] mod ordinary;')
+        self.assertEqual(ci_check.check_cli_client_boundary(), [])
+        client.unlink()
+        main = self.source / 'main.rs'
+        main.write_text(main.read_text() + '#[path = "serve.rs"] mod alias;')
+        self.assertTrue(any('path attribute' in error for error in ci_check.check_cli_client_boundary()))
+
     def test_comments_and_string_literals_are_not_references(self):
         (self.source / 'open.rs').write_text(
-            '// crate::serve and genaimage_core are not code\n'
+            '// crate::serve, include!("serve.rs") and #[path = "serve.rs"] are not code\n'
             '/* outer /* pub use crate::config_local; */ still comment */\n'
             'let a = "genaimage_server and serve";\n'
-            'let b = r##"pub use crate::serve;"##;\n'
+            'let b = r##"pub use crate::serve; include!(\"serve.rs\"); #[path = \"serve.rs\"]"##;\n'
             "let c = '\\n';\n"
         )
         self.assertEqual(ci_check.check_cli_client_boundary(), [])

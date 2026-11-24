@@ -210,13 +210,27 @@ def check_cli_client_boundary():
         words = [token for token, _ in tokens]
         public_dispatches = 0
         in_use = False
+        attribute_depth = 0
         for index, (word, line) in enumerate(tokens):
+            if word == "[" and (attribute_depth or
+                                words[max(0, index - 1):index] == ["#"] or
+                                words[max(0, index - 2):index] == ["#", "!"]):
+                attribute_depth += 1
+            elif word == "]" and attribute_depth:
+                attribute_depth -= 1
             if word == "use":
                 in_use = True
             elif word == ";":
                 in_use = False
             if not local and word in forbidden:
                 errors.append(f"{relative}:{line}: client module references a local-only crate")
+            # Reject all file-inclusion macros, including aliases and computed paths.
+            if (not local and word in {"include", "include_str", "include_bytes"}
+                    and (in_use or words[index + 1:index + 2] == ["!"])):
+                errors.append(f"{relative}:{line}: client modules must not use include macros")
+            if (not local and attribute_depth and word == "path"
+                    and words[index + 1:index + 2] == ["="]):
+                errors.append(f"{relative}:{line}: client modules must not use path attributes")
             local_reference = (word in local_modules and (
                 in_use or (index > 0 and words[index - 1] in {"mod", "::"})
                 or words[index + 1:index + 2] == ["::"]

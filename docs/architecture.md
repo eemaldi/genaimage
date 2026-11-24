@@ -37,8 +37,9 @@ genaimage local config module -> genaimage-core (configuration only)
   example configuration and error types for `config init`, without opening a
   harness. CI rejects client references to the core, adapter, server and local
   modules; only `main.rs` may call the local dispatch functions, whose public
-  interfaces cannot expose local types. See the [CLI reference](cli.md) for
-  server selection and output contracts.
+  interfaces cannot expose local types. Client files also reject `#[path]`
+  attributes and all file-inclusion macros, including those with computed paths.
+  See the [CLI reference](cli.md) for server selection and output contracts.
 - `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
   exposes an async `genaimage_api::client::Client` with the opt-in
   `client` feature (reqwest with rustls). The server uses the wire types
