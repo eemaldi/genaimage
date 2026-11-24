@@ -20,7 +20,10 @@ use axum::{
     http::{HeaderName, Request},
     middleware, Router,
 };
-use genaimage_core::{Harness, LlmRoles};
+use genaimage_core::{
+    assistant::{ConversationService, PromptTemplates},
+    Harness, LlmRoles,
+};
 use tokio::task::JoinHandle;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::{
@@ -43,6 +46,7 @@ pub struct AppState {
     portal_dev: Option<PortalDevProxy>,
     workflow_index: Arc<WorkflowIndexCache>,
     llm_roles: LlmRoles,
+    conversation_service: ConversationService,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
 }
@@ -81,12 +85,17 @@ impl Drop for MonitorRegistration {
 impl AppState {
     pub fn new(harness: Arc<Harness>) -> Self {
         let llm_roles = LlmRoles::new(&harness.config().llm, None);
+        let conversation_service = ConversationService::unbound(
+            harness.conversation_store(),
+            PromptTemplates::new(harness.config().data_dir()),
+        );
         Self {
             settings: Arc::new(settings::SettingsState::new(harness)),
             lifecycle: Arc::default(),
             portal_dev: None,
             workflow_index: Arc::default(),
             llm_roles,
+            conversation_service,
         }
     }
 
@@ -108,6 +117,10 @@ impl AppState {
 
     pub fn llm_roles(&self) -> &LlmRoles {
         &self.llm_roles
+    }
+
+    pub(crate) fn conversation_service(&self) -> ConversationService {
+        self.conversation_service.clone()
     }
 
     /// Starts graceful draining and notifies long-lived handlers. Idempotent.

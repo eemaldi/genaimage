@@ -1,6 +1,413 @@
 {
   "components": {
     "schemas": {
+      "AssistantChatContent": {
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "image": {
+                "properties": {
+                  "bytes": {
+                    "items": {
+                      "format": "int32",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "media_type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "media_type",
+                  "bytes"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "image"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AssistantChatMessage": {
+        "oneOf": [
+          {
+            "properties": {
+              "system": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "system"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "user": {
+                "items": {
+                  "$ref": "#/components/schemas/AssistantChatContent"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "user"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "assistant": {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "tool_calls": {
+                    "items": {
+                      "$ref": "#/components/schemas/AssistantToolCall"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "text",
+                  "tool_calls"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "assistant"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "tool": {
+                "properties": {
+                  "call_id": {
+                    "type": "string"
+                  },
+                  "result": {}
+                },
+                "required": [
+                  "call_id",
+                  "result"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "tool"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AssistantConversationDetailResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantMessageResponse"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": "string"
+          },
+          "system_prompt": {
+            "type": "string"
+          },
+          "system_prompt_sha256": {
+            "type": "string"
+          },
+          "system_prompt_template": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at",
+          "model",
+          "system_prompt_template",
+          "system_prompt_sha256",
+          "system_prompt",
+          "messages"
+        ],
+        "type": "object"
+      },
+      "AssistantConversationListResponse": {
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantConversationResponse"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "conversations"
+        ],
+        "type": "object"
+      },
+      "AssistantConversationResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "description": "Explicit model selected when this conversation was created.",
+            "type": "string"
+          },
+          "system_prompt": {
+            "type": "string"
+          },
+          "system_prompt_sha256": {
+            "type": "string"
+          },
+          "system_prompt_template": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at",
+          "model",
+          "system_prompt_template",
+          "system_prompt_sha256",
+          "system_prompt"
+        ],
+        "type": "object"
+      },
+      "AssistantDeltaEvent": {
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "user_message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "user_message_id",
+          "text"
+        ],
+        "type": "object"
+      },
+      "AssistantMessageResponse": {
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/AssistantChatMessage"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/AssistantMessageRole"
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssistantMessageStatus"
+          },
+          "tool_call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "seq",
+          "role",
+          "content",
+          "status",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "AssistantMessageRole": {
+        "enum": [
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "type": "string"
+      },
+      "AssistantMessageStartedEvent": {
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "user_message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "user_message_id",
+          "model"
+        ],
+        "type": "object"
+      },
+      "AssistantMessageStatus": {
+        "enum": [
+          "complete",
+          "cancelled",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "AssistantTerminalEvent": {
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssistantMessageStatus"
+          },
+          "user_message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "user_message_id",
+          "message_id",
+          "model",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AssistantToolCall": {
+        "properties": {
+          "arguments": {},
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "AssistantToolCallEvent": {
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "tool_call": {
+            "$ref": "#/components/schemas/AssistantToolCall"
+          },
+          "user_message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "user_message_id",
+          "tool_call"
+        ],
+        "type": "object"
+      },
       "BackendEvent": {
         "properties": {
           "event_type": {
@@ -60,6 +467,18 @@
       "BinaryData": {
         "format": "binary",
         "type": "string"
+      },
+      "CreateAssistantConversationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
       },
       "Event": {
         "oneOf": [
@@ -1004,6 +1423,21 @@
         ],
         "type": "string"
       },
+      "SendAssistantMessageRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantChatContent"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
       "Setting": {
         "allOf": [
           {
@@ -1776,6 +2210,846 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/assistant/conversations": {
+      "get": {
+        "description": "List conversations newest first. Results are bounded and cursor-paginated.",
+        "operationId": "assistant_conversations_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantConversationListResponse"
+                }
+              }
+            },
+            "description": "Conversation page"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid query"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      },
+      "head": {
+        "description": "List conversations newest first. Results are bounded and cursor-paginated.",
+        "operationId": "assistant_conversations_list_head",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Conversation page"
+          },
+          "400": {
+            "description": "Invalid query"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      },
+      "post": {
+        "description": "Create a conversation pinned to the currently configured text role. The initial model is recorded explicitly; later assistant messages record the text model used for each turn.",
+        "operationId": "assistant_conversations_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAssistantConversationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantConversationResponse"
+                }
+              }
+            },
+            "description": "Conversation created",
+            "headers": {
+              "Location": {
+                "description": "Conversation URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/conversations/{id}": {
+      "delete": {
+        "description": "Delete a conversation. If generation is in flight, it is first cancelled and its terminal record is persisted before deletion.",
+        "operationId": "assistant_conversations_delete",
+        "parameters": [
+          {
+            "description": "Conversation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Conversation deleted"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conversation not found"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conversation conflict"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      },
+      "get": {
+        "description": "Read a conversation and its newest bounded message history in sequence order.",
+        "operationId": "assistant_conversations_get",
+        "parameters": [
+          {
+            "description": "Conversation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "message_limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantConversationDetailResponse"
+                }
+              }
+            },
+            "description": "Conversation detail"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conversation not found"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      },
+      "head": {
+        "description": "Read a conversation and its newest bounded message history in sequence order.",
+        "operationId": "assistant_conversations_get_head",
+        "parameters": [
+          {
+            "description": "Conversation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "message_limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Conversation detail"
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "Conversation not found"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/conversations/{id}/cancel": {
+      "post": {
+        "description": "Cancel an in-flight assistant turn and persist its partial response as cancelled.",
+        "operationId": "assistant_conversations_cancel",
+        "parameters": [
+          {
+            "description": "Conversation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Generation cancelled and persisted"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conversation not found"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "No generation in flight"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/conversations/{id}/messages": {
+      "post": {
+        "description": "Append a user message and stream the assistant turn over SSE. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains the persisted assistant message ID and status.",
+        "operationId": "assistant_conversations_send_message",
+        "parameters": [
+          {
+            "description": "Conversation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendAssistantMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "SSE frames: message_started, delta, tool_call, then done or error"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conversation not found"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Conversation already has a generation in flight"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The selected text role cannot accept the request"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
     "/api/v1/events": {
       "get": {
         "description": "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Pass bus_id with the replay cursor to detect server restarts even when the numeric ID is still in range. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",

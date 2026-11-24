@@ -3,6 +3,9 @@
 #[cfg(feature = "client")]
 pub mod client;
 
+mod assistant;
+pub use assistant::*;
+
 mod events;
 pub use events::*;
 

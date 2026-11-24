@@ -12,21 +12,32 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{ChatContent, ChatDelta, ChatMessage, ChatRequest, HarnessError, LlmProvider, Result};
+use crate::{
+    ChatContent, ChatDelta, ChatMessage, ChatRequest, HarnessError, LlmProvider, LlmRoleBinding,
+    Result,
+};
 
 use super::{
     AssistantConversation, AssistantConversationDetail, AssistantConversationListQuery,
-    AssistantConversationPage, AssistantMessageStatus, ConversationStore, NewAssistantConversation,
-    NewAssistantMessage, PromptTemplates, SYSTEM_PROMPT_TEMPLATE,
+    AssistantConversationPage, AssistantMessage, AssistantMessageStatus, ConversationStore,
+    NewAssistantConversation, NewAssistantMessage, PromptTemplates, SYSTEM_PROMPT_TEMPLATE,
 };
 
 const STREAM_CHANNEL_CAPACITY: usize = 32;
+
+type GenerationResult = std::result::Result<AssistantMessage, String>;
+
+struct GenerationBinding {
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+    role: Option<LlmRoleBinding>,
+}
 
 #[derive(Clone)]
 struct InFlight {
     id: Uuid,
     cancellation: CancellationToken,
-    finished: watch::Receiver<Option<std::result::Result<(), String>>>,
+    finished: watch::Receiver<Option<GenerationResult>>,
 }
 
 struct InFlightLease {
@@ -54,6 +65,27 @@ impl Drop for InFlightLease {
 
 pub struct AssistantStream {
     receiver: mpsc::Receiver<Result<ChatDelta>>,
+    user_message_id: String,
+    finished: watch::Receiver<Option<GenerationResult>>,
+}
+
+impl AssistantStream {
+    pub fn user_message_id(&self) -> &str {
+        &self.user_message_id
+    }
+
+    pub async fn terminal_message(&mut self) -> Result<AssistantMessage> {
+        loop {
+            if let Some(result) = self.finished.borrow().clone() {
+                return result.map_err(HarnessError::Database);
+            }
+            self.finished.changed().await.map_err(|error| {
+                HarnessError::Database(format!(
+                    "assistant generation completion channel closed: {error}"
+                ))
+            })?;
+        }
+    }
 }
 
 impl futures_core::Stream for AssistantStream {
@@ -71,8 +103,8 @@ impl futures_core::Stream for AssistantStream {
 pub struct ConversationService {
     store: ConversationStore,
     templates: PromptTemplates,
-    provider: Arc<dyn LlmProvider>,
-    model: String,
+    provider: Option<Arc<dyn LlmProvider>>,
+    model: Option<String>,
     in_flight: Arc<Mutex<HashMap<String, InFlight>>>,
     #[cfg(test)]
     append_gate: Arc<Semaphore>,
@@ -96,8 +128,8 @@ impl ConversationService {
         Ok(Self {
             store,
             templates,
-            provider,
-            model,
+            provider: Some(provider),
+            model: Some(model),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             append_gate: Arc::new(Semaphore::new(1)),
@@ -106,12 +138,37 @@ impl ConversationService {
         })
     }
 
+    pub fn unbound(store: ConversationStore, templates: PromptTemplates) -> Self {
+        Self {
+            store,
+            templates,
+            provider: None,
+            model: None,
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            append_gate: Arc::new(Semaphore::new(1)),
+            #[cfg(test)]
+            append_started: Arc::new(Notify::new()),
+        }
+    }
+
     pub async fn create_conversation(&self, title: String) -> Result<AssistantConversation> {
+        let model = self.model.clone().ok_or_else(|| {
+            HarnessError::AssistantNotConfigured("no text model is selected".into())
+        })?;
+        self.create_conversation_with_model(title, model).await
+    }
+
+    pub async fn create_conversation_with_model(
+        &self,
+        title: String,
+        model: String,
+    ) -> Result<AssistantConversation> {
         let template = self.templates.load(SYSTEM_PROMPT_TEMPLATE).await?;
         self.store
             .create(NewAssistantConversation {
                 title,
-                model: self.model.clone(),
+                model,
                 system_prompt_template: template.name,
                 system_prompt_sha256: template.sha256,
                 system_prompt: template.content,
@@ -138,7 +195,7 @@ impl ConversationService {
         &self,
         conversation_id: &str,
         message: NewAssistantMessage,
-    ) -> Result<super::AssistantMessage> {
+    ) -> Result<AssistantMessage> {
         self.store.append_message(conversation_id, message).await
     }
 
@@ -146,6 +203,36 @@ impl ConversationService {
         &self,
         conversation_id: &str,
         content: Vec<ChatContent>,
+    ) -> Result<AssistantStream> {
+        let provider = self.provider.clone().ok_or_else(|| {
+            HarnessError::AssistantNotConfigured("no text provider is selected".into())
+        })?;
+        let model = self.model.clone().ok_or_else(|| {
+            HarnessError::AssistantNotConfigured("no text model is selected".into())
+        })?;
+        self.send_message_with(conversation_id, content, provider, model, None)
+            .await
+    }
+
+    pub async fn send_message_with_binding(
+        &self,
+        conversation_id: &str,
+        content: Vec<ChatContent>,
+        binding: LlmRoleBinding,
+    ) -> Result<AssistantStream> {
+        let provider = binding.provider();
+        let model = binding.model().to_owned();
+        self.send_message_with(conversation_id, content, provider, model, Some(binding))
+            .await
+    }
+
+    async fn send_message_with(
+        &self,
+        conversation_id: &str,
+        content: Vec<ChatContent>,
+        provider: Arc<dyn LlmProvider>,
+        model: String,
+        binding: Option<LlmRoleBinding>,
     ) -> Result<AssistantStream> {
         if content.is_empty() {
             return Err(HarnessError::InvalidConversationRequest(
@@ -157,15 +244,33 @@ impl ConversationService {
         let id = conversation_id.to_owned();
         let (sender, receiver) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
         let (started_tx, started_rx) = oneshot::channel();
+        let (finished_tx, finished_rx) = watch::channel(None);
         tokio::spawn(async move {
-            supervise_generation(service, id, content, sender, started_tx).await;
+            supervise_generation(
+                service,
+                id,
+                content,
+                GenerationBinding {
+                    provider,
+                    model,
+                    role: binding,
+                },
+                sender,
+                started_tx,
+                finished_tx,
+            )
+            .await;
         });
-        started_rx.await.map_err(|_| {
+        let user_message_id = started_rx.await.map_err(|_| {
             HarnessError::ConversationConflict(
                 "assistant generation supervisor stopped during setup".into(),
             )
         })??;
-        Ok(AssistantStream { receiver })
+        Ok(AssistantStream {
+            receiver,
+            user_message_id,
+            finished: finished_rx,
+        })
     }
 
     pub async fn cancel(&self, conversation_id: &str) -> Result<()> {
@@ -185,7 +290,7 @@ impl ConversationService {
         active.cancellation.cancel();
         loop {
             if let Some(result) = active.finished.borrow().clone() {
-                return result.map_err(HarnessError::Database);
+                return result.map(|_| ()).map_err(HarnessError::Database);
             }
             active.finished.changed().await.map_err(|error| {
                 HarnessError::Database(format!(
@@ -230,167 +335,142 @@ async fn supervise_generation(
     service: ConversationService,
     conversation_id: String,
     content: Vec<ChatContent>,
+    binding: GenerationBinding,
     sender: mpsc::Sender<Result<ChatDelta>>,
-    started: oneshot::Sender<Result<()>>,
+    started: oneshot::Sender<Result<String>>,
+    finished_tx: watch::Sender<Option<GenerationResult>>,
 ) {
     let mut started = Some(started);
-    let result = async {
-        let cancellation = CancellationToken::new();
-        let generation_id = Uuid::new_v4();
-        let (finished_tx, finished_rx) = watch::channel(None);
-        let lease = {
-            let mut active = service
-                .in_flight
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if active.contains_key(&conversation_id) {
-                return Err(HarnessError::ConversationConflict(format!(
-                    "conversation '{conversation_id}' already has a generation in flight"
-                )));
-            }
-            active.insert(
-                conversation_id.clone(),
-                InFlight {
-                    id: generation_id,
-                    cancellation: cancellation.clone(),
-                    finished: finished_rx,
-                },
-            );
-            InFlightLease {
-                active: Arc::clone(&service.in_flight),
-                conversation_id: conversation_id.clone(),
-                generation_id,
-                cancellation: cancellation.clone(),
-            }
-        };
-
-        let conversation = match service.store.get(&conversation_id, Some(1)).await {
-            Ok(conversation) => conversation,
-            Err(error) => {
-                let message = error.to_string();
-                let _ = finished_tx.send(Some(Err(message)));
-                drop(lease);
-                if let Some(started) = started.take() {
-                    let _ = started.send(Err(error));
-                }
-                return Ok(());
-            }
-        };
-        if conversation.conversation.model != service.model {
+    let cancellation = CancellationToken::new();
+    let generation_id = Uuid::new_v4();
+    let finished_rx = finished_tx.subscribe();
+    let lease = {
+        let mut active = service
+            .in_flight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if active.contains_key(&conversation_id) {
             let error = HarnessError::ConversationConflict(format!(
-                "conversation '{}' is pinned to model '{}', not configured model '{}'",
-                conversation_id, conversation.conversation.model, service.model
+                "conversation '{conversation_id}' already has a generation in flight"
             ));
-            let message = error.to_string();
-            let _ = finished_tx.send(Some(Err(message)));
+            let _ = finished_tx.send(Some(Err(error.to_string())));
+            let _ = started.take().expect("start sender").send(Err(error));
+            return;
+        }
+        active.insert(
+            conversation_id.clone(),
+            InFlight {
+                id: generation_id,
+                cancellation: cancellation.clone(),
+                finished: finished_rx,
+            },
+        );
+        InFlightLease {
+            active: Arc::clone(&service.in_flight),
+            conversation_id: conversation_id.clone(),
+            generation_id,
+            cancellation: cancellation.clone(),
+        }
+    };
+
+    let conversation = match service.store.get(&conversation_id, Some(500)).await {
+        Ok(conversation) => conversation,
+        Err(error) => {
+            fail_setup(&finished_tx, &mut started, error);
             drop(lease);
-            if let Some(started) = started.take() {
-                let _ = started.send(Err(error));
-            }
-            return Ok(());
+            return;
         }
-        if cancellation.is_cancelled() || sender.is_closed() {
-            let _ = finished_tx.send(Some(Ok(())));
+    };
+    let mut messages = Vec::with_capacity(conversation.messages.len() + 2);
+    messages.push(ChatMessage::System(conversation.conversation.system_prompt));
+    messages.extend(
+        conversation
+            .messages
+            .into_iter()
+            .map(|message| message.content),
+    );
+    messages.push(ChatMessage::User(content.clone()));
+    let request = ChatRequest {
+        model: binding.model.clone(),
+        messages,
+        tools: Vec::new(),
+    };
+    if let Some(binding) = &binding.role {
+        if let Err(error) = binding.check_request(&request) {
+            fail_setup(&finished_tx, &mut started, error);
             drop(lease);
-            if let Some(started) = started.take() {
-                let _ = started.send(Ok(()));
-            }
-            return Ok(());
+            return;
         }
+    }
+    if cancellation.is_cancelled() || sender.is_closed() {
+        fail_setup(
+            &finished_tx,
+            &mut started,
+            HarnessError::ConversationConflict("generation was cancelled during setup".into()),
+        );
+        drop(lease);
+        return;
+    }
 
-        #[cfg(test)]
-        {
-            service.append_started.notify_one();
-            let _permit = service
-                .append_gate
-                .acquire()
-                .await
-                .expect("append gate is never closed");
-        }
+    #[cfg(test)]
+    {
+        service.append_started.notify_one();
+        let _permit = service
+            .append_gate
+            .acquire()
+            .await
+            .expect("append gate is never closed");
+    }
 
-        let append = service
-            .store
-            .append_message(&conversation_id, NewAssistantMessage::user(content))
-            .await;
-        if let Err(error) = append {
-            let message = error.to_string();
-            let _ = finished_tx.send(Some(Err(message)));
+    let user_message = match service
+        .store
+        .append_message(&conversation_id, NewAssistantMessage::user(content))
+        .await
+    {
+        Ok(message) => message,
+        Err(error) => {
+            fail_setup(&finished_tx, &mut started, error);
             drop(lease);
-            if let Some(started) = started.take() {
-                let _ = started.send(Err(error));
-            }
-            return Ok(());
+            return;
         }
+    };
+    if started
+        .take()
+        .is_some_and(|started| started.send(Ok(user_message.id)).is_err())
+    {
+        cancellation.cancel();
+    }
 
-        let detail = match service.store.get(&conversation_id, Some(500)).await {
-            Ok(detail) => detail,
-            Err(error) => {
-                let reason = error.to_string();
-                persist_terminal(
-                    &service.store,
-                    &conversation_id,
-                    &service.model,
-                    String::new(),
-                    Vec::new(),
-                    AssistantMessageStatus::Failed,
-                    Some(reason.clone()),
-                )
-                .await?;
-                let _ = send_delta(
-                    &sender,
-                    &cancellation,
-                    Err(HarnessError::Database(reason.clone())),
-                )
-                .await;
-                let _ = finished_tx.send(Some(Err(reason)));
-                drop(lease);
-                if let Some(started) = started.take() {
-                    let _ = started.send(Err(error));
-                }
-                return Ok(());
-            }
-        };
-        let mut messages = Vec::with_capacity(detail.messages.len() + 1);
-        messages.push(ChatMessage::System(detail.conversation.system_prompt));
-        messages.extend(detail.messages.into_iter().map(|message| message.content));
-        let request = ChatRequest {
-            model: service.model.clone(),
-            messages,
-            tools: Vec::new(),
-        };
-        if started
-            .take()
-            .is_some_and(|started| started.send(Ok(())).is_err())
-        {
-            cancellation.cancel();
-        }
-
-        let result = run_generation(
-            service.store.clone(),
-            Arc::clone(&service.provider),
-            service.model.clone(),
-            &conversation_id,
-            request,
-            cancellation.clone(),
-            sender.clone(),
+    let result = run_generation(
+        service.store.clone(),
+        binding.provider,
+        binding.model,
+        &conversation_id,
+        request,
+        cancellation.clone(),
+        sender.clone(),
+    )
+    .await;
+    if let Err(error) = &result {
+        let _ = send_delta(
+            &sender,
+            &cancellation,
+            Err(HarnessError::Database(error.to_string())),
         )
         .await;
-        let completion = result.as_ref().map_err(ToString::to_string).map(|_| ());
-        if let Err(error) = &result {
-            let _ = send_delta(
-                &sender,
-                &cancellation,
-                Err(HarnessError::Database(error.to_string())),
-            )
-            .await;
-        }
-        drop(lease);
-        let _ = finished_tx.send(Some(completion));
-        result
     }
-    .await;
+    let completion = result.as_ref().cloned().map_err(ToString::to_string);
+    drop(lease);
+    let _ = finished_tx.send(Some(completion));
+}
 
-    if let (Err(error), Some(started)) = (result, started) {
+fn fail_setup(
+    finished: &watch::Sender<Option<GenerationResult>>,
+    started: &mut Option<oneshot::Sender<Result<String>>>,
+    error: HarnessError,
+) {
+    let _ = finished.send(Some(Err(error.to_string())));
+    if let Some(started) = started.take() {
         let _ = started.send(Err(error));
     }
 }
@@ -403,30 +483,25 @@ async fn run_generation(
     request: ChatRequest,
     cancellation: CancellationToken,
     sender: mpsc::Sender<Result<ChatDelta>>,
-) -> Result<()> {
+) -> Result<AssistantMessage> {
     let provider_stream = tokio::select! {
         biased;
         () = cancellation.cancelled() => {
-            persist_terminal(&store, conversation_id, &model, String::new(), Vec::new(), AssistantMessageStatus::Cancelled, None).await?;
-            return Ok(())
+            return persist_terminal(&store, conversation_id, &model, String::new(), Vec::new(), AssistantMessageStatus::Cancelled, None).await;
         }
         _ = sender.closed() => {
-            persist_terminal(&store, conversation_id, &model, String::new(), Vec::new(), AssistantMessageStatus::Cancelled, None).await?;
-            return Ok(())
+            return persist_terminal(&store, conversation_id, &model, String::new(), Vec::new(), AssistantMessageStatus::Cancelled, None).await;
         }
         result = std::panic::AssertUnwindSafe(provider.chat_stream(request)).catch_unwind() => match result {
             Ok(result) => result,
-            Err(_) => {
-                let error = HarnessError::Configuration("provider startup panicked".into());
-                Err(error)
-            }
+            Err(_) => Err(HarnessError::Configuration("provider startup panicked".into())),
         },
     };
     let mut stream = match provider_stream {
         Ok(stream) => stream,
         Err(error) => {
             let reason = error.to_string();
-            persist_terminal(
+            let terminal = persist_terminal(
                 &store,
                 conversation_id,
                 &model,
@@ -437,7 +512,7 @@ async fn run_generation(
             )
             .await?;
             let _ = send_delta(&sender, &cancellation, Err(error)).await;
-            return Ok(());
+            return Ok(terminal);
         }
     };
     let mut output = AssistantOutput::default();
@@ -446,27 +521,24 @@ async fn run_generation(
             biased;
             () = cancellation.cancelled() => {
                 drop(stream);
-                persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await?;
-                return Ok(())
+                return persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await;
             }
             _ = sender.closed() => {
                 drop(stream);
-                persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await?;
-                return Ok(())
+                return persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await;
             }
             item = std::panic::AssertUnwindSafe(stream.next()).catch_unwind() => match item {
                 Ok(Some(Ok(delta))) => {
                     output.record(&delta);
                     if !send_delta(&sender, &cancellation, Ok(delta)).await {
                         drop(stream);
-                        persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await?;
-                        return Ok(())
+                        return persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await;
                     }
                 }
                 Ok(Some(Err(error))) => {
                     let reason = error.to_string();
                     drop(stream);
-                    persist_terminal(
+                    let terminal = persist_terminal(
                         &store,
                         conversation_id,
                         &model,
@@ -477,16 +549,15 @@ async fn run_generation(
                     )
                     .await?;
                     let _ = send_delta(&sender, &cancellation, Err(error)).await;
-                    return Ok(())
+                    return Ok(terminal);
                 }
                 Ok(None) => {
-                    persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Complete, None).await?;
-                    return Ok(())
+                    return persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Complete, None).await;
                 }
                 Err(_) => {
                     drop(stream);
                     let reason = "provider stream panicked".to_owned();
-                    persist_terminal(
+                    let terminal = persist_terminal(
                         &store,
                         conversation_id,
                         &model,
@@ -502,7 +573,7 @@ async fn run_generation(
                         Err(HarnessError::Configuration(reason)),
                     )
                     .await;
-                    return Ok(())
+                    return Ok(terminal);
                 }
             }
         }
@@ -545,12 +616,11 @@ async fn persist_terminal(
     tool_calls: Vec<crate::ToolCall>,
     status: AssistantMessageStatus,
     error: Option<String>,
-) -> Result<()> {
+) -> Result<AssistantMessage> {
     store
         .append_message(
             conversation_id,
             NewAssistantMessage::assistant(model.to_owned(), text, tool_calls, status, error),
         )
         .await
-        .map(|_| ())
 }
