@@ -71,7 +71,8 @@ thumbnail only when it is a supported image within the manifest directory; see
 Version 1 manifests are not migrated automatically. Remove
 `generation_mode` and `required_gates`, change `schema_version` to `2`, and
 optionally add metadata and UI hints. Validate the result against the schema
-and run `genaimage workflow validate <manifest-path>`. Previously written run
+and use `genaimage workflow validate <ID>` against the server catalogue (see
+the [CLI reference](cli.md)). Previously written run
 records remain readable and are not rewritten. For compatibility with the
 existing run database, new records still store `generic` in its historical
 `generation_mode` column; this does not change binding or generation.
@@ -121,9 +122,9 @@ default against that parameter's `minimum`, `maximum` or `allowed_values`,
 check that options contain the default, or validate a preset value against its
 named parameter. Its mathematical `integer` type also permits `1.0`, whereas
 Rust binding expects an integer JSON representation within its supported
-integer range. Always run `genaimage workflow validate <manifest-path>` as well:
+integer range. Also run `genaimage workflow validate <ID>` with your intended parameters:
 the loader enforces these cross-field rules and checks workflow node/input
-bindings. The bundled-manifest test runs both checks.
+bindings. The bundled-manifest tests check the schema and the loader.
 
 For `integer` and `seed`, the supported binding range is
 `-9223372036854775808` to `18446744073709551615` inclusive. The schema bounds
@@ -139,8 +140,9 @@ parameter to the `upload_id` returned by `POST /api/v1/uploads`
 (`sha256:<lowercase hex digest>`), not a filesystem path. The core verifies
 the stored bytes and uploads them to the configured ComfyUI input area before
 prompt submission. Run provenance records the upload ID, SHA-256, sanitised
-original filename, byte size and returned ComfyUI filename. The direct CLI
-still accepts local paths and records the path instead of an upload ID.
+original filename, byte size and returned ComfyUI filename. To send a local
+reference through the CLI, use `run --image NAME=PATH`; `--set` accepts an
+already stored upload ID. See the [CLI reference](cli.md#runs-and-jobs).
 
 ## Presets
 

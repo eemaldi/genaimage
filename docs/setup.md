@@ -61,7 +61,8 @@ this order:
 An explicitly selected file must exist. `--workspace` selects the workspace,
 not the configuration search directory. Relative data and workflow paths are
 resolved against the workspace; relative configuration paths use the current
-directory. `genaimage config show` displays the resolved configuration.
+directory. `genaimage config show` displays the running server’s resolved
+configuration, not a local file selected by the CLI.
 If no `--config`, `GENAIMAGE_CONFIG` or current-directory file is selected,
 GenAImage checks for a clearly legacy workspace file before XDG discovery. It
 asks you to migrate or move that file aside after preserving its settings and
@@ -207,11 +208,14 @@ workspace and endpoint. No automatic path rewriting or data migration is offered
 ## 3. CLI
 
 Install Rust 1.80 or newer and a C toolchain. Check the project and local
-ComfyUI connection without submitting a run:
+ComfyUI connection without submitting a run. Start `genaimage serve` in a
+separate terminal first; see the [CLI reference](cli.md) for server selection.
 
 ```bash
 cargo run -p genaimage -- workflow list
-cargo run -p genaimage -- workflow validate text-to-image
+cargo run -p genaimage -- workflow validate text-to-image --preset fast \
+  --set checkpoint='"my-local-checkpoint.safetensors"' \
+  --set positive_prompt='"an approved, specific visual description"'
 cargo run -p genaimage -- doctor
 ```
 

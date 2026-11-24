@@ -12,11 +12,13 @@ use genaimage_core::{
     EventEnvelope, EventSubscription, Harness, HarnessConfig, RunRecord, RunRequest,
 };
 use genaimage_server::{serve_on_listener, AppState};
-use genaimage_test_support::{FakeComfyServer, FakeComfyState};
+use genaimage_test_support::{
+    install_contract_workflow, ApiFixture, FakeComfyServer, FakeComfyState,
+};
 use reqwest::{header, Method, Response, StatusCode};
 use serde::{de::DeserializeOwned, Serialize};
 use tempfile::TempDir;
-use tokio::{net::TcpListener, task::JoinHandle, time::timeout};
+use tokio::{task::JoinHandle, time::timeout};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -49,29 +51,15 @@ impl ApiHarness {
     }
 
     async fn start_configured(seconds: u64, env: &[(&str, &str)], drain: Duration) -> Self {
-        let workspace = TempDir::new().expect("temporary workspace");
-        let fake = FakeComfyState::default();
-        let backend = FakeComfyServer::start(fake.clone()).await;
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind API");
-        let address = listener.local_addr().unwrap();
-        let origin = format!("http://{address}");
-        let config_path = workspace.path().join("genaimage.toml");
         let max_upload_bytes = genaimage_core::config::ServerConfig::default().max_upload_bytes;
-        std::fs::write(
-            &config_path,
-            format!(
-                "# API fixture configuration\n[server]\nport = {} # listener\nmax_upload_bytes = {}\n\
-                 [comfyui]\nbase_url = \"http://{}\"\nrequest_timeout_seconds = {}\n\
-                 websocket_reconnect_seconds = 1\n\
-                 [paths]\nstate_database = \"state.sqlite3\"\nworkflows = \"workflows\"\n\
-                 runs = \"runs\"\nuploads = \"uploads\"\n",
-                address.port(),
-                max_upload_bytes,
-                backend.address(),
-                seconds
-            ),
-        )
-        .unwrap();
+        let ApiFixture {
+            workspace,
+            fake,
+            backend,
+            listener,
+            config_path,
+            origin,
+        } = ApiFixture::start(seconds, max_upload_bytes).await;
         let root = workspace.path().to_str().unwrap().to_owned();
         let config = HarnessConfig::load_with(
             workspace.path(),
@@ -244,16 +232,5 @@ impl Drop for ApiHarness {
 }
 
 pub fn install_workflow(api: &ApiHarness) {
-    let dir = &api.core.config().workflows;
-    std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(
-        dir.join("workflow.api.json"),
-        include_str!("../../../genaimage-core/tests/fixtures/contract-workflow.api.json"),
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("contract.genaimage.json"),
-        include_str!("../../../genaimage-core/tests/fixtures/contract-workflow.genaimage.json"),
-    )
-    .unwrap();
+    install_contract_workflow(&api.core.config().workflows);
 }

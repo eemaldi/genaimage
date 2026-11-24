@@ -34,7 +34,8 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
 - `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
   adapter factory to the extension registry and passes the selected backend to
   the core harness. `genaimage serve` passes this harness to `genaimage-server`;
-  the other commands continue to call the core directly.
+  the client commands use the HTTP API through `genaimage-api`. See the
+  [CLI reference](cli.md) for server selection and output contracts.
 - `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
   exposes an async `genaimage_api::client::Client` with the opt-in
   `client` feature (reqwest with rustls). The server uses the wire types
@@ -465,11 +466,9 @@ Applications start one independent forwarding task per registered `EventSink`
 using `ExtensionRegistry::forward_event_sinks` and should observe the returned
 handles for failures. Each sink receives an explicit resync notification and
 its task stops on lag or invalidation. Slow sinks and subscribers do not block
-publishers. The CLI uses a run-filtered, non-replaying progress subscription
-with an unbounded queue, matching its previous progress channel and preserving output even when
-printing is slow. It holds no lifecycle state to resynchronise; the final poll
-reports the current run. Other bus subscribers and sinks remain bounded. SSE
-transport remains planned for [#30](https://github.com/eemaldi/genaimage/issues/30).
+publishers. The CLI waits on run-filtered SSE and reads the durable run state
+on completion, stream failure or resync. It falls back to status polling
+without submitting or reconciling the run.
 
 ## State and provenance
 

@@ -1,12 +1,14 @@
-use std::{collections::BTreeMap, path::PathBuf};
+mod artefacts;
+mod output;
+mod run_commands;
+mod server_commands;
+
+use std::{collections::BTreeMap, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
+use genaimage_api::client::{Client, DEFAULT_BASE_URL};
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{
-    Event, EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError, ReceiveError,
-    RunRequest, RunStatus,
-};
-use serde::Serialize;
+use genaimage_core::{EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
@@ -17,10 +19,16 @@ use tracing_subscriber::EnvFilter;
     about = "A controllable ComfyUI workflow harness"
 )]
 struct Cli {
-    #[arg(long, default_value = ".", global = true)]
-    workspace: PathBuf,
+    /// Workspace for `serve` only (defaults to the current directory).
+    #[arg(long, global = true)]
+    workspace: Option<PathBuf>,
+    /// Emit machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
+    /// Loopback API origin for server-backed commands.
+    #[arg(long, global = true, env = "GENAIMAGE_SERVER", default_value = DEFAULT_BASE_URL, value_name = "URL")]
+    server: String,
+    /// Configuration file for `serve`, or destination for `config init`.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
@@ -31,6 +39,7 @@ struct Cli {
 enum Command {
     /// Start the loopback HTTP server.
     Serve,
+    /// Check the server and its ComfyUI backend.
     Doctor,
     Config {
         #[command(subcommand)]
@@ -41,7 +50,7 @@ enum Command {
         command: WorkflowCommand,
     },
     Presets {
-        workflow: String,
+        id: String,
     },
     Run(RunCommand),
     Jobs {
@@ -56,14 +65,23 @@ enum ConfigCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Show settings from the running server.
     Show,
 }
 
 #[derive(Subcommand)]
 enum WorkflowCommand {
     List,
-    Validate { workflow: String },
-    Inspect { workflow: String },
+    Validate {
+        id: String,
+        #[arg(long)]
+        preset: Option<String>,
+        #[arg(long = "set", value_name = "NAME=JSON")]
+        parameters: Vec<String>,
+    },
+    Inspect {
+        id: String,
+    },
 }
 
 #[derive(Args)]
@@ -73,10 +91,16 @@ struct RunCommand {
     preset: Option<String>,
     #[arg(long = "set", value_name = "NAME=JSON")]
     parameters: Vec<String>,
+    /// Upload an explicitly selected local reference image.
+    #[arg(long = "image", value_name = "NAME=PATH")]
+    images: Vec<String>,
     #[arg(long)]
     version: Option<String>,
     #[arg(long)]
     wait: bool,
+    /// Maximum observation time in seconds (default: 600).
+    #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..=86400))]
+    timeout: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -84,17 +108,38 @@ enum JobsCommand {
     List {
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Return the next page using a cursor from a previous list.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     Show {
         run_id: String,
         #[arg(long, default_value_t = 100)]
         events: usize,
+        /// Return the next page of output metadata.
+        #[arg(long)]
+        output_cursor: Option<String>,
     },
     Reconcile {
         run_id: Option<String>,
     },
     Wait {
         run_id: String,
+        /// Maximum observation time in seconds.
+        #[arg(long, default_value_t = run_commands::DEFAULT_WAIT_SECONDS, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        timeout: u64,
+    },
+    /// Download the original outputs into a local directory.
+    Download {
+        run_id: String,
+        #[arg(long, value_name = "DIR")]
+        dir: PathBuf,
+    },
+    /// Print the run manifest, or save it to a new local file.
+    Manifest {
+        run_id: String,
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
     },
     /// Request cancellation; a running ComfyUI job uses a global interrupt.
     #[command(
@@ -106,8 +151,15 @@ enum JobsCommand {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(command) = server_commands::Command::from_cli(&cli.command) {
+        let output = output::Output::new(cli.json);
+        return match execute_server(&cli, command, output).await {
+            Ok(outcome) => outcome.into(),
+            Err(error) => output.report(&error),
+        };
+    }
     if matches!(cli.command, Command::Serve) {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -118,14 +170,8 @@ async fn main() {
             .with_writer(std::io::stderr)
             .json()
             .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_target(false)
-            .without_time()
-            .init();
     }
-    if let Err(error) = execute(&cli).await {
+    if let Err(error) = execute_local(&cli).await {
         if cli.json {
             eprintln!(
                 "{}",
@@ -134,12 +180,36 @@ async fn main() {
         } else {
             eprintln!("Error: {error}");
         }
-        std::process::exit(1);
+        return output::Status::LocalFailure.into();
     }
+    ExitCode::SUCCESS
+}
+
+async fn execute_server(
+    cli: &Cli,
+    command: server_commands::Command<'_>,
+    output: output::Output,
+) -> Result<output::Status, output::Error> {
+    if cli.workspace.is_some()
+        || cli.config.is_some()
+        || std::env::var_os("GENAIMAGE_CONFIG").is_some()
+    {
+        return Err(output::Error::Input("--workspace, --config and GENAIMAGE_CONFIG are only for selecting the server's workspace or configuration. Pass the options (or set GENAIMAGE_CONFIG) when running `genaimage serve`, unset GENAIMAGE_CONFIG for this command, and select the server with --server.".into()));
+    }
+    if std::env::var_os("GENAIMAGE_PROFILE").is_some() {
+        return Err(output::Error::Input("GENAIMAGE_PROFILE is no longer supported. Unset it, migrate the selected profile to [comfyui] in the configuration used by `genaimage serve`, and select the server with --server.".into()));
+    }
+    let client = Client::with_base_url(&cli.server)?;
+    command.execute(&client, output).await
 }
 
 async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
-    let config = HarnessConfig::load_with_config(&cli.workspace, cli.config.as_deref())?;
+    let config = HarnessConfig::load_with_config(
+        cli.workspace
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+        cli.config.as_deref(),
+    )?;
     let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
     let backend = registry
         .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
@@ -158,231 +228,62 @@ async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
     Ok(harness)
 }
 
-async fn execute(cli: &Cli) -> Result<(), HarnessError> {
+async fn execute_local(cli: &Cli) -> Result<(), HarnessError> {
     match &cli.command {
-        Command::Config { command } => return config_command(cli, command).await,
         Command::Serve => {
             let harness = open_harness(cli).await?;
             genaimage_server::serve(genaimage_server::AppState::new(harness.into())).await?;
         }
-        Command::Doctor => {
-            let harness = open_harness(cli).await?;
-            let health = harness.health().await?;
-            output(
-                cli,
-                &serde_json::json!({
-                    "configuration": harness.config(),
-                    "comfyui": health
-                }),
-            )?;
+        Command::Config {
+            command: ConfigCommand::Init { force },
+        } => {
+            if cli.workspace.is_some() {
+                return Err(HarnessError::Configuration("--workspace is only supported by `genaimage serve`; use --config to choose where to write the example configuration".into()));
+            }
+            config_init(cli, *force)?;
         }
-        Command::Workflow { command } => workflow_command(cli, command).await?,
-        Command::Presets { workflow } => {
-            let harness = open_harness(cli).await?;
-            let loaded = harness.load_workflow(workflow)?;
-            output(cli, &loaded.manifest.presets)?;
-        }
-        Command::Run(command) => run_command(cli, command).await?,
-        Command::Jobs { command } => jobs_command(cli, command).await?,
+        _ => unreachable!("server-backed commands are dispatched first"),
     }
     Ok(())
 }
 
-async fn config_command(cli: &Cli, command: &ConfigCommand) -> Result<(), HarnessError> {
+fn config_init(cli: &Cli, force: bool) -> Result<(), HarnessError> {
     let path = cli
         .config
         .clone()
         .unwrap_or_else(|| PathBuf::from("genaimage.toml"));
-    match command {
-        ConfigCommand::Init { force } => {
-            if path.exists() && !force {
-                return Err(HarnessError::Configuration(format!(
-                    "'{}' already exists; use --force to replace it",
-                    path.display()
-                )));
-            }
-            std::fs::write(&path, HarnessConfig::example())?;
-            output(cli, &serde_json::json!({ "path": path, "created": true }))?;
-        }
-        ConfigCommand::Show => {
-            let config = HarnessConfig::load_with_config(&cli.workspace, cli.config.as_deref())?;
-            output(cli, &config)?;
-        }
-    }
-    Ok(())
-}
-
-async fn workflow_command(cli: &Cli, command: &WorkflowCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(cli).await?;
-    match command {
-        WorkflowCommand::List => {
-            let discovery = harness.discover_workflows()?;
-            for diagnostic in discovery.diagnostics {
-                eprintln!(
-                    "warning: skipping manifest '{}': {}",
-                    diagnostic.path.display(),
-                    diagnostic.error
-                );
-            }
-            output(cli, &discovery.manifests)?;
-        }
-        WorkflowCommand::Validate { workflow } => {
-            let loaded = harness.load_workflow(workflow)?;
-            output(
-                cli,
-                &serde_json::json!({
-                    "valid": true,
-                    "manifest": loaded.manifest_path,
-                    "workflow": loaded.workflow_path,
-                    "workflow_sha256": loaded.workflow_sha256
-                }),
-            )?;
-        }
-        WorkflowCommand::Inspect { workflow } => {
-            let loaded = harness.load_workflow(workflow)?;
-            output(
-                cli,
-                &serde_json::json!({
-                    "manifest": loaded.manifest,
-                    "parameters": loaded.parameter_summary(),
-                    "workflow_sha256": loaded.workflow_sha256
-                }),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(cli).await?;
-    let parameters = parse_parameters(&command.parameters)?;
-    let run = harness
-        .submit(RunRequest {
-            workflow: command.workflow.clone(),
-            preset: command.preset.clone(),
-            parameters,
-            version: command.version.clone(),
-        })
-        .await?;
-    output(cli, &run)?;
-    if command.wait && run.status.is_trackable() {
-        let completed = if cli.json {
-            let run_id = run.id.clone();
-            let waiting_harness = harness.clone();
-            tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await })
-                .await
-                .map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??
-        } else {
-            let mut receiver = harness.events().subscribe_run_progress(&run.id);
-            let run_id = run.id.clone();
-            let waiting_harness = harness.clone();
-            let mut waiter =
-                tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await });
-            loop {
-                tokio::select! {
-                    biased;
-                    event = receiver.recv() => match event {
-                        Ok(envelope) => {
-                            match envelope.event {
-                                Event::RunProgress { run: progress_run, backend_event } if progress_run.id == run.id => {
-                                    print_progress(&progress_run, backend_event.as_ref());
-                                }
-                                _ => {}
-                            }
-                        }
-                        // This stream carries every progress update and maintains no
-                        // lifecycle state; the final poll supplies the current run.
-                        Err(ReceiveError::ResyncRequired(_)) => {},
-                        Err(ReceiveError::Closed) => {
-                            break waiter.await.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??;
-                        }
-                    },
-                    result = &mut waiter => break result.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??,
-                }
-            }
-        };
-        output(cli, &completed)?;
-    }
-    if run.status == RunStatus::UnknownSubmission {
-        return Err(HarnessError::ComfyUi(format!(
-            "submission of run '{}' is ambiguous; use 'jobs reconcile' before retrying",
-            run.id
+    if path.exists() && !force {
+        return Err(HarnessError::Configuration(format!(
+            "'{}' already exists; use --force to replace it",
+            path.display()
         )));
     }
-    Ok(())
-}
-
-async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(cli).await?;
-    match command {
-        JobsCommand::List { limit } => {
-            output(cli, &harness.repository().as_async().list(*limit).await?)?
-        }
-        JobsCommand::Show { run_id, events } => output(
-            cli,
-            &serde_json::json!({
-                "run": harness.repository().as_async().get(run_id).await?,
-                "events": harness.repository().as_async().events(run_id, *events).await?,
-                "outputs": harness.repository().as_async().outputs(run_id).await?
-            }),
-        )?,
-        JobsCommand::Reconcile { run_id } => {
-            if let Some(run_id) = run_id {
-                output(cli, &harness.reconcile(run_id).await?)?;
-            } else {
-                output(cli, &harness.reconcile_all().await?)?;
-            }
-        }
-        JobsCommand::Wait { run_id } => {
-            let completed = harness.wait_for_run(run_id).await?;
-            output(cli, &completed)?;
-        }
-        JobsCommand::Cancel { run_id } => output(cli, &harness.cancel(run_id).await?)?,
+    std::fs::write(&path, HarnessConfig::example())?;
+    let report = serde_json::json!({ "path": path, "created": true });
+    if cli.json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        println!("Created configuration file '{}'.", path.display());
     }
     Ok(())
 }
 
-fn output<T: Serialize>(cli: &Cli, value: &T) -> Result<(), HarnessError> {
-    let rendered = if cli.json {
-        serde_json::to_string(value)?
-    } else {
-        serde_json::to_string_pretty(value)?
-    };
-    println!("{rendered}");
-    Ok(())
-}
-
-fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, HarnessError> {
+fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, String> {
     let mut parameters = BTreeMap::new();
     for value in values {
-        let (name, raw) = value.split_once('=').ok_or_else(|| {
-            HarnessError::Configuration(format!(
-                "parameter override '{value}' must use NAME=JSON form"
-            ))
-        })?;
+        let (name, raw) = value
+            .split_once('=')
+            .ok_or_else(|| format!("parameter override '{value}' must use NAME=JSON form"))?;
         if name.trim().is_empty() {
-            return Err(HarnessError::Configuration(
-                "parameter name cannot be empty".to_owned(),
-            ));
+            return Err("parameter name cannot be empty".to_owned());
         }
-        let parsed = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()));
+        if parameters.contains_key(name) {
+            return Err(format!("Parameter '{name}' was specified more than once."));
+        }
+        let parsed = serde_json::from_str(raw).map_err(|error| {
+            format!("Invalid JSON for parameter '{name}': {error}. Quote string values as JSON.")
+        })?;
         parameters.insert(name.to_owned(), parsed);
     }
     Ok(parameters)
-}
-
-fn print_progress(
-    run: &genaimage_core::RunRecord,
-    event: Option<&genaimage_core::image_backend::BackendEvent>,
-) {
-    if let Some(event) = event {
-        let suffix = event
-            .value
-            .zip(event.maximum)
-            .map(|(value, maximum)| format!(" {value}/{maximum}"))
-            .unwrap_or_default();
-        eprintln!("{}{}", event.event_type, suffix);
-    } else {
-        eprintln!("{}: {}", run.id, run.status.as_str());
-    }
 }

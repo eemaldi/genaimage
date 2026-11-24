@@ -5,7 +5,7 @@ image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
 and the [architecture](docs/architecture.md). The loopback server offers a health
 endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
-The portal, LLM assistance and a thin CLI client are planned.
+The portal and LLM assistance are planned.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.
@@ -16,8 +16,9 @@ or replace ComfyUI, models, weights, or custom nodes.
 ## Current interfaces
 
 `genaimage` is the Rust command-line application for scripts and reproducible
-operation. Operator commands call the shared `genaimage-core` crate directly.
-`genaimage serve` starts the local HTTP server.
+operation. `genaimage serve` starts the local HTTP server. Health, workflow,
+preset, settings, run and job commands use that server. See the
+[CLI reference](docs/cli.md) for server selection, image uploads and JSON.
 
 ## Current scope
 
@@ -42,28 +43,29 @@ binds to loopback only.
 
 ## Quick start
 
-Start the loopback server and check its health from a separate terminal:
-
-```bash
-cargo run -p genaimage -- serve
-curl http://127.0.0.1:3000/api/v1/health
-```
-
-The server starts without ComfyUI. Health reports the image backend as
-`unavailable` until it responds. The portal is planned.
-
-Create project configuration:
+Create project configuration, then start the loopback server:
 
 ```bash
 cp genaimage.example.toml genaimage.toml
+cargo run -p genaimage -- serve
+```
+
+From a separate terminal, check its health:
+
+```bash
 cargo run -p genaimage -- doctor
 ```
+
+The server starts without ComfyUI. Health reports the image backend as
+`unavailable` until it responds.
 
 List and inspect the bundled workflow examples:
 
 ```bash
 cargo run -p genaimage -- workflow list
-cargo run -p genaimage -- workflow validate text-to-image
+cargo run -p genaimage -- workflow validate text-to-image --preset fast \
+  --set checkpoint='"my-local-checkpoint.safetensors"' \
+  --set positive_prompt='"an approved, specific visual description"'
 cargo run -p genaimage -- workflow inspect text-to-image
 ```
 
@@ -78,8 +80,8 @@ cargo run -p genaimage -- run text-to-image \
   --wait
 ```
 
-Values passed with `--set` are parsed as JSON first and otherwise treated as
-strings. Quote JSON strings as shown in the example.
+Values passed with `--set` must be valid JSON. Quote JSON strings as shown
+in the example and specify each parameter at most once.
 
 Useful job commands:
 
