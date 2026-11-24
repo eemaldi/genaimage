@@ -149,8 +149,12 @@ export const workflowThumbnailUrl = (id: string) =>
 
 // Read the original token before JSON number rounding can change a seed.
 async function readExactIntegers(response: Response, bindings = false) {
+  return parseBindingJson(await response.text(), bindings);
+}
+
+export function parseBindingJson(text: string, bindings = true): unknown {
   return JSON.parse(
-    await response.text(),
+    text,
     (_key, value: unknown, context?: { source?: string }) => {
       if (
         bindings &&
@@ -188,7 +192,10 @@ export class BindingFloat {
 
 async function readWorkflowBindings(response: Response) {
   const details: components['schemas']['WorkflowDetails'] =
-    await readExactIntegers(response, true);
+    (await readExactIntegers(
+      response,
+      true,
+    )) as components['schemas']['WorkflowDetails'];
   for (const parameter of Object.values(details.parameters)) {
     for (const key of ['minimum', 'maximum', 'step'] as const) {
       const value: unknown = parameter[key];
@@ -204,6 +211,10 @@ export function supportsExactNumberWrites(): boolean {
 }
 
 type JsonWithRaw = JSON & { rawJSON?: (source: string) => unknown };
+export function stringifyBindingJson(value: unknown): string {
+  return JSON.stringify(value, writeBindingNumber);
+}
+
 function writeBindingNumber(_key: string, value: unknown): unknown {
   if (typeof value !== 'bigint' && !(value instanceof BindingFloat))
     return value;
@@ -281,7 +292,7 @@ export function createApiClient(
       body = form;
     } else if (options.body !== undefined) {
       headers.set('Content-Type', 'application/json');
-      body = JSON.stringify(options.body, writeBindingNumber);
+      body = stringifyBindingJson(options.body);
     }
     return request(
       apiUrl(path, options.path, options.query),

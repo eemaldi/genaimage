@@ -16,6 +16,12 @@
   import type { components } from '../../lib/api/schema';
   import RunProgress from './RunProgress.svelte';
   import { encodeFormState, restoreFormState } from './share';
+  import {
+    clearPending,
+    loadPending,
+    savePending,
+    type PendingSubmission,
+  } from './pending';
   import Input from '../../lib/ui/Input.svelte';
   import Select from '../../lib/ui/Select.svelte';
   import ParameterField from './ParameterField.svelte';
@@ -42,6 +48,7 @@
       random: boolean;
       image: boolean;
       requirement: string;
+      sharedDefault: boolean;
     }>;
     outputs: ReadonlyArray<{ node: string; kind: string }>;
     workflow: string;
@@ -62,12 +69,24 @@
         (field.seedMode === 'random' ||
           field.source === 'user' ||
           field.source === 'preset' ||
-          restored.warnings.some(({ name: warned }) => warned === name)),
+          restored.warnings.some(({ name: warned }) => warned === name) ||
+          restored.differences.some(({ name: changed }) => changed === name)),
     ),
   );
   const fields = new SvelteMap(restored.fields);
   const chosenSeeds = new SvelteMap(restored.chosenSeeds);
   let warnings = $state.raw(restored.warnings);
+  let differences = $state.raw(restored.differences);
+  const recovered = untrack(() => {
+    try {
+      return { pending: loadPending(workflow.id) };
+    } catch (failure) {
+      return {
+        problem: problem(failure, 'Could not restore a pending submission'),
+      };
+    }
+  });
+  let pending = $state.raw<PendingSubmission | undefined>(recovered.pending);
   let shareMessage = $state('');
   let shareFallback = $state('');
   const uploadErrors = new SvelteMap<string, string>();
@@ -81,14 +100,12 @@
   let reviewErrors = $state.raw<Record<string, string>>({});
   let review = $state.raw<Snapshot>();
   let validationProblem = $state<Problem>();
-  let submissionProblem = $state<Problem>();
+  let submissionProblem = $state<Problem | undefined>(recovered.problem);
   let validating = $state(false);
   let submitting = $state(false);
-  let ambiguous = $state(false);
-  let knownRunId = $state<string>();
   let accepted = $state(false);
   let run = $state.raw<Run>();
-  let editingLocked = $derived(submitting || ambiguous);
+  let editingLocked = $derived(submitting || !!pending || !!recovered.problem);
   let validation: AbortController | undefined;
   let submission: AbortController | undefined;
   onDestroy(() => {
@@ -153,6 +170,7 @@
     for (const warning of warnings) {
       if (warning.name === undefined) continue;
       fields.set(warning.name, initialField(workflow.parameters[warning.name]));
+      differences = differences.filter(({ name }) => name !== warning.name);
       chosenSeeds.delete(warning.name);
       if (preset) modified = true;
     }
@@ -170,14 +188,24 @@
           enumerable: true,
         });
     }
-    const hash = encodeFormState({
-      workflow: workflow.id,
-      version: workflow.version,
-      preset,
-      modified,
-      fields,
-      chosenSeeds: chosen,
-    });
+    let hash: string;
+    try {
+      hash = encodeFormState({
+        workflow: workflow.id,
+        version: workflow.version,
+        preset,
+        modified,
+        fields,
+        chosenSeeds: chosen,
+      });
+    } catch (failure) {
+      shareFallback = '';
+      shareMessage =
+        failure instanceof Error
+          ? failure.message
+          : 'Could not create the share link.';
+      return;
+    }
     const url = new URL(hash, location.href).href;
     try {
       await navigator.clipboard.writeText(url);
@@ -206,6 +234,9 @@
           advancedOpen = true;
         chosenSeeds.delete(key);
         warnings = warnings.filter((warning) => warning.name !== key);
+        differences = differences.filter(
+          (difference) => difference.name !== key,
+        );
         resetUpload(key);
       } else if (field.highlighted) {
         fields.set(key, { ...field, highlighted: false });
@@ -221,6 +252,7 @@
     fields.set(name, next);
     chosenSeeds.delete(name);
     warnings = warnings.filter((warning) => warning.name !== name);
+    differences = differences.filter((difference) => difference.name !== name);
     if (preset) modified = true;
     invalidateReview();
   }
@@ -298,6 +330,9 @@
       random: field.seedMode === 'random',
       image: workflow.parameters[name].kind === 'image_upload',
       requirement: requirementLabel(workflow.parameters[name]),
+      sharedDefault:
+        field.source === 'default' &&
+        differences.some((difference) => difference.name === name),
     }));
     const controller = new AbortController();
     validation = controller;
@@ -372,47 +407,83 @@
   }
 
   async function submitReview() {
-    const snapshot = review;
-    if (!snapshot || submitting || accepted) return;
+    if (submitting || accepted || recovered.problem) return;
+    const snapshot = pending ?? review;
+    if (!snapshot) return;
     submitting = true;
     submissionProblem = undefined;
     const controller = new AbortController();
     submission = controller;
     try {
-      const result = await api.createRun(snapshot.body, snapshot.key, {
-        signal: controller.signal,
-      });
+      if (!pending) {
+        try {
+          savePending(snapshot);
+        } catch (failure) {
+          submissionProblem = problem(failure, 'Could not save a safe retry');
+          return;
+        }
+      }
+      pending = snapshot;
+      let result: Run;
+      try {
+        result = await api.createRun(snapshot.body, snapshot.key, {
+          signal: controller.signal,
+        });
+        if (
+          !result ||
+          typeof result.id !== 'string' ||
+          !result.id ||
+          typeof result.status !== 'string'
+        )
+          throw new Error('The server did not return a run.');
+      } catch (failure) {
+        if (controller.signal.aborted) return;
+        const status =
+          failure instanceof ApiProblemError || failure instanceof ApiHttpError
+            ? failure.status
+            : undefined;
+        const definitive =
+          status !== undefined &&
+          status >= 400 &&
+          status < 500 &&
+          status !== 408;
+        submissionProblem = problem(
+          failure,
+          definitive
+            ? 'Could not submit the run'
+            : 'The submission outcome is uncertain',
+        );
+        if (definitive) {
+          clearPending(snapshot);
+          pending = undefined;
+          review = undefined;
+        } else if (failure instanceof ApiProblemError) {
+          const { run_id: id, instance } = failure.problem;
+          const runId =
+            typeof id === 'string' && id
+              ? id
+              : instance?.match(/^\/api\/v1\/runs\/([a-zA-Z0-9_-]+)$/)?.[1];
+          if (runId) {
+            pending = { ...snapshot, runId };
+            try {
+              savePending(pending);
+            } catch {
+              /* The original exact request is already stored. */
+            }
+          }
+        }
+        return;
+      }
       if (controller.signal.aborted) return;
+      clearPending(snapshot);
+      pending = undefined;
       run = result;
-      ambiguous = false;
-      knownRunId = undefined;
       accepted = true;
     } catch (failure) {
-      if (controller.signal.aborted) return;
-      const status =
-        failure instanceof ApiProblemError || failure instanceof ApiHttpError
-          ? failure.status
-          : undefined;
-      ambiguous =
-        status === undefined || status === 408 || status < 400 || status >= 500;
       submissionProblem = problem(
         failure,
-        ambiguous
-          ? 'The submission outcome is uncertain'
-          : 'Could not submit the run',
+        'Could not update the pending submission',
       );
-      if (ambiguous && failure instanceof ApiProblemError) {
-        const { run_id: id, instance } = failure.problem;
-        const pathId = instance?.match(
-          /^\/api\/v1\/runs\/([a-zA-Z0-9_-]+)$/,
-        )?.[1];
-        if (typeof id === 'string' && id) knownRunId = id;
-        else if (pathId) knownRunId = pathId;
-      }
-      if (!ambiguous) {
-        review = undefined;
-        knownRunId = undefined;
-      }
     } finally {
       if (submission === controller) {
         submitting = false;
@@ -437,7 +508,9 @@
       })),
     }}
   />
-  <Button onclick={discardWarnings}>Discard unresolved shared values</Button>
+  <Button onclick={discardWarnings} disabled={editingLocked}
+    >Discard unresolved shared values</Button
+  >
 {/if}
 <form novalidate onsubmit={requestReview}>
   <fieldset class="editor" disabled={editingLocked}>
@@ -489,7 +562,12 @@
                 }}>Choose a new seed on review</Button
               >
             {/if}
+            {@const difference = differences.find((item) => item.name === name)}
+            {#if difference}<p class="source">
+                {name}: {difference.message}
+              </p>{/if}
             <ParameterField
+              sharedDefault={!!difference && field.source === 'default'}
               id={fieldId(name)}
               {name}
               {parameter}
@@ -559,7 +637,7 @@
     </p>
     {#if review.rows.length}
       <dl>
-        {#each review.rows as { name, value, source, random, image, requirement } (name)}
+        {#each review.rows as { name, value, source, random, image, requirement, sharedDefault } (name)}
           <dt>
             {name}{random ? ' (randomised seed)' : ''}
             <span class="source">· {requirement}</span>
@@ -572,7 +650,9 @@
                   ? '(empty text)'
                   : String(value)}{/if}
             {#if source && value !== undefined}
-              <span class="source">({source})</span>{/if}
+              <span class="source"
+                >({sharedDefault ? 'shared default' : source})</span
+              >{/if}
             {#if image && typeof value === 'string'}<br />SHA-256:
               <code>{value.slice('sha256:'.length)}</code>{/if}
           </dd>
@@ -587,24 +667,39 @@
         {/each}
       </ul>
     {/if}
-    {#if ambiguous}
-      <p>
-        The run may already exist. {#if knownRunId}<a
-            href={`#/runs/${encodeURIComponent(knownRunId)}`}
-            >Check the run details</a
-          > or
-        {/if}<a href="#/jobs">check Jobs</a> to reconcile it. Retrying here sends
-        the identical request with the same key.
-      </p>
-      <Button onclick={submitReview} disabled={submitting}
-        >Retry with the same key</Button
-      >
-    {:else if !accepted}
+    {#if !accepted && !pending}
       <Button variant="primary" onclick={submitReview} disabled={submitting}
         >Submit run</Button
       >
     {/if}
-    {#if submitting}<p role="status">Submitting the reviewed run…</p>{/if}
+  </section>
+{/if}
+{#if pending}
+  <section class="review" aria-labelledby={`${uid}-pending`}>
+    <h3 id={`${uid}-pending`}>Pending submission</h3>
+    <p>
+      Workflow: <code>{pending.body.workflow}</code> · Reviewed version: {pending.version}
+    </p>
+    {#if !review && Object.keys(pending.body.parameters ?? {}).length}
+      <dl>
+        {#each Object.entries(pending.body.parameters ?? {}) as [name, value] (name)}
+          <dt>{name}</dt>
+          <dd>{value === '' ? '(empty text)' : String(value)}</dd>
+        {/each}
+      </dl>
+    {/if}
+    {#if submitting}<p role="status">Submitting the reviewed run…</p>
+    {:else}
+      <p>
+        The run may already exist. {#if pending.runId}<a
+            href={`#/runs/${encodeURIComponent(pending.runId)}`}
+            >Check the run details</a
+          > or
+        {/if}<a href="#/jobs">check status in Jobs</a>. Retrying here sends the
+        identical request with the same key.
+      </p>
+      <Button onclick={submitReview}>Retry with the same key</Button>
+    {/if}
   </section>
 {/if}
 {#if run}{#key run.id}<RunProgress initial={run} />{/key}{/if}

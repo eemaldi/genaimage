@@ -34,6 +34,7 @@ const fake = vi.hoisted(() => ({
   validateWorkflow: vi.fn<typeof api.validateWorkflow>(),
   createRun: vi.fn<typeof api.createRun>(),
   getRun: vi.fn<typeof api.getRun>(),
+  listRuns: vi.fn<typeof api.listRuns>(),
   listOutputs: vi.fn<typeof api.listOutputs>(),
 }));
 vi.mock('../../lib/api/client', async (original) => ({
@@ -157,6 +158,7 @@ const output: components['schemas']['OutputResponse'] = {
 beforeEach(() => {
   vi.resetAllMocks();
   history.replaceState(null, '', '/');
+  sessionStorage.clear();
   fake.getWorkflow.mockResolvedValue(workflow);
   fake.validateWorkflow.mockResolvedValue({
     valid: true,
@@ -165,6 +167,7 @@ beforeEach(() => {
   });
   fake.createRun.mockResolvedValue(run);
   fake.getRun.mockResolvedValue(run);
+  fake.listRuns.mockResolvedValue({ runs: [] });
   fake.listOutputs.mockResolvedValue({ outputs: [] });
   fake.getSettings.mockResolvedValue({
     config_file: '',
@@ -635,7 +638,7 @@ test('shares form provenance and a concrete seed without validating or submittin
   const reviewedSeed = fake.validateWorkflow.mock.calls[0][1].parameters?.Seed;
   await user.click(screen.getByRole('button', { name: 'Copy share link' }));
   const shared = new URL(writeText.mock.calls[0][0]);
-  expect(shared.hash).toContain('v=1');
+  expect(shared.hash).toContain('v=2');
   expect(shared.hash).toContain('modified=1');
   cleanup();
   fake.validateWorkflow.mockClear();
@@ -804,3 +807,74 @@ test('opens Generate from the catalogue and distinguishes defaulted, declared an
   );
   expect(fake.createRun).not.toHaveBeenCalled();
 });
+
+test('recovers the exact submission after checking Jobs and after a reload', async () => {
+  const uuid = vi.spyOn(crypto, 'randomUUID');
+  fake.createRun.mockRejectedValueOnce(new TypeError('Lost response'));
+  history.replaceState(null, '', '#/generate?workflow=portrait');
+  render(App);
+  const user = userEvent.setup();
+  await user.type(await screen.findByLabelText('Prompt'), 'Pending');
+  await user.click(reviewButton());
+  await user.click(await screen.findByRole('button', { name: 'Submit run' }));
+  const [body, key] = fake.createRun.mock.calls[0];
+  await user.click(
+    await screen.findByRole('link', { name: 'check status in Jobs' }),
+  );
+  await screen.findByRole('heading', { name: 'Jobs' });
+  const oldHash = '#/generate?workflow=portrait';
+  location.hash = oldHash;
+  await screen.findByRole('heading', { name: 'Pending submission' });
+  cleanup();
+  render(App);
+  expect(await screen.findByText(String(seed))).toBeTruthy();
+  expect(fake.createRun).toHaveBeenCalledTimes(1);
+  await user.click(
+    screen.getByRole('button', { name: 'Retry with the same key' }),
+  );
+  expect(fake.createRun.mock.calls[1].slice(0, 2)).toEqual([body, key]);
+  expect(uuid).toHaveBeenCalledTimes(1);
+  await screen.findByRole('heading', { name: 'Run progress' });
+  expect(sessionStorage.length).toBe(0);
+});
+
+test.each(['1', 'old'])(
+  'keeps shared defaults and blocks a newly defaulted unset field (version %s)',
+  async (version) => {
+    fake.getWorkflow.mockResolvedValue({
+      ...workflow,
+      outputs: [],
+      parameters: {
+        Strength: parameter('number', { default: 0.75 }),
+        Notes: parameter('string', { default: 'new default' }),
+      },
+    });
+    const hash = encodeFormState({
+      workflow: 'portrait',
+      version,
+      fields: [
+        ['Strength', { value: 0.5, source: 'default' }],
+        ['Notes', {}],
+      ],
+    });
+    mount(hash.split('?')[1]);
+    await screen.findByText(
+      /Shared default: 0.5. Current manifest default: 0.75/,
+    );
+    expect(control('Strength').value).toBe('0.5');
+    expect(control('Notes').value).toBe('');
+    expect(screen.getByText(/explicitly left this unset/)).toBeTruthy();
+    expect((reviewButton() as HTMLButtonElement).disabled).toBe(true);
+    expect(fake.validateWorkflow).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Discard unresolved shared values' }),
+    );
+    await user.click(reviewButton());
+    expect(fake.validateWorkflow.mock.calls[0][1].parameters).toEqual({
+      Strength: 0.5,
+      Notes: 'new default',
+    });
+    expect(within(review()).getByText('(shared default)')).toBeTruthy();
+  },
+);

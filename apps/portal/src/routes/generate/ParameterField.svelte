@@ -18,6 +18,7 @@
 
   let {
     id,
+    sharedDefault,
     name,
     parameter,
     field,
@@ -29,6 +30,7 @@
     uploadStatus,
   }: {
     id: string;
+    sharedDefault: boolean;
     name: string;
     parameter: Parameter;
     field: FieldState;
@@ -283,7 +285,8 @@
 
   {#if field.source === 'default'}
     <p>
-      Manifest default: {field.value === ''
+      {sharedDefault ? 'Shared default' : 'Manifest default'}: {field.value ===
+      ''
         ? '(empty text)'
         : String(field.value)}
     </p>
@@ -294,7 +297,7 @@
         : 'From preset'}{#if field.value === ''}: (empty text){/if}
     </p>
   {/if}
-  {#if (field.source && field.source !== 'default') || field.seedMode === 'random' || (parameter.kind === 'image_upload' && !!error)}
+  {#if (field.source && field.source !== 'default') || sharedDefault || field.seedMode === 'random' || (parameter.kind === 'image_upload' && !!error)}
     <Button onclick={reset} aria-label={`Reset ${name}`}>Reset</Button>
   {/if}
 </div>

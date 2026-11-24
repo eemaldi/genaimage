@@ -179,31 +179,41 @@ function randomBelow(count: bigint): bigint {
   return value;
 }
 
-export function randomSeed(parameter: Parameter): Scalar | undefined {
-  const lower =
-    parameter.minimum == null
-      ? minInteger
-      : BigInt(Math.ceil(parameter.minimum));
-  const upper =
-    parameter.maximum == null
-      ? maxInteger
-      : BigInt(Math.floor(parameter.maximum));
-  const min = lower < minInteger ? minInteger : lower;
-  const max = upper > maxInteger ? maxInteger : upper;
-  if (min > max) return;
+// Find the first integer satisfying a monotone predicate on the supported range.
+function firstInteger(test: (value: number) => boolean): bigint {
+  let low = minInteger;
+  let high = maxInteger + 1n;
+  while (low < high) {
+    const middle = low + (high - low) / 2n;
+    if (test(Number(middle))) high = middle;
+    else low = middle + 1n;
+  }
+  return low;
+}
+
+export function randomSeed(parameter: Parameter): number | bigint | undefined {
   if (parameter.allowed_values) {
     const options = [...new Set(parameter.allowed_values.map(scalar))].filter(
       (value): value is number | bigint =>
-        (typeof value === 'bigint' ||
-          (typeof value === 'number' && Number.isSafeInteger(value))) &&
-        BigInt(value) >= min &&
-        BigInt(value) <= max,
+        (typeof value === 'bigint' || typeof value === 'number') &&
+        !bindingError(parameter, { value }),
     );
-    if (options.length)
-      return options[Number(randomBelow(BigInt(options.length)))];
-    return;
+    return options.length
+      ? options[Number(randomBelow(BigInt(options.length)))]
+      : undefined;
   }
-  return compactInteger(min + randomBelow(max - min + 1n));
+  // Rust compares as_f64() against the bounds, including integers that round to an endpoint.
+  const { minimum, maximum } = parameter;
+  const first =
+    minimum == null
+      ? minInteger
+      : firstInteger((rounded) => rounded >= minimum);
+  const pastLast =
+    maximum == null
+      ? maxInteger + 1n
+      : firstInteger((rounded) => rounded > maximum);
+  if (first < pastLast)
+    return compactInteger(first + randomBelow(pastLast - first));
 }
 
 export function workflowHref(id: string): string {

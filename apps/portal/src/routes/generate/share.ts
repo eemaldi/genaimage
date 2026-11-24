@@ -2,21 +2,23 @@ import { BindingFloat } from '../../lib/api/client';
 import {
   bindingError,
   initialField,
-  numericDraft,
+  sameValue,
   type FieldState,
   type Scalar,
   type Workflow,
 } from './model';
 
+const format = '2';
+const maxFragment = 32_768;
+const maxEntries = 256;
 type Encoded =
   | string
-  | number
   | boolean
   | null
   | [kind: 'int' | 'float' | 'draft' | 'invalid', text: string];
 type Entry = [
   name: string,
-  source: 'd' | 'p' | 'u',
+  source: 'd' | 'p' | 'u' | 'n',
   value: Encoded,
   mode?: 'r' | 'l',
   chosen?: Encoded,
@@ -32,36 +34,49 @@ type FormState = {
 
 function encodeValue(value: unknown): Encoded {
   if (value === undefined) return null;
-  if (typeof value === 'bigint') return ['int', String(value)];
+  if (
+    typeof value === 'bigint' ||
+    (typeof value === 'number' && Number.isSafeInteger(value))
+  )
+    return ['int', String(value)];
   if (value instanceof BindingFloat) return ['float', String(value)];
   if (
-    typeof value === 'string' ||
-    typeof value === 'boolean' ||
-    (typeof value === 'number' &&
-      Number.isFinite(value) &&
-      (!Number.isInteger(value) || Number.isSafeInteger(value)))
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    !Number.isInteger(value)
   )
-    return value;
+    return ['float', String(value)];
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
   return ['invalid', String(value)];
 }
 
+function makeHash(query: URLSearchParams, entries: Entry[]): string {
+  if (entries.length > maxEntries)
+    throw new Error('There are too many parameters for a share link.');
+  query.set('p', JSON.stringify(entries));
+  const hash = `#/generate?${query}`;
+  if (hash.length > maxFragment) throw new Error('The share link is too long.');
+  return hash;
+}
+
 export function encodeFormState(state: FormState): string {
-  const query = new URLSearchParams({ workflow: state.workflow, v: '1' });
+  const query = new URLSearchParams({ workflow: state.workflow, v: format });
   if (state.version !== undefined) query.set('wv', state.version);
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
   const entries: Entry[] = [];
   for (const [name, field] of state.fields) {
-    if (
-      (!field.source || field.source === 'default') &&
-      field.seedMode !== 'random'
-    )
-      continue;
     const source =
-      field.source === 'user' ? 'u' : field.source === 'preset' ? 'p' : 'd';
-    const value: Encoded =
-      field.draft !== undefined
-        ? ['draft', field.draft]
+      field.source === 'user'
+        ? 'u'
+        : field.source === 'preset'
+          ? 'p'
+          : field.source === 'default'
+            ? 'd'
+            : 'n';
+    const value =
+      field.value === undefined && field.draft !== undefined
+        ? (['draft', field.draft] as Encoded)
         : encodeValue(field.value);
     const entry: Entry = [name, source, value];
     if (field.seedMode) entry.push(field.seedMode === 'random' ? 'r' : 'l');
@@ -73,11 +88,10 @@ export function encodeFormState(state: FormState): string {
       entry.push(encodeValue(state.chosenSeeds[name]));
     entries.push(entry);
   }
-  if (entries.length) query.set('p', JSON.stringify(entries));
-  return `#/generate?${query}`;
+  return makeHash(query, entries);
 }
 
-/** Pass a recorded run with exact integers from api.getRecordedRun(id, { exactBindings: true }). */
+/** Use api.getRecordedRun(id, { exactBindings: true }) to preserve exact numbers. */
 export function buildGenerateUrl(run: {
   workflow_id: string;
   workflow_version: string;
@@ -85,54 +99,57 @@ export function buildGenerateUrl(run: {
 }): string {
   const query = new URLSearchParams({
     workflow: run.workflow_id,
-    v: '1',
+    v: format,
     wv: run.workflow_version,
   });
-  if (
+  const entries =
     run.parameters &&
     typeof run.parameters === 'object' &&
     !Array.isArray(run.parameters)
-  ) {
-    const entries = Object.entries(run.parameters).map(
-      ([name, value]): Entry => [name, 'u', encodeValue(value)],
-    );
-    if (entries.length) query.set('p', JSON.stringify(entries));
-  }
-  return `#/generate?${query}`;
+      ? Object.entries(run.parameters).map(([name, value]): Entry => [
+          name,
+          'u',
+          encodeValue(value),
+        ])
+      : [];
+  return makeHash(query, entries);
 }
 
 function decodeValue(value: unknown): Pick<FieldState, 'draft' | 'value'> {
   if (value === null) return {};
-  if (
-    typeof value === 'string' ||
-    typeof value === 'boolean' ||
-    (typeof value === 'number' &&
-      Number.isFinite(value) &&
-      (!Number.isInteger(value) || Number.isSafeInteger(value)))
-  )
-    return { value };
+  if (typeof value === 'string' || typeof value === 'boolean') return { value };
   if (
     Array.isArray(value) &&
     value.length === 2 &&
     typeof value[1] === 'string'
   ) {
     const [tag, text] = value;
-    if (tag === 'int' && /^-?\d{1,20}$/.test(text)) {
+    if (tag === 'int' && /^(?:0|-?[1-9]\d{0,19})$/.test(text)) {
       const exact = BigInt(text);
-      return {
-        value: Number.isSafeInteger(Number(exact)) ? Number(exact) : exact,
-      };
+      if (exact >= -(1n << 63n) && exact < 1n << 64n)
+        return {
+          value: Number.isSafeInteger(Number(exact)) ? Number(exact) : exact,
+        };
     }
     if (
       tag === 'float' &&
-      /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(text) &&
-      Number.isInteger(Number(text))
-    )
-      return { value: new BindingFloat(Number(text)) };
+      /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/.test(text) &&
+      /[.e]/.test(text)
+    ) {
+      const number = Number(text);
+      if (Number.isFinite(number)) {
+        const exact = Number.isInteger(number)
+          ? new BindingFloat(number)
+          : number;
+        if (String(exact) === text) return { value: exact };
+      }
+    }
     if (tag === 'draft') return { draft: text };
   }
-  throw new Error('Unrecognised value');
+  throw new Error('The encoded value is not supported.');
 }
+
+type Difference = { name: string; message: string };
 
 export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   const fields = new Map(
@@ -142,132 +159,171 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     ]),
   );
   const warnings: { name?: string; message: string }[] = [];
+  const differences: Difference[] = [];
   const chosenSeeds = new Map<string, Scalar>();
-  const oldVersion = query.get('wv');
-  const versionNotice =
-    oldVersion !== null && oldVersion !== workflow.version
-      ? `This link used workflow version ${oldVersion}; the current version is ${workflow.version}. Check the parameters before reviewing.`
-      : undefined;
-  let preset = query.get('preset') ?? '';
-  const modified = query.get('modified') === '1';
-  if (
-    !query.has('v') &&
-    !query.has('p') &&
-    !query.has('preset') &&
-    !query.has('wv')
-  )
-    return { fields, warnings, chosenSeeds, preset, modified, versionNotice };
-  if (query.get('v') !== '1') {
+  const state = {
+    fields,
+    warnings,
+    differences,
+    chosenSeeds,
+    preset: '',
+    modified: false,
+    versionNotice: undefined as string | undefined,
+  };
+  if (!['v', 'p', 'wv', 'preset', 'modified'].some((key) => query.has(key)))
+    return state;
+  if (query.toString().length + '#/generate?'.length > maxFragment) {
+    warnings.push({ message: 'This share link is too long.' });
+    return state;
+  }
+  if (query.get('v') !== format) {
     warnings.push({
       message: 'This link uses an unsupported form state version.',
     });
-    preset = '';
-    return { fields, warnings, chosenSeeds, preset, modified, versionNotice };
+    return state;
   }
-  if (preset && !Object.hasOwn(workflow.presets, preset)) {
+  const oldVersion = query.get('wv');
+  if (oldVersion !== null && oldVersion !== workflow.version)
+    state.versionNotice = `This link used workflow version ${oldVersion}; the current version is ${workflow.version}. Check the parameters before reviewing.`;
+  const preset = query.get('preset') ?? '';
+  state.preset = preset;
+  state.modified = query.get('modified') === '1';
+  if (preset && !Object.hasOwn(workflow.presets, preset))
     warnings.push({
       message: `Preset “${preset}” is not available in the current workflow.`,
     });
+  let entries: unknown;
+  try {
+    entries = JSON.parse(query.get('p') ?? '');
+  } catch {
+    /* reported below */
   }
-  if (query.has('p')) {
-    let entries: unknown;
-    try {
-      entries = JSON.parse(query.get('p') ?? '');
-    } catch {
-      /* reported below */
-    }
-    if (!Array.isArray(entries))
+  if (!Array.isArray(entries)) {
+    warnings.push({ message: 'This link contains unreadable parameter data.' });
+    return state;
+  }
+  if (entries.length > maxEntries) {
+    warnings.push({ message: 'This link contains too many parameters.' });
+    return state;
+  }
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || typeof entry[0] !== 'string') {
       warnings.push({
-        message: 'This link contains unreadable parameter data.',
+        message: 'This link contains an unreadable parameter entry.',
       });
-    else {
-      const seen = new Set<string>();
-      for (const entry of entries) {
-        if (!Array.isArray(entry) || typeof entry[0] !== 'string') {
-          warnings.push({
-            message: 'This link contains an unreadable parameter entry.',
-          });
-          continue;
-        }
-        const [name, source, encoded, mode, chosen]: [
-          string,
-          unknown,
-          unknown,
-          unknown?,
-          unknown?,
-        ] = entry as [string, unknown, unknown, unknown?, unknown?];
-        if (seen.has(name)) {
-          warnings.push({ message: `The link repeats parameter “${name}”.` });
-          continue;
-        }
-        seen.add(name);
-        if (!Object.hasOwn(workflow.parameters, name)) {
-          warnings.push({
-            message: `Unknown parameter “${name}”: ${JSON.stringify(encoded) ?? '(missing)'}.`,
-          });
-          continue;
-        }
-        const parameter = workflow.parameters[name];
-        const seedMode =
-          parameter.kind === 'seed'
-            ? mode === 'r'
-              ? 'random'
-              : 'locked'
-            : undefined;
-        const field: FieldState = {
-          seedMode,
-          source:
-            source === 'p' ? 'preset' : source === 'd' ? 'default' : 'user',
-        };
-        let error: string | undefined;
-        try {
-          if (
-            entry.length < 3 ||
-            entry.length > 5 ||
-            !['d', 'p', 'u'].includes(String(source)) ||
-            (mode !== undefined &&
-              (parameter.kind !== 'seed' || (mode !== 'r' && mode !== 'l'))) ||
-            (chosen !== undefined && mode !== 'r')
-          )
-            throw new Error('Unrecognised entry');
-          Object.assign(field, decodeValue(encoded));
-          if (
-            field.draft !== undefined &&
-            ['integer', 'number', 'seed'].includes(parameter.kind)
-          )
-            Object.assign(field, numericDraft(parameter, field.draft));
-          if (chosen !== undefined) {
-            const decoded = decodeValue(chosen);
-            error =
-              decoded.value === undefined
-                ? 'The shared seed is missing.'
-                : bindingError(parameter, decoded);
-            if (!error && decoded.value !== undefined)
-              chosenSeeds.set(name, decoded.value);
-          }
-          if (
-            field.value !== undefined ||
-            field.draft !== undefined ||
-            seedMode !== 'random'
-          )
-            error ??= bindingError(parameter, field);
-          if (
-            seedMode !== 'random' &&
-            field.value === undefined &&
-            initialField(parameter).source
-          )
-            error ??= 'An omitted value would fall back to a manifest default.';
-        } catch {
-          error = 'The encoded value is not supported.';
-        }
-        fields.set(name, field);
-        if (error)
-          warnings.push({
-            name,
-            message: `Parameter “${name}”: ${error} Shared value: ${JSON.stringify(encoded) ?? '(missing)'}.`,
-          });
-      }
+      continue;
     }
+    const [name, source, encoded, mode, chosen] = entry as [
+      string,
+      unknown,
+      unknown,
+      unknown?,
+      unknown?,
+    ];
+    if (seen.has(name)) {
+      warnings.push({ message: `The link repeats parameter “${name}”.` });
+      continue;
+    }
+    seen.add(name);
+    if (!Object.hasOwn(workflow.parameters, name)) {
+      warnings.push({
+        message: `Unknown parameter “${name}”: ${JSON.stringify(encoded) ?? '(missing)'}.`,
+      });
+      continue;
+    }
+    const parameter = workflow.parameters[name];
+    const currentDefault = fields.get(name)?.value;
+    const seedMode =
+      parameter.kind === 'seed'
+        ? mode === 'r'
+          ? 'random'
+          : 'locked'
+        : undefined;
+    const field: FieldState = {
+      seedMode,
+      source:
+        source === 'p'
+          ? 'preset'
+          : source === 'd'
+            ? 'default'
+            : source === 'u'
+              ? 'user'
+              : undefined,
+    };
+    let error: string | undefined;
+    try {
+      if (
+        entry.length < 3 ||
+        entry.length > 5 ||
+        (source !== 'd' &&
+          source !== 'p' &&
+          source !== 'u' &&
+          source !== 'n') ||
+        (source === 'n' && encoded !== null) ||
+        (mode !== undefined &&
+          (parameter.kind !== 'seed' || (mode !== 'r' && mode !== 'l'))) ||
+        (chosen !== undefined && mode !== 'r')
+      )
+        throw new Error('Unrecognised entry');
+      Object.assign(field, decodeValue(encoded));
+      if (chosen !== undefined) {
+        const decoded = decodeValue(chosen);
+        error =
+          decoded.value === undefined
+            ? 'The shared seed is missing.'
+            : bindingError(parameter, decoded);
+        if (!error && decoded.value !== undefined)
+          chosenSeeds.set(name, decoded.value);
+      }
+      if (encoded === null && currentDefault !== undefined)
+        error ??= `The link explicitly left this unset, but the current manifest defaults to ${display(currentDefault)}. Set a value or accept the current default.`;
+      else if (source === 'd' && !sameValue(field.value, currentDefault))
+        differences.push({
+          name,
+          message: `Shared default: ${display(field.value)}. Current manifest default: ${display(currentDefault)}. The shared value was kept.`,
+        });
+      else if (
+        currentDefault !== undefined &&
+        field.value !== undefined &&
+        !sameValue(field.value, currentDefault)
+      )
+        differences.push({
+          name,
+          message: `Shared value: ${display(field.value)}. Current manifest default: ${display(currentDefault)}. The shared value was kept.`,
+        });
+      if (
+        field.value !== undefined ||
+        field.draft !== undefined ||
+        seedMode !== 'random'
+      )
+        error ??= bindingError(parameter, field);
+    } catch {
+      error = 'The encoded value is not supported.';
+    }
+    fields.set(name, field);
+    if (error)
+      warnings.push({
+        name,
+        message: `Parameter “${name}”: ${error} Shared value: ${JSON.stringify(encoded) ?? '(missing)'}.`,
+      });
   }
-  return { fields, warnings, chosenSeeds, preset, modified, versionNotice };
+  for (const [name, parameter] of Object.entries(workflow.parameters)) {
+    if (seen.has(name)) continue;
+    const current = initialField(parameter);
+    fields.set(name, { seedMode: current.seedMode });
+    warnings.push({
+      name,
+      message: `Parameter “${name}” is missing from the link.${current.value === undefined ? '' : ` The current manifest defaults to ${display(current.value)}.`} Set a value or accept the current form setting.`,
+    });
+  }
+  return state;
+}
+
+function display(value: Scalar | undefined) {
+  return value === undefined
+    ? '(not set)'
+    : typeof value === 'string'
+      ? JSON.stringify(value)
+      : String(value);
 }

@@ -694,20 +694,23 @@ inside native audio and video controls to the browser.
 ### Generate share links and Remix
 
 `#/generate?workflow=<id>` opens an empty editor with manifest defaults.
-Versioned share links add `v=1`, `wv` (workflow version), optional `preset`
+Versioned share links add `v=2`, `wv` (workflow version), optional `preset`
 and `modified=1`, and `p` (URL-encoded JSON). The `p` value is an array of
 `[name, source, value, seedMode?, chosenSeed?]` tuples. Sources are `d`
-(default), `p` (preset) and `u` (user). Ordinary scalars are JSON values;
-`null` means unset, `["int","<decimal>"]` holds a large integer,
-`["float","<number>"]` holds a whole-valued float and `["draft","<text>"]`
+(default), `p` (preset), `u` (user) and `n` (no source). Text and booleans
+use JSON scalars; `null` explicitly means unset, `['int','<decimal>']` and
+`['float','<decimal>']` preserve numeric type, and `['draft','<text>']`
 retains invalid editor text. Seed modes are `l` (locked) and `r` (randomise).
 A randomised field can include its concrete reviewed seed as `chosenSeed`;
 it is visible and reused at the next explicit review unless the user requests
 another seed. Upload values are `sha256:<digest>` strings, not file contents.
-Unchanged defaults are omitted except when needed to describe a random seed.
-Preset-sourced values are explicit: restoration never applies the current
-preset behind the scenes. Review is blocked on unresolved values, and a
-workflow version change is shown as a notice. A share link never submits a run.
+Shared editor links include defaults and explicitly unset fields. Restoration
+keeps changed defaults as linked, reports per-field differences even for the
+same workflow version, and blocks review on missing fields or unset fields
+that now have a default until the user resolves them. Preset-sourced values
+are explicit; restoration never applies the current preset behind the scenes.
+Links over 32 KiB of encoded fragment or 256 tuples are rejected. Opening a
+share link never submits a run.
 The fragment contains clear-text parameter data: share only with intended
 recipients. Upload references only work where those uploads are stored.
 
@@ -722,6 +725,10 @@ On review, the server validates the concrete parameter snapshot. Submit sends
 those parameters explicitly, not a preset for the server to expand, and uses
 one idempotency key for the lifetime of that snapshot. An uncertain request
 can be retried explicitly with the same key; it is never retried automatically.
+The exact pending request and key stay in this tab’s session storage across
+navigation and reload until the server returns a run or definitively rejects
+the request. Jobs is the status-check fallback because there is no lookup by
+idempotency key.
 Live output cards require both completed run status and indexed outputs.
 
 ### Accessibility checks
