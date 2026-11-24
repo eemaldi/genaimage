@@ -167,8 +167,8 @@ impl ImageBackend for ComfyUiClient {
     async fn queue(&self) -> Result<QueueSnapshot> {
         let raw = self.get_json("queue").await?;
         Ok(QueueSnapshot {
-            running: extract_queue_ids(raw.get("queue_running")),
-            pending: extract_queue_ids(raw.get("queue_pending")),
+            running: extract_queue_ids(&raw, "queue_running")?,
+            pending: extract_queue_ids(&raw, "queue_pending")?,
             raw,
         })
     }
@@ -561,12 +561,19 @@ fn default_input_type() -> String {
     "input".to_owned()
 }
 
-fn extract_queue_ids(value: Option<&Value>) -> Vec<String> {
-    value
+fn extract_queue_ids(raw: &Value, key: &str) -> Result<Vec<String>> {
+    let invalid = || HarnessError::ComfyUi(format!("ComfyUI returned invalid {key} data"));
+    raw.get(key)
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.get(1).and_then(Value::as_str).map(str::to_owned))
+        .ok_or_else(invalid)?
+        .iter()
+        .map(|item| {
+            item.get(1)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(invalid)
+        })
         .collect()
 }
 
@@ -634,7 +641,9 @@ fn parse_history(prompt_id: &str, raw: Value) -> HistorySnapshot {
             })
         })
     };
-    let outcome = if has_message("execution_error") {
+    let outcome = if raw.is_object() && entry.is_none() {
+        HistoryOutcome::NotFound
+    } else if has_message("execution_error") {
         HistoryOutcome::Failed
     } else if explicit_status == Some("execution_interrupted")
         || has_message("execution_interrupted")
@@ -708,7 +717,7 @@ mod tests {
             }}});
             assert_eq!(
                 parse_history("absent", raw.clone()).outcome,
-                HistoryOutcome::Unresolved
+                HistoryOutcome::NotFound
             );
             assert_eq!(parse_history("target", raw).outcome, expected);
         }

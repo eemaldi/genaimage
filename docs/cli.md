@@ -235,9 +235,12 @@ and `cancelled`.
   for running jobs; if the target finishes first, another prompt may be
   interrupted. A successful request is not confirmation of cancellation.
 - **`jobs reconcile [<RUN_ID>]`** asks the server to check ComfyUI queue and
-  history. With an ID, JSON is the updated run record; without one, it is
-  `{runs}` for the active runs examined. This is not a resubmission. A successful
-  reconciliation request can still return a non-successful run status.
+  history. With an ID, JSON is the updated run record plus an `outcome` field;
+  without one, `{runs}` contains such a record for each non-terminal run examined.
+  Outcomes are `terminal`, `active`, `in_progress_elsewhere`, `not_found` and
+  `still_ambiguous`; see [troubleshooting](troubleshooting.md#a-run-is-unknown_submission).
+  This is not a resubmission. A successful reconciliation request can still
+  return a non-successful run status.
 
 - **`jobs download <RUN_ID> --dir <DIR>`** downloads original output bytes
   from all output pages. Creates the destination directory if needed. Local

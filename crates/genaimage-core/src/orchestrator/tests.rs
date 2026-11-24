@@ -523,18 +523,28 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         assert!(
             matches!(replay.recv().await.unwrap().event, Event::RunUnknownSubmission { run } if run.status == RunStatus::UnknownSubmission)
         );
-        for _ in 0..2 {
-            assert_eq!(
-                harness.reconcile(&run.id).await.unwrap().run.status,
-                RunStatus::UnknownSubmission
-            );
+        for (history, expected) in [
+            (HistoryOutcome::Unresolved, ReconcileOutcome::StillAmbiguous),
+            (HistoryOutcome::NotFound, ReconcileOutcome::NotFound),
+        ] {
+            state.lock().unwrap().history_outcome = history;
+            let result = harness.reconcile(&run.id).await.unwrap();
+            assert_eq!(result.run.status, RunStatus::UnknownSubmission);
+            assert_eq!(result.run.updated_at, run.updated_at);
+            assert_eq!(result.outcome, expected);
+            let events = harness.run_events(&run.id, 10).unwrap();
+            assert_eq!(events.last().unwrap().event_type, "run_reconciled");
+            assert_eq!(events.last().unwrap().payload, json!({"outcome": expected}));
         }
         if seen_in_queue {
             state.lock().unwrap().queue_position = Some(QueuePosition::Pending);
-            assert_eq!(
-                harness.reconcile(&run.id).await.unwrap().run.status,
-                RunStatus::Queued
-            );
+            let result = harness.reconcile(&run.id).await.unwrap();
+            assert_eq!(result.run.status, RunStatus::Queued);
+            assert_eq!(result.outcome, ReconcileOutcome::Active);
+            state.lock().unwrap().queue_position = None;
+            let result = harness.reconcile(&run.id).await.unwrap();
+            assert_eq!(result.run.status, RunStatus::Queued);
+            assert_eq!(result.outcome, ReconcileOutcome::StillAmbiguous);
         }
         {
             let mut state = state.lock().unwrap();
@@ -543,6 +553,7 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         }
         let result = harness.reconcile(&run.id).await.unwrap();
         assert_eq!(result.run.status, RunStatus::Completed);
+        assert_eq!(result.outcome, ReconcileOutcome::Terminal);
         assert_eq!(result.run.prompt_id, run.prompt_id);
         assert_eq!(result.outputs.len(), 1);
     }
@@ -1251,6 +1262,9 @@ async fn abandoned_reservation_is_recovered_without_resending() {
             .await
             .unwrap();
         assert_eq!(replay.run.status, RunStatus::Submitting);
+        let result = observer.reconcile(&run.id).await.unwrap();
+        assert_eq!(result.outcome, ReconcileOutcome::InProgressElsewhere);
+        assert_eq!(result.run.status, RunStatus::Submitting);
         drop(observer);
         live.abort();
         assert!(matches!(live.await, Err(error) if error.is_cancelled()));

@@ -17,7 +17,7 @@ import type {
 } from '../../lib/api/events';
 import { mockNativeDialog } from '../../test/dialog';
 import Page from './Page.svelte';
-import type { ReconciledRun, Run } from './run-model';
+import type { Run } from './run-model';
 
 const fake = vi.hoisted(() => ({
   client: {
@@ -25,7 +25,7 @@ const fake = vi.hoisted(() => ({
     getRun: vi.fn<typeof api.getRun>(),
     getWorkflow: vi.fn<typeof api.getWorkflow>(),
     cancelRun: vi.fn<typeof api.cancelRun>(),
-    reconcileRun: vi.fn<(id: string) => Promise<ReconciledRun>>(),
+    reconcileRun: vi.fn<typeof api.reconcileRun>(),
     createRun: vi.fn<typeof api.createRun>(),
   },
   listeners: new Map<string, (event: EventEnvelope) => void>(),
@@ -216,7 +216,10 @@ test('requires a not-found outcome and explicit review before creating a new run
   expect(
     screen.queryByRole('button', { name: 'Submit as new run' }),
   ).toBeNull();
-  client.reconcileRun.mockResolvedValueOnce(unknown);
+  client.reconcileRun.mockResolvedValueOnce({
+    ...unknown,
+    outcome: 'still_ambiguous',
+  });
   await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
   expect(await screen.findByText(/still ambiguous/)).toBeTruthy();
   expect(
@@ -225,7 +228,7 @@ test('requires a not-found outcome and explicit review before creating a new run
 
   client.reconcileRun.mockResolvedValueOnce({
     ...unknown,
-    reconciliation_outcome: 'not_found',
+    outcome: 'not_found',
   });
   await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
   const submit = await screen.findByRole('button', {
@@ -277,7 +280,7 @@ test('links to Generate when a not-found run lacks reusable parameters', async (
   await start(unknown);
   client.reconcileRun.mockResolvedValueOnce({
     ...unknown,
-    reconciliation_outcome: 'not_found',
+    outcome: 'not_found',
   });
   await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
   expect(

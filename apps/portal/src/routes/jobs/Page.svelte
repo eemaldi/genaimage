@@ -24,7 +24,6 @@
   import {
     canCancel,
     isRunStatus,
-    reconcileOutcome,
     statuses,
     submissionFrom,
     type Run,
@@ -115,14 +114,33 @@
     const epoch = reconcileEpoch;
     try {
       const result = await api.reconcileRun(run.id);
-      switch (reconcileOutcome(result)) {
-        case 'adopted':
+      switch (result.outcome) {
+        case 'active':
           notice = {
             message:
               'ComfyUI found the prompt. GenAImage adopted it under the original run.',
           };
           break;
+        case 'terminal':
+          notice = {
+            message:
+              'The original run has reached a final status. Review its result below.',
+          };
+          break;
+        case 'in_progress_elsewhere':
+          notice = {
+            message:
+              'The original submission is still in progress elsewhere. Wait for it to finish before reconciling again.',
+          };
+          break;
         case 'not_found':
+          if (result.status !== 'unknown_submission') {
+            notice = {
+              message:
+                'The reconciliation result does not match the run status. Nothing was submitted.',
+            };
+            break;
+          }
           if (epoch === reconcileEpoch) grants.set(run.id, revision(result));
           notice = {
             message: 'Reconciliation did not find the prompt in ComfyUI.',

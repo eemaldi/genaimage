@@ -103,8 +103,32 @@ pub struct RunEventsResponse {
     pub events: Vec<RunEventResponse>,
 }
 
-/// Current snapshots of the runs examined during bulk reconciliation.
+/// What reconciliation established, independently of the run status.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileOutcome {
+    /// The run was already terminal or reached a terminal state.
+    Terminal,
+    /// The prompt was found pending or running in the backend queue.
+    Active,
+    /// A live submission owner still holds the run.
+    InProgressElsewhere,
+    /// An unknown submission was absent from both queue and history.
+    NotFound,
+    /// The backend evidence did not settle the run's state.
+    StillAmbiguous,
+}
+
+/// A refreshed run snapshot with the outcome of this reconciliation.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReconcileRunResponse {
+    #[serde(flatten)]
+    pub run: RunResponse,
+    pub outcome: ReconcileOutcome,
+}
+
+/// Current snapshots and outcomes of the runs examined during bulk reconciliation.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ReconcileRunsResponse {
-    pub runs: Vec<RunResponse>,
+    pub runs: Vec<ReconcileRunResponse>,
 }

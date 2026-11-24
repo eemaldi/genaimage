@@ -269,8 +269,8 @@ and a recovery hint.
 | `GET /runs/{id}` | Return the current persisted run snapshot. |
 | `GET /runs/{id}/events` | Return the latest persisted events in ascending event ID order. `limit` defaults to 50 and accepts 1–200. |
 | `POST /runs/{id}/cancel` | Request pending deletion or running interruption through core; return the current snapshot. |
-| `POST /runs/{id}/reconcile` | Inspect ComfyUI queue and history for this run; return the refreshed snapshot. |
-| `POST /runs/reconcile` | Reconcile non-terminal runs, including unknown submissions, and return `{ "runs": [...] }`. |
+| `POST /runs/{id}/reconcile` | Inspect ComfyUI queue and history for this run; return the refreshed snapshot with its `outcome`. |
+| `POST /runs/reconcile` | Reconcile non-terminal runs, including unknown submissions, and return `{ "runs": [...] }`, each with its own `outcome`. |
 
 A submission body is `application/json`, for example
 `{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
@@ -316,6 +316,22 @@ accepted queued runs, the server observes progress via the core event bus and
 persists backend progress and lifecycle events. Monitoring stops on shutdown;
 use reconciliation to refresh old runs. A cancellation request can leave the
 run in `cancelling` until ComfyUI provides evidence for the target prompt.
+
+Reconciliation reports an `outcome` separately from the durable run `status`:
+
+| Outcome | Meaning |
+| --- | --- |
+| `terminal` | The run was already terminal or has now reached a terminal state. Check `status` for the result. |
+| `active` | ComfyUI reports the prompt pending or running; the original run is tracked under its existing ID. |
+| `in_progress_elsewhere` | A live submission owner still holds the run. |
+| `not_found` | The run is still `unknown_submission` and its prompt was absent from both the pending/running queue and the returned history. |
+| `still_ambiguous` | The evidence did not settle the run's state, for example because history has an incomplete entry and the prompt is not in the queue. |
+
+Explicit reconciliation records a `run_reconciled` event with the outcome;
+background polling does not write these audit events. `not_found` is a finding
+from this check, not a terminal state or proof the prompt was never accepted.
+Jobs only offers to submit a separate run after `not_found`, and confirmation
+with reviewed parameters is required. Neither endpoint resubmits the prompt.
 
 List responses contain `runs` and `next_cursor` (null at the end). Pass `cursor`
 back unchanged with the same filters. Ordering is descending by creation time,

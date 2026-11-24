@@ -597,12 +597,42 @@
         ],
         "type": "object"
       },
+      "ReconcileOutcome": {
+        "description": "What reconciliation established, independently of the run status.",
+        "enum": [
+          "terminal",
+          "active",
+          "in_progress_elsewhere",
+          "not_found",
+          "still_ambiguous"
+        ],
+        "type": "string"
+      },
+      "ReconcileRunResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RunResponse"
+          },
+          {
+            "properties": {
+              "outcome": {
+                "$ref": "#/components/schemas/ReconcileOutcome"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A refreshed run snapshot with the outcome of this reconciliation."
+      },
       "ReconcileRunsResponse": {
-        "description": "Current snapshots of the runs examined during bulk reconciliation.",
+        "description": "Current snapshots and outcomes of the runs examined during bulk reconciliation.",
         "properties": {
           "runs": {
             "items": {
-              "$ref": "#/components/schemas/RunResponse"
+              "$ref": "#/components/schemas/ReconcileRunResponse"
             },
             "type": "array"
           }
@@ -4131,7 +4161,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunResponse"
+                  "$ref": "#/components/schemas/ReconcileRunResponse"
                 }
               }
             },

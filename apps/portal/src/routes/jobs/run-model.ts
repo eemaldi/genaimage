@@ -29,27 +29,6 @@ export function describeStatus(status: string) {
 export const canCancel = (status: string) =>
   status === 'queued' || status === 'running';
 
-// Today's endpoint returns only the run. An unchanged unknown_submission is
-// not proof of absence: both missing and unresolved history produce that state.
-export type ReconciledRun = Run & {
-  reconciliation_outcome?: 'not_found' | 'ambiguous' | 'adopted';
-};
-
-export function reconcileOutcome(run: ReconciledRun) {
-  if (
-    run.status === 'unknown_submission' &&
-    run.reconciliation_outcome === 'not_found'
-  )
-    return 'not_found';
-  if (
-    ['queued', 'running', 'completed', 'failed', 'cancelled'].includes(
-      run.status,
-    )
-  )
-    return 'adopted';
-  return 'ambiguous';
-}
-
 export function submissionFrom(run: Run): SubmitRunRequest | undefined {
   const { workflow_id, parameters } = run;
   if (

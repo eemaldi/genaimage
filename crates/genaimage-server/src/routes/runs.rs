@@ -8,7 +8,10 @@ use axum::{
     Json,
 };
 use genaimage_api as api;
-use genaimage_core::{HarnessError, RunRecord, RunRequest, RunStatus};
+use genaimage_core::{
+    orchestrator::{ReconcileOutcome, ReconcileResult},
+    HarnessError, RunRecord, RunRequest, RunStatus,
+};
 
 use crate::{AppState, Problem};
 
@@ -256,7 +259,7 @@ pub(super) async fn cancel(
     description = "Reconcile a run against ComfyUI.",
     params(("id" = String, Path, description = "Run ID")),
     responses(
-        (status = 200, body = api::RunResponse),
+        (status = 200, body = api::ReconcileRunResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -272,7 +275,7 @@ pub(super) async fn cancel(
 pub(super) async fn reconcile(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
-) -> Result<Json<api::RunResponse>, Problem> {
+) -> Result<Json<api::ReconcileRunResponse>, Problem> {
     let id = parse_id(id)?;
     let harness = state.harness();
     let deadline = state.lifecycle.deadline.clone();
@@ -280,7 +283,7 @@ pub(super) async fn reconcile(
         harness.reconcile_until(&id, &deadline).await
     })
     .await?;
-    Ok(Json(run_response(result.run)))
+    Ok(Json(reconcile_response(result)))
 }
 
 #[utoipa::path(
@@ -310,11 +313,21 @@ pub(super) async fn reconcile_all(
     })
     .await?;
     Ok(Json(api::ReconcileRunsResponse {
-        runs: results
-            .into_iter()
-            .map(|result| run_response(result.run))
-            .collect(),
+        runs: results.into_iter().map(reconcile_response).collect(),
     }))
+}
+
+fn reconcile_response(result: ReconcileResult) -> api::ReconcileRunResponse {
+    api::ReconcileRunResponse {
+        run: run_response(result.run),
+        outcome: match result.outcome {
+            ReconcileOutcome::Terminal => api::ReconcileOutcome::Terminal,
+            ReconcileOutcome::Active => api::ReconcileOutcome::Active,
+            ReconcileOutcome::InProgressElsewhere => api::ReconcileOutcome::InProgressElsewhere,
+            ReconcileOutcome::NotFound => api::ReconcileOutcome::NotFound,
+            ReconcileOutcome::StillAmbiguous => api::ReconcileOutcome::StillAmbiguous,
+        },
+    }
 }
 
 async fn run_mutation<T: Send + 'static>(

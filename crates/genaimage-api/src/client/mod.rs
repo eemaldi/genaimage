@@ -15,10 +15,11 @@ use thiserror::Error;
 use url::{Host, Url};
 
 use crate::{
-    HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunsResponse,
-    RunEventsQuery, RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus,
-    SettingsPatch, SettingsResponse, SettingsTestResponse, SubmitRunRequest, UploadResponse,
-    WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest, WorkflowValidationResponse,
+    HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
+    ReconcileRunsResponse, RunEventsQuery, RunEventsResponse, RunListQuery, RunListResponse,
+    RunResponse, RunStatus, SettingsPatch, SettingsResponse, SettingsTestResponse,
+    SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
+    WorkflowValidationRequest, WorkflowValidationResponse,
 };
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:3000";
@@ -193,7 +194,7 @@ impl Client {
             .await
     }
 
-    pub async fn reconcile_run(&self, id: &str) -> Result<RunResponse, Error> {
+    pub async fn reconcile_run(&self, id: &str) -> Result<ReconcileRunResponse, Error> {
         self.json(self.request(Method::POST, &["runs", id, "reconcile"])?)
             .await
     }

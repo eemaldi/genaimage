@@ -40,8 +40,17 @@ genaimage jobs reconcile <run-id>
 genaimage jobs show <run-id>
 ```
 
-After ComfyUI queue/history proves the first prompt absent, create a new run
-only with an explicit decision.
+Check the reconciliation `outcome`, not just the run status:
+
+- `active`: the prompt was found pending or running. Keep tracking the original run.
+- `terminal`: the run has ended. Check its status and outputs.
+- `in_progress_elsewhere`: the original submission is still in progress. Wait before checking again.
+- `still_ambiguous`: the evidence is inconclusive. Investigate ComfyUI before taking further action.
+- `not_found`: the prompt was absent from queue and history during this check.
+  This does not prove that ComfyUI never accepted it. The original record stays
+  `unknown_submission`. If you decide to submit again, review the parameters
+  and confirm a separate run in Jobs. If the bindings cannot be recovered,
+  review and enter them in Generate instead. GenAImage does not retry automatically.
 
 ## A run is stuck after restart
 

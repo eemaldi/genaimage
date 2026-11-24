@@ -99,7 +99,12 @@ async fn submits_lists_reconciles_and_cancels_runs_with_streaming_media() {
     );
     api.fake.complete.store(true, Ordering::SeqCst);
     assert_eq!(
-        client.reconcile_run(&submitted.id).await.unwrap().status,
+        client
+            .reconcile_run(&submitted.id)
+            .await
+            .unwrap()
+            .run
+            .status,
         RunStatus::Completed
     );
 
@@ -155,7 +160,10 @@ async fn submits_lists_reconciles_and_cancels_runs_with_streaming_media() {
         RunStatus::Cancelling
     );
     let reconciled = client.reconcile_runs().await.unwrap();
-    assert!(reconciled.runs.iter().any(|run| run.id == second.id));
+    assert!(reconciled
+        .runs
+        .iter()
+        .any(|result| result.run.id == second.id));
     api.shutdown().await;
 }
 
@@ -262,7 +270,7 @@ async fn uncertain_submission_returns_the_durable_run_for_reconciliation() {
     };
     assert_eq!(run.status, RunStatus::UnknownSubmission);
     assert_eq!(
-        client.reconcile_run(&run.id).await.unwrap().status,
+        client.reconcile_run(&run.id).await.unwrap().run.status,
         RunStatus::Queued
     );
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);

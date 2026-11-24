@@ -4,7 +4,8 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use common::{install_workflow, ApiHarness};
 use genaimage_api::{
-    ReconcileRunsResponse, RunEventsResponse, RunListResponse, RunResponse, RunStatus,
+    ReconcileOutcome, ReconcileRunResponse, ReconcileRunsResponse, RunEventsResponse,
+    RunListResponse, RunResponse, RunStatus,
 };
 use genaimage_core::Event;
 use reqwest::{header, Method, Response, StatusCode};
@@ -136,22 +137,73 @@ async fn ambiguous_timeout_is_persisted_and_only_reconciled_never_resubmitted() 
         .events
         .iter()
         .any(|event| event.event_type == "submission_unknown"));
-    let reconcile = api
-        .request(Method::POST, &format!("{path}/reconcile"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        run(reconcile, StatusCode::OK).await.status,
-        RunStatus::Queued
-    );
+    let reconcile: ReconcileRunResponse = api
+        .post_json(&format!("{path}/reconcile"), &Value::Null)
+        .await;
+    assert_eq!(reconcile.run.status, RunStatus::Queued);
+    assert_eq!(reconcile.outcome, ReconcileOutcome::Active);
     api.fake.complete.store(true, Ordering::SeqCst);
     let bulk: ReconcileRunsResponse = api
         .post_json(&format!("{RUNS}/reconcile"), &Value::Null)
         .await;
     assert_eq!(bulk.runs.len(), 1);
-    assert_eq!(bulk.runs[0].id, submitted.id);
-    assert_eq!(bulk.runs[0].status, RunStatus::Completed);
+    assert_eq!(bulk.runs[0].run.id, submitted.id);
+    assert_eq!(bulk.runs[0].run.status, RunStatus::Completed);
+    assert_eq!(bulk.runs[0].outcome, ReconcileOutcome::Terminal);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn distinguishes_missing_history_from_incomplete_history_without_resubmitting() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    api.fake.fail_submit_response.store(true, Ordering::SeqCst);
+    let submitted = run(
+        submit(&api, "unknown", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let path = format!("{RUNS}/{}", submitted.id);
+    *api.fake.queue_override.lock().unwrap() =
+        Some(json!({"queue_pending": [], "queue_running": []}));
+    for (history, expected) in [
+        (
+            json!({submitted.prompt_id.clone(): {"status": {"completed": false}}}),
+            ReconcileOutcome::StillAmbiguous,
+        ),
+        (json!(null), ReconcileOutcome::StillAmbiguous),
+        (json!({}), ReconcileOutcome::NotFound),
+    ] {
+        api.fake
+            .history_overrides
+            .lock()
+            .unwrap()
+            .insert(submitted.prompt_id.clone(), history);
+        let result: ReconcileRunResponse = api
+            .post_json(&format!("{path}/reconcile"), &Value::Null)
+            .await;
+        assert_eq!(result.run.status, RunStatus::UnknownSubmission);
+        assert_eq!(result.run.updated_at, submitted.updated_at);
+        assert_eq!(result.outcome, expected);
+    }
+    let bulk: ReconcileRunsResponse = api
+        .post_json(&format!("{RUNS}/reconcile"), &Value::Null)
+        .await;
+    assert_eq!(bulk.runs[0].run.id, submitted.id);
+    assert_eq!(bulk.runs[0].outcome, ReconcileOutcome::NotFound);
+    let events: RunEventsResponse = api.get_json(&format!("{path}/events")).await;
+    assert_eq!(
+        events.events.last().unwrap().payload,
+        json!({"outcome": "not_found"})
+    );
+    *api.fake.queue_override.lock().unwrap() = Some(json!({"queue_pending": []}));
+    let response = api
+        .request(Method::POST, &format!("{path}/reconcile"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
     api.shutdown().await;
 }

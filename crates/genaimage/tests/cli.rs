@@ -799,6 +799,7 @@ async fn ambiguous_submission_is_not_replayed_and_jobs_can_reconcile_and_cancel(
     );
     let bulk = report(server.cli(&["--json", "jobs", "reconcile"]).await, 0);
     assert_eq!(bulk["runs"][0]["id"], id);
+    assert_eq!(bulk["runs"][0]["outcome"], "active");
     server.fake.running.store(true, Ordering::SeqCst);
     let cancelled = report(server.cli(&["--json", "jobs", "cancel", id]).await, 0);
     assert!(matches!(
@@ -807,6 +808,7 @@ async fn ambiguous_submission_is_not_replayed_and_jobs_can_reconcile_and_cancel(
     ));
     let cancelled = report(server.cli(&["--json", "jobs", "reconcile", id]).await, 0);
     assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["outcome"], "terminal");
     assert_eq!(
         report(server.cli(&["--json", "jobs", "wait", id]).await, 7)["status"],
         "cancelled"

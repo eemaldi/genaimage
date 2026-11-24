@@ -174,7 +174,9 @@ pub struct HistorySnapshot {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryOutcome {
-    /// History is absent, incomplete, or does not establish a terminal outcome.
+    /// A valid history response has no entry for this prompt.
+    NotFound,
+    /// History is incomplete or does not establish a terminal outcome.
     #[default]
     Unresolved,
     Completed,
