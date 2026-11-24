@@ -1,4 +1,5 @@
 pub mod artifacts;
+pub mod assistant;
 pub mod config;
 pub mod error;
 pub mod event;
@@ -20,7 +21,10 @@ pub use event::{
     Event, EventBus, EventCursor, EventEnvelope, EventSubscription, ProgressSubscription,
     ReceiveError, ResyncReason,
 };
-pub use extensions::{AssistantTool, EventSink, ExtensionRegistry, LlmProvider, SinkNotification};
+pub use extensions::{
+    AssistantTool, ChatContent, ChatDelta, ChatMessage, ChatRequest, ChatStream, EventSink,
+    ExtensionRegistry, LlmModel, LlmProvider, SinkNotification, ToolCall, ToolDefinition,
+};
 pub use image_backend::ImageBackend;
 pub use llm_roles::{
     AssistantUnavailable, LlmCapability, LlmHealthSnapshot, LlmModelSnapshot, LlmRole,

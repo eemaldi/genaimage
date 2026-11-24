@@ -169,6 +169,12 @@ pub struct ResolvedConfig {
     settings: settings::Metadata,
 }
 
+impl ResolvedConfig {
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+}
+
 impl HarnessConfig {
     pub fn load(workspace: &Path) -> Result<ResolvedConfig> {
         Self::load_with_config(workspace, None)

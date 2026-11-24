@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     artifacts::{self, InputFileRecord},
+    assistant::{ConversationService, ConversationStore, PromptTemplates},
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse, UploadResponse},
@@ -29,7 +30,7 @@ use crate::{
         read_regular_file, workflow_revision, BoundWorkflow, GenerationMode, LoadedWorkflow,
         ParameterError, ParameterKind, WorkflowManifest,
     },
-    Event, EventBus, HarnessError, Result,
+    Event, EventBus, HarnessError, LlmProvider, Result,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -341,6 +342,23 @@ impl Harness {
 
     pub fn repository(&self) -> &RunRepository {
         &self.repository
+    }
+
+    pub fn conversation_store(&self) -> ConversationStore {
+        self.repository.conversation_store()
+    }
+
+    pub fn conversation_service(
+        &self,
+        provider: Arc<dyn LlmProvider>,
+        model: impl Into<String>,
+    ) -> Result<ConversationService> {
+        ConversationService::new(
+            self.conversation_store(),
+            PromptTemplates::new(self.config.data_dir()),
+            provider,
+            model,
+        )
     }
 
     pub fn discover_workflows(&self) -> Result<WorkflowDiscovery> {

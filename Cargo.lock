@@ -851,6 +851,7 @@ dependencies = [
  "criterion",
  "fs2",
  "futures-core",
+ "futures-util",
  "hex",
  "image",
  "jsonschema",
