@@ -131,6 +131,28 @@ it('traps focus in a named modal, handles native Escape cancellation and restore
   expect(document.activeElement).toBe(opener);
 });
 
+it.each([true, false])(
+  'wraps Tab at a final radio group (checked: %s)',
+  async (checkedRadio) => {
+    const user = userEvent.setup();
+    render(Fixture, { kind: 'radio', checkedRadio });
+    await user.click(screen.getByRole('button', { name: 'Open example' }));
+    const close = screen.getByRole('button', { name: 'Close' });
+    const draft = screen.getByRole('radio', { name: 'Draft' });
+    const final = screen.getByRole('radio', { name: 'Final' });
+    expect(document.activeElement).toBe(close);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(draft);
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.click(final);
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(final);
+  },
+);
+
 it('automatically activates tabs with roving focus, wrapping and Home/End', async () => {
   const user = userEvent.setup();
   render(Fixture, { kind: 'tabs' });
@@ -171,6 +193,41 @@ it('describes a tooltip trigger, opens on focus and hover, and dismisses without
   expect(screen.getByRole('tooltip')).toBeTruthy();
   await fireEvent.pointerLeave(wrapper, { pointerType: 'mouse' });
   expect(screen.queryByRole('tooltip')).toBeNull();
+});
+
+it('shifts a focused tooltip back inside a 320px viewport at either edge', async () => {
+  const user = userEvent.setup();
+  const viewport = vi
+    .spyOn(document.documentElement, 'clientWidth', 'get')
+    .mockReturnValue(320);
+  try {
+    render(Fixture, { kind: 'tooltip-edges' });
+    for (const [name, left, expectedLeft] of [
+      ['Left', -5, 0],
+      ['Right', 280, 110],
+    ] as const) {
+      const trigger = screen.getByRole('button', { name });
+      const bubble = document.getElementById(
+        trigger.getAttribute('aria-describedby')!,
+      )!;
+      const width = 210;
+      vi.spyOn(trigger.parentElement!, 'getBoundingClientRect').mockReturnValue(
+        new DOMRect(left, 0, 40, 40),
+      );
+      vi.spyOn(bubble, 'getBoundingClientRect').mockReturnValue(
+        new DOMRect(left, 40, width, 40),
+      );
+      await user.tab();
+      expect(document.activeElement).toBe(trigger);
+      expect(screen.getByRole('tooltip')).toBe(bubble);
+      const positionedLeft =
+        left + parseFloat(bubble.style.getPropertyValue('--tooltip-shift'));
+      expect(positionedLeft).toBe(expectedLeft);
+      expect(positionedLeft + width).toBeLessThanOrEqual(320);
+    }
+  } finally {
+    viewport.mockRestore();
+  }
 });
 
 it('announces toasts without stealing focus and supports keyboard dismissal', async () => {

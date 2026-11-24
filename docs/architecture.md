@@ -546,7 +546,7 @@ Import Svelte files from `apps/portal/src/lib/ui/`:
 | `Input.svelte` | `label`, optional `id`, `hint`, `error`, `name`, `required`, `disabled`; `bind:value` (string), `multiline`, `rows`, `placeholder`, `maxlength`, `autocomplete`, `readonly`. |
 | `Select.svelte` | Same common field props as Input; `bind:value` (string), `options` (`{ value, label, disabled? }[]`, unique values). |
 | `Slider.svelte` | `label`, optional `id`, `hint`, `error`, `name`, `disabled`; `bind:value` (number), `min`, `max`, `step`. |
-| `Dialog.svelte` | `bind:open`, `title`, optional `description` and child content. Use native tab order (no positive `tabindex`); Escape and Close dismiss the modal and return focus. |
+| `Dialog.svelte` | `bind:open`, `title`, optional `description`, `returnFocus` callback and child content. Escape and Close restore focus to the opener or call the fallback (the shell focuses the current `main`). |
 | `Tabs.svelte` | `label`, `tabs` (`{ id, label }[]`, unique IDs), optional `bind:value` (active ID; falls back to first tab), `children(tab)` snippet. Panels remain mounted. |
 | `Tooltip.svelte` | `text` and a `children(attrs)` snippet that spreads `attrs` on one focusable trigger. Put essential instructions in visible text instead. |
 | `ToastRegion.svelte` | Mounted by the shell; optional `returnFocus` callback for the last dismissal. Use `pushToast({ message, kind?: 'info' \| 'error' })` (returns ID), `dismissToast(id)` or the readable `toasts` store from `toasts.ts`. Notifications persist until dismissed. |
@@ -568,6 +568,27 @@ Vitest runs axe on the shell and help, and checks the flat palette pairs
 separately. jsdom does not measure rendered colour contrast or implement native
 modal behaviour; verify those and assistive-technology announcements in a
 browser. The modal uses a heading without introducing a second banner landmark.
+
+For a manual browser regression check at 320 CSS pixels, navigate from Dashboard
+to Jobs, open Menu, focus a navigation link, press `?`, go Back, then press
+Escape. Focus should land on Dashboard’s `main`. In the UI test fixture at
+`apps/portal/src/lib/ui/Fixture.test.svelte`, render `kind="radio"` with and
+without `checkedRadio`; Tab must wrap after the final group and Shift+Tab from
+Close must reach the checked or first radio. Render `kind="tooltip-edges"` and
+Tab to both triggers; each bubble must stay within the viewport.
+To mount either fixture without adding browser tooling, open the Vite dev
+portal and run this in its DevTools console. Reload before changing fixtures.
+
+```js
+const kind = 'radio'; // Or 'tooltip-edges'.
+const checkedRadio = true; // Also try false for the radio fixture.
+const svelte = performance.getEntriesByType('resource').find(({ name }) =>
+  new URL(name).pathname.endsWith('/deps/svelte.js'));
+const { mount } = await import(svelte.name);
+const { default: Fixture } = await import('/src/lib/ui/Fixture.test.svelte');
+document.querySelector('#app').hidden = true;
+mount(Fixture, { target: document.body, props: { kind, checkedRadio } });
+```
 
 ## Performance budgets
 

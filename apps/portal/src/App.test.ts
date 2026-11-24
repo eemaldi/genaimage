@@ -1,4 +1,10 @@
-import { render, screen, waitFor, cleanup } from '@testing-library/svelte';
+import {
+  render,
+  screen,
+  waitFor,
+  cleanup,
+  fireEvent,
+} from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -98,6 +104,32 @@ it('opens shortcut help and allows character shortcuts to be turned off', async 
   await user.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }));
   expect(screen.getByRole('dialog')).toBeTruthy();
 });
+
+it.each(['hidden', 'unfocusable'])(
+  'returns focus to the current route if the menu opener is %s',
+  async (state) => {
+    window.location.hash = '#/jobs';
+    const user = userEvent.setup();
+    render(App);
+    const toggle = screen.getByRole('button', { name: 'Menu' });
+    await user.click(toggle);
+    const opener = screen.getByRole('link', { name: 'Generate' });
+    opener.focus();
+    await user.keyboard('?');
+    const help = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    window.location.hash = '#/';
+    await screen.findByRole('heading', { name: 'Dashboard' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(help.contains(document.activeElement)).toBe(true);
+    // jsdom does not apply the responsive navigation rule in this suite.
+    if (state === 'hidden') screen.getByRole('navigation').hidden = true;
+    else opener.removeAttribute('href');
+    expect(opener.isConnected).toBe(true);
+    await fireEvent(help, new Event('cancel', { cancelable: true }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('main'));
+  },
+);
 
 it('has no axe violations in the shell or shortcut help (contrast checked separately)', async () => {
   document.title = 'GenAImage';

@@ -169,7 +169,7 @@
   </div>
 </main>
 <ToastRegion returnFocus={focusMain} />
-<Dialog bind:open={helpOpen} title="Keyboard shortcuts">
+<Dialog bind:open={helpOpen} title="Keyboard shortcuts" returnFocus={focusMain}>
   <p>For two-key shortcuts, press the keys in order, not together.</p>
   <dl class="shortcut-list">
     {#each shortcuts as shortcut (shortcut.label)}

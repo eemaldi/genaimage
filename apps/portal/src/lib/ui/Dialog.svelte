@@ -7,11 +7,13 @@
     open = $bindable(false),
     title,
     description,
+    returnFocus,
     children,
   }: {
     open?: boolean;
     title: string;
     description?: string;
+    returnFocus?: () => void;
     children?: Snippet;
   } = $props();
   const uid = $props.id();
@@ -24,32 +26,65 @@
     untrack(() => dialog.showModal());
     return () => {
       if (dialog.open) dialog.close();
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+      if (
+        opener instanceof HTMLElement &&
+        opener !== document.body &&
+        isAvailable(opener)
+      ) {
+        opener.focus();
+        if (document.activeElement === opener) return;
+      }
+      returnFocus?.();
     };
   });
 
+  function isAvailable(element: HTMLElement) {
+    return (
+      element.isConnected &&
+      !element.matches(':disabled, input[type="hidden"]') &&
+      !element.closest('[hidden], [inert]') &&
+      (element.checkVisibility?.({ visibilityProperty: true }) ?? true)
+    );
+  }
+
+  function groupedRadio(element: Element | null): element is HTMLInputElement {
+    return (
+      element instanceof HTMLInputElement &&
+      element.type === 'radio' &&
+      element.name !== ''
+    );
+  }
+
   function handleKey(event: KeyboardEvent) {
     if (event.defaultPrevented || event.key !== 'Tab') return;
-    const stops = Array.from(
+    const candidates = Array.from(
       dialog.querySelectorAll<HTMLElement>(
         'button, a[href], input, select, textarea, summary, [tabindex], [contenteditable]',
       ),
-    ).filter(
-      (el) =>
-        el.tabIndex >= 0 &&
-        !el.matches(':disabled, input[type="hidden"]') &&
-        !el.closest('[hidden], [inert]') &&
-        (el.checkVisibility?.({ visibilityProperty: true }) ?? true),
-    );
-    const first = stops[0];
-    const last = stops.at(-1);
-    const active = document.activeElement;
-    if (
-      !stops.some((el) => el === active) ||
-      active === (event.shiftKey ? first : last)
-    ) {
+    ).filter((el) => el.tabIndex >= 0 && isAvailable(el));
+    const radios = candidates.filter(groupedRadio);
+    function stopFor(element: Element | null) {
+      if (!groupedRadio(element)) return element;
+      const group = radios.filter(
+        (radio) => radio.name === element.name && radio.form === element.form,
+      );
+      return group.find((radio) => radio.checked) ?? group[0];
+    }
+    const order = (element: HTMLElement) => element.tabIndex || Infinity;
+    const stops = candidates
+      .filter((el) => stopFor(el) === el)
+      .sort((a, b) => order(a) - order(b));
+    const active = stopFor(document.activeElement);
+    const index = stops.findIndex((stop) => stop === active);
+    const next = index + (event.shiftKey ? -1 : 1);
+    const nextStop = stops[next];
+    if (index === -1 || !nextStop) {
       event.preventDefault();
-      (event.shiftKey ? last : first)?.focus();
+      (event.shiftKey ? stops.at(-1) : stops[0])?.focus();
+    } else if (groupedRadio(nextStop) && !nextStop.checked) {
+      // Native reverse Tab can enter an unchecked group at its last radio.
+      event.preventDefault();
+      nextStop.focus();
     }
   }
 </script>

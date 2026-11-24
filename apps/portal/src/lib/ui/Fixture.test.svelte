@@ -4,15 +4,28 @@
   import Tabs from './Tabs.svelte';
   import Tooltip from './Tooltip.svelte';
 
-  let { kind }: { kind: 'dialog' | 'tabs' | 'tooltip' } = $props();
+  let {
+    kind,
+    checkedRadio,
+  }: {
+    kind: 'dialog' | 'radio' | 'tabs' | 'tooltip' | 'tooltip-edges';
+    checkedRadio?: boolean;
+  } = $props();
   let open = $state(false);
 </script>
 
-{#if kind === 'dialog'}
+{#if kind === 'dialog' || kind === 'radio'}
   <Button onclick={() => (open = true)}>Open example</Button>
   <Dialog bind:open title="Example" description="An example dialog">
     <Button disabled>Disabled</Button>
-    <Button>Last action</Button>
+    {#if kind === 'radio'}
+      <label
+        ><input type="radio" name="quality" checked={checkedRadio} /> Draft</label
+      >
+      <label><input type="radio" name="quality" /> Final</label>
+    {:else}
+      <Button>Last action</Button>
+    {/if}
   </Dialog>
 {:else if kind === 'tabs'}
   <Tabs
@@ -25,6 +38,14 @@
   >
     {#snippet children(tab)}Content for {tab.label}{/snippet}
   </Tabs>
+{:else if kind === 'tooltip-edges'}
+  <div style="display: flex; justify-content: space-between">
+    {#each ['Left', 'Right'] as edge (edge)}
+      <Tooltip text="Enough tooltip text to take up space">
+        {#snippet children(attrs)}<Button {...attrs}>{edge}</Button>{/snippet}
+      </Tooltip>
+    {/each}
+  </div>
 {:else}
   <Tooltip text="Extra context">
     {#snippet children(attrs)}<Button {...attrs}>Information</Button>{/snippet}
