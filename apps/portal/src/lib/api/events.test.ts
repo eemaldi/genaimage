@@ -26,7 +26,9 @@ class FakeEventSource extends EventTarget {
 }
 
 const streams = () => FakeEventSource.connections;
-const health = (bus_id = 'bus-a') => ({
+const oldBus = 'cd296a42-2c8f-4246-9d9b-b74c77de48d1';
+const newBus = '185ac8d7-6ea1-43a6-a6d1-dff7faa71199';
+const health = (bus_id = oldBus) => ({
   type: 'backend_health_changed',
   bus_id,
   id: 1,
@@ -60,7 +62,7 @@ describe('portal event stream', () => {
     expect(status).toHaveBeenLastCalledWith('open');
     stream.emit(
       'settings_changed',
-      { type: 'settings_changed', bus_id: 'bus-a', id: 1, settings: {} },
+      { type: 'settings_changed', bus_id: oldBus, id: 1, settings: {} },
       '1',
     );
     expect(receive).not.toHaveBeenCalled();
@@ -95,7 +97,7 @@ describe('portal event stream', () => {
     vi.advanceTimersByTime(1);
     const second = streams()[1];
     expect(second.url).toBe(
-      '/api/v1/events?last_event_id=18446744073709551615',
+      `/api/v1/events?last_event_id=18446744073709551615&bus_id=${oldBus}`,
     );
     second.fail();
     vi.advanceTimersByTime(499);
@@ -141,6 +143,40 @@ describe('portal event stream', () => {
     },
   );
 
+  it('signals a snapshot refetch after a restart with the same latest ID and no new events', () => {
+    const store = createEventStore(FakeEventSource);
+    const resync = vi.fn();
+    const stop = store.resync.subscribe(resync);
+    const [first] = streams();
+    const lastEvent = health(oldBus);
+    const restartedLatest = health(newBus);
+    first.opened();
+    first.emit(lastEvent.type, lastEvent, String(lastEvent.id));
+    first.fail();
+    vi.advanceTimersByTime(250);
+
+    const second = streams()[1];
+    const query = new URL(second.url, 'http://localhost').searchParams;
+    expect(query.get('last_event_id')).toBe(String(restartedLatest.id));
+    expect(query.get('bus_id')).toBe(lastEvent.bus_id);
+    second.opened();
+    // The restarted bus is idle and cannot replay any events after that ID.
+    const reason = {
+      reason: 'bus_changed',
+      requested: lastEvent.bus_id,
+      current: restartedLatest.bus_id,
+    } satisfies ResyncEvent;
+    second.emit('resync', reason);
+    second.fail();
+    expect(second.close).toHaveBeenCalledOnce();
+    expect(resync).toHaveBeenLastCalledWith(null);
+    vi.advanceTimersByTime(250);
+    expect(streams()[2].url).toBe('/api/v1/events');
+    streams()[2].opened();
+    expect(resync).toHaveBeenLastCalledWith({ epoch: 1, reason });
+    stop();
+  });
+
   it('resynchronises on a changed bus instead of dispatching the replayed event', () => {
     const store = createEventStore(FakeEventSource);
     const resync = vi.fn();
@@ -154,14 +190,14 @@ describe('portal event stream', () => {
     vi.advanceTimersByTime(250);
     const second = streams()[1];
     second.opened();
-    second.emit('backend_health_changed', health('bus-b'), '2');
+    second.emit('backend_health_changed', health(newBus), '2');
     expect(receive).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(250);
     expect(streams()[2].url).toBe('/api/v1/events');
     streams()[2].opened();
     expect(resync).toHaveBeenLastCalledWith({
       epoch: 1,
-      reason: { reason: 'bus_changed', requested: 'bus-a', current: 'bus-b' },
+      reason: { reason: 'bus_changed', requested: oldBus, current: newBus },
     });
     stopResync();
     stopEvent();

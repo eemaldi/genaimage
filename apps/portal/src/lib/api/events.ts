@@ -79,6 +79,7 @@ export function createEventStore(EventSourceImpl?: EventSourceConstructor) {
   function connect() {
     const query: operations['events_events']['parameters']['query'] = {
       last_event_id: lastId,
+      bus_id: busId,
     };
     let stream: InstanceType<EventSourceConstructor>;
     try {

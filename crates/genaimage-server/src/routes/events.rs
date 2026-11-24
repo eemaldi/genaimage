@@ -9,7 +9,7 @@ use axum::{
     },
 };
 use futures_util::{stream, StreamExt};
-use genaimage_core::{Event as CoreEvent, ReceiveError, ResyncReason};
+use genaimage_core::{Event as CoreEvent, EventCursor, ReceiveError, ResyncReason};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -22,6 +22,8 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 pub(super) struct EventQuery {
     run_id: Option<String>,
     last_event_id: Option<String>,
+    /// Originating bus UUID. Requires an event ID in last_event_id or Last-Event-ID.
+    bus_id: Option<String>,
 }
 
 fn invalid_cursor() -> Problem {
@@ -36,7 +38,7 @@ fn invalid_cursor() -> Problem {
     get, path = "/events",
     operation_id = "events_events",
     tag = "events",
-    description = "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
+    description = "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Pass bus_id with the replay cursor to detect server restarts even when the numeric ID is still in range. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
     params(EventQuery, ("Last-Event-ID" = Option<String>, Header, description = "Unsigned decimal replay cursor")),
     responses(
         (status = 200, description = "SSE frames; JSON data is EventEnvelope or ResyncEvent", body = String, content_type = "text/event-stream"),
@@ -58,7 +60,7 @@ pub(super) async fn events(
         Problem::new(
             StatusCode::BAD_REQUEST,
             "The event stream query is invalid.",
-            "Supply at most one run_id and one last_event_id query parameter.",
+            "Supply at most one of each query parameter: run_id, last_event_id and bus_id.",
         )
     })?;
     let mut ids = headers.get_all("last-event-id").iter();
@@ -79,27 +81,49 @@ pub(super) async fn events(
     })
     .transpose()?;
 
+    let bus_cursor = query
+        .bus_id
+        .map(|bus_id| {
+            let id =
+                cursor.ok_or_else(|| invalid_bus_cursor("A bus ID requires a last event ID."))?;
+            let bus_id = bus_id
+                .parse()
+                .map_err(|_| invalid_bus_cursor("The bus ID is invalid."))?;
+            Ok(EventCursor { bus_id, id })
+        })
+        .transpose()?;
     Ok(event_response(
         state,
         query.run_id,
         cursor,
+        bus_cursor,
         HEARTBEAT_INTERVAL,
     ))
+}
+
+fn invalid_bus_cursor(detail: &str) -> Problem {
+    Problem::new(
+        StatusCode::BAD_REQUEST,
+        detail,
+        "Supply the originating bus UUID together with an unsigned decimal event ID.",
+    )
 }
 
 fn event_response(
     state: AppState,
     run_id: Option<String>,
     cursor: Option<u64>,
+    bus_cursor: Option<EventCursor>,
     heartbeat_interval: Duration,
 ) -> Response {
     let harness = state.harness();
     let bus = harness.events();
     // The core takes the replay snapshot and subscribes to live delivery under
     // the same lock, so the two cannot overlap or leave a gap.
-    let subscription = match cursor {
-        Some(id) => bus.subscribe_since(id),
-        None => Ok(bus.subscribe()),
+    let subscription = match (bus_cursor, cursor) {
+        (Some(cursor), _) => bus.subscribe_from_cursor(cursor),
+        (None, Some(id)) => bus.subscribe_since(id),
+        (None, None) => Ok(bus.subscribe()),
     };
     let events = stream::unfold(Some((run_id, subscription)), |next| async move {
         let (run_id, subscription) = next?;

@@ -150,12 +150,14 @@ must be unsigned decimal integers; malformed cursors return 400 problem
 details. `?run_id=` selects events for that exact run in both replay and live
 delivery, excluding global events such as backend health and settings changes.
 Filtered streams can have gaps because IDs are assigned across the whole bus.
-The numeric cursor is scoped to the originating bus; do not resume it across
-server restarts. Clients should retain the envelope's `bus_id` and resynchronise
-if they observe a different one; a numeric ID alone cannot detect every restart.
+The numeric cursor is scoped to the originating bus. Send the envelope's
+`bus_id` as a query parameter with the replay cursor to detect a server restart
+before any replay or live event. `bus_id` must be a UUID and requires an event
+ID; cursors without `bus_id` remain supported but cannot reliably detect a
+restart.
 
-If a cursor falls outside the replay window, the subscriber falls behind, or
-the core invalidates the stream, the server sends a final `event: resync` frame
+If a cursor belongs to a different bus or falls outside the replay window,
+the subscriber falls behind, or the core invalidates the stream, the server sends a final `event: resync` frame
 and closes the stream. Its empty `id:` clears the browser's reconnect cursor;
 its JSON `data` has a `reason` and the corresponding details:
 
@@ -163,6 +165,7 @@ its JSON `data` has a `reason` and the corresponding details:
 | --- | --- |
 | `cursor_out_of_range` | `requested`, `oldest` (or `null`), and `latest` IDs |
 | `lagged` | `skipped`: number of broadcast messages missed |
+| `bus_changed` | `requested` and `current` bus UUIDs |
 | `invalidated` | `id`: the invalidation boundary |
 
 A client receiving `resync` should stop automatic reconnects (close the

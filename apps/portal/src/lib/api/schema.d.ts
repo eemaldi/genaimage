@@ -11,13 +11,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments. */
+        /** @description SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Pass bus_id with the replay cursor to detect server restarts even when the numeric ID is still in range. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments. */
         get: operations["events_events"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
-        /** @description SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments. */
+        /** @description SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Pass bus_id with the replay cursor to detect server restarts even when the numeric ID is still in range. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments. */
         head: operations["events_events_head"];
         patch?: never;
         trace?: never;
@@ -783,6 +783,8 @@ export interface operations {
             query?: {
                 run_id?: string;
                 last_event_id?: string;
+                /** @description Originating bus UUID. Requires an event ID in last_event_id or Last-Event-ID. */
+                bus_id?: string;
             };
             header?: {
                 /** @description Unsigned decimal replay cursor */
@@ -872,6 +874,8 @@ export interface operations {
             query?: {
                 run_id?: string;
                 last_event_id?: string;
+                /** @description Originating bus UUID. Requires an event ID in last_event_id or Last-Event-ID. */
+                bus_id?: string;
             };
             header?: {
                 /** @description Unsigned decimal replay cursor */
