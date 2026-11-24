@@ -424,6 +424,7 @@ fn sse_response(
                     tool,
                     arguments,
                     json_schema,
+                    preview,
                 })) => {
                     let event = Event::default()
                         .event("confirmation_required")
@@ -435,6 +436,7 @@ fn sse_response(
                             tool,
                             arguments,
                             json_schema,
+                            preview,
                         })
                         .expect("serialisable assistant SSE event");
                     Some((Ok::<_, Infallible>(event), Some(assistant)))

@@ -337,6 +337,8 @@ pub struct AssistantConfirmationRequiredEvent {
     pub tool: String,
     pub arguments: serde_json::Value,
     pub json_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

@@ -84,6 +84,7 @@ pub enum ChatDelta {
         tool: String,
         arguments: Value,
         json_schema: Value,
+        preview: Option<Value>,
     },
 }
 
@@ -110,18 +111,23 @@ pub trait LlmProvider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<LlmModel>>;
 }
 
-/// The tool runtime must validate arguments against the schema and obtain any
+/// The tool runtime validates arguments against the schema and obtains any
 /// required user confirmation before invoking the tool. `requires_confirmation`
 /// is metadata, not enforcement. An assistant must never submit a run without
 /// explicit user approval of the effective proposal, regardless of tool metadata.
-/// The runtime supplies the invocation context after that approval; tools must
-/// treat `confirmation_id` as an idempotency key for confirmed operations.
+/// A confirmation tool may implement the read-only `preview` hook so the pause
+/// payload can show values resolved from presets, defaults and inherited inputs.
+/// The runtime supplies the invocation context after approval; tools must treat
+/// `confirmation_id` as an idempotency key for confirmed operations.
 #[async_trait]
 pub trait AssistantTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn json_schema(&self) -> Value;
     fn requires_confirmation(&self) -> bool;
+    async fn preview(&self, _arguments: &Value) -> Result<Option<Value>> {
+        Ok(None)
+    }
     async fn invoke(&self, context: ToolContext, arguments: Value) -> Result<Value>;
 }
 

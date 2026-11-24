@@ -207,6 +207,20 @@ append-only audit trail. The `confirmation_id` passed in `ToolContext` is the
 stable idempotency key for a confirmed invocation; tools that submit external
 work must reuse it.
 
+The serve entry point registers the built-in read and generation tools in the
+core registry. `list_workflows` and `inspect_workflow` expose the bounded local
+catalogue; `propose_run` validates a pinned proposal and resolves preset,
+default and inherited inputs; `submit_run` requires confirmation and reuses its
+single confirmation ID as the submission idempotency key; `run_status` only
+exposes outputs for completed runs; `get_output` returns metadata without bytes;
+and `review_image` calls the exact configured vision role and appends a
+model-opinion annotation. Review is automatic because it is an append-only
+operator assessment rather than a generation submission, does not alter run
+provenance and uses no text-model fallback. A `submit_run` pause can include an
+optional read-only `preview` in `confirmation_required`; it contains every
+effective value the user is approving, while the original editable `arguments`
+remain available separately.
+
 ### Live event stream
 
 `GET /api/v1/events` returns `text/event-stream` without compression, with

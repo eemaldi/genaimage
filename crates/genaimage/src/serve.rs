@@ -77,6 +77,13 @@ async fn open_harness(
         .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
     let bus = EventBus::default();
     let harness = Harness::with_event_bus_async(config, backend, bus.clone()).await?;
+    let builtins = genaimage_core::assistant::tools::builtin_assistant_tools(
+        std::sync::Arc::new(harness.clone()),
+        llm_roles.clone(),
+    );
+    for tool in builtins {
+        registry.register_assistant_tool(tool)?;
+    }
     for (name, task) in registry.forward_event_sinks(&bus) {
         tokio::spawn(async move {
             match task.await {

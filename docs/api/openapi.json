@@ -190,6 +190,7 @@
             "type": "string"
           },
           "json_schema": {},
+          "preview": {},
           "status": {
             "$ref": "#/components/schemas/AssistantToolConfirmationStatus"
           },

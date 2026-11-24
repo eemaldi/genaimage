@@ -780,6 +780,38 @@ async fn supervise_confirmation(
                 drop(lease);
                 return;
             }
+            if let Some(tool) = service.tools.get(&confirmation.tool) {
+                if let Err(error) = tool.preview(&arguments).await {
+                    let error = error.to_string();
+                    let _ = service
+                        .store
+                        .append_tool_audit(NewAssistantToolAudit {
+                            conversation_id: conversation_id.clone(),
+                            confirmation_id: Some(confirmation.id.clone()),
+                            tool_call_id: confirmation.tool_call_id.clone(),
+                            tool: confirmation.tool.clone(),
+                            proposed_arguments: confirmation.proposed_arguments.clone(),
+                            validation_outcome: "valid_schema".into(),
+                            validation_error: Some(error.clone()),
+                            decision: "edit_invalid".into(),
+                            effective_arguments: Some(arguments.clone()),
+                            decided_by: Some("user".into()),
+                            invocation_ok: None,
+                            invocation_result: None,
+                            invocation_error: None,
+                            decided_at: Some(Utc::now()),
+                            invoked_at: None,
+                        })
+                        .await;
+                    fail_setup(
+                        &_finished_placeholder,
+                        &mut started,
+                        HarnessError::InvalidToolArguments(error),
+                    );
+                    drop(lease);
+                    return;
+                }
+            }
             ("edit", arguments, None)
         }
         AssistantConfirmationDecision::Reject(reason) => ("reject", Value::Null, reason),
@@ -1208,6 +1240,30 @@ async fn process_tool_calls(
             continue;
         }
         if tool.requires_confirmation() {
+            let preview = match tool.preview(&call.arguments).await {
+                Ok(preview) => preview,
+                Err(error) => {
+                    let error = error.to_string();
+                    service
+                        .store
+                        .append_tool_audit(invalid_audit(conversation_id, call, error.clone()))
+                        .await?;
+                    append_tool_outcome(
+                        service,
+                        &sender,
+                        &cancellation,
+                        conversation_id,
+                        &call.id,
+                        &call.name,
+                        &ToolOutcome::Err(error.clone()),
+                    )
+                    .await?;
+                    request
+                        .messages
+                        .push(tool_message(call, &ToolOutcome::Err(error)));
+                    continue;
+                }
+            };
             let confirmation = service
                 .store
                 .create_confirmation(NewAssistantConfirmation {
@@ -1232,6 +1288,7 @@ async fn process_tool_calls(
                     tool: call.name.clone(),
                     arguments: call.arguments.clone(),
                     json_schema: tool.json_schema(),
+                    preview,
                 }),
             )
             .await;

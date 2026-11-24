@@ -655,6 +655,7 @@ export interface components {
             confirmation_id: string;
             conversation_id: string;
             json_schema: unknown;
+            preview?: unknown;
             status: components["schemas"]["AssistantToolConfirmationStatus"];
             tool: string;
             tool_call_id: string;

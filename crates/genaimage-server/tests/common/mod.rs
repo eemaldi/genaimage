@@ -56,7 +56,20 @@ impl ApiHarness {
         env: &[(&str, &str)],
         tools: Vec<Arc<dyn genaimage_core::AssistantTool>>,
     ) -> Self {
-        Self::start_configured_with_tools(seconds, env, Duration::from_secs(2), "", tools).await
+        Self::start_configured_with_tools(seconds, env, Duration::from_secs(2), "", tools, false)
+            .await
+    }
+
+    pub async fn start_with_builtin_assistant_tools(seconds: u64, env: &[(&str, &str)]) -> Self {
+        Self::start_configured_with_tools(
+            seconds,
+            env,
+            Duration::from_secs(2),
+            "",
+            Vec::new(),
+            true,
+        )
+        .await
     }
 
     pub async fn start_with_deadlines(seconds: u64, drain: Duration) -> Self {
@@ -69,7 +82,7 @@ impl ApiHarness {
         drain: Duration,
         extra: &str,
     ) -> Self {
-        Self::start_configured_with_tools(seconds, env, drain, extra, Vec::new()).await
+        Self::start_configured_with_tools(seconds, env, drain, extra, Vec::new(), false).await
     }
 
     async fn start_configured_with_tools(
@@ -78,6 +91,7 @@ impl ApiHarness {
         drain: Duration,
         extra: &str,
         assistant_tools: Vec<Arc<dyn genaimage_core::AssistantTool>>,
+        builtin_assistant_tools: bool,
     ) -> Self {
         let max_upload_bytes = genaimage_core::config::ServerConfig::default().max_upload_bytes;
         let ApiFixture {
@@ -129,6 +143,14 @@ impl ApiHarness {
             llm_provider.map(|provider| provider as Arc<dyn genaimage_core::LlmProvider>),
         );
         let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
+        let assistant_tools = if builtin_assistant_tools {
+            genaimage_core::assistant::tools::builtin_assistant_tools(
+                Arc::clone(&core),
+                llm_roles.clone(),
+            )
+        } else {
+            assistant_tools
+        };
         let state = AppState::new(core.clone())
             .with_llm_roles(llm_roles)
             .with_assistant_tools(assistant_tools)
