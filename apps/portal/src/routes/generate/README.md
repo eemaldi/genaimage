@@ -16,3 +16,7 @@ matching. Steps and suggested options are control hints, not binding rules.
 Reference images are previewed from the selected local file after upload. The
 server returns metadata but does not serve stored image bytes, so a reference
 supplied by a manifest or preset can show its ID but not its preview. See the [portal share link contract](../../../../../docs/architecture.md#generate-share-links-and-remix) for restoration and Remix.
+
+Requiredness and expected output types use the server’s effective values. The
+workflow detail API identifies these as declared, defaulted or unknown. An
+optional parameter without a manifest default stays unset.

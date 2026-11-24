@@ -24,6 +24,8 @@
     initialField,
     parameterGroups,
     presetField,
+    presenceLabel,
+    requirementLabel,
     randomSeed,
     type FieldState,
     type Review,
@@ -39,7 +41,9 @@
       source?: FieldState['source'];
       random: boolean;
       image: boolean;
+      requirement: string;
     }>;
+    outputs: ReadonlyArray<{ node: string; kind: string }>;
     workflow: string;
     version: string;
     preset: string;
@@ -293,6 +297,7 @@
       source: field.seedMode === 'random' ? ('user' as const) : field.source,
       random: field.seedMode === 'random',
       image: workflow.parameters[name].kind === 'image_upload',
+      requirement: requirementLabel(workflow.parameters[name]),
     }));
     const controller = new AbortController();
     validation = controller;
@@ -332,6 +337,10 @@
       review = {
         body,
         rows,
+        outputs: workflow.outputs.map(({ node, kind, declared_kind }) => ({
+          node,
+          kind: `${kind}${presenceLabel(declared_kind)}`,
+        })),
         workflow: workflow.id,
         version: workflow.version,
         preset,
@@ -550,8 +559,11 @@
     </p>
     {#if review.rows.length}
       <dl>
-        {#each review.rows as { name, value, source, random, image } (name)}
-          <dt>{name}{random ? ' (randomised seed)' : ''}</dt>
+        {#each review.rows as { name, value, source, random, image, requirement } (name)}
+          <dt>
+            {name}{random ? ' (randomised seed)' : ''}
+            <span class="source">· {requirement}</span>
+          </dt>
           <dd>
             {#if image && typeof value === 'string'}<code>{value}</code>
             {:else}{value === undefined
@@ -567,6 +579,14 @@
         {/each}
       </dl>
     {:else}<p>No parameters are set.</p>{/if}
+    {#if review.outputs.length}
+      <h4>Expected outputs</h4>
+      <ul>
+        {#each review.outputs as { node, kind }, index (index)}
+          <li>Node <code>{node}</code> · {kind}</li>
+        {/each}
+      </ul>
+    {/if}
     {#if ambiguous}
       <p>
         The run may already exist. {#if knownRunId}<a

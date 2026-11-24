@@ -22,6 +22,7 @@ import {
   createApiClient,
   type api,
 } from '../../lib/api/client';
+import App from '../../App.svelte';
 import Page from './Page.svelte';
 import type { Parameter, Workflow } from './model';
 
@@ -742,4 +743,64 @@ test('an accepted but uncertain backend submission points to Jobs without succes
   expect(screen.queryByText('Run completed with outputs.')).toBeNull();
   expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull();
   expect(fake.listOutputs).not.toHaveBeenCalled();
+});
+
+test('opens Generate from the catalogue and distinguishes defaulted, declared and unknown presence', async () => {
+  const id = 'portrait & ink';
+  fake.getWorkflow.mockResolvedValue({
+    ...workflow,
+    id,
+    parameters: {
+      Omitted: parameter('string', { declared_required: null, default: null }),
+      Declared: parameter('boolean', {
+        declared_required: false,
+        default: false,
+      }),
+      Unknown: parameter('string', { required: true }),
+    },
+    outputs: [
+      { node: '1', kind: 'image', declared_kind: null },
+      { node: '2', kind: 'image', declared_kind: 'image' },
+      { node: '3', kind: 'image' },
+    ],
+  });
+  history.replaceState(null, '', `#/workflows/${encodeURIComponent(id)}`);
+  render(App);
+  const user = userEvent.setup();
+  await user.click(
+    await screen.findByRole('button', { name: 'Use this workflow' }),
+  );
+  await screen.findByRole('heading', { name: 'Generate' });
+  expect(location.hash).toBe('#/generate?workflow=portrait+%26+ink');
+  await screen.findByLabelText('Omitted');
+  expect(fake.getWorkflow).toHaveBeenLastCalledWith(
+    id,
+    expect.objectContaining({ exactBindings: true }),
+  );
+  expect(control('Omitted').value).toBe('');
+  expect(control('Omitted').required).toBe(false);
+  expect(control('Unknown').required).toBe(true);
+  expect(screen.getByText('Optional (default).')).toBeTruthy();
+  expect(screen.getByText('Optional (declared).')).toBeTruthy();
+  expect(screen.getByText('Required (declaration unavailable).')).toBeTruthy();
+  expect(screen.getByText('Manifest default: false')).toBeTruthy();
+  await user.type(control('Unknown'), 'Explicit value');
+  await user.click(reviewButton());
+  const panel = within(
+    await screen.findByRole('region', { name: 'Review parameters' }),
+  );
+  expect(panel.getByText('· Optional (default)')).toBeTruthy();
+  expect(panel.getByText('· Optional (declared)')).toBeTruthy();
+  expect(panel.getByText('· Required (declaration unavailable)')).toBeTruthy();
+  expect(panel.getByText('Not set — not submitted')).toBeTruthy();
+  expect(panel.getByText('(default)')).toBeTruthy();
+  expect(panel.getByText(/image \(default\)/)).toBeTruthy();
+  expect(panel.getByText(/image \(declared\)/)).toBeTruthy();
+  expect(panel.getByText(/image \(declaration unavailable\)/)).toBeTruthy();
+  expect(fake.validateWorkflow).toHaveBeenLastCalledWith(
+    id,
+    { parameters: { Declared: false, Unknown: 'Explicit value' } },
+    expect.any(Object),
+  );
+  expect(fake.createRun).not.toHaveBeenCalled();
 });

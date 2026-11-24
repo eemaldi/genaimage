@@ -2,10 +2,7 @@ import { BindingFloat } from '../../lib/api/client';
 import type { components } from '../../lib/api/schema';
 
 export type Workflow = components['schemas']['WorkflowDetails'];
-export type Parameter = components['schemas']['WorkflowParameter'] & {
-  // #44 adds this to the wire contract. Main only reports effective requiredness.
-  declared_required?: boolean | null;
-};
+export type Parameter = components['schemas']['WorkflowParameter'];
 export type Scalar = string | number | bigint | boolean | BindingFloat;
 export type FieldState = {
   value?: Scalar;
@@ -96,10 +93,16 @@ function compactInteger(integer: bigint): number | bigint {
   return Number.isSafeInteger(value) ? value : integer;
 }
 
-export function required(parameter: Parameter): boolean {
-  return parameter.declared_required === undefined
-    ? parameter.required
-    : parameter.declared_required === true;
+export function presenceLabel(
+  declared: boolean | string | null | undefined,
+): string {
+  if (declared === null) return ' (default)';
+  if (declared === undefined) return ' (declaration unavailable)';
+  return ' (declared)';
+}
+
+export function requirementLabel(parameter: Parameter): string {
+  return `${parameter.required ? 'Required' : 'Optional'}${presenceLabel(parameter.declared_required)}`;
 }
 
 export function bindingError(
@@ -108,9 +111,7 @@ export function bindingError(
 ): string | undefined {
   const value = field.value;
   if (value === undefined && field.draft === undefined) {
-    return required(parameter)
-      ? 'Enter a value for this parameter.'
-      : undefined;
+    return parameter.required ? 'Enter a value for this parameter.' : undefined;
   }
   switch (parameter.kind) {
     case 'seed':

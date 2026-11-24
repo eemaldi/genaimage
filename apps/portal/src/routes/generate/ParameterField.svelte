@@ -9,7 +9,7 @@
   import {
     bindingError,
     numericDraft,
-    required,
+    requirementLabel,
     sameValue,
     type FieldState,
     type Parameter,
@@ -40,11 +40,11 @@
     uploadStatus: (message?: string) => void;
   } = $props();
 
-  let needed = $derived(required(parameter));
+  let needed = $derived(parameter.required);
   let hint = $derived(
     [
       parameter.description,
-      needed ? 'Required.' : '',
+      `${requirementLabel(parameter)}.`,
       parameter.kind !== 'image_upload' && parameter.minimum != null
         ? `Minimum: ${parameter.minimum}.`
         : '',
