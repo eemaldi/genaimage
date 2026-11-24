@@ -124,6 +124,20 @@ def check_skill_lock():
     return []
 
 
+def check_cli_client_boundary():
+    source = ROOT / "crates" / "genaimage" / "src"
+    local_modules = {source / "serve.rs", source / "config_local.rs"}
+    forbidden = re.compile(r"\bgenaimage_(?:core|comfyui|server)\b")
+    errors = []
+    for path in sorted(source.rglob("*.rs")):
+        if path in local_modules:
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if forbidden.search(line):
+                errors.append(f"{path.relative_to(ROOT)}:{number}: client module references a local-only crate")
+    return errors
+
+
 def run_command(label, command, cwd=ROOT):
     print(f"==> {label}", flush=True)
     environment = os.environ.copy()
@@ -191,6 +205,7 @@ def main():
         ("Skill mirrors", check_skill_mirrors),
         ("Skill lock", check_skill_lock),
         ("OpenAPI structure", check_openapi.check),
+        ("CLI client boundary", check_cli_client_boundary),
         ("Portal lockfile", lambda: check_portal_lockfile(portal) if portal_present else []),
         ("Prerequisites", lambda: check_runtime_tooling(portal_present)),
     ]

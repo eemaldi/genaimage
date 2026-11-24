@@ -16,13 +16,13 @@ planned architecture, the assistant tool runtime and self-hosted web portal.
 Current dependencies (arrows point to dependencies):
 
 ```text
-genaimage (CLI) -> genaimage-server -> genaimage-api
-      |                   |
-      |                   v
-      +------------> genaimage-core
-      |                   ^
-      v                   |
-      genaimage-comfyui --+
+genaimage client modules -> genaimage-api
+      serve module -> genaimage-server -> genaimage-api
+          |                   |
+          +--------------> genaimage-core
+          |                   ^
+          +-> genaimage-comfyui
+      local config module -> genaimage-core (configuration only)
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
@@ -31,11 +31,13 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
   `ImageBackend` trait and has no HTTP or WebSocket client dependencies.
 - `genaimage-comfyui` implements `ImageBackend` over HTTP and WebSocket, mapping
   ComfyUI responses and progress events into core-owned types.
-- `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
-  adapter factory to the extension registry and passes the selected backend to
-  the core harness. `genaimage serve` passes this harness to `genaimage-server`;
-  the client commands use the HTTP API through `genaimage-api`. See the
-  [CLI reference](cli.md) for server selection and output contracts.
+- `genaimage` provides the scripted CLI. Its client modules use only the HTTP
+  API through `genaimage-api` for GenAImage functionality. The isolated `serve`
+  module supplies the ComfyUI adapter factory, constructs the core harness and
+  passes it to `genaimage-server`. The local configuration module uses core's
+  example configuration and error types for `config init`, without opening a
+  harness. See the [CLI reference](cli.md) for server selection and output
+  contracts.
 - `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
   exposes an async `genaimage_api::client::Client` with the opt-in
   `client` feature (reqwest with rustls). The server uses the wire types
@@ -55,7 +57,7 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
-The target is for the CLI and browser portal to use the same loopback API.
+The CLI uses the loopback API; the planned browser portal will use the same API.
 The server uses the core and local adapters rather than reimplementing run
 orchestration or assistant logic.
 
@@ -367,7 +369,7 @@ configured endpoint and model. Ollama, llama.cpp and LM Studio are intended
 local options when their compatible APIs are enabled.
 
 The core defines async, object-safe `ImageBackend`, `LlmProvider`,
-`AssistantTool` and `EventSink` contracts. The CLI builds an `ExtensionRegistry`
+`AssistantTool` and `EventSink` contracts. The CLI serve module builds an `ExtensionRegistry`
 from the resolved ComfyUI settings using an adapter factory supplied by the CLI;
 core does not construct adapters. The registry looks up registered extensions by
 name without a fallback. Only the image backend is configured today; the LLM

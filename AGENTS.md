@@ -15,8 +15,9 @@ ComfyUI image generation, assisted by local LLMs. Read
   HTTP and WebSocket connections.
 - `crates/genaimage` is the scripted interface. Health, workflow, preset and
   settings, run and job commands call the server through `crates/genaimage-api`.
-  `genaimage serve` starts the local Axum server in `crates/genaimage-server`;
-  `config init` writes a local example configuration.
+  The isolated `serve` module wires the core and adapter to the local Axum
+  server in `crates/genaimage-server`; the local `config init` module uses only
+  core configuration and error types to write an example configuration.
 - The server binds to loopback only and currently serves health, workflows, runs,
   outputs, uploads, settings, live events and an OpenAPI contract. The embedded
   Svelte portal is planned.

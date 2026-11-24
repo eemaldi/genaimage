@@ -9,7 +9,9 @@ loopback server currently serves health, workflows, runs, outputs, uploads,
 settings, live events and an OpenAPI contract; the embedded Svelte portal is
 planned. Keep generation orchestration, run state,
 provenance and the planned assistant runtime in the core, and ComfyUI transport
-in its adapter.
+in its adapter. CLI client commands use `genaimage-api`; only the isolated
+`serve` module wires the core, adapter and server. Local `config init` uses core
+configuration and error types without opening a harness.
 
 Use API-format ComfyUI JSON and strict manifests. Never silently substitute a
 model, node, seed, image, prompt or setting. LLM output is a proposal the user

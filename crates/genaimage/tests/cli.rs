@@ -714,17 +714,97 @@ async fn server_commands_reject_explicit_local_selectors() {
         let message = result["message"].as_str().unwrap();
         assert!(message.contains("genaimage serve") && message.contains("--server"));
     }
-    let destination = server._workspace.path().join("example.toml");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn config_init_is_local_and_preserves_its_output_and_overwrite_rules() {
+    let workspace = TempDir::new().unwrap();
+    let destination = workspace.path().join("example.toml");
+    let args = [
+        "--json",
+        "--config",
+        destination.to_str().unwrap(),
+        "config",
+        "init",
+    ];
+    let mut command = cli();
+    command.current_dir(workspace.path()).args(args);
+    assert_eq!(
+        report(cli_output(command).await, 0),
+        json!({"path": destination, "created": true})
+    );
+    assert_eq!(
+        fs::read_to_string(&destination).unwrap(),
+        HarnessConfig::example()
+    );
+
+    fs::write(&destination, "keep me").unwrap();
+    let mut command = cli();
+    command.current_dir(workspace.path()).args(args);
+    let failure = error(cli_output(command).await, 1);
+    assert!(failure["error"]
+        .as_str()
+        .unwrap()
+        .contains("already exists; use --force"));
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "keep me");
+
     let mut command = cli();
     command
-        .args(["config", "init", "--json", "--config"])
-        .arg(&destination);
+        .current_dir(workspace.path())
+        .args(args)
+        .arg("--force");
+    assert_eq!(report(cli_output(command).await, 0)["created"], true);
     assert_eq!(
-        report(cli_output(command).await, 0)["path"],
-        json!(destination)
+        fs::read_to_string(&destination).unwrap(),
+        HarnessConfig::example()
     );
-    assert!(destination.is_file());
-    server.shutdown().await;
+
+    let mut command = cli();
+    command.current_dir(workspace.path()).args([
+        "--json",
+        "--workspace",
+        ".",
+        "config",
+        "init",
+        "--force",
+    ]);
+    let failure = error(cli_output(command).await, 1);
+    assert!(failure["error"]
+        .as_str()
+        .unwrap()
+        .contains("--workspace is only supported"));
+    assert!(!workspace.path().join("genaimage.toml").exists());
+}
+
+#[tokio::test]
+async fn client_commands_do_not_fall_back_to_local_workspace_when_server_stops() {
+    let mut server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    server.state.begin_shutdown();
+    tokio::time::timeout(Duration::from_secs(5), &mut server.task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    for args in [
+        &["workflow", "list"][..],
+        &["workflow", "inspect", "contract-workflow"][..],
+        &["run", "contract-workflow", "--preset", "fast"][..],
+        &["jobs", "list"][..],
+    ] {
+        let mut command = cli();
+        command
+            .current_dir(server._workspace.path())
+            .args(["--json", "--server", &server.origin])
+            .args(args);
+        assert_eq!(
+            error(cli_output(command).await, 3)["kind"],
+            "server_not_running"
+        );
+    }
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

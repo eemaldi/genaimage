@@ -1,16 +1,15 @@
 mod artefacts;
+mod config_local;
 mod output;
 mod run_commands;
+mod serve;
 mod server_commands;
 
 use std::{collections::BTreeMap, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
 use genaimage_api::client::{Client, DEFAULT_BASE_URL};
-use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError};
 use serde_json::Value;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -160,29 +159,7 @@ async fn main() -> ExitCode {
             Err(error) => output.report(&error),
         };
     }
-    if matches!(cli.command, Command::Serve) {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::builder()
-                    .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
-                    .from_env_lossy(),
-            )
-            .with_writer(std::io::stderr)
-            .json()
-            .init();
-    }
-    if let Err(error) = execute_local(&cli).await {
-        if cli.json {
-            eprintln!(
-                "{}",
-                serde_json::json!({ "status": "error", "error": error.to_string() })
-            );
-        } else {
-            eprintln!("Error: {error}");
-        }
-        return output::Status::LocalFailure.into();
-    }
-    ExitCode::SUCCESS
+    config_local::execute(&cli).await
 }
 
 async fn execute_server(
@@ -201,71 +178,6 @@ async fn execute_server(
     }
     let client = Client::with_base_url(&cli.server)?;
     command.execute(&client, output).await
-}
-
-async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
-    let config = HarnessConfig::load_with_config(
-        cli.workspace
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new(".")),
-        cli.config.as_deref(),
-    )?;
-    let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
-    let backend = registry
-        .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
-        .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
-    let bus = EventBus::default();
-    let harness = Harness::with_event_bus_async(config, backend, bus.clone()).await?;
-    for (name, task) in registry.forward_event_sinks(&bus) {
-        tokio::spawn(async move {
-            match task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("event sink '{name}' failed: {error}"),
-                Err(error) => eprintln!("event sink '{name}' task failed: {error}"),
-            }
-        });
-    }
-    Ok(harness)
-}
-
-async fn execute_local(cli: &Cli) -> Result<(), HarnessError> {
-    match &cli.command {
-        Command::Serve => {
-            let harness = open_harness(cli).await?;
-            genaimage_server::serve(genaimage_server::AppState::new(harness.into())).await?;
-        }
-        Command::Config {
-            command: ConfigCommand::Init { force },
-        } => {
-            if cli.workspace.is_some() {
-                return Err(HarnessError::Configuration("--workspace is only supported by `genaimage serve`; use --config to choose where to write the example configuration".into()));
-            }
-            config_init(cli, *force)?;
-        }
-        _ => unreachable!("server-backed commands are dispatched first"),
-    }
-    Ok(())
-}
-
-fn config_init(cli: &Cli, force: bool) -> Result<(), HarnessError> {
-    let path = cli
-        .config
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("genaimage.toml"));
-    if path.exists() && !force {
-        return Err(HarnessError::Configuration(format!(
-            "'{}' already exists; use --force to replace it",
-            path.display()
-        )));
-    }
-    std::fs::write(&path, HarnessConfig::example())?;
-    let report = serde_json::json!({ "path": path, "created": true });
-    if cli.json {
-        println!("{}", serde_json::to_string(&report)?);
-    } else {
-        println!("Created configuration file '{}'.", path.display());
-    }
-    Ok(())
 }
 
 fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, String> {

@@ -1,5 +1,6 @@
 import contextlib
 import io
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -91,6 +92,30 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertTrue(any('node' in error and 'apps/portal/package.json' in error for error in errors))
         self.assertTrue(any('npm' in error and 'apps/portal/package.json' in error for error in errors))
+
+
+class CliBoundaryTests(unittest.TestCase):
+    def test_only_local_modules_may_reference_local_crates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'crates/genaimage/src'
+            source.mkdir(parents=True)
+            (source / 'serve.rs').write_text('use genaimage_server::AppState;')
+            (source / 'config_local.rs').write_text('use genaimage_core::HarnessConfig;')
+            (source / 'main.rs').write_text('use genaimage_api::client::Client;')
+            nested = source / 'client'
+            nested.mkdir()
+            (nested / 'commands.rs').write_text(
+                'use genaimage_core::Harness;\n'
+                'let _ = genaimage_comfyui::ComfyUiClient;\n'
+                'extern crate genaimage_server;\n'
+            )
+            with mock.patch.object(ci_check, 'ROOT', root):
+                errors = ci_check.check_cli_client_boundary()
+                self.assertEqual(len(errors), 3)
+                self.assertTrue(all('client/commands.rs:' in error for error in errors))
+                (nested / 'commands.rs').write_text('use genaimage_api::RunResponse;')
+                self.assertEqual(ci_check.check_cli_client_boundary(), [])
 
 
 if __name__ == '__main__':
