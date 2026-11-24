@@ -3,7 +3,7 @@ mod common;
 use std::{io::Cursor, path::PathBuf, sync::atomic::Ordering};
 
 use common::{install_workflow, ApiHarness};
-use genaimage_api::OutputListResponse;
+use genaimage_api::{OutputListResponse, OutputResponse};
 use genaimage_core::{RunRecord, RunRequest, RunStatus};
 use reqwest::{header, Method, StatusCode};
 use serde_json::{json, Value};
@@ -79,6 +79,54 @@ async fn paginates_and_filters_by_run_workflow_dates_and_archived_tags() {
         .await
         .unwrap();
     ApiHarness::assert_problem(response, StatusCode::BAD_REQUEST).await;
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn filters_by_run_status_and_fetches_metadata_outside_the_first_page() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let older = completed(&api, "Older").await;
+    let newer = completed(&api, "Newer").await;
+    let first: OutputListResponse = api
+        .get_json(&format!("{OUTPUTS}?limit=1&status=completed"))
+        .await;
+    assert_eq!(first.outputs[0].run_id, newer.id);
+    let older_outputs: OutputListResponse =
+        api.get_json(&format!("{OUTPUTS}?run={}", older.id)).await;
+    let id = &older_outputs.outputs[0].id;
+    let path = format!("{OUTPUTS}/{id}/metadata");
+    let metadata: OutputResponse = api.get_json(&path).await;
+    assert_eq!(metadata.run_id, older.id);
+    assert_eq!(metadata.tags, ["Older"]);
+    assert_eq!(metadata.content_type, "image/png");
+    let missing = api
+        .request(Method::GET, &format!("{OUTPUTS}/missing:1/metadata"))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(missing, StatusCode::NOT_FOUND).await;
+
+    // Simulate a terminal failure after the artefact was indexed.
+    api.core
+        .repository()
+        .update_status(&older.id, RunStatus::Failed, Some("Fixture failure"), None)
+        .unwrap();
+    let default: OutputListResponse = api.get_json(OUTPUTS).await;
+    assert_eq!(default.outputs.len(), 1);
+    let failed: OutputListResponse = api
+        .get_json(&format!("{OUTPUTS}?status=failed&tag=Older"))
+        .await;
+    assert_eq!(failed.outputs.len(), 1);
+    assert_eq!(&failed.outputs[0].id, id);
+    let empty: OutputListResponse = api.get_json(&format!("{OUTPUTS}?status=running")).await;
+    assert!(empty.outputs.is_empty());
+    let invalid = api
+        .request(Method::GET, &format!("{OUTPUTS}?status=invalid"))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(invalid, StatusCode::BAD_REQUEST).await;
     api.shutdown().await;
 }
 

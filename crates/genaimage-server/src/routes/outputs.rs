@@ -22,12 +22,19 @@ use crate::{AppState, Problem};
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "private, no-cache";
 
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(super) struct OutputStatusQuery {
+    /// Exact run status. Defaults to completed; only terminal runs can expose indexed outputs.
+    status: Option<api::RunStatus>,
+}
+
 #[utoipa::path(
     get, path = "/outputs",
     operation_id = "outputs_list",
     tag = "outputs",
     description = "List indexed outputs.",
-    params(api::OutputListQuery),
+    params(api::OutputListQuery, OutputStatusQuery),
     responses(
         (status = 200, body = api::OutputListResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -42,6 +49,7 @@ const REVALIDATE: &str = "private, no-cache";
 pub(super) async fn list(
     State(state): State<AppState>,
     query: Result<Query<api::OutputListQuery>, QueryRejection>,
+    status: Result<Query<OutputStatusQuery>, QueryRejection>,
 ) -> Result<Json<api::OutputListResponse>, Problem> {
     let query = parse_query(query)?;
     let page = state
@@ -49,6 +57,7 @@ pub(super) async fn list(
         .repository()
         .as_async()
         .list_outputs(OutputListQuery {
+            status: parse_query(status)?.status.map(super::runs::core_status),
             run: query.run,
             workflow: query.workflow,
             created_from: query.created_from,
@@ -60,28 +69,54 @@ pub(super) async fn list(
         .await
         .map_err(problem)?;
     Ok(Json(api::OutputListResponse {
-        outputs: page
-            .outputs
-            .into_iter()
-            .map(|indexed| {
-                let output = indexed.output;
-                api::OutputResponse {
-                    id: indexed.id,
-                    workflow_id: indexed.workflow_id,
-                    tags: indexed.tags,
-                    content_type: content_type(&output.source_filename).into(),
-                    run_id: output.run_id,
-                    node_id: output.node_id,
-                    kind: output.kind,
-                    source_filename: output.source_filename,
-                    sha256: output.sha256,
-                    byte_size: output.byte_size,
-                    created_at: output.created_at,
-                }
-            })
-            .collect(),
+        outputs: page.outputs.into_iter().map(output_response).collect(),
         next_cursor: page.next_cursor,
     }))
+}
+
+fn output_response(indexed: genaimage_core::media::IndexedOutput) -> api::OutputResponse {
+    let output = indexed.output;
+    api::OutputResponse {
+        id: indexed.id,
+        workflow_id: indexed.workflow_id,
+        tags: indexed.tags,
+        content_type: content_type(&output.source_filename).into(),
+        run_id: output.run_id,
+        node_id: output.node_id,
+        kind: output.kind,
+        source_filename: output.source_filename,
+        sha256: output.sha256,
+        byte_size: output.byte_size,
+        created_at: output.created_at,
+    }
+}
+
+#[utoipa::path(
+    get, path = "/outputs/{id}/metadata",
+    operation_id = "outputs_metadata",
+    tag = "outputs",
+    description = "Fetch indexed metadata without transferring the original bytes.",
+    params(("id" = String, Path, description = "Output ID")),
+    responses(
+        (status = 200, body = api::OutputResponse),
+        (status = 404, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn metadata(
+    State(state): State<AppState>,
+    path: Result<Path<String>, PathRejection>,
+) -> Result<Json<api::OutputResponse>, Problem> {
+    let id = parse_id(path)?;
+    state
+        .harness()
+        .repository()
+        .as_async()
+        .output(&id)
+        .await
+        .map(|output| Json(output_response(output)))
+        .map_err(problem)
 }
 
 #[utoipa::path(

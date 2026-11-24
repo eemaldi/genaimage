@@ -29,6 +29,7 @@ static DECODERS: Semaphore = Semaphore::const_new(2);
 
 #[derive(Default)]
 pub struct OutputListQuery {
+    pub status: Option<crate::RunStatus>,
     pub run: Option<String>,
     pub workflow: Option<String>,
     pub created_from: Option<DateTime<Utc>>,

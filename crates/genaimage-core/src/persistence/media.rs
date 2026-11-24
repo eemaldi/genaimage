@@ -12,7 +12,7 @@ const OUTPUT_SELECT: &str = "
            o.id, r.workflow_id, COALESCE(m.tags_json, '[]')
     FROM outputs o JOIN runs r ON r.id = o.run_id
     LEFT JOIN run_media m ON m.run_id = r.id
-    WHERE r.status = 'completed'";
+    ";
 
 fn map_indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedOutput> {
     Ok(IndexedOutput {
@@ -70,19 +70,49 @@ impl RunRepository {
         let cursor = query.cursor.as_deref().map(Cursor::decode).transpose()?;
         self.guarded_read(|connection| {
             let mut sql = OUTPUT_SELECT.to_owned();
-            if cursor.is_some() {
-                sql.push_str(" AND (o.created_at, o.id) < (?1, ?2)");
+            let status = query.status.unwrap_or(crate::RunStatus::Completed);
+            if status == crate::RunStatus::Completed {
+                sql.push_str(" WHERE r.status = 'completed' AND r.status = ?9");
+            } else if status.is_terminal() {
+                sql.push_str(" WHERE r.status IN ('failed', 'cancelled') AND r.status = ?9");
             } else {
-                sql.push_str(" AND ?1 IS NULL AND ?2 IS NULL");
+                return Ok(OutputPage {
+                    outputs: Vec::new(),
+                    next_cursor: None,
+                });
             }
-            sql.push_str(
-                " AND (?3 IS NULL OR o.run_id = ?3)
-                AND (?4 IS NULL OR r.workflow_id = ?4)
-                AND (?5 IS NULL OR o.created_at >= ?5)
-                AND (?6 IS NULL OR o.created_at <= ?6)
-                AND (?7 IS NULL OR EXISTS (SELECT 1 FROM json_each(m.tags_json) WHERE value = ?7))
-                ORDER BY o.created_at DESC, o.id DESC LIMIT ?8",
-            );
+            sql.push_str(if cursor.is_some() {
+                " AND (o.created_at, o.id) < (?1, ?2)"
+            } else {
+                " AND ?1 IS NULL AND ?2 IS NULL"
+            });
+            // Keep active range/equality predicates usable by SQLite's indexes.
+            for (present, condition, absent) in [
+                (query.run.is_some(), " AND o.run_id = ?3", " AND ?3 IS NULL"),
+                (
+                    query.workflow.is_some(),
+                    " AND r.workflow_id = ?4",
+                    " AND ?4 IS NULL",
+                ),
+                (
+                    query.created_from.is_some(),
+                    " AND o.created_at >= ?5",
+                    " AND ?5 IS NULL",
+                ),
+                (
+                    query.created_to.is_some(),
+                    " AND o.created_at <= ?6",
+                    " AND ?6 IS NULL",
+                ),
+                (
+                    query.tag.is_some(),
+                    " AND EXISTS (SELECT 1 FROM json_each(m.tags_json) WHERE value = ?7)",
+                    " AND ?7 IS NULL",
+                ),
+            ] {
+                sql.push_str(if present { condition } else { absent });
+            }
+            sql.push_str(" ORDER BY o.created_at DESC, o.id DESC LIMIT ?8");
             let mut stmt = connection.prepare(&sql)?;
             let mut rows = stmt
                 .query_map(
@@ -95,6 +125,7 @@ impl RunRepository {
                         query.created_to.map(|time| time.to_rfc3339()),
                         query.tag,
                         (limit + 1) as i64,
+                        status.as_str(),
                     ],
                     |row| Ok((map_indexed(row)?, Cursor(row.get(9)?, row.get(10)?))),
                 )?
@@ -126,7 +157,7 @@ impl AsyncRunRepository {
             repo.guarded_read(|connection| {
                 connection
                     .query_row(
-                        &format!("{OUTPUT_SELECT} AND o.id = ?1 AND o.run_id = ?2"),
+                        &format!("{OUTPUT_SELECT} WHERE o.id = ?1 AND o.run_id = ?2 AND r.status IN ('completed', 'failed', 'cancelled')"),
                         params![row, run],
                         map_indexed,
                     )

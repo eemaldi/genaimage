@@ -92,6 +92,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/outputs/{id}/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Fetch indexed metadata without transferring the original bytes. */
+        get: operations["outputs_metadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Fetch indexed metadata without transferring the original bytes. */
+        head: operations["outputs_metadata_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/outputs/{id}/thumbnail": {
         parameters: {
             query?: never;
@@ -1276,6 +1294,8 @@ export interface operations {
                 tag?: string;
                 limit?: number;
                 cursor?: string;
+                /** @description Exact run status. Defaults to completed; only terminal runs can expose indexed outputs. */
+                status?: components["schemas"]["RunStatus"];
             };
             header?: never;
             path?: never;
@@ -1367,6 +1387,8 @@ export interface operations {
                 tag?: string;
                 limit?: number;
                 cursor?: string;
+                /** @description Exact run status. Defaults to completed; only terminal runs can expose indexed outputs. */
+                status?: components["schemas"]["RunStatus"];
             };
             header?: never;
             path?: never;
@@ -1678,6 +1700,96 @@ export interface operations {
             };
             /** @description Problem details */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    outputs_metadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Output ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutputResponse"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    outputs_metadata_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Output ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -2051,6 +2051,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Exact run status. Defaults to completed; only terminal runs can expose indexed outputs.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RunStatus"
+            }
           }
         ],
         "responses": {
@@ -2201,6 +2210,15 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Exact run status. Defaults to completed; only terminal runs can expose indexed outputs.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RunStatus"
             }
           }
         ],
@@ -2681,6 +2699,100 @@
             "description": "Problem details"
           },
           "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "outputs"
+        ]
+      }
+    },
+    "/api/v1/outputs/{id}/metadata": {
+      "get": {
+        "description": "Fetch indexed metadata without transferring the original bytes.",
+        "operationId": "outputs_metadata",
+        "parameters": [
+          {
+            "description": "Output ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "outputs"
+        ]
+      },
+      "head": {
+        "description": "Fetch indexed metadata without transferring the original bytes.",
+        "operationId": "outputs_metadata_head",
+        "parameters": [
+          {
+            "description": "Output ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "404": {
             "description": "Problem details"
           },
           "500": {

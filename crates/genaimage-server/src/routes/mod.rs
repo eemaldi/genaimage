@@ -99,6 +99,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(runs::reconcile))
         .routes(routes!(outputs::manifest))
         .routes(routes!(outputs::list))
+        .routes(routes!(outputs::metadata))
         .routes(routes!(outputs::original))
         .routes(routes!(outputs::thumbnail))
         .routes(routes!(uploads::upload))

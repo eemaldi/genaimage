@@ -286,7 +286,12 @@ export function createApiClient(
       }),
     listOutputs: (query?: OutputQuery, options?: RequestOptions) =>
       json('get', '/api/v1/outputs', { ...options, query }),
-    // The API exposes metadata in listOutputs; the single-output endpoint serves media bytes.
+    getOutputMetadata: (id: string, options?: RequestOptions) =>
+      json('get', '/api/v1/outputs/{id}/metadata', {
+        ...options,
+        path: { id },
+      }),
+    // Preserve the original bytes API for callers that need a Blob.
     getOutput: (id: string, options?: RequestOptions) =>
       request(outputMediaUrl(id), options ?? {}, (response) => response.blob()),
     upload: (file: File, options?: RequestOptions) =>

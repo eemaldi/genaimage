@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -865,6 +865,8 @@ const MIGRATION_8: &str = "
     ALTER TABLE runs ADD COLUMN rerun_of TEXT REFERENCES runs(id);
     ALTER TABLE runs ADD COLUMN preflight_sha256 TEXT;
 ";
+const MIGRATION_9: &str =
+    "CREATE INDEX runs_output_status_idx ON runs(status) WHERE status IN ('failed', 'cancelled');";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -874,6 +876,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_6,
     MIGRATION_7,
     MIGRATION_8,
+    MIGRATION_9,
 ];
 
 // The first version that must already contain each table before migration.
