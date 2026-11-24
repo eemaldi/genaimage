@@ -16,6 +16,9 @@
     error,
     previous,
     next,
+    positionUnknown,
+    nextLoading,
+    nextProblem,
     returnFocus,
   }: {
     open?: boolean;
@@ -24,6 +27,9 @@
     error?: ReturnType<typeof galleryProblem>;
     previous?: () => void;
     next?: () => void;
+    positionUnknown: boolean;
+    nextLoading: boolean;
+    nextProblem?: ReturnType<typeof galleryProblem>;
     returnFocus: () => void;
   } = $props();
 
@@ -42,7 +48,7 @@
     if (!open || !runId) return;
     const controller = new AbortController();
     run = runError = undefined;
-    void api.getRun(runId, { signal: controller.signal }).then(
+    void api.getRecordedRun(runId, { signal: controller.signal }).then(
       (result) => {
         if (!controller.signal.aborted) run = result;
       },
@@ -160,6 +166,14 @@
         download={output.source_filename}>Download original</a
       >{/if}
   </div>
+  {#if positionUnknown}
+    <p role="status">
+      Previous and next are unavailable until this output appears in the loaded
+      gallery results.
+    </p>
+  {/if}
+  {#if nextLoading}<p role="status">Loading the next output…</p>{/if}
+  {#if nextProblem}<ProblemDetails problem={nextProblem} />{/if}
   {#if error}
     <ProblemDetails problem={error} />
   {:else if output}

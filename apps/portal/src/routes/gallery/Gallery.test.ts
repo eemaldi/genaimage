@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writable } from 'svelte/store';
 import App from '../../App.svelte';
-import { api } from '../../lib/api/client';
+import { api, createApiClient } from '../../lib/api/client';
 import {
   events,
   type EventEnvelope,
@@ -21,13 +21,17 @@ import { mockNativeDialog } from '../../test/dialog';
 import type { Output } from './gallery-model';
 import Grid from './Grid.svelte';
 import { gridGeometry, virtualRows } from './virtualiser';
-import { parameterDiff } from './parameter-diff';
+import { formatRecordedValue, parameterDiff } from './parameter-diff';
 
 vi.mock('../../lib/api/client', async (original) => {
   const actual = await original<typeof import('../../lib/api/client')>();
   return {
     ...actual,
-    api: { getRun: vi.fn(), listOutputs: vi.fn(), getOutputMetadata: vi.fn() },
+    api: {
+      getRecordedRun: vi.fn(),
+      listOutputs: vi.fn(),
+      getOutputMetadata: vi.fn(),
+    },
   };
 });
 
@@ -110,7 +114,10 @@ beforeEach(() => {
     };
   });
   list.mockResolvedValue(page([output(2), output(1)]));
-  vi.mocked(api.getRun).mockImplementation(async (id) =>
+  metadata.mockImplementation(async (id) =>
+    output(Number(id.split(':').at(-1))),
+  );
+  vi.mocked(api.getRecordedRun).mockImplementation(async (id) =>
     run(id, { seed: id === 'run-2' ? 20 : 10, steps: 4 }),
   );
 });
@@ -274,6 +281,76 @@ it('opens a deep link outside the loaded pages and exposes native media and the 
   await waitFor(() => expect(dialog.hasAttribute('open')).toBe(false));
 });
 
+function twoPages() {
+  const first = Array.from({ length: 100 }, (_, i) => output(102 - i));
+  list.mockImplementation(async (query) =>
+    query?.cursor === 'second'
+      ? page([output(2), output(1)])
+      : page(first, 'second'),
+  );
+}
+
+it('advances across a page boundary using the same cursor as the grid', async () => {
+  twoPages();
+  route('#/gallery?output=run-3%3A3');
+  const dialog = await screen.findByRole('dialog', { name: 'Output preview' });
+  await within(dialog).findByRole('heading', { name: 'File 3' });
+  const next = within(dialog).getByRole('button', { name: 'Next' });
+  await waitFor(() => expect((next as HTMLButtonElement).disabled).toBe(false));
+  await fireEvent.keyDown(
+    within(dialog).getByRole('button', { name: 'Close' }),
+    { key: 'ArrowRight' },
+  );
+  expect(
+    await within(dialog).findByRole('heading', { name: 'File 2' }),
+  ).toBeTruthy();
+  expect(list).toHaveBeenCalledWith(
+    expect.objectContaining({ cursor: 'second' }),
+    expect.anything(),
+  );
+  expect(location.hash).toBe('#/gallery?output=run-2%3A2');
+});
+
+it('does not navigate to an unrelated output before a deep-linked position is known', async () => {
+  twoPages();
+  metadata.mockResolvedValue(output(2));
+  route('#/gallery?output=run-2%3A2');
+  const dialog = await screen.findByRole('dialog', { name: 'Output preview' });
+  await within(dialog).findByRole('heading', { name: 'File 2' });
+  expect(
+    within(dialog).getByText(/unavailable until this output appears/),
+  ).toBeTruthy();
+  for (const direction of ['Previous', 'Next']) {
+    expect(
+      (
+        within(dialog).getByRole('button', {
+          name: direction,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  }
+  await fireEvent.keyDown(
+    within(dialog).getByRole('button', { name: 'Close' }),
+    { key: 'ArrowRight' },
+  );
+  expect(location.hash).toBe('#/gallery?output=run-2%3A2');
+  const grid = await screen.findByRole('region', { name: 'Gallery outputs' });
+  await scroll(grid, gridGeometry(720).rowHeight * 23);
+  await waitFor(() =>
+    expect(
+      (
+        within(dialog).getByRole('button', {
+          name: 'Next',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false),
+  );
+  await fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+  expect(
+    await within(dialog).findByRole('heading', { name: 'File 1' }),
+  ).toBeTruthy();
+});
+
 it('navigates with arrow keys and pans rather than navigating when zoomed', async () => {
   route();
   await userEvent.click(
@@ -343,6 +420,36 @@ it('distinguishes absent values from recorded null and compares JSON without rel
     different: true,
   });
   expect(rows.find((row) => row.label === 'config')?.different).toBe(false);
+});
+
+it('compares large seeds without losing digits from the run response', async () => {
+  const client = createApiClient(async (url) => {
+    const id = String(url).split('/').at(-1)!;
+    const seed =
+      id === 'distinct' ? '18446744073709551614' : '18446744073709551615';
+    const json = JSON.stringify(run(id, null)).replace(
+      '"parameters":null',
+      `"parameters":{"seed":${seed}}`,
+    );
+    return new Response(json);
+  });
+  const [first, identical, distinct] = await Promise.all(
+    ['first', 'identical', 'distinct'].map((id) => client.getRecordedRun(id)),
+  );
+  const seed = (other: typeof first) =>
+    parameterDiff([first, other]).find((row) => row.label === 'Seed')!;
+  expect(seed(identical)).toMatchObject({ different: false, inexact: false });
+  expect(seed(distinct)).toMatchObject({ different: true, inexact: false });
+  expect(seed(distinct).values.map(formatRecordedValue)).toEqual([
+    '18446744073709551615',
+    '18446744073709551614',
+  ]);
+  expect(
+    parameterDiff([
+      run('a', { seed: Number.MAX_SAFE_INTEGER + 1 }),
+      run('b', { seed: 2 }),
+    ]).find((row) => row.label === 'Seed'),
+  ).toMatchObject({ different: false, inexact: true });
 });
 
 it('uses fallbacks for unsupported thumbnail formats and failed requests', async () => {

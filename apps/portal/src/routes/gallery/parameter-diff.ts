@@ -6,6 +6,7 @@ export type RecordedRow = {
   label: string;
   values: unknown[];
   different: boolean;
+  inexact: boolean;
 };
 
 function entries(value: unknown): Record<string, unknown> | undefined {
@@ -49,15 +50,16 @@ export function parameterDiff(
     const values = runs.map((run) =>
       run === undefined ? undefined : select(run),
     );
-    if (values.some((value) => value !== undefined))
+    if (values.some((value) => value !== undefined)) {
+      const inexact = values.some(imprecise);
       rows.push({
         key,
         label,
         values,
-        different: values.some(
-          (value) => imprecise(value) || !equal(value, values[0]),
-        ),
+        different: !inexact && values.some((value) => !equal(value, values[0])),
+        inexact,
       });
+    }
   };
   add('workflow', 'Workflow', (run) => run.workflow_id);
   add('version', 'Workflow version', (run) => run.workflow_version);
@@ -87,8 +89,19 @@ export function parameterDiff(
   return rows;
 }
 
+function serialise(value: unknown): string {
+  if (typeof value === 'bigint') return String(value);
+  if (Array.isArray(value)) return `[${value.map(serialise).join(',')}]`;
+  const object = entries(value);
+  if (object)
+    return `{${Object.entries(object)
+      .map(([key, item]) => `${JSON.stringify(key)}:${serialise(item)}`)
+      .join(',')}}`;
+  return JSON.stringify(value);
+}
+
 export function formatRecordedValue(value: unknown) {
   if (value === undefined) return 'Not recorded';
   if (imprecise(value)) return 'Cannot display exactly; see the run record';
-  return typeof value === 'string' ? value : JSON.stringify(value);
+  return typeof value === 'string' ? value : serialise(value);
 }

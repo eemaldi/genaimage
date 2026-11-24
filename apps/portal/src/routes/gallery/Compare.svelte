@@ -27,7 +27,11 @@
     parameterDiff(outputs.map((output) => records?.get(output.run_id)?.run)),
   );
   let changed = $derived(rows.filter((row) => row.different));
-  let identical = $derived(rows.filter((row) => !row.different));
+  let identical = $derived(
+    rows.filter((row) => !row.different && !row.inexact),
+  );
+
+  let inexact = $derived(rows.filter((row) => row.inexact));
 
   $effect(() => {
     if (!open) return;
@@ -39,7 +43,9 @@
         try {
           return [
             id,
-            { run: await api.getRun(id, { signal: controller.signal }) },
+            {
+              run: await api.getRecordedRun(id, { signal: controller.signal }),
+            },
           ];
         } catch (error) {
           return [
@@ -108,9 +114,13 @@
         {#if result.problem}<ProblemDetails problem={result.problem} />{/if}
       {/each}
       {#if changed.length}{@render table(changed, 'Parameter differences')}
-      {:else if identical.length}<p>
+      {:else if identical.length && !inexact.length}<p>
           No differences in the recorded fields.
         </p>{/if}
+      {#if inexact.length}{@render table(
+          inexact,
+          'Fields that cannot be compared exactly',
+        )}{/if}
       {#if identical.length}
         <details>
           <summary>Identical recorded fields ({identical.length})</summary>

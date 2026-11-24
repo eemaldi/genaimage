@@ -36,6 +36,7 @@
   let refresh = $state.raw<() => void>();
   let more: (() => void) | undefined;
   let heading: HTMLHeadingElement;
+  let advanceAfter = $state<{ id: string; filters: string; hash: string }>();
 
   let lightboxOpen = $derived(!!requested);
   let index = $derived(
@@ -59,15 +60,45 @@
   }
 
   function closePreview() {
+    advanceAfter = undefined;
     // Do not add every dismissal to browser history or re-open it on Back.
     history.replaceState(history.state, '', url());
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   }
 
   function navigate(id: string) {
+    advanceAfter = undefined;
     history.replaceState(history.state, '', url(id));
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   }
+
+  function goNext() {
+    if (!found) return;
+    const neighbour = outputs[index + 1];
+    if (neighbour) navigate(neighbour.id);
+    else if (cursor && !advanceAfter) {
+      advanceAfter = { id: requested, filters, hash: location.hash };
+      if (problem) refresh?.();
+      else if (!busy) more?.();
+    }
+  }
+
+  $effect(() => {
+    const intent = advanceAfter;
+    if (!intent) return;
+    if (
+      intent.id !== requested ||
+      intent.filters !== filters ||
+      intent.hash !== location.hash
+    ) {
+      advanceAfter = undefined;
+      return;
+    }
+    const neighbour = found ? outputs[index + 1] : undefined;
+    if (neighbour) untrack(() => navigate(neighbour.id));
+    else if (problem || !found || !cursor) advanceAfter = undefined;
+    else if (!busy) untrack(() => more?.());
+  });
 
   function applyFilters(event: SubmitEvent) {
     event.preventDefault();
@@ -375,8 +406,13 @@
     ? metadataProblem?.problem
     : undefined}
   previous={index > 0 ? () => navigate(outputs[index - 1].id) : undefined}
-  next={index + 1 < outputs.length
-    ? () => navigate(outputs[index + 1].id)
+  next={found && !advanceAfter && (index + 1 < outputs.length || cursor)
+    ? goNext
+    : undefined}
+  positionUnknown={!found && !!preview}
+  nextLoading={!!advanceAfter}
+  nextProblem={found && index === outputs.length - 1 && cursor
+    ? problem
     : undefined}
   {returnFocus}
 />

@@ -641,6 +641,15 @@ Import Svelte files from `apps/portal/src/lib/ui/`:
 `reset()`. The shell handles enablement and suspends shortcuts in modals;
 editable controls suppress shortcuts. Two-key shortcuts expire after 1.2 seconds.
 
+Gallery lightbox navigation follows the filtered results and fetches the next
+cursor page at the end of a loaded page. Direct links can show an output before
+its position is known; neighbour navigation remains disabled until it is in the
+loaded results. The gallery reads recorded run parameters with the typed client's
+`getRecordedRun`, preserving large JSON integers as `bigint` where the browser
+supplies the original token. Values that cannot be read exactly are shown
+separately from identical fields and differences. Dialogs leave focus traversal
+inside native audio and video controls to the browser.
+
 ### Accessibility checks
 
 Use a desktop-width route and a narrow screen with both menu states as review
