@@ -24,6 +24,7 @@ enum Reply {
     Pending,
     ErrorAfter(String),
     StartupError,
+    PanicOnce,
 }
 
 struct FakeLlm {
@@ -57,6 +58,13 @@ impl LlmProvider for FakeLlm {
                 Err(HarnessError::Configuration("provider stream failed".into())),
             ]))),
             Reply::StartupError => Err(HarnessError::Configuration("provider unavailable".into())),
+            Reply::PanicOnce => {
+                if self.requests.lock().unwrap().len() == 1 {
+                    Ok(Box::pin(PanicStream))
+                } else {
+                    Ok(Box::pin(stream::pending()))
+                }
+            }
         }
     }
 
@@ -66,6 +74,19 @@ impl LlmProvider for FakeLlm {
             supports_tools: false,
             supports_vision: false,
         }])
+    }
+}
+
+struct PanicStream;
+
+impl Stream for PanicStream {
+    type Item = Result<ChatDelta>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        panic!("provider stream panicked")
     }
 }
 
@@ -269,6 +290,120 @@ async fn prompt_templates_are_created_once_and_user_edits_are_preserved() {
         second.sha256,
         hex::encode(Sha256::digest(edited.as_bytes()))
     );
+}
+
+#[tokio::test]
+async fn concurrent_first_load_creates_one_complete_template() {
+    let root = workspace();
+    let templates = PromptTemplates::new(root.path().join("data"));
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let templates = templates.clone();
+        tasks.push(tokio::spawn(async move { templates.load("system").await }));
+    }
+    let mut loaded = Vec::new();
+    for task in tasks {
+        loaded.push(task.await.unwrap().unwrap());
+    }
+    assert!(loaded.iter().all(|template| template == &loaded[0]));
+    assert!(loaded[0].content.contains("local GenAImage assistant"));
+}
+
+#[tokio::test]
+async fn dropping_send_during_setup_releases_the_in_flight_lease() {
+    let root = workspace();
+    let database = root.path().join("state.sqlite3");
+    let store = ConversationStore::open(&database).await.unwrap();
+    let service = ConversationService::new(
+        store,
+        PromptTemplates::new(root.path().join("data")),
+        FakeLlm::new(Reply::Pending),
+        "text-model",
+    )
+    .unwrap();
+    let conversation = service
+        .create_conversation("Setup drop".into())
+        .await
+        .unwrap();
+
+    let mut writer = rusqlite::Connection::open(&database).unwrap();
+    writer.busy_timeout(Duration::from_secs(10)).unwrap();
+    let transaction = writer.transaction().unwrap();
+    transaction
+        .execute_batch("UPDATE assistant_conversations SET title = title;")
+        .unwrap();
+
+    let task_service = service.clone();
+    let id = conversation.id.clone();
+    let task = tokio::spawn(async move { task_service.send_message(&id, user("first")).await });
+    timeout(Duration::from_secs(1), async {
+        while !service.has_in_flight(&conversation.id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    let _ = task.await;
+    assert!(!service.has_in_flight(&conversation.id));
+    drop(transaction);
+    tokio::task::yield_now().await;
+
+    let _stream = service
+        .send_message(&conversation.id, user("second"))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), service.cancel(&conversation.id))
+        .await
+        .unwrap()
+        .unwrap();
+    service.delete_conversation(&conversation.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn provider_stream_panic_releases_the_in_flight_lease() {
+    let (_root, service, _provider) = fixture(Reply::PanicOnce).await;
+    let conversation = service.create_conversation("Panic".into()).await.unwrap();
+    let mut response = service
+        .send_message(&conversation.id, user("panic"))
+        .await
+        .unwrap();
+    let error = timeout(Duration::from_secs(1), response.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("provider stream panicked"));
+    assert!(!service.has_in_flight(&conversation.id));
+
+    let _retry = service
+        .send_message(&conversation.id, user("retry"))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), service.cancel(&conversation.id))
+        .await
+        .unwrap()
+        .unwrap();
+    service.delete_conversation(&conversation.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_is_not_blocked_by_a_full_output_channel() {
+    let parts = (0..100).map(|value| value.to_string()).collect();
+    let (_root, service, _provider) = fixture(Reply::Complete(parts)).await;
+    let conversation = service
+        .create_conversation("Full stream".into())
+        .await
+        .unwrap();
+    let _response = service
+        .send_message(&conversation.id, user("start"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    timeout(Duration::from_secs(1), service.cancel(&conversation.id))
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

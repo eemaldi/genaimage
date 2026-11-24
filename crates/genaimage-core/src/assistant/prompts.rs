@@ -140,7 +140,20 @@ fn ensure_real_directory(root: &Path, path: &Path) -> Result<()> {
                 path.display()
             )))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::create_dir(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+            let metadata = fs::symlink_metadata(path)?;
+            if !metadata.file_type().is_dir() {
+                return Err(HarnessError::Configuration(format!(
+                    "assistant prompt path '{}' is not a regular directory",
+                    path.display()
+                )));
+            }
+        }
         Err(error) => return Err(error.into()),
     }
     if path.canonicalize()?.starts_with(root) {
