@@ -34,7 +34,7 @@ Current ComfyUI profiles accept loopback hosts only.
 3. Check required typed parameters, defaults, presets, local image inputs and
    node/input bindings. Use `run --image NAME=PATH` for an explicitly selected
    local image. The CLI's `--set NAME=JSON` overrides the preset; values
-   parse as JSON first and otherwise become strings. Confirm the selected
+   must be valid JSON, with string values quoted and no duplicate names. Confirm the selected
    workflow, preset and all effective choices with the user, including defaults
    and values in the source workflow. Inspection is not a resolved-run preview;
    don't claim one exists. Treat invalid bindings, missing inputs or unavailable

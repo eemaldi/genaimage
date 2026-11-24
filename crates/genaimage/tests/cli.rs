@@ -469,6 +469,48 @@ async fn run_uploads_explicit_images_and_jobs_show_persisted_details() {
     assert_eq!(details["events"].as_array().unwrap().len(), 1);
     assert_eq!(details["outputs"][0]["run_id"], id);
     assert_eq!(details["next_output_cursor"], Value::Null);
+
+    let destination = TempDir::new().unwrap();
+    let dir = destination.path().to_str().unwrap();
+    let args = ["--json", "jobs", "download", id, "--dir", dir];
+    let saved = report(server.cli(&args).await, 0);
+    let path = Path::new(saved["outputs"][0]["path"].as_str().unwrap());
+    assert_eq!(saved["outputs"][0]["id"], details["outputs"][0]["id"]);
+    assert_eq!(fs::read(path).unwrap(), b"not-a-real-png-but-deterministic");
+    fs::write(path, b"keep me").unwrap();
+    assert_eq!(error(server.cli(&args).await, 1)["kind"], "file_error");
+    assert_eq!(fs::read(path).unwrap(), b"keep me");
+
+    let manifest = report(server.cli(&["--json", "jobs", "manifest", id]).await, 0);
+    assert_eq!(manifest["run_id"], id);
+    assert_eq!(
+        manifest["outputs"][0]["sha256"],
+        details["outputs"][0]["sha256"]
+    );
+    assert_eq!(manifest["source_inputs"][0]["upload_id"], upload_id);
+    assert!(manifest["workflow"].get("manifest_path").is_none());
+    assert!(manifest["outputs"][0].get("local_path").is_none());
+    assert!(manifest["source_inputs"][0].get("source_path").is_none());
+    let path = destination.path().join("manifest.json");
+    let args = [
+        "--json",
+        "jobs",
+        "manifest",
+        id,
+        "--out",
+        path.to_str().unwrap(),
+    ];
+    assert_eq!(
+        report(server.cli(&args).await, 0),
+        json!({"run_id": id, "path": path})
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+        manifest
+    );
+    fs::write(&path, b"keep manifest").unwrap();
+    assert_eq!(error(server.cli(&args).await, 1)["kind"], "file_error");
+    assert_eq!(fs::read(&path).unwrap(), b"keep manifest");
     assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 1);
     server.shutdown().await;
 }
@@ -660,4 +702,142 @@ async fn failed_submission_reports_a_durable_run_without_waiting() {
         .contains("jobs reconcile"));
     assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 0);
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn server_commands_reject_explicit_local_selectors() {
+    let server = Server::start().await;
+    for args in [
+        &["--json", "--workspace", ".", "run", "contract-workflow"][..],
+        &["--json", "config", "show", "--config", "genaimage.toml"][..],
+    ] {
+        let result = error(server.cli(args).await, 1);
+        assert_eq!(result["kind"], "input_error");
+        let message = result["message"].as_str().unwrap();
+        assert!(message.contains("genaimage serve") && message.contains("--server"));
+    }
+    let destination = server._workspace.path().join("example.toml");
+    let mut command = cli();
+    command
+        .args(["config", "init", "--json", "--config"])
+        .arg(&destination);
+    assert_eq!(
+        report(cli_output(command).await, 0)["path"],
+        json!(destination)
+    );
+    assert!(destination.is_file());
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_bindings_fail_before_upload_or_submission() {
+    let server = Server::start().await;
+    for (bindings, expected) in [
+        (
+            &["--set", "prompt=\"unterminated"][..],
+            "Invalid JSON for parameter 'prompt'",
+        ),
+        (
+            &["--set", "seed=42", "--set", "seed=43"][..],
+            "'seed' was specified more than once",
+        ),
+    ] {
+        let mut args = vec![
+            "--json",
+            "run",
+            "not-installed",
+            "--image",
+            "reference=missing.png",
+        ];
+        args.extend_from_slice(bindings);
+        let result = error(server.cli(&args).await, 1);
+        assert_eq!(result["kind"], "input_error");
+        assert!(
+            result["message"].as_str().unwrap().contains(expected),
+            "{result}"
+        );
+        let mut args = vec!["--json", "workflow", "validate", "not-installed"];
+        args.extend_from_slice(bindings);
+        assert!(error(server.cli(&args).await, 1)["message"]
+            .as_str()
+            .unwrap()
+            .contains(expected));
+    }
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(server.fake.upload_calls.load(Ordering::SeqCst), 0);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn wait_times_out_without_mutating_a_stalled_run() {
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    let result = error(
+        server
+            .cli(&[
+                "--json",
+                "run",
+                "contract-workflow",
+                "--preset",
+                "fast",
+                "--wait",
+                "--timeout",
+                "1",
+            ])
+            .await,
+        9,
+    );
+    let id = result["run_id"].as_str().unwrap();
+    assert_eq!(result["kind"], "wait_timeout");
+    assert!(result["message"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("jobs reconcile {id}")));
+    let result = error(
+        server
+            .cli(&["--json", "jobs", "wait", id, "--timeout", "1"])
+            .await,
+        9,
+    );
+    assert_eq!(result["run_id"], id);
+    let client = Client::with_base_url(&server.origin).unwrap();
+    assert_eq!(
+        client.run(id).await.unwrap().status,
+        genaimage_api::RunStatus::Queued
+    );
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unanswered_status_request_has_its_own_deadline() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut command = cli();
+    command.args([
+        "--server",
+        &format!("http://{}", listener.local_addr().unwrap()),
+        "--json",
+        "jobs",
+        "wait",
+        "test-run",
+        "--timeout",
+        "60",
+    ]);
+    let (result, ()) = tokio::join!(cli_output(command), async {
+        let (connection, _) = listener.accept().await.unwrap();
+        // Hold the real HTTP connection open without ever sending a response.
+        tokio::time::timeout(Duration::from_secs(8), async {
+            use tokio::io::AsyncReadExt;
+            let mut connection = connection;
+            let _ = connection.read_to_end(&mut Vec::new()).await;
+        })
+        .await
+        .unwrap();
+    });
+    let result = error(result, 9);
+    assert_eq!(result["run_id"], "test-run");
+    assert!(result["message"]
+        .as_str()
+        .unwrap()
+        .contains("status request timed out"));
 }

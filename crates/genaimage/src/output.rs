@@ -16,6 +16,7 @@ pub(crate) enum Status {
     NegativeResult = 6,
     UnsuccessfulRun = 7,
     UnknownSubmission = 8,
+    WaitTimeout = 9,
 }
 
 impl From<Status> for ExitCode {
@@ -27,6 +28,8 @@ impl From<Status> for ExitCode {
 pub(crate) enum Error {
     Api(client::Error),
     Input(String),
+    WaitTimeout(String),
+    File(String),
     Submit(client::Error),
     UnconfirmedRun(Box<RunResponse>),
     Observe { run_id: String, error: Box<Error> },
@@ -134,6 +137,8 @@ impl Error {
                 report.message.push_str(&format!(" Could not confirm the state of run '{run_id}'. Use `genaimage jobs show {run_id}` or `genaimage jobs reconcile {run_id}`."));
                 (status, report)
             }
+            Self::WaitTimeout(message) => (Status::WaitTimeout, ErrorReport::new("wait_timeout", message)),
+            Self::File(message) => (Status::LocalFailure, ErrorReport::new("file_error", message)),
             Self::Input(message) => (Status::LocalFailure, ErrorReport::new("input_error", message)),
             Self::Output(error) => (
                 Status::LocalFailure,

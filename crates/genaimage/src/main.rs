@@ -1,3 +1,4 @@
+mod artefacts;
 mod output;
 mod run_commands;
 mod server_commands;
@@ -18,14 +19,16 @@ use tracing_subscriber::EnvFilter;
     about = "A controllable ComfyUI workflow harness"
 )]
 struct Cli {
-    #[arg(long, default_value = ".", global = true)]
-    workspace: PathBuf,
+    /// Workspace for `serve` only (defaults to the current directory).
+    #[arg(long, global = true)]
+    workspace: Option<PathBuf>,
     /// Emit machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
     /// Loopback API origin for server-backed commands.
     #[arg(long, global = true, env = "GENAIMAGE_SERVER", default_value = DEFAULT_BASE_URL, value_name = "URL")]
     server: String,
+    /// Configuration file for `serve`, or destination for `config init`.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
@@ -95,6 +98,9 @@ struct RunCommand {
     version: Option<String>,
     #[arg(long)]
     wait: bool,
+    /// Maximum observation time in seconds (default: 600).
+    #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..=86400))]
+    timeout: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -119,6 +125,21 @@ enum JobsCommand {
     },
     Wait {
         run_id: String,
+        /// Maximum observation time in seconds.
+        #[arg(long, default_value_t = run_commands::DEFAULT_WAIT_SECONDS, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        timeout: u64,
+    },
+    /// Download the original outputs into a local directory.
+    Download {
+        run_id: String,
+        #[arg(long, value_name = "DIR")]
+        dir: PathBuf,
+    },
+    /// Print the run manifest, or save it to a new local file.
+    Manifest {
+        run_id: String,
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
     },
     /// Request cancellation; a running ComfyUI job uses a global interrupt.
     #[command(
@@ -169,12 +190,20 @@ async fn execute_server(
     command: server_commands::Command<'_>,
     output: output::Output,
 ) -> Result<output::Status, output::Error> {
+    if cli.workspace.is_some() || cli.config.is_some() {
+        return Err(output::Error::Input("--workspace and --config cannot select a workspace for a server-backed command. Pass them to `genaimage serve` and select that instance with --server.".into()));
+    }
     let client = Client::with_base_url(&cli.server)?;
     command.execute(&client, output).await
 }
 
 async fn open_harness(cli: &Cli) -> Result<Harness, HarnessError> {
-    let config = HarnessConfig::load_with_config(&cli.workspace, cli.config.as_deref())?;
+    let config = HarnessConfig::load_with_config(
+        cli.workspace
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+        cli.config.as_deref(),
+    )?;
     let registry = ExtensionRegistry::from_config(&config, ComfyUiClient::new)?;
     let backend = registry
         .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
@@ -201,7 +230,12 @@ async fn execute_local(cli: &Cli) -> Result<(), HarnessError> {
         }
         Command::Config {
             command: ConfigCommand::Init { force },
-        } => config_init(cli, *force)?,
+        } => {
+            if cli.workspace.is_some() {
+                return Err(HarnessError::Configuration("--workspace is only supported by `genaimage serve`; use --config to choose where to write the example configuration".into()));
+            }
+            config_init(cli, *force)?;
+        }
         _ => unreachable!("server-backed commands are dispatched first"),
     }
     Ok(())
@@ -237,7 +271,12 @@ fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, String
         if name.trim().is_empty() {
             return Err("parameter name cannot be empty".to_owned());
         }
-        let parsed = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()));
+        if parameters.contains_key(name) {
+            return Err(format!("Parameter '{name}' was specified more than once."));
+        }
+        let parsed = serde_json::from_str(raw).map_err(|error| {
+            format!("Invalid JSON for parameter '{name}': {error}. Quote string values as JSON.")
+        })?;
         parameters.insert(name.to_owned(), parsed);
     }
     Ok(parameters)

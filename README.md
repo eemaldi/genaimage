@@ -80,8 +80,8 @@ cargo run -p genaimage -- run text-to-image \
   --wait
 ```
 
-Values passed with `--set` are parsed as JSON first and otherwise treated as
-strings. Quote JSON strings as shown in the example.
+Values passed with `--set` must be valid JSON. Quote JSON strings as shown
+in the example and specify each parameter at most once.
 
 Useful job commands:
 

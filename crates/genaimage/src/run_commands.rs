@@ -26,6 +26,8 @@ use crate::{
 };
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
+pub(crate) const DEFAULT_WAIT_SECONDS: u64 = 600;
+const STATUS_REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 const STREAM_CONNECT_DEADLINE: Duration = Duration::from_secs(5);
 
 pub(crate) async fn run(
@@ -48,7 +50,9 @@ pub(crate) async fn run(
         .await
         .map_err(Error::Submit)?;
     if command.wait {
-        return finish(output, wait(client, output, run).await?);
+        let seconds = command.timeout.unwrap_or(DEFAULT_WAIT_SECONDS);
+        let id = run.id.clone();
+        return finish(output, wait(client, output, &id, Some(run), seconds).await?);
     }
     write_run(output, &run)?;
     Ok(if run.status == RunStatus::Cancelled {
@@ -222,17 +226,21 @@ pub(crate) async fn jobs(
                         item.id, item.source_filename, item.content_type
                     )?;
                 }
+                writeln!(out, "Retrieve artefacts with `genaimage jobs download {run_id} --dir DIR` or `genaimage jobs manifest {run_id}`.")?;
                 if let Some(cursor) = &details.next_output_cursor {
                     writeln!(out, "Next output page: --output-cursor {cursor}")?;
                 }
                 Ok(())
             })?;
         }
-        JobsCommand::Wait { run_id } => {
-            return finish(
-                output,
-                wait(client, output, client.run(run_id).await?).await?,
-            )
+        JobsCommand::Wait { run_id, timeout } => {
+            return finish(output, wait(client, output, run_id, None, *timeout).await?);
+        }
+        JobsCommand::Download { run_id, dir } => {
+            crate::artefacts::download(client, output, run_id, dir).await?
+        }
+        JobsCommand::Manifest { run_id, out } => {
+            crate::artefacts::manifest(client, output, run_id, out.as_deref()).await?
         }
         JobsCommand::Cancel { run_id } => write_run(output, &client.cancel_run(run_id).await?)?,
         JobsCommand::Reconcile {
@@ -246,24 +254,43 @@ pub(crate) async fn jobs(
     Ok(Status::Success)
 }
 
-async fn wait(client: &Client, output: Output, initial: RunResponse) -> Result<RunResponse, Error> {
-    if done(initial.status) {
-        return Ok(initial);
-    }
-    let id = initial.id;
-    observe(client, output, &id)
-        .await
-        .map_err(|error| Error::Observe {
-            run_id: id,
-            error: Box::new(error.into()),
-        })
-}
-
-async fn observe(
+async fn wait(
     client: &Client,
     output: Output,
     id: &str,
-) -> Result<RunResponse, genaimage_api::client::Error> {
+    initial: Option<RunResponse>,
+    seconds: u64,
+) -> Result<RunResponse, Error> {
+    let result = timeout(Duration::from_secs(seconds), async {
+        let initial = match initial {
+            Some(run) => run,
+            None => status(client, id).await?,
+        };
+        if done(initial.status) {
+            return Ok(initial);
+        }
+        observe(client, output, id).await
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(Error::WaitTimeout(format!(
+            "Wait exceeded {seconds} seconds."
+        )))
+    });
+    result.map_err(|error| Error::Observe {
+        run_id: id.to_owned(),
+        error: Box::new(error),
+    })
+}
+
+async fn status(client: &Client, id: &str) -> Result<RunResponse, Error> {
+    timeout(STATUS_REQUEST_DEADLINE, client.run(id))
+        .await
+        .map_err(|_| Error::WaitTimeout("Run status request timed out after 5 seconds.".into()))?
+        .map_err(Error::from)
+}
+
+async fn observe(client: &Client, output: Output, id: &str) -> Result<RunResponse, Error> {
     let query = EventsQuery {
         run_id: Some(id),
         ..Default::default()
@@ -279,7 +306,7 @@ async fn observe(
         ));
     }
     loop {
-        let current = client.run(id).await?;
+        let current = status(client, id).await?;
         if done(current.status) {
             return Ok(current);
         }
