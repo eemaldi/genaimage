@@ -138,7 +138,7 @@ export interface paths {
         /** @description List runs. */
         get: operations["runs_list"];
         put?: never;
-        /** @description Submit explicit bindings; use the same key for retries. */
+        /** @description Submit explicit bindings, optionally pinned to a reviewed workflow revision; use the same key for retries. */
         post: operations["runs_submit"];
         delete?: never;
         options?: never;
@@ -710,6 +710,8 @@ export interface components {
             version?: string | null;
             /** @description Manifest ID, not a local path. */
             workflow: string;
+            /** @description Revision from the reviewed workflow. Omit for unpinned submission. */
+            workflow_revision?: string | null;
         };
         /** @enum {integer} */
         ThumbnailSizeSchema: 128 | 256 | 512 | 1024;
@@ -746,6 +748,8 @@ export interface components {
                     [key: string]: unknown;
                 };
             };
+            /** @description Opaque revision of the API graph and manifest. */
+            revision: string;
             /** Format: int32 */
             schema_version: number;
             tags?: string[] | null;
@@ -813,6 +817,8 @@ export interface components {
             description?: string | null;
             id: string;
             name: string;
+            /** @description Opaque revision of the API graph and manifest. */
+            revision: string;
             tags?: string[] | null;
             thumbnail_url?: string | null;
             version: string;
@@ -823,11 +829,15 @@ export interface components {
                 [key: string]: unknown;
             };
             preset?: string | null;
+            /** @description Revision from the reviewed workflow. Omit for unpinned validation. */
+            workflow_revision?: string | null;
         };
         /** @description The result of validating bindings and checking backend node availability. */
         WorkflowValidationResponse: {
             node_check: components["schemas"]["WorkflowNodeCheck"];
             parameter_errors: components["schemas"]["WorkflowParameterError"][];
+            /** @description Opaque revision of the API graph and manifest that were validated. */
+            revision: string;
             valid: boolean;
         };
     };
@@ -2202,7 +2212,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Problem details */
+            /** @description Workflow revision mismatch or idempotency key conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4566,6 +4576,15 @@ export interface operations {
             };
             /** @description Problem details */
             408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Workflow revision mismatch */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

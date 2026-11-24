@@ -40,6 +40,7 @@ pub(crate) async fn run(
         upload_images(client, &command.workflow, &command.images, &mut parameters).await?;
     }
     let request = SubmitRunRequest {
+        workflow_revision: None,
         workflow: command.workflow.clone(),
         preset: command.preset.clone(),
         parameters,

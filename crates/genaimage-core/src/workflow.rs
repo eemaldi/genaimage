@@ -222,6 +222,18 @@ impl LoadedWorkflow {
         Ok(loaded)
     }
 
+    /// Identifies the exact graph and sidecar snapshot loaded for binding.
+    pub fn revision(&self) -> String {
+        workflow_revision(&self.workflow_sha256, &self.manifest_sha256)
+    }
+
+    pub(crate) fn verify_revision(&self, expected: Option<&str>) -> Result<()> {
+        if expected.is_some_and(|expected| self.revision() != expected) {
+            return Err(HarnessError::WorkflowChanged);
+        }
+        Ok(())
+    }
+
     pub fn parameter_summary(&self) -> Vec<ParameterSummary> {
         self.manifest
             .parameters
@@ -640,6 +652,12 @@ fn validate_node(nodes: &Map<String, Value>, node_id: &str, context: &str) -> Re
         )));
     }
     Ok(())
+}
+
+pub(crate) fn workflow_revision(graph_sha256: &str, manifest_sha256: &str) -> String {
+    sha256_hex(
+        format!("genaimage-workflow-revision-v1:{graph_sha256}:{manifest_sha256}").as_bytes(),
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

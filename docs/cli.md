@@ -156,11 +156,11 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   backend did not report `ok`; an unconfigured LLM does not fail the check.
 - **`workflow list`** lists catalogue entries and non-fatal discovery
   diagnostics. JSON is `{workflows, diagnostics}`. Each workflow has `id`,
-  `name`, `version`, `description`, `tags`, `category` and `thumbnail_url`;
+  `name`, `version`, `revision`, `description`, `tags`, `category` and `thumbnail_url`;
   the descriptive fields can be null. Each diagnostic has `path` and `error`.
 - **`workflow inspect <ID>`** shows a catalogue workflow, its declared
   bindings and outputs. JSON is `WorkflowDetails`: `{schema_version, id,
-  version, title, workflow, description, tags, category, thumbnail, parameters,
+  version, revision, title, workflow, description, tags, category, thumbnail, parameters,
   presets, outputs}`. `parameters` maps each name to its binding, constraints
   and UI hints; `outputs` is an array of `{node, kind}` objects. This is not a
   resolved-run preview. Use `--json` to see the full constraints and metadata.
@@ -168,7 +168,7 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   bindings and the availability of required ComfyUI node classes without
   submitting a run. Explicit `--set` values override preset values; parameters not supplied
   by either fall back to manifest defaults where declared. Values must be valid
-  JSON and each name can appear only once. JSON is `{valid, parameter_errors, node_check}`;
+  JSON and each name can appear only once. JSON is `{revision, valid, parameter_errors, node_check}`;
   parameter errors contain `parameter` and `reason`, and `node_check` contains
   `status` (`available`, `missing` or `unavailable`), `missing_classes` (an
   array), and `reason` (a nullable string). `valid: false` exits with `6`.
@@ -200,6 +200,8 @@ and `cancelled`.
 - **`run <ID> [--preset <NAME>] [--set NAME=JSON]… [--image NAME=PATH]… [--version <VERSION>] [--wait [--timeout <SECONDS>]]`**
   submits the server catalogue workflow once and prints its run record. Explicit
   bindings override the selected preset; the server applies declared defaults.
+  The CLI does not pin the workflow revision: it uses the snapshot current at
+  submission time.
   `--set` requires valid JSON and rejects duplicate names before uploading or
   submitting. For a string, use shell quoting such as `--set 'prompt="a portrait"'`.
   Use `--image`

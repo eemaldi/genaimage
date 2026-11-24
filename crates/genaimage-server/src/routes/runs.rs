@@ -19,7 +19,7 @@ use crate::{AppState, Problem};
     post, path = "/runs",
     operation_id = "runs_submit",
     tag = "runs",
-    description = "Submit explicit bindings; use the same key for retries.",
+    description = "Submit explicit bindings, optionally pinned to a reviewed workflow revision; use the same key for retries.",
     params(("Idempotency-Key" = String, Header, description = "Required unique key, 1–128 visible ASCII characters excluding commas")),
     request_body = api::SubmitRunRequest,
     responses(
@@ -27,7 +27,7 @@ use crate::{AppState, Problem};
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow revision mismatch or idempotency key conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -63,6 +63,7 @@ pub(super) async fn submit(
                         preset: body.preset,
                         parameters: body.parameters,
                         version: body.version,
+                        workflow_revision: body.workflow_revision,
                     },
                     &deadline,
                 )
@@ -445,6 +446,7 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::NOT_FOUND,
             "Use a run ID returned by the runs API.",
         ),
+        HarnessError::WorkflowChanged => return Problem::workflow_changed(),
         HarnessError::IdempotencyConflict => (
             StatusCode::CONFLICT,
             "Use the original request with this key, or a fresh key for a distinct run.",

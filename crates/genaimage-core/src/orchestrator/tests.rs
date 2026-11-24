@@ -312,6 +312,7 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
         .unwrap();
     let harness = Harness::new(config, backend).unwrap();
     let request = RunRequest {
+        workflow_revision: None,
         workflow: "contract-workflow".to_owned(),
         preset: Some("fast".to_owned()),
         parameters: BTreeMap::from([("seed".to_owned(), json!(123))]),
@@ -449,7 +450,7 @@ fn discovery_reports_reserved_dot_segment_ids() {
         manifest["id"] = json!(id);
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let discovery = harness.discover_workflows().unwrap();
-        assert!(discovery.manifests.is_empty());
+        assert!(discovery.workflows.is_empty());
         assert!(discovery.indexable_manifest_paths.is_empty());
         assert_eq!(discovery.diagnostics.len(), 1);
         let message = discovery.diagnostics[0].error.to_string();
@@ -866,6 +867,7 @@ async fn workspaces_can_use_the_same_explicit_run_version() {
         harnesses.push(Harness::new(config, Arc::new(FakeImageBackend::default())).unwrap());
     }
     let request = RunRequest {
+        workflow_revision: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),
         parameters: BTreeMap::new(),

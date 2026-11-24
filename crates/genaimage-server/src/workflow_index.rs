@@ -334,7 +334,8 @@ impl WorkflowIndex {
                 }
                 append_diagnostics(&mut discovery, &after);
                 let mut entries = BTreeMap::new();
-                for manifest in &discovery.manifests {
+                for workflow in &discovery.workflows {
+                    let manifest = &workflow.manifest;
                     if let Some(path) = discovery.indexable_manifest_paths.get(&manifest.id) {
                         let graph = path
                             .parent()
@@ -583,7 +584,7 @@ mod tests {
         }));
         let first = cache.list(harness.clone()).await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 3);
-        assert_eq!(first.manifests.len(), 1);
+        assert_eq!(first.workflows.len(), 1);
         assert!(first
             .diagnostics
             .iter()

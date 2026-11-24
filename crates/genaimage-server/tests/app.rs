@@ -22,6 +22,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn run_request() -> RunRequest {
     RunRequest {
+        workflow_revision: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),
         parameters: BTreeMap::new(),
