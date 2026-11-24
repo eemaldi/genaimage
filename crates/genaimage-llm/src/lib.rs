@@ -26,6 +26,12 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ERROR_MESSAGE: usize = 1024;
+const MAX_MODELS_BODY_BYTES: usize = 512 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
+const MAX_PENDING_TOOL_CALLS: usize = 64;
+const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1024;
+const MAX_TOOL_ID_BYTES: usize = 1024;
+const MAX_TOOL_NAME_BYTES: usize = 1024;
 const ENDPOINT_KEY: &str = "llm.base_url";
 
 /// Connection and streaming options for an OpenAI-compatible local endpoint.
@@ -97,6 +103,14 @@ impl OpenAiCompatibleProvider {
         &self.base_url
     }
 
+    fn error(&self, message: impl Into<String>) -> HarnessError {
+        provider_error(message, self.options.api_key.as_deref())
+    }
+
+    fn redact(&self, message: impl Into<String>) -> String {
+        redact(self.options.api_key.as_deref(), message.into())
+    }
+
     async fn connection(&self) -> Result<&PinnedConnection> {
         self.connection
             .get_or_try_init(|| async {
@@ -117,13 +131,13 @@ impl OpenAiCompatibleProvider {
                 let addresses = tokio::time::timeout(self.options.connect_timeout, resolution)
                     .await
                     .map_err(|_| {
-                        provider_error(format!("endpoint DNS resolution to {host} timed out"))
+                        self.error(format!("endpoint DNS resolution to {host} timed out"))
                     })?
                     .map_err(|error| {
-                        provider_error(format!("cannot start endpoint DNS resolution: {error}"))
+                        self.error(format!("cannot start endpoint DNS resolution: {error}"))
                     })?
                     .map_err(|error| {
-                        provider_error(format!(
+                        self.error(format!(
                             "endpoint {host} is unavailable: cannot resolve host ({error})"
                         ))
                     })?;
@@ -140,9 +154,7 @@ impl OpenAiCompatibleProvider {
                     .connect_timeout(self.options.connect_timeout)
                     .resolve_to_addrs(host, &addresses)
                     .build()
-                    .map_err(|error| {
-                        provider_error(format!("cannot build HTTP client: {error}"))
-                    })?;
+                    .map_err(|error| self.error(format!("cannot build HTTP client: {error}")))?;
                 Ok(PinnedConnection { http })
             })
             .await
@@ -168,8 +180,8 @@ impl OpenAiCompatibleProvider {
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<Response> {
         tokio::time::timeout(self.options.first_byte_timeout, request.send())
             .await
-            .map_err(|_| provider_error("request timed out waiting for the first response byte"))?
-            .map_err(map_request_error)
+            .map_err(|_| self.error("request timed out waiting for the first response byte"))?
+            .map_err(|error| map_request_error(error, self.options.api_key.as_deref()))
     }
 
     async fn reject_error_response(
@@ -179,22 +191,27 @@ impl OpenAiCompatibleProvider {
         capabilities: RequestCapabilities<'_>,
     ) -> HarnessError {
         let status = response.status();
-        let message = read_error_message(response, self.options.idle_timeout).await;
+        let message = read_error_message(
+            response,
+            self.options.idle_timeout,
+            self.options.api_key.as_deref(),
+        )
+        .await;
         let lower = message.to_ascii_lowercase();
         if capabilities.images && is_capability_message(&lower, &["vision", "image", "multimodal"])
         {
-            return HarnessError::Configuration(format!(
+            return HarnessError::Configuration(self.redact(format!(
                 "model '{}' does not support the requested vision/image capability: HTTP {status}: {message}",
                 capabilities.model
-            ));
+            )));
         }
         if capabilities.tools && is_capability_message(&lower, &["tool", "function call"]) {
-            return HarnessError::Configuration(format!(
+            return HarnessError::Configuration(self.redact(format!(
                 "model '{}' does not support the requested tool-calling capability: HTTP {status}: {message}",
                 capabilities.model
-            ));
+            )));
         }
-        provider_error(format!("{operation} returned HTTP {status}: {message}"))
+        self.error(format!("{operation} returned HTTP {status}: {message}"))
     }
 }
 
@@ -237,15 +254,14 @@ impl LlmProvider for OpenAiCompatibleProvider {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("text/event-stream"))
         {
-            return Err(provider_error(
-                "chat completion did not return a text/event-stream response",
-            ));
+            return Err(self.error("chat completion did not return a text/event-stream response"));
         }
 
         Ok(decode_chat_stream(
             response,
             model,
             self.options.idle_timeout,
+            self.options.api_key.clone(),
         ))
     }
 
@@ -273,16 +289,20 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 )
                 .await);
         }
-        let value = tokio::time::timeout(self.options.first_byte_timeout, response.json::<Value>())
-            .await
-            .map_err(|_| provider_error("model listing response timed out"))?
-            .map_err(|error| {
-                provider_error(format!("model listing returned invalid JSON: {error}"))
-            })?;
+        let bytes = read_limited_body(
+            response,
+            self.options.first_byte_timeout,
+            MAX_MODELS_BODY_BYTES,
+            "model listing",
+            self.options.api_key.as_deref(),
+        )
+        .await?;
+        let value = serde_json::from_slice::<Value>(&bytes)
+            .map_err(|error| self.error(format!("model listing returned invalid JSON: {error}")))?;
         let models = value
             .get("data")
             .and_then(Value::as_array)
-            .ok_or_else(|| provider_error("model listing JSON is missing the 'data' array"))?;
+            .ok_or_else(|| self.error("model listing JSON is missing the 'data' array"))?;
         models
             .iter()
             .map(|model| {
@@ -290,9 +310,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     .get("id")
                     .and_then(Value::as_str)
                     .filter(|id| !id.is_empty())
-                    .ok_or_else(|| {
-                        provider_error("model listing contains a model without an ID")
-                    })?;
+                    .ok_or_else(|| self.error("model listing contains a model without an ID"))?;
                 Ok(LlmModel {
                     id: id.to_owned(),
                     supports_tools: capability(model, "tools"),
@@ -415,22 +433,64 @@ fn with_idle_timeout(
     source: ByteStream,
     idle_timeout: Duration,
 ) -> impl Stream<Item = std::result::Result<bytes::Bytes, TimedBodyError>> {
-    stream::unfold(source.fuse(), move |mut source| async move {
-        let item = match tokio::time::timeout(idle_timeout, source.next()).await {
-            Ok(Some(Ok(bytes))) => Ok(bytes),
-            Ok(Some(Err(error))) => Err(TimedBodyError::Request(error)),
-            Ok(None) => return None,
-            Err(_) => Err(TimedBodyError::Idle(idle_timeout)),
-        };
-        Some((item, source))
-    })
+    stream::unfold(
+        (Some(source.fuse()), 0usize, Vec::with_capacity(3)),
+        move |(source, mut event_bytes, mut separator)| async move {
+            let mut source = source?;
+            match tokio::time::timeout(idle_timeout, source.next()).await {
+                Ok(Some(Ok(bytes))) => {
+                    if sse_event_exceeds_limit(&bytes, &mut event_bytes, &mut separator) {
+                        return Some((
+                            Err(TimedBodyError::EventTooLarge(MAX_SSE_EVENT_BYTES)),
+                            (None, event_bytes, separator),
+                        ));
+                    }
+                    Some((Ok(bytes), (Some(source), event_bytes, separator)))
+                }
+                Ok(Some(Err(error))) => Some((
+                    Err(TimedBodyError::Request(error)),
+                    (None, event_bytes, separator),
+                )),
+                Ok(None) => None,
+                Err(_) => Some((
+                    Err(TimedBodyError::Idle(idle_timeout)),
+                    (None, event_bytes, separator),
+                )),
+            }
+        },
+    )
 }
 
-fn decode_chat_stream(response: Response, model: String, idle_timeout: Duration) -> ChatStream {
+fn sse_event_exceeds_limit(chunk: &[u8], event_bytes: &mut usize, separator: &mut Vec<u8>) -> bool {
+    for byte in chunk {
+        *event_bytes = event_bytes.saturating_add(1);
+        separator.push(*byte);
+        if separator.ends_with(b"\n\n")
+            || separator.ends_with(b"\r\r")
+            || separator.ends_with(b"\r\n\r\n")
+        {
+            *event_bytes = 0;
+            separator.clear();
+        } else if separator.len() > 3 {
+            separator.remove(0);
+        }
+        if *event_bytes > MAX_SSE_EVENT_BYTES {
+            return true;
+        }
+    }
+    false
+}
+
+fn decode_chat_stream(
+    response: Response,
+    model: String,
+    idle_timeout: Duration,
+    api_key: Option<String>,
+) -> ChatStream {
     let source = Box::pin(response.bytes_stream()) as ByteStream;
     let events = with_idle_timeout(source, idle_timeout).eventsource();
     let with_end = events.map(Some).chain(stream::once(async { None }));
-    let mut parser = ChatParser::new(model);
+    let mut parser = ChatParser::new(model, api_key);
     Box::pin(
         with_end
             .flat_map(move |event| {
@@ -438,9 +498,7 @@ fn decode_chat_stream(response: Response, model: String, idle_timeout: Duration)
                     Some(Ok(event)) => parser.process_event(&event.data),
                     Some(Err(error)) => {
                         parser.fail();
-                        vec![Err(provider_error(format!(
-                            "malformed SSE response: {error}"
-                        )))]
+                        vec![Err(parser.error(format!("malformed SSE response: {error}")))]
                     }
                     None => parser.finish(),
                 };
@@ -454,6 +512,7 @@ fn decode_chat_stream(response: Response, model: String, idle_timeout: Duration)
 enum TimedBodyError {
     Request(reqwest::Error),
     Idle(Duration),
+    EventTooLarge(usize),
 }
 
 impl fmt::Display for TimedBodyError {
@@ -463,6 +522,9 @@ impl fmt::Display for TimedBodyError {
             Self::Idle(duration) => {
                 write!(formatter, "stream idle for {} ms", duration.as_millis())
             }
+            Self::EventTooLarge(maximum) => {
+                write!(formatter, "SSE event exceeds the {maximum} byte limit")
+            }
         }
     }
 }
@@ -471,13 +533,14 @@ impl StdError for TimedBodyError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Request(error) => Some(error),
-            Self::Idle(_) => None,
+            Self::Idle(_) | Self::EventTooLarge(_) => None,
         }
     }
 }
 
 struct ChatParser {
     model: String,
+    api_key: Option<String>,
     tool_calls: BTreeMap<usize, PendingToolCall>,
     ended: bool,
 }
@@ -490,17 +553,29 @@ struct PendingToolCall {
 }
 
 impl ChatParser {
-    fn new(model: String) -> Self {
+    fn new(model: String, api_key: Option<String>) -> Self {
         Self {
             model,
+            api_key,
             tool_calls: BTreeMap::new(),
             ended: false,
         }
     }
 
+    fn error(&self, message: impl Into<String>) -> HarnessError {
+        provider_error(message, self.api_key.as_deref())
+    }
+
     fn process_event(&mut self, data: &str) -> Vec<Result<ChatDelta>> {
         if self.ended {
             return Vec::new();
+        }
+        if data.len() > MAX_SSE_EVENT_BYTES {
+            self.fail();
+            return vec![Err(self.error(format!(
+                "malformed SSE event for model '{}': event exceeds the {} byte limit",
+                self.model, MAX_SSE_EVENT_BYTES
+            )))];
         }
         if data.trim() == "[DONE]" {
             self.ended = true;
@@ -510,7 +585,7 @@ impl ChatParser {
             Ok(chunk) => chunk,
             Err(error) => {
                 self.ended = true;
-                return vec![Err(provider_error(format!(
+                return vec![Err(self.error(format!(
                     "malformed SSE data for model '{}': invalid JSON ({error})",
                     self.model
                 )))];
@@ -518,7 +593,7 @@ impl ChatParser {
         };
         let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
             self.ended = true;
-            return vec![Err(provider_error(format!(
+            return vec![Err(self.error(format!(
                 "malformed SSE data for model '{}': missing choices array",
                 self.model
             )))];
@@ -557,19 +632,38 @@ impl ChatParser {
             .get("index")
             .and_then(Value::as_u64)
             .and_then(|index| usize::try_from(index).ok())
-            .ok_or_else(|| {
-                provider_error("malformed tool-call delta: missing non-negative index")
-            })?;
+            .ok_or_else(|| self.error("malformed tool-call delta: missing non-negative index"))?;
+        let is_new = !self.tool_calls.contains_key(&index);
+        if is_new && self.tool_calls.len() >= MAX_PENDING_TOOL_CALLS {
+            return Err(self.error(format!(
+                "malformed SSE data for model '{}': pending tool-call count exceeds the {MAX_PENDING_TOOL_CALLS} call limit",
+                self.model
+            )));
+        }
+        let api_key = self.api_key.clone();
         let pending = self.tool_calls.entry(index).or_default();
         if let Some(id) = call.get("id").and_then(Value::as_str) {
-            pending.id.push_str(id);
+            append_bounded(&mut pending.id, id, MAX_TOOL_ID_BYTES, "tool-call id")
+                .map_err(|message| provider_error(message, api_key.as_deref()))?;
         }
         if let Some(function) = call.get("function") {
             if let Some(name) = function.get("name").and_then(Value::as_str) {
-                pending.name.push_str(name);
+                append_bounded(
+                    &mut pending.name,
+                    name,
+                    MAX_TOOL_NAME_BYTES,
+                    "tool-call function name",
+                )
+                .map_err(|message| provider_error(message, api_key.as_deref()))?;
             }
             if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                pending.arguments.push_str(arguments);
+                append_bounded(
+                    &mut pending.arguments,
+                    arguments,
+                    MAX_TOOL_ARGUMENT_BYTES,
+                    "tool-call arguments",
+                )
+                .map_err(|message| provider_error(message, api_key.as_deref()))?;
             }
         }
         Ok(())
@@ -584,8 +678,11 @@ impl ChatParser {
         if self.ended {
             return Vec::new();
         }
-        self.ended = true;
-        self.take_tool_calls()
+        let model = self.model.clone();
+        self.fail();
+        vec![Err(self.error(format!(
+            "malformed SSE stream for model '{model}': ended without [DONE] or a terminal finish_reason"
+        )))]
     }
 
     fn take_tool_calls(&mut self) -> Vec<Result<ChatDelta>> {
@@ -597,12 +694,12 @@ impl ChatParser {
             .into_iter()
             .map(|(index, call)| {
                 if call.id.is_empty() || call.name.is_empty() {
-                    return Err(provider_error(format!(
+                    return Err(self.error(format!(
                         "malformed tool call {index}: completed delta is missing an id or function name"
                     )));
                 }
                 let arguments = serde_json::from_str(&call.arguments).map_err(|error| {
-                    provider_error(format!(
+                    self.error(format!(
                         "tool call '{}' for model '{}' has invalid JSON arguments: {error}; fragment={}",
                         call.id,
                         self.model,
@@ -619,17 +716,21 @@ impl ChatParser {
     }
 }
 
-fn map_request_error(error: reqwest::Error) -> HarnessError {
+fn map_request_error(error: reqwest::Error, api_key: Option<&str>) -> HarnessError {
     if error.is_timeout() {
-        provider_error(format!("request timed out: {error}"))
+        provider_error(format!("request timed out: {error}"), api_key)
     } else if error.is_connect() {
-        provider_error(format!("endpoint is unavailable: {error}"))
+        provider_error(format!("endpoint is unavailable: {error}"), api_key)
     } else {
-        provider_error(format!("request failed: {error}"))
+        provider_error(format!("request failed: {error}"), api_key)
     }
 }
 
-async fn read_error_message(response: Response, timeout: Duration) -> String {
+async fn read_error_message(
+    response: Response,
+    timeout: Duration,
+    api_key: Option<&str>,
+) -> String {
     let status = response.status();
     match tokio::time::timeout(timeout, async {
         let mut response = response;
@@ -656,11 +757,68 @@ async fn read_error_message(response: Response, timeout: Duration) -> String {
                         .map(str::to_owned)
                 })
                 .unwrap_or_else(|| text.into_owned());
-            truncate(message.trim(), MAX_ERROR_MESSAGE)
+            truncate(
+                redact(api_key, message.trim().to_owned()).trim(),
+                MAX_ERROR_MESSAGE,
+            )
         }
-        Ok(Err(error)) => format!("could not read HTTP {status} response body: {error}"),
+        Ok(Err(error)) => redact(
+            api_key,
+            format!("could not read HTTP {status} response body: {error}"),
+        ),
         Err(_) => format!("timed out reading HTTP {status} response body"),
     }
+}
+
+async fn read_limited_body(
+    response: Response,
+    timeout: Duration,
+    maximum: usize,
+    operation: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<u8>> {
+    tokio::time::timeout(timeout, async {
+        let mut response = response;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(ResultReadError::Http)? {
+            if body.len().saturating_add(chunk.len()) > maximum {
+                return Err(ResultReadError::Provider(provider_error(
+                    format!("{operation} response exceeds the {maximum} byte limit"),
+                    api_key,
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    })
+    .await
+    .map_err(|_| provider_error(format!("{operation} response timed out"), api_key))?
+    .map_err(|error: ResultReadError| match error {
+        ResultReadError::Http(error) => provider_error(
+            format!("cannot read {operation} response: {error}"),
+            api_key,
+        ),
+        ResultReadError::Provider(error) => error,
+    })
+}
+
+#[derive(Debug)]
+enum ResultReadError {
+    Http(reqwest::Error),
+    Provider(HarnessError),
+}
+
+fn append_bounded(
+    target: &mut String,
+    fragment: &str,
+    maximum: usize,
+    field: &str,
+) -> std::result::Result<(), String> {
+    if target.len().saturating_add(fragment.len()) > maximum {
+        return Err(format!("{field} exceeds the {maximum} byte limit"));
+    }
+    target.push_str(fragment);
+    Ok(())
 }
 
 fn truncate(text: &str, maximum: usize) -> String {
@@ -675,10 +833,17 @@ fn truncate(text: &str, maximum: usize) -> String {
     output
 }
 
-fn provider_error(message: impl Into<String>) -> HarnessError {
+fn redact(api_key: Option<&str>, message: String) -> String {
+    match api_key.filter(|key| !key.is_empty()) {
+        Some(key) => message.replace(key, "[REDACTED]"),
+        None => message,
+    }
+}
+
+fn provider_error(message: impl Into<String>, api_key: Option<&str>) -> HarnessError {
     HarnessError::Backend {
         backend: "OpenAI-compatible LLM".to_owned(),
-        message: message.into(),
+        message: redact(api_key, message.into()),
     }
 }
 

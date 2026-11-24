@@ -308,6 +308,110 @@ async fn reports_malformed_sse_data() {
 }
 
 #[tokio::test]
+async fn redacts_the_api_key_echoed_by_an_error_response() {
+    let api_key = "secret-local-token";
+    let server = FakeLlmServer::start(
+        FakeLlmScript::default()
+            .with_chat_error(401, format!("request rejected for bearer token {api_key}")),
+    )
+    .await;
+    let provider = OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+        base_url: server.base_url(),
+        api_key: Some(api_key.to_owned()),
+        ..Default::default()
+    })
+    .expect("provider");
+
+    let error = provider
+        .chat_stream(request())
+        .await
+        .err()
+        .expect("chat error")
+        .to_string();
+
+    assert!(error.contains("[REDACTED]"), "{error}");
+    assert!(!error.contains(api_key), "{error}");
+}
+
+#[tokio::test]
+async fn rejects_eof_with_pending_tool_calls_without_emitting_them() {
+    let server = FakeLlmServer::start(
+        FakeLlmScript::default().with_events([FakeLlmEvent::tool_calls([FakeToolCallDelta::new(
+            0,
+        )
+        .id("call-1")
+        .name("inspect")
+        .arguments("{}")])]),
+    )
+    .await;
+    let mut stream = provider(&server)
+        .chat_stream(request())
+        .await
+        .expect("stream");
+
+    let error = stream.next().await.expect("item").unwrap_err();
+    assert!(
+        error.to_string().contains("ended without [DONE]"),
+        "{error}"
+    );
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn idle_timeout_is_terminal_and_drops_the_response_body() {
+    let server =
+        FakeLlmServer::start(FakeLlmScript::default().with_events([FakeLlmEvent::Hang])).await;
+    let mut stream = provider(&server)
+        .chat_stream(request())
+        .await
+        .expect("stream");
+
+    let error = stream.next().await.expect("item").unwrap_err();
+    assert!(error.to_string().contains("idle"), "{error}");
+    assert!(
+        server
+            .wait_for_stream_disconnect(Duration::from_secs(1))
+            .await
+    );
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn rejects_an_oversized_models_response() {
+    let server = FakeLlmServer::start(FakeLlmScript::default().with_models_response(json!({
+        "data": [{ "id": "x".repeat(600_000) }]
+    })))
+    .await;
+
+    let error = provider(&server)
+        .list_models()
+        .await
+        .expect_err("models error");
+    assert!(error.to_string().contains("exceeds the 524288 byte limit"));
+}
+
+#[tokio::test]
+async fn rejects_an_oversized_sse_event() {
+    let raw = format!(
+        "data: {{\"choices\":[],\"padding\":\"{}\"}}\n\n",
+        "x".repeat(300_000)
+    );
+    let server =
+        FakeLlmServer::start(FakeLlmScript::default().with_events([FakeLlmEvent::RawSse(raw)]))
+            .await;
+    let mut stream = provider(&server)
+        .chat_stream(request())
+        .await
+        .expect("stream");
+
+    let error = stream.next().await.expect("item").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("event exceeds the 262144 byte limit"));
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
 async fn dropping_stream_cancels_the_http_body_promptly() {
     let server =
         FakeLlmServer::start(FakeLlmScript::default().with_events([FakeLlmEvent::Hang])).await;
