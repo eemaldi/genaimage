@@ -249,6 +249,15 @@ export function createApiClient(
     );
   }
 
+  async function settingsSnapshot(response: Response) {
+    const etag = response.headers.get('etag');
+    if (!etag || etag.startsWith('W/'))
+      throw new Error('The server did not provide a strong settings ETag.');
+    const settings =
+      (await response.json()) as components['schemas']['SettingsResponse'];
+    return { settings, etag };
+  }
+
   return {
     health: (options: RequestOptions = {}) =>
       json('get', '/api/v1/health', options),
@@ -327,12 +336,46 @@ export function createApiClient(
       json('get', '/api/v1/uploads/{id}', { ...options, path: { id } }),
     getSettings: (options: RequestOptions = {}) =>
       json('get', '/api/v1/settings', options),
+    getSettingsWithRevision: (options: RequestOptions = {}) =>
+      request(
+        apiUrl('/api/v1/settings'),
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json, application/problem+json' },
+          signal: options.signal,
+        },
+        settingsSnapshot,
+      ),
+    putSettingsWithRevision: (
+      body: SettingsPatch,
+      etag: string,
+      options: RequestOptions = {},
+    ) =>
+      request(
+        apiUrl('/api/v1/settings'),
+        {
+          method: 'PUT',
+          headers: {
+            Accept: 'application/json, application/problem+json',
+            'Content-Type': 'application/json',
+            'If-Match': etag,
+          },
+          body: JSON.stringify(body),
+          signal: options.signal,
+        },
+        settingsSnapshot,
+      ),
     putSettings: (body: SettingsPatch, options?: RequestOptions) =>
       json('put', '/api/v1/settings', { ...options, body }),
     testSettings: (
       body: JsonBody<Operation<'/api/v1/settings/test', 'post'>>,
-      options?: RequestOptions,
-    ) => json('post', '/api/v1/settings/test', { ...options, body }),
+      options?: RequestOptions & { service?: 'comfyui' | 'llm' },
+    ) =>
+      json('post', '/api/v1/settings/test', {
+        signal: options?.signal,
+        query: options?.service ? { service: options.service } : undefined,
+        body,
+      }),
   };
 }
 

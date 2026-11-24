@@ -72,17 +72,78 @@ export function formFrom(settings: Settings): Form {
       .map(({ key }) => [key, display(settings.settings[key].value)]),
   );
 }
+function ipAddress(value: string): string | undefined {
+  if (
+    /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(value) &&
+    value.split('.').every((part) => Number(part) <= 255)
+  )
+    return value;
+  if (
+    !value.includes(':') ||
+    value.includes('[') ||
+    value.includes(']') ||
+    /[\s%]/.test(value)
+  )
+    return;
+  try {
+    return new URL(`http://[${value}]/`).hostname.slice(1, -1);
+  } catch {
+    return;
+  }
+}
 function isLoopback(host: string): boolean {
-  const name = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host.toLowerCase() === 'localhost') return true;
+  const ip = ipAddress(host);
   return (
-    name === 'localhost' ||
-    name === '::1' ||
-    (/^127\.(\d{1,3}\.){2}\d{1,3}$/.test(name) &&
-      name.split('.').every((part) => Number(part) <= 255)) ||
-    /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(name)
+    ip === '::1' ||
+    (!!ip &&
+      (ip.startsWith('127.') ||
+        /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(ip)))
   );
 }
-function validUrl(value: string, loopbackOnly: boolean): string | undefined {
+function isLocalIp(ip: string): boolean {
+  if (isLoopback(ip)) return true;
+  if (ip.includes('.')) {
+    const [a, b] = ip.split('.').map(Number);
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
+  if (mapped) {
+    const a = parseInt(mapped[1], 16),
+      b = parseInt(mapped[2], 16);
+    return isLocalIp(`${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`);
+  }
+  const first = parseInt(ip.split(':')[0] || '0', 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+function parseHosts(value: string): string[] | undefined {
+  try {
+    const hosts: unknown = JSON.parse(value);
+    if (
+      !Array.isArray(hosts) ||
+      hosts.some(
+        (host) =>
+          typeof host !== 'string' ||
+          !host ||
+          (/[/:* @]/.test(host) && !ipAddress(host)),
+      )
+    )
+      return;
+    return hosts;
+  } catch {
+    return;
+  }
+}
+function validUrl(
+  value: string,
+  loopbackOnly: boolean,
+  hosts: string[],
+): string | undefined {
   try {
     const url = new URL(value);
     if (
@@ -93,8 +154,17 @@ function validUrl(value: string, loopbackOnly: boolean): string | undefined {
       value.includes('#')
     )
       return 'Use an HTTP(S) URL without credentials, a query or a fragment.';
-    if (loopbackOnly && !isLoopback(url.hostname))
+    const hostname = url.hostname.replace(/^\[|\]$/g, '');
+    const ip = ipAddress(hostname);
+    if (ip && !isLocalIp(ip))
+      return 'Public and non-local addresses are not permitted.';
+    if (loopbackOnly && !isLoopback(hostname))
       return 'Use a loopback URL here. Configure private or Compose hosts in the file or environment.';
+    if (
+      !isLoopback(hostname) &&
+      !hosts.some((host) => host.toLowerCase() === hostname.toLowerCase())
+    )
+      return 'Add the endpoint host to the proposed allow-list.';
   } catch {
     return 'Enter a valid HTTP(S) URL.';
   }
@@ -106,7 +176,8 @@ export function validate(
   const errors: Record<string, string> = {};
   for (const field of fields) {
     const setting = settings.settings[field.key];
-    if (!setting || setting.read_only) continue;
+    if (!setting) continue;
+    if (setting.read_only && !field.key.endsWith('.base_url')) continue;
     const value = form[field.key];
     if (field.kind === 'number') {
       const n = Number(value);
@@ -128,30 +199,18 @@ export function validate(
     )
       errors[field.key] = 'Choose a database file path.';
     else if (field.kind === 'hosts') {
-      try {
-        const hosts: unknown = JSON.parse(value);
-        if (
-          !Array.isArray(hosts) ||
-          hosts.some(
-            (host: unknown) =>
-              typeof host !== 'string' ||
-              !host ||
-              /[/* @]/.test(host) ||
-              (host.includes(':') && !/^[0-9a-f:]+$/i.test(host)),
-          )
-        )
-          throw new Error();
-      } catch {
+      if (!parseHosts(value))
         errors[field.key] =
           'Enter a JSON array of exact hostnames or IP addresses, for example ["comfyui"].';
-      }
     } else if (field.key === 'server.host' && !isLoopback(value))
       errors[field.key] = 'Use a loopback host: localhost, 127.0.0.0/8 or ::1.';
     else if (
       (field.key === 'comfyui.base_url' || field.key === 'llm.base_url') &&
       (value !== '' || field.key === 'comfyui.base_url')
     ) {
-      const error = validUrl(value, value !== display(setting.value));
+      const hostKey = field.key.replace('base_url', 'allowed_hosts');
+      const hosts = parseHosts(form[hostKey]) ?? [];
+      const error = validUrl(value, value !== display(setting.value), hosts);
       if (error) errors[field.key] = error;
     }
   }
@@ -160,12 +219,14 @@ export function validate(
 export function patchFrom(
   form: Form,
   settings: Settings,
+  service?: string,
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   for (const field of fields) {
     const setting = settings.settings[field.key];
     if (
       !setting ||
+      (service !== undefined && !field.key.startsWith(`${service}.`)) ||
       setting.read_only ||
       form[field.key] === display(setting.value)
     )

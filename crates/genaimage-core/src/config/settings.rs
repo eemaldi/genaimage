@@ -251,12 +251,20 @@ impl SettingsUpdate {
     /// opt-ins still work via trusted files and environment at startup.
     pub fn validate_http_endpoints(
         &self,
-        probe: bool,
+        probe: Option<&str>,
     ) -> std::result::Result<(), Vec<SettingIssue>> {
         let mut errors = Vec::new();
         for (key, value, test) in [
-            ("comfyui.base_url", &self.config.comfyui.base_url, probe),
-            ("llm.base_url", &self.config.llm.base_url, probe),
+            (
+                "comfyui.base_url",
+                &self.config.comfyui.base_url,
+                probe == Some("comfyui") || probe == Some("both"),
+            ),
+            (
+                "llm.base_url",
+                &self.config.llm.base_url,
+                probe == Some("llm") || probe == Some("both"),
+            ),
         ] {
             if !value.is_empty()
                 && (test || self.edits.contains_key(key))

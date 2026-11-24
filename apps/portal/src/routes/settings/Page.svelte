@@ -8,6 +8,7 @@
     type Problem,
   } from '../../lib/ui/ProblemDetails.svelte';
   import type { RouteProps } from '../../router';
+  import { setNavigationGuard } from '../../navigation';
   import {
     display,
     formFrom,
@@ -22,12 +23,18 @@
   let settings = $state<Settings>();
   let form = $state<Form>({});
   let problem = $state<Problem>();
+  let probeProblem = $state<Problem>();
+  let probeService = $state<'comfyui' | 'llm'>();
+  let etag = $state('');
+  let saving = $state(false);
+  let conflict = $state(false);
+  let draft = $state<Form>();
+  let previous = $state<Form>();
   let fieldErrors = $state<Record<string, string>>({});
   let busy = $state(false);
   let loading = $state(true);
   let notice = $state('');
   let result = $state<components['schemas']['SettingsTestResponse']>();
-  let currentHash = window.location.hash;
   let validation = $derived(settings ? validate(form, settings) : {});
   let dirty = $derived(
     settings
@@ -60,16 +67,18 @@
     problem = undefined;
     notice = '';
     result = undefined;
+    probeProblem = undefined;
   }
-  function load(response: Settings) {
-    settings = response;
-    form = formFrom(response);
+  function load(snapshot: { settings: Settings; etag: string }) {
+    settings = snapshot.settings;
+    etag = snapshot.etag;
+    form = formFrom(snapshot.settings);
     fieldErrors = {};
   }
   onMount(() => {
     let mounted = true;
     api
-      .getSettings()
+      .getSettingsWithRevision()
       .then((response) => {
         if (mounted) load(response);
       })
@@ -80,47 +89,98 @@
         if (mounted) loading = false;
       });
     function beforeUnload(event: BeforeUnloadEvent) {
-      if (dirty || busy) {
+      if (dirty || saving || conflict) {
         event.preventDefault();
         event.returnValue = '';
       }
     }
-    function guard(event: HashChangeEvent) {
-      if (
-        (dirty || busy) &&
-        !window.confirm(
+    setNavigationGuard(() => {
+      if (saving) {
+        window.alert(
+          'A save is in progress. Wait for its result before leaving settings.',
+        );
+        return false;
+      }
+      return (
+        !(dirty || conflict) ||
+        window.confirm(
           'You have unsaved changes. Leave settings and discard them?',
         )
-      ) {
-        event.stopImmediatePropagation();
-        window.history.replaceState(
-          window.history.state,
-          '',
-          currentHash || '#/settings',
-        );
-      } else currentHash = window.location.hash;
-    }
+      );
+    });
     window.addEventListener('beforeunload', beforeUnload);
-    window.addEventListener('hashchange', guard, true);
     return () => {
       mounted = false;
       window.removeEventListener('beforeunload', beforeUnload);
-      window.removeEventListener('hashchange', guard, true);
+      setNavigationGuard();
     };
   });
-  async function testConnection() {
-    if (!settings || invalid || busy) return;
+  async function testConnection(service: 'comfyui' | 'llm') {
+    if (
+      !settings ||
+      busy ||
+      conflict ||
+      Object.keys(validation).some((key) => key.startsWith(`${service}.`))
+    )
+      return;
     busy = true;
-    problem = undefined;
-    fieldErrors = {};
+    probeService = service;
+    probeProblem = undefined;
     result = undefined;
     try {
-      result = await api.testSettings(patchFrom(form, settings));
+      result = await api.testSettings(patchFrom(form, settings, service), {
+        service,
+      });
+    } catch (error) {
+      probeProblem =
+        error instanceof ApiProblemError
+          ? error.problem
+          : {
+              title: 'Connection test failed',
+              detail:
+                error instanceof Error
+                  ? error.message
+                  : 'An unexpected error occurred.',
+              recovery: 'Check the local server and try again.',
+            };
+    } finally {
+      busy = false;
+    }
+  }
+  async function reloadConflict() {
+    if (!settings || busy) return;
+    busy = true;
+    try {
+      const pending = { ...form };
+      const baseline = formFrom(settings);
+      const fresh = await api.getSettingsWithRevision();
+      load(fresh);
+      draft = pending;
+      previous = baseline;
+      problem = undefined;
+      notice =
+        'Review the current and proposed values, then choose whether to re-apply your changes.';
     } catch (error) {
       showError(error);
     } finally {
       busy = false;
     }
+  }
+  function reapply() {
+    if (!draft || !previous || !settings) return;
+    const skipped: string[] = [];
+    for (const key of Object.keys(draft)) {
+      if (draft[key] === previous[key]) continue;
+      if (!settings.settings[key] || settings.settings[key].read_only)
+        skipped.push(key);
+      else form[key] = draft[key];
+    }
+    draft = undefined;
+    previous = undefined;
+    conflict = false;
+    notice = skipped.length
+      ? `Could not re-apply read-only settings: ${skipped.join(', ')}.`
+      : 'Changes re-applied. Review them before saving.';
   }
   async function save() {
     if (
@@ -128,18 +188,23 @@
       invalid ||
       !dirty ||
       busy ||
+      conflict ||
       Object.keys(fieldErrors).length
     )
       return;
     busy = true;
+    saving = true;
     problem = undefined;
     fieldErrors = {};
     notice = '';
     try {
-      const saved = await api.putSettings(patchFrom(form, settings));
+      const saved = await api.putSettingsWithRevision(
+        patchFrom(form, settings),
+        etag,
+      );
       load(saved);
       try {
-        load(await api.getSettings());
+        load(await api.getSettingsWithRevision());
         notice = 'Settings saved and refreshed.';
       } catch (error) {
         notice =
@@ -148,11 +213,14 @@
       }
     } catch (error) {
       showError(error);
+      if (error instanceof ApiProblemError && error.status === 412)
+        conflict = true;
       if (!(error instanceof ApiProblemError) || error.status >= 500)
         notice =
           'The save may have completed. Reload the page to check before trying again.';
     } finally {
       busy = false;
+      saving = false;
     }
   }
   function source(setting: Settings['settings'][string]) {
@@ -166,6 +234,31 @@
 <h1>Settings</h1>
 {#if loading}<p>Loading settings…</p>{/if}
 {#if problem}<ProblemDetails {problem} />{/if}
+{#if conflict && !draft}<Button onclick={reloadConflict} disabled={busy}
+    >Reload settings for review</Button
+  >{/if}
+{#if conflict && draft && previous && settings}
+  <div class="restart" role="status">
+    <p>Review your changes against the reloaded settings:</p>
+    <ul>
+      {#each Object.keys(draft).filter((key) => draft![key] !== previous![key]) as key (key)}<li
+        >
+          <strong>{key}</strong>: current {display(
+            settings.settings[key]?.value,
+          )}, your change {draft[key]}
+        </li>{/each}
+    </ul>
+    <Button onclick={reapply}>Re-apply my changes</Button>
+    <Button
+      onclick={() => {
+        draft = undefined;
+        previous = undefined;
+        conflict = false;
+        notice = 'Your changes were discarded.';
+      }}>Discard my changes</Button
+    >
+  </div>
+{/if}
 {#if settings}
   <p>Configuration file: {settings.config_file}</p>
   <p>
@@ -173,8 +266,11 @@
     hosts must be explicitly allow-listed in the configuration file or
     environment; public endpoints are never permitted.
   </p>
+  {#if saving}<p role="status">
+      Save in progress. It may still complete if you close or reload this page.
+    </p>{/if}
   <p role="status">
-    {dirty ? 'Unsaved changes' : 'No unsaved changes'}{#if notice}
+    {dirty || conflict ? 'Unsaved changes' : 'No unsaved changes'}{#if notice}
       — {notice}{/if}
   </p>
   {#if settings.restart_required.length}
@@ -182,7 +278,7 @@
       <strong>Restart required:</strong>
       {settings.restart_required.join(', ')}. The active values are shown below.
     </div>
-  {:else if notice && !problem}
+  {:else if notice === 'Settings saved and refreshed.' && !problem}
     <p>All saved settings are active without a restart.</p>
   {/if}
   <form
@@ -204,31 +300,42 @@
                 () => form[field.key], (value) => update(field.key, value)
               }
               readonly={setting.read_only}
-              disabled={busy}
+              disabled={busy || conflict}
               hint={`${source(setting)}${setting.read_only && setting.source !== 'env' ? ' Read-only in the settings API.' : ''}${field.kind === 'hosts' ? ' Enter a JSON array of exact hosts.' : ''}${setting.active_value !== undefined ? ` Active value until restart: ${display(setting.active_value)}.` : ''}`}
               error={validation[field.key] ?? fieldErrors[field.key]}
             />
           {/if}
         {/each}
         {#if section.title === 'ComfyUI' || section.title === 'LLM'}
-          <Button onclick={testConnection} disabled={busy || invalid}
-            >Test {section.title} connection</Button
+          <Button
+            onclick={() =>
+              testConnection(section.title === 'ComfyUI' ? 'comfyui' : 'llm')}
+            disabled={busy ||
+              conflict ||
+              Object.keys(validation).some((key) =>
+                key.startsWith(
+                  section.title === 'ComfyUI' ? 'comfyui.' : 'llm.',
+                ),
+              )}>Test {section.title} connection</Button
           >
         {/if}
       </section>
     {/each}
-    {#if result}
+    {#if probeProblem}<ProblemDetails problem={probeProblem} />{/if}
+    {#if result && probeService}
       <div role="status">
-        <p>
-          ComfyUI: {result.comfyui}{#if result.comfyui_reason}
-            ({result.comfyui_reason === 'timeout'
-              ? 'timed out'
-              : 'probe failed'}){/if}
-        </p>
-        <p>
-          LLM: {result.llm === 'not_configured' ? 'not configured' : result.llm}
-        </p>
-        {#if result.comfyui === 'unavailable' || result.llm === 'unavailable'}<p
+        {#if probeService === 'comfyui'}<p>
+            ComfyUI: {result.comfyui}{#if result.comfyui_reason}
+              ({result.comfyui_reason === 'timeout'
+                ? 'timed out'
+                : 'probe failed'}){/if}
+          </p>
+        {:else}<p>
+            LLM: {result.llm === 'not_configured'
+              ? 'not configured'
+              : result.llm}
+          </p>{/if}
+        {#if (probeService === 'comfyui' ? result.comfyui : result.llm) === 'unavailable'}<p
           >
             Check that the configured service is running and reachable, then
             test again.
@@ -241,6 +348,7 @@
       variant="primary"
       disabled={busy ||
         invalid ||
+        conflict ||
         !dirty ||
         Object.keys(fieldErrors).length > 0}>Save settings</Button
     >

@@ -778,6 +778,15 @@ async fn settings_probe_llm_uses_models_route_without_persisting_or_following_re
     let configured = ApiHarness::start_with_config(5, &[("GENAIMAGE_LLM_URL", &root)]).await;
     let response: SettingsTestResponse = configured.post_json(TEST_SETTINGS, &json!({})).await;
     assert_eq!(response.llm, HealthStatus::Ok);
+    configured.fake.health_hangs.store(true, Ordering::SeqCst);
+    let selected: SettingsTestResponse = tokio::time::timeout(
+        Duration::from_secs(1),
+        configured.post_json(&format!("{TEST_SETTINGS}?service=llm"), &json!({})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(selected.llm, HealthStatus::Ok);
+    assert_eq!(selected.comfyui, HealthStatus::NotConfigured);
     configured.shutdown().await;
     api.shutdown().await;
     server.abort();
@@ -828,4 +837,98 @@ async fn settings_reject_unwritable_database_targets_without_saving() {
     assert_eq!(fs::read(config).unwrap(), original);
     assert!(!directory.join("missing").exists());
     api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_etag_prevents_concurrent_lost_updates_and_preserves_legacy_put() {
+    let api = ApiHarness::start().await;
+    let response = api.request(Method::GET, SETTINGS).send().await.unwrap();
+    let etag = response.headers()[reqwest::header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let first = api
+        .request(Method::PUT, SETTINGS)
+        .header(reqwest::header::IF_MATCH, &etag)
+        .json(&json!({"llm.model":"first"}))
+        .send();
+    let second = api
+        .request(Method::PUT, SETTINGS)
+        .header(reqwest::header::IF_MATCH, &etag)
+        .json(&json!({"llm.model":"second"}))
+        .send();
+    let (a, b) = tokio::join!(first, second);
+    let (a, b) = (a.unwrap(), b.unwrap());
+    let (saved, rejected) = if a.status() == StatusCode::OK {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_ne!(saved.headers()[reqwest::header::ETAG], etag);
+    let saved: SettingsResponse = saved.json().await.unwrap();
+    let problem = ApiHarness::assert_problem(rejected, StatusCode::PRECONDITION_FAILED).await;
+    assert!(problem.recovery.contains("Reload"));
+    let current: SettingsResponse = api.get_json(SETTINGS).await;
+    assert_eq!(
+        current.settings["llm.model"].value,
+        saved.settings["llm.model"].value
+    );
+    let legacy = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"llm.model":"legacy"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), StatusCode::OK);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_probe_selects_service_and_uses_effective_env_url() {
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", "http://192.168.10.2"),
+            ("GENAIMAGE_LLM_ALLOWED_HOSTS", "192.168.10.2"),
+        ],
+    )
+    .await;
+    let comfy: SettingsTestResponse = api
+        .post_json(&format!("{TEST_SETTINGS}?service=comfyui"), &json!({}))
+        .await;
+    assert_eq!(comfy.comfyui, HealthStatus::Ok);
+    assert_eq!(comfy.llm, HealthStatus::NotConfigured);
+    let response = api
+        .request(Method::POST, &format!("{TEST_SETTINGS}?service=llm"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::UNPROCESSABLE_ENTITY).await;
+    assert_eq!(problem.errors[0].key, "llm.base_url");
+    let invalid = api
+        .request(Method::POST, &format!("{TEST_SETTINGS}?service=other"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(invalid, StatusCode::BAD_REQUEST).await;
+    api.shutdown().await;
+
+    let llm = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_COMFYUI_URL", "http://192.168.10.2"),
+            ("GENAIMAGE_COMFYUI_ALLOWED_HOSTS", "192.168.10.2"),
+            ("GENAIMAGE_LLM_URL", "http://127.0.0.1:1"),
+        ],
+    )
+    .await;
+    let result: SettingsTestResponse = llm
+        .post_json(&format!("{TEST_SETTINGS}?service=llm"), &json!({}))
+        .await;
+    assert_eq!(result.comfyui, HealthStatus::NotConfigured);
+    assert_eq!(result.llm, HealthStatus::Unavailable);
+    llm.shutdown().await;
 }

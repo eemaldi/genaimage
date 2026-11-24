@@ -103,7 +103,11 @@ returned. `config_file` shows the write target.
 
 Send a sparse JSON object to `PUT /api/v1/settings`, for example
 `{"comfyui.base_url":"http://127.0.0.1:8189","server.port":3001}`. Omitted
-keys are unchanged. Invalid, unknown or changed read-only keys return 422
+keys are unchanged. GET and successful PUT responses include a strong `ETag`.
+Send it in `If-Match` with PUT to reject concurrent changes atomically (412
+with a recovery hint); reload and review changes before resubmitting. PUT
+without `If-Match` remains available for older clients but can overwrite
+concurrent changes. Invalid, unknown or changed read-only keys return 422
 with a problem JSON `errors` array containing `key` and `reason` for each
 issue. Saves edit the file selected at server startup (following the
 precedence above), or create the XDG configuration file if none was selected.
@@ -130,9 +134,11 @@ WAL sidecar files); for a new path, the nearest existing directory must be
 writable. Invalid targets return 422. Saving does not create or migrate a database.
 
 `POST /api/v1/settings/test` accepts the same JSON shape (`{}` to use the
-saved settings). It tests ComfyUI and a configured LLM without saving or
-changing the running adapter. The probes run concurrently with a two-second
-budget each. The LLM probe sends an unauthenticated `GET` to `{base}/models`,
+saved settings). Omit the query to test ComfyUI and a configured LLM together,
+or pass `?service=comfyui` or `?service=llm` to test only that service; the
+unselected status is `not_configured`. Environment-overridden endpoints use
+their effective values. Testing does not save settings or change the running
+adapter. The probes run concurrently with a two-second budget each. The LLM probe sends an unauthenticated `GET` to `{base}/models`,
 or `/v1/models` if the URL has no base path. It reports `ok` for an HTTP 2xx
 response, `unavailable` if the probe fails, and `not_configured` if
 `llm.base_url` is unset or empty. Both probes pin validated loopback addresses

@@ -4,6 +4,7 @@
   import Dialog from './lib/ui/Dialog.svelte';
   import ToastRegion from './lib/ui/ToastRegion.svelte';
   import { matchHash } from './router';
+  import { acceptNavigation, initialiseNavigation } from './navigation';
   import { createShortcutHandler, sections, shortcuts } from './shortcuts';
   import './styles/tokens.css';
   import './styles/ui.css';
@@ -17,6 +18,7 @@
     }
   }
 
+  initialiseNavigation();
   let route = $state(matchHash(window.location.hash));
   let navOpen = $state(false);
   let helpOpen = $state(false);
@@ -45,6 +47,7 @@
   }
 
   async function updateRoute() {
+    if (!acceptNavigation()) return;
     const next = matchHash(window.location.hash);
     const changed = next.path !== route.path;
     route = next;

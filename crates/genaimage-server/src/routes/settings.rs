@@ -1,8 +1,11 @@
 use std::time::Duration;
 
 use axum::{
-    extract::{rejection::JsonRejection, State},
-    http::{header, HeaderName},
+    extract::{
+        rejection::{JsonRejection, QueryRejection},
+        Query, State,
+    },
+    http::{header, HeaderMap, HeaderName, StatusCode},
     Json,
 };
 use genaimage_api::{
@@ -18,8 +21,23 @@ use tokio::time::timeout;
 use crate::{settings::save_failed, AppState, Problem};
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(2);
-const NO_STORE: [(HeaderName, &str); 1] = [(header::CACHE_CONTROL, "no-store")];
-type SettingsReply = ([(HeaderName, &'static str); 1], Json<SettingsResponse>);
+type SettingsReply = ([(HeaderName, String); 2], Json<SettingsResponse>);
+fn reply((etag, response): (String, SettingsResponse)) -> SettingsReply {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store".into()),
+            (header::ETAG, etag),
+        ],
+        Json(response),
+    )
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(super) struct ProbeQuery {
+    /// Choose one service; omit to test both for backwards compatibility.
+    service: Option<String>,
+}
 
 #[utoipa::path(
     get, path = "/settings",
@@ -27,7 +45,7 @@ type SettingsReply = ([(HeaderName, &'static str); 1], Json<SettingsResponse>);
     tag = "settings",
     description = "Read effective settings.",
     responses(
-        (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String))),
+        (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String), ("ETag" = String))),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -38,19 +56,21 @@ type SettingsReply = ([(HeaderName, &'static str); 1], Json<SettingsResponse>);
     )
 )]
 pub(super) async fn read(State(state): State<AppState>) -> SettingsReply {
-    (NO_STORE, Json(state.settings.get()))
+    reply(state.settings.get())
 }
 
 #[utoipa::path(
     put, path = "/settings",
     operation_id = "settings_save",
     tag = "settings",
-    description = "Save sparse settings.",
+    description = "Save sparse settings. If-Match is optional for older clients; use the GET ETag to prevent lost updates.",
+    params(("If-Match" = Option<String>, Header, description = "Current settings ETag")),
     request_body = genaimage_api::SettingsPatch,
     responses(
-        (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String))),
+        (status = 200, body = genaimage_api::SettingsResponse, headers(("Cache-Control" = String), ("ETag" = String))),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 412, description = "Settings revision mismatch", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 409, description = "Settings conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -63,13 +83,27 @@ pub(super) async fn read(State(state): State<AppState>) -> SettingsReply {
 )]
 pub(super) async fn save(
     State(state): State<AppState>,
+    headers: HeaderMap,
     patch: Result<Json<SettingsPatch>, JsonRejection>,
 ) -> Result<SettingsReply, Problem> {
     let patch = parse(patch)?;
-    let saved = tokio::task::spawn_blocking(move || state.settings.save(patch))
+    let if_match = headers
+        .get_all(header::IF_MATCH)
+        .iter()
+        .map(|value| value.to_str().map(str::to_owned))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| {
+            Problem::new(
+                StatusCode::BAD_REQUEST,
+                "Invalid If-Match header.",
+                "Use the ETag returned by GET settings.",
+            )
+        })?;
+    let if_match = (!if_match.is_empty()).then(|| if_match.join(","));
+    let saved = tokio::task::spawn_blocking(move || state.settings.save(patch, if_match))
         .await
         .map_err(|_| save_failed())??;
-    Ok((NO_STORE, Json(saved)))
+    Ok(reply(saved))
 }
 
 #[utoipa::path(
@@ -78,6 +112,7 @@ pub(super) async fn save(
     tag = "settings",
     description = "Test proposed settings without saving them.",
     request_body = genaimage_api::SettingsPatch,
+    params(ProbeQuery),
     responses(
         (status = 200, body = genaimage_api::SettingsTestResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -93,16 +128,50 @@ pub(super) async fn save(
 )]
 pub(super) async fn probe(
     State(state): State<AppState>,
+    query: Result<Query<ProbeQuery>, QueryRejection>,
     patch: Result<Json<SettingsPatch>, JsonRejection>,
 ) -> Result<Json<SettingsTestResponse>, Problem> {
-    let proposal = state.settings.propose(parse(patch)?, true)?;
+    let Query(query) = query.map_err(|_| {
+        Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid test service.",
+            "Choose comfyui or llm, or omit service to test both.",
+        )
+    })?;
+    let service = match query.service.as_deref() {
+        Some("comfyui") => "comfyui",
+        Some("llm") => "llm",
+        None => "both",
+        _ => {
+            return Err(Problem::new(
+                StatusCode::BAD_REQUEST,
+                "Invalid test service.",
+                "Choose comfyui or llm, or omit service to test both.",
+            ))
+        }
+    };
+    let proposal = state.settings.propose(parse(patch)?, Some(service))?;
     let config = proposal.config();
     let (reason, llm) = tokio::join!(
-        probe_comfyui(&config.comfyui),
-        probe_llm(&config.llm.base_url)
+        async {
+            if service != "llm" {
+                probe_comfyui(&config.comfyui).await
+            } else {
+                None
+            }
+        },
+        async {
+            if service != "comfyui" {
+                probe_llm(&config.llm.base_url).await
+            } else {
+                HealthStatus::NotConfigured
+            }
+        }
     );
     Ok(Json(SettingsTestResponse {
-        comfyui: if reason.is_none() {
+        comfyui: if service == "llm" {
+            HealthStatus::NotConfigured
+        } else if reason.is_none() {
             HealthStatus::Ok
         } else {
             HealthStatus::Unavailable
