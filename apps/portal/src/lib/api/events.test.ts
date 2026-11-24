@@ -143,6 +143,40 @@ describe('portal event stream', () => {
     },
   );
 
+  it.each([
+    { busId: 'not-a-uuid', id: '2' },
+    { busId: oldBus, id: '18446744073709551616' },
+  ])(
+    'clears both cursor parameters and resyncs once for an invalid pair ($busId, $id)',
+    ({ busId, id }) => {
+      const store = createEventStore(FakeEventSource);
+      const resync = vi.fn();
+      const receive = vi.fn();
+      const stopResync = store.resync.subscribe(resync);
+      const stopEvent = store.on('backend_health_changed', receive);
+      const [first] = streams();
+      first.opened();
+      first.emit('backend_health_changed', health(), '1');
+      first.emit('backend_health_changed', health(busId), id);
+      expect(receive).toHaveBeenCalledTimes(1);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(resync.mock.calls).toEqual([[null]]);
+
+      vi.advanceTimersByTime(250);
+      expect(streams()).toHaveLength(2);
+      const second = streams()[1];
+      expect(second.url).toBe('/api/v1/events');
+      second.opened();
+      second.opened();
+      expect(resync.mock.calls).toEqual([
+        [null],
+        [{ epoch: 1, reason: { reason: 'invalid_frame' } }],
+      ]);
+      stopEvent();
+      stopResync();
+    },
+  );
+
   it('signals a snapshot refetch after a restart with the same latest ID and no new events', () => {
     const store = createEventStore(FakeEventSource);
     const resync = vi.fn();

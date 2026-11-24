@@ -30,6 +30,12 @@ const eventNames = {
 } satisfies Record<EventType, true>;
 const initialDelay = 250;
 const maxDelay = 10_000;
+const busUuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const maxEventId = 18_446_744_073_709_551_615n;
+
+function isEventId(id: string): boolean {
+  return /^[0-9]+$/.test(id) && BigInt(id) <= maxEventId;
+}
 
 function parse(message: MessageEvent<string>): unknown {
   try {
@@ -123,7 +129,8 @@ export function createEventStore(EventSourceImpl?: EventSourceConstructor) {
         if (
           event?.type !== name ||
           typeof event.bus_id !== 'string' ||
-          !/^\d+$/.test(message.lastEventId)
+          !busUuid.test(event.bus_id) ||
+          !isEventId(message.lastEventId)
         ) {
           resetCursor({ reason: 'invalid_frame' });
           return;
