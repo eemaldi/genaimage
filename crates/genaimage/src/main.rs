@@ -1,4 +1,5 @@
 mod output;
+mod run_commands;
 mod server_commands;
 
 use std::{collections::BTreeMap, path::PathBuf, process::ExitCode};
@@ -6,11 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf, process::ExitCode};
 use clap::{Args, Parser, Subcommand};
 use genaimage_api::client::{Client, DEFAULT_BASE_URL};
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{
-    Event, EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError, ReceiveError,
-    RunRequest, RunStatus,
-};
-use serde::Serialize;
+use genaimage_core::{EventBus, ExtensionRegistry, Harness, HarnessConfig, HarnessError};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
@@ -91,6 +88,9 @@ struct RunCommand {
     preset: Option<String>,
     #[arg(long = "set", value_name = "NAME=JSON")]
     parameters: Vec<String>,
+    /// Upload an explicitly selected local reference image.
+    #[arg(long = "image", value_name = "NAME=PATH")]
+    images: Vec<String>,
     #[arg(long)]
     version: Option<String>,
     #[arg(long)]
@@ -102,11 +102,17 @@ enum JobsCommand {
     List {
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Return the next page using a cursor from a previous list.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     Show {
         run_id: String,
         #[arg(long, default_value_t = 100)]
         events: usize,
+        /// Return the next page of output metadata.
+        #[arg(long)]
+        output_cursor: Option<String>,
     },
     Reconcile {
         run_id: Option<String>,
@@ -142,12 +148,6 @@ async fn main() -> ExitCode {
             )
             .with_writer(std::io::stderr)
             .json()
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_target(false)
-            .without_time()
             .init();
     }
     if let Err(error) = execute_local(&cli).await {
@@ -202,8 +202,6 @@ async fn execute_local(cli: &Cli) -> Result<(), HarnessError> {
         Command::Config {
             command: ConfigCommand::Init { force },
         } => config_init(cli, *force)?,
-        Command::Run(command) => run_command(cli, command).await?,
-        Command::Jobs { command } => jobs_command(cli, command).await?,
         _ => unreachable!("server-backed commands are dispatched first"),
     }
     Ok(())
@@ -221,105 +219,12 @@ fn config_init(cli: &Cli, force: bool) -> Result<(), HarnessError> {
         )));
     }
     std::fs::write(&path, HarnessConfig::example())?;
-    output(cli, &serde_json::json!({ "path": path, "created": true }))
-}
-
-async fn run_command(cli: &Cli, command: &RunCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(cli).await?;
-    let parameters = parse_parameters(&command.parameters).map_err(HarnessError::Configuration)?;
-    let run = harness
-        .submit(RunRequest {
-            workflow: command.workflow.clone(),
-            preset: command.preset.clone(),
-            parameters,
-            version: command.version.clone(),
-        })
-        .await?;
-    output(cli, &run)?;
-    if command.wait && run.status.is_trackable() {
-        let completed = if cli.json {
-            let run_id = run.id.clone();
-            let waiting_harness = harness.clone();
-            tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await })
-                .await
-                .map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??
-        } else {
-            let mut receiver = harness.events().subscribe_run_progress(&run.id);
-            let run_id = run.id.clone();
-            let waiting_harness = harness.clone();
-            let mut waiter =
-                tokio::spawn(async move { waiting_harness.wait_for_run(&run_id).await });
-            loop {
-                tokio::select! {
-                    biased;
-                    event = receiver.recv() => match event {
-                        Ok(envelope) => {
-                            match envelope.event {
-                                Event::RunProgress { run: progress_run, backend_event } if progress_run.id == run.id => {
-                                    print_progress(&progress_run, backend_event.as_ref());
-                                }
-                                _ => {}
-                            }
-                        }
-                        // This stream carries every progress update and maintains no
-                        // lifecycle state; the final poll supplies the current run.
-                        Err(ReceiveError::ResyncRequired(_)) => {},
-                        Err(ReceiveError::Closed) => {
-                            break waiter.await.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??;
-                        }
-                    },
-                    result = &mut waiter => break result.map_err(|error| HarnessError::ComfyUi(format!("wait task failed: {error}")))??,
-                }
-            }
-        };
-        output(cli, &completed)?;
-    }
-    if run.status == RunStatus::UnknownSubmission {
-        return Err(HarnessError::ComfyUi(format!(
-            "submission of run '{}' is ambiguous; use 'jobs reconcile' before retrying",
-            run.id
-        )));
-    }
-    Ok(())
-}
-
-async fn jobs_command(cli: &Cli, command: &JobsCommand) -> Result<(), HarnessError> {
-    let harness = open_harness(cli).await?;
-    match command {
-        JobsCommand::List { limit } => {
-            output(cli, &harness.repository().as_async().list(*limit).await?)?
-        }
-        JobsCommand::Show { run_id, events } => output(
-            cli,
-            &serde_json::json!({
-                "run": harness.repository().as_async().get(run_id).await?,
-                "events": harness.repository().as_async().events(run_id, *events).await?,
-                "outputs": harness.repository().as_async().outputs(run_id).await?
-            }),
-        )?,
-        JobsCommand::Reconcile { run_id } => {
-            if let Some(run_id) = run_id {
-                output(cli, &harness.reconcile(run_id).await?)?;
-            } else {
-                output(cli, &harness.reconcile_all().await?)?;
-            }
-        }
-        JobsCommand::Wait { run_id } => {
-            let completed = harness.wait_for_run(run_id).await?;
-            output(cli, &completed)?;
-        }
-        JobsCommand::Cancel { run_id } => output(cli, &harness.cancel(run_id).await?)?,
-    }
-    Ok(())
-}
-
-fn output<T: Serialize>(cli: &Cli, value: &T) -> Result<(), HarnessError> {
-    let rendered = if cli.json {
-        serde_json::to_string(value)?
+    let report = serde_json::json!({ "path": path, "created": true });
+    if cli.json {
+        println!("{}", serde_json::to_string(&report)?);
     } else {
-        serde_json::to_string_pretty(value)?
-    };
-    println!("{rendered}");
+        println!("Created configuration file '{}'.", path.display());
+    }
     Ok(())
 }
 
@@ -336,20 +241,4 @@ fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, String
         parameters.insert(name.to_owned(), parsed);
     }
     Ok(parameters)
-}
-
-fn print_progress(
-    run: &genaimage_core::RunRecord,
-    event: Option<&genaimage_core::image_backend::BackendEvent>,
-) {
-    if let Some(event) = event {
-        let suffix = event
-            .value
-            .zip(event.maximum)
-            .map(|(value, maximum)| format!(" {value}/{maximum}"))
-            .unwrap_or_default();
-        eprintln!("{}{}", event.event_type, suffix);
-    } else {
-        eprintln!("{}: {}", run.id, run.status.as_str());
-    }
 }

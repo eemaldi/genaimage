@@ -140,8 +140,9 @@ parameter to the `upload_id` returned by `POST /api/v1/uploads`
 (`sha256:<lowercase hex digest>`), not a filesystem path. The core verifies
 the stored bytes and uploads them to the configured ComfyUI input area before
 prompt submission. Run provenance records the upload ID, SHA-256, sanitised
-original filename, byte size and returned ComfyUI filename. The direct CLI
-still accepts local paths and records the path instead of an upload ID.
+original filename, byte size and returned ComfyUI filename. To send a local
+reference through the CLI, use `run --image NAME=PATH`; `--set` accepts an
+already stored upload ID. See the [CLI reference](cli.md#runs-and-jobs).
 
 ## Presets
 

@@ -749,6 +749,7 @@ name = "genaimage"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "futures-util",
  "genaimage-api",
  "genaimage-comfyui",
  "genaimage-core",
@@ -759,6 +760,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

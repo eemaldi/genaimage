@@ -3,7 +3,7 @@ use std::{
     process::ExitCode,
 };
 
-use genaimage_api::{client, ProblemDetails};
+use genaimage_api::{client, ProblemDetails, RunResponse};
 use serde::Serialize;
 
 pub(crate) enum Status {
@@ -14,6 +14,8 @@ pub(crate) enum Status {
     ServerProblem = 4,
     ClientFailure = 5,
     NegativeResult = 6,
+    UnsuccessfulRun = 7,
+    UnknownSubmission = 8,
 }
 
 impl From<Status> for ExitCode {
@@ -25,6 +27,9 @@ impl From<Status> for ExitCode {
 pub(crate) enum Error {
     Api(client::Error),
     Input(String),
+    Submit(client::Error),
+    UnconfirmedRun(Box<RunResponse>),
+    Observe { run_id: String, error: Box<Error> },
     Output(serde_json::Error),
     Io(io::Error),
 }
@@ -41,6 +46,10 @@ struct ErrorReport<'a> {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     problem: Option<&'a ProblemDetails>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<&'a RunResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<&'a str>,
 }
 
 impl ErrorReport<'_> {
@@ -49,6 +58,8 @@ impl ErrorReport<'_> {
             kind,
             message: message.into(),
             problem: None,
+            run: None,
+            run_id: None,
         }
     }
 }
@@ -56,7 +67,8 @@ impl ErrorReport<'_> {
 impl Error {
     fn describe(&self) -> (Status, ErrorReport<'_>) {
         match self {
-            Self::Api(client::Error::ServerNotRunning { base_url, .. }) => (
+            Self::Api(client::Error::ServerNotRunning { base_url, .. })
+            | Self::Submit(client::Error::ServerNotRunning { base_url, .. }) => (
                 Status::ServerNotRunning,
                 ErrorReport::new("server_not_running", format!(
                     "Cannot connect to the GenAImage server at {base_url}. Start it with `genaimage serve`. If it uses a different address, set --server or GENAIMAGE_SERVER."
@@ -68,12 +80,60 @@ impl Error {
                     kind: "server_problem",
                     message: format!("{}: {} {}", problem.title, problem.detail, problem.recovery),
                     problem: Some(problem),
+                    run: None,
+                    run_id: None,
                 },
             ),
-            Self::Api(error) => (
+            Self::Submit(client::Error::UnknownSubmission(run)) | Self::UnconfirmedRun(run) => (
+                Status::UnknownSubmission,
+                ErrorReport {
+                    run: Some(run),
+                    ..ErrorReport::new("unknown_submission", format!(
+                        "Submission of run '{}' is unconfirmed. Use `genaimage jobs reconcile {}` before considering another submission.", run.id, run.id
+                    ))
+                },
+            ),
+            Self::Submit(client::Error::FailedSubmission(run)) => (
+                Status::UnsuccessfulRun,
+                ErrorReport {
+                    run: Some(run),
+                    ..ErrorReport::new("failed_submission", format!(
+                        "Submission of run '{}' failed: {}. Inspect it with `genaimage jobs show {}` or use `genaimage jobs reconcile {}` to check backend state.",
+                        run.id, run.error.as_deref().unwrap_or("no failure detail supplied"), run.id, run.id
+                    ))
+                },
+            ),
+            Self::Submit(error) if uncertain_response(error) => (
+                Status::UnknownSubmission,
+                ErrorReport {
+                    problem: match error {
+                        client::Error::Problem(problem) => Some(problem),
+                        _ => None,
+                    },
+                    ..ErrorReport::new("unknown_submission", format!(
+                        "No conclusive submission response: {error} Check `genaimage jobs list` and use `genaimage jobs reconcile` before considering another submission."
+                    ))
+                },
+            ),
+            Self::Submit(client::Error::Problem(problem)) => (
+                Status::ServerProblem,
+                ErrorReport {
+                    problem: Some(problem),
+                    ..ErrorReport::new("server_problem", format!(
+                        "{}: {} {} If a run was recorded, check `genaimage jobs list` and use `genaimage jobs reconcile`.", problem.title, problem.detail, problem.recovery
+                    ))
+                },
+            ),
+            Self::Api(error) | Self::Submit(error) => (
                 Status::ClientFailure,
                 ErrorReport::new("client_error", error.to_string()),
             ),
+            Self::Observe { run_id, error } => {
+                let (status, mut report) = error.describe();
+                report.run_id = Some(run_id);
+                report.message.push_str(&format!(" Could not confirm the state of run '{run_id}'. Use `genaimage jobs show {run_id}` or `genaimage jobs reconcile {run_id}`."));
+                (status, report)
+            }
             Self::Input(message) => (Status::LocalFailure, ErrorReport::new("input_error", message)),
             Self::Output(error) => (
                 Status::LocalFailure,
@@ -84,6 +144,14 @@ impl Error {
                 ErrorReport::new("output_error", error.to_string()),
             ),
         }
+    }
+}
+
+fn uncertain_response(error: &client::Error) -> bool {
+    match error {
+        client::Error::Http(_) | client::Error::HttpStatus { .. } => true,
+        client::Error::Problem(problem) => problem.status >= 500 || problem.status == 408,
+        _ => false,
     }
 }
 
@@ -108,6 +176,12 @@ impl Output {
             writeln!(stdout, "{rendered}").map_err(Error::Io)
         } else {
             human(&mut stdout).map_err(Error::Io)
+        }
+    }
+
+    pub(crate) fn progress(self, message: impl std::fmt::Display) {
+        if !self.json {
+            let _ = writeln!(io::stderr().lock(), "{message}");
         }
     }
 

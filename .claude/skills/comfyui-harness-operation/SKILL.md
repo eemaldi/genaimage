@@ -6,9 +6,8 @@ description: Operate the local GenAImage CLI safely with explicit workflow bindi
 # ComfyUI harness operation
 
 Use this skill to operate GenAImage through its current CLI, which calls the
-loopback server for health, workflow, preset and settings commands. `run`
-and `jobs` still call the shared Rust core directly. ComfyUI is a separate,
-already running process; the harness does not install or replace ComfyUI,
+loopback server for health, workflow, preset, settings, run and job commands.
+ComfyUI is a separate, already running process; the harness does not install or replace ComfyUI,
 models, weights or custom nodes.
 Current ComfyUI profiles accept loopback hosts only.
 
@@ -33,7 +32,8 @@ Current ComfyUI profiles accept loopback hosts only.
    Create example configuration with `genaimage config init`; do not use
    `--force` to replace existing configuration without the user's direction.
 3. Check required typed parameters, defaults, presets, local image inputs and
-   node/input bindings. The CLI's `--set NAME=JSON` overrides the preset; values
+   node/input bindings. Use `run --image NAME=PATH` for an explicitly selected
+   local image. The CLI's `--set NAME=JSON` overrides the preset; values
    parse as JSON first and otherwise become strings. Confirm the selected
    workflow, preset and all effective choices with the user, including defaults
    and values in the source workflow. Inspection is not a resolved-run preview;

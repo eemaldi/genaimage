@@ -363,55 +363,6 @@ async fn refused_connections_have_an_actionable_error_and_distinct_exit_code() {
 }
 
 #[test]
-fn run_by_id_refuses_to_choose_between_valid_and_legacy_sidecars() {
-    let temp = TempDir::new().expect("temp");
-    let workflows = temp.path().join("workflows/comfyui");
-    write(
-        &workflows.join("api.json"),
-        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
-    );
-    write(
-        &workflows.join("valid.genaimage.json"),
-        r#"{"schema_version":2,"id":"shared","version":"1.0.0","workflow":"api.json"}"#,
-    );
-    write(
-        &workflows.join("legacy.genaimage.json"),
-        r#"{"schema_version":1,"id":"shared","version":"1.0.0","workflow":"api.json","required_gates":["gate3"]}"#,
-    );
-    let run_cli = |args: &[&str]| {
-        cli()
-            .current_dir(temp.path())
-            .env("XDG_DATA_HOME", temp.path().join("data"))
-            .env("XDG_CONFIG_HOME", temp.path().join("config"))
-            .arg("--workspace")
-            .arg(temp.path())
-            .arg("--json")
-            .args(args)
-            .output()
-            .expect("run CLI")
-    };
-    for valid_name in ["valid.genaimage.json", "shared.genaimage.json"] {
-        let rejected = run_cli(&["run", "shared"]);
-        assert!(!rejected.status.success());
-        let error: Value = serde_json::from_slice(&rejected.stderr).expect("error JSON");
-        let message = error["error"].as_str().expect("error message");
-        assert!(message.contains("workflow id 'shared'"), "{message}");
-        assert!(message.contains("legacy.genaimage.json"), "{message}");
-        assert!(
-            message.contains("select an explicit manifest path"),
-            "{message}"
-        );
-        if valid_name == "valid.genaimage.json" {
-            fs::rename(
-                workflows.join(valid_name),
-                workflows.join("shared.genaimage.json"),
-            )
-            .expect("move valid sidecar to the conventional filename");
-        }
-    }
-}
-
-#[test]
 fn legacy_keys_are_rejected_with_migration_guidance() {
     let temp = TempDir::new().expect("temp");
     write(
@@ -422,7 +373,7 @@ fn legacy_keys_are_rejected_with_migration_guidance() {
         .current_dir(temp.path())
         .env("XDG_DATA_HOME", temp.path().join("data"))
         .env("XDG_CONFIG_HOME", temp.path().join("config"))
-        .args(["--json", "jobs", "list"])
+        .args(["--json", "serve"])
         .output()
         .expect("run CLI");
     assert!(!output.status.success());
@@ -431,221 +382,282 @@ fn legacy_keys_are_rejected_with_migration_guidance() {
     assert!(message.contains("characters") && message.contains("migrate"));
 }
 
-#[test]
-fn local_jobs_do_not_require_a_backend_or_server_connection() {
-    let temp = TempDir::new().unwrap();
-    write(&temp.path().join("genaimage.toml"), "[comfyui]\nbase_url = 'http://missing.invalid:8188'\nallowed_hosts = ['missing.invalid']\nrequest_timeout_seconds = 1\n");
-    let output = cli()
-        .current_dir(temp.path())
-        .env("XDG_DATA_HOME", temp.path().join("data"))
-        .env("XDG_CONFIG_HOME", temp.path().join("config"))
-        .args(["--json", "jobs", "list"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+#[tokio::test]
+async fn run_uploads_explicit_images_and_jobs_show_persisted_details() {
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    let manifest = server.workflows.join("contract.genaimage.json");
+    let mut body: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    body["parameters"]["reference"] =
+        json!({"node":"12", "input":"image", "kind":"image_upload", "required":true});
+    write(&manifest, &body.to_string());
+    let graph = server.workflows.join("workflow.api.json");
+    let mut body: Value = serde_json::from_slice(&fs::read(&graph).unwrap()).unwrap();
+    body["12"] = json!({"class_type":"LoadImage", "inputs":{"image":""}});
+    write(&graph, &body.to_string());
+    let image = server._workspace.path().join("client-reference.png");
+    let bytes = include_bytes!("../../genaimage-server/tests/fixtures/reference.png");
+    fs::write(&image, bytes).unwrap();
+    let reference = format!("reference={}", image.display());
+    let invalid = server
+        .cli(&[
+            "--json",
+            "run",
+            "contract-workflow",
+            "--preset",
+            "fast",
+            "--image",
+            &reference,
+            "--set",
+            "reference=already-specified",
+        ])
+        .await;
+    assert_eq!(error(invalid, 1)["kind"], "input_error");
+    let run = report(
+        server
+            .cli(&[
+                "--json",
+                "run",
+                "contract-workflow",
+                "--preset",
+                "fast",
+                "--image",
+                &reference,
+                "--set",
+                "seed=99",
+            ])
+            .await,
+        0,
     );
+    let id = run["id"].as_str().unwrap();
+    assert_eq!(run["status"], "queued");
+    assert_eq!(run["parameters"]["seed"], 99);
+    let client = Client::with_base_url(&server.origin).unwrap();
+    let upload_id = run["parameters"]["reference"].as_str().unwrap();
+    assert_eq!(
+        client
+            .upload_metadata(upload_id)
+            .await
+            .unwrap()
+            .original_filename,
+        "client-reference.png"
+    );
+    assert_eq!(
+        server.fake.uploaded_image.lock().unwrap().as_deref(),
+        Some(bytes.as_slice())
+    );
+
+    server.fake.complete.store(true, Ordering::SeqCst);
+    let finished = report(server.cli(&["--json", "jobs", "wait", id]).await, 0);
+    assert_eq!(finished["status"], "completed");
+    assert_eq!(
+        report(
+            server
+                .cli(&["--json", "jobs", "list", "--limit", "1"])
+                .await,
+            0
+        ),
+        json!({"runs":[finished], "next_cursor":null})
+    );
+    let details = report(
+        server
+            .cli(&["--json", "jobs", "show", id, "--events", "1"])
+            .await,
+        0,
+    );
+    assert_eq!(details["run"], finished);
+    assert_eq!(details["events"].as_array().unwrap().len(), 1);
+    assert_eq!(details["outputs"][0]["run_id"], id);
+    assert_eq!(details["next_output_cursor"], Value::Null);
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    server.shutdown().await;
 }
 
-#[test]
-fn run_wait_preserves_json_and_human_progress() {
-    use serde_json::json;
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        process::Stdio,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        },
-        thread,
-        time::Duration,
-    };
+#[tokio::test]
+async fn run_wait_streams_progress_and_polls_after_resync() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
-    let stopping = Arc::new(AtomicBool::new(false));
-    let server = {
-        let stopping = Arc::clone(&stopping);
-        thread::spawn(move || {
-            while !stopping.load(Ordering::SeqCst) {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
-                        continue;
-                    }
-                    Err(error) => panic!("fake server accept: {error}"),
-                };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut bytes = Vec::new();
-                let (header_end, content_length) = loop {
-                    let mut chunk = [0; 4096];
-                    let n = stream.read(&mut chunk).unwrap();
-                    assert_ne!(n, 0);
-                    bytes.extend_from_slice(&chunk[..n]);
-                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                        let header = String::from_utf8_lossy(&bytes[..end]);
-                        let length = header
-                            .lines()
-                            .find_map(|line| {
-                                let (name, value) = line.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().unwrap())
-                            })
-                            .unwrap_or(0);
-                        break (end + 4, length);
-                    }
-                };
-                while bytes.len() < header_end + content_length {
-                    let mut chunk = [0; 4096];
-                    let n = stream.read(&mut chunk).unwrap();
-                    assert_ne!(n, 0);
-                    bytes.extend_from_slice(&chunk[..n]);
-                }
-                let header = String::from_utf8_lossy(&bytes[..header_end]);
-                let path = header
-                    .lines()
-                    .next()
-                    .unwrap()
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap();
-                let (status, body) = if path == "/object_info" {
-                    ("200 OK", json!({"KSampler": {}}))
-                } else if path == "/prompt" {
-                    let request: Value =
-                        serde_json::from_slice(&bytes[header_end..header_end + content_length])
-                            .unwrap();
-                    (
-                        "200 OK",
-                        json!({"prompt_id": request["prompt_id"], "node_errors": {}}),
-                    )
-                } else if path == "/queue" {
-                    ("200 OK", json!({"queue_running": [], "queue_pending": []}))
-                } else if let Some(prompt_id) = path.strip_prefix("/history/") {
-                    (
-                        "200 OK",
-                        json!({prompt_id: {"status": {"status_str": "success", "completed": true}, "outputs": {}}}),
-                    )
-                } else {
-                    ("400 Bad Request", json!({}))
-                };
-                let body = body.to_string();
-                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-            }
-        })
-    };
-    let temp = TempDir::new().unwrap();
-    write(
-        &temp.path().join("genaimage.toml"),
-        &format!("[comfyui]\nbase_url = \"http://{address}\"\n"),
-    );
-    let workflows = temp.path().join("workflows/comfyui");
-    write(
-        &workflows.join("api.json"),
-        r#"{"3":{"class_type":"KSampler","inputs":{"seed":1}}}"#,
-    );
-    write(
-        &workflows.join("test.genaimage.json"),
-        r#"{"schema_version":2,"id":"test","version":"1.0.0","workflow":"api.json"}"#,
-    );
-
-    let test_cli = || {
-        let mut command = cli();
-        command
-            .current_dir(temp.path())
-            .env("XDG_DATA_HOME", temp.path().join("data"))
-            .env("XDG_CONFIG_HOME", temp.path().join("config"))
-            .arg("--config")
-            .arg(temp.path().join("genaimage.toml"));
-        command
-    };
-    for json_mode in [true, false] {
-        let mut command = test_cli();
-        command.arg("--workspace").arg(temp.path());
-        if json_mode {
-            command.arg("--json");
-        }
-        let output = command.args(["run", "test", "--wait"]).output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let records: Vec<Value> = serde_json::Deserializer::from_slice(&output.stdout)
-            .into_iter::<Value>()
-            .map(|value| value.unwrap())
-            .collect();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0]["status"], "queued");
-        assert_eq!(records[1]["status"], "completed");
-        assert_eq!(records[0]["id"], records[1]["id"]);
-        if json_mode {
-            assert!(output.stderr.is_empty());
-            assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 2);
-        } else {
-            let progress = String::from_utf8_lossy(&output.stderr);
-            let terminal = format!("{}: completed\n", records[0]["id"].as_str().unwrap());
-            assert_eq!(progress.matches(&terminal).count(), 1, "{progress}");
-            assert!(progress.ends_with(&terminal), "{progress}");
-        }
-    }
-    // Reconcile from a separate CLI process before the waiter's first poll.
-    let mut waiter = test_cli()
-        .arg("--workspace")
-        .arg(temp.path())
-        .args(["run", "test", "--wait"])
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    let mut child = tokio::process::Command::from(cli())
+        .args([
+            "--server",
+            &server.origin,
+            "run",
+            "contract-workflow",
+            "--preset",
+            "fast",
+            "--wait",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .unwrap();
-    let mut stdout = BufReader::new(waiter.stdout.take().unwrap());
-    let mut queued_json = String::new();
-    loop {
-        let mut line = String::new();
-        assert_ne!(stdout.read_line(&mut line).unwrap(), 0);
-        queued_json.push_str(&line);
-        if line == "}\n" {
-            break;
-        }
-    }
-    let queued: Value = serde_json::from_str(&queued_json).unwrap();
-    assert_eq!(queued["status"], "queued");
-    let run_id = queued["id"].as_str().unwrap();
-    let other = test_cli()
-        .arg("--workspace")
-        .arg(temp.path())
-        .arg("--json")
-        .args(["jobs", "reconcile", run_id])
-        .output()
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    server
+        .fake
+        .wait_for_progress_listener(Duration::from_secs(5))
+        .await
         .unwrap();
-    assert!(
-        other.status.success(),
-        "{}",
-        String::from_utf8_lossy(&other.stderr)
+    let prompt = server.fake.prompt_id.lock().unwrap().clone().unwrap();
+    let progress = json!({"type":"progress", "data":{"prompt_id":prompt, "value":2, "max":10}});
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                _ = tick.tick() => { let _ = server.fake.progress.send(progress.clone()); }
+                line = lines.next_line() => if line.unwrap().expect("progress line").contains("progress 2/10") { break; }
+            }
+        }
+    }).await.expect("SSE progress on stderr");
+    server.state.harness().events().invalidate();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("fallback line")
+            .contains("live updates interrupted")
+        {}
+    })
+    .await
+    .expect("resync triggers status polling");
+    server.fake.complete.store(true, Ordering::SeqCst);
+    let saved = tokio::time::timeout(Duration::from_secs(7), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(saved.status.success());
+    assert!(String::from_utf8_lossy(&saved.stdout).contains("contract-workflow  completed"));
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_wait_json_reports_terminal_success_or_failure_once() {
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    for succeeds in [true, false] {
+        server.fake.complete.store(false, Ordering::SeqCst);
+        let calls = server.fake.prompt_calls.load(Ordering::SeqCst);
+        let run = server.cli(&[
+            "run",
+            "contract-workflow",
+            "--preset",
+            "fast",
+            "--wait",
+            "--json",
+        ]);
+        let finish =
+            async {
+                let prompt = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if server.fake.prompt_calls.load(Ordering::SeqCst) > calls {
+                            if let Some(id) = server.fake.prompt_id.lock().unwrap().clone() {
+                                break id;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                if succeeds {
+                    server.fake.complete.store(true, Ordering::SeqCst);
+                } else {
+                    server.fake.history_overrides.lock().unwrap().insert(prompt.clone(), json!({
+                    prompt: {"status":{"status_str":"error", "completed":false, "messages":[]}}
+                }));
+                }
+            };
+        let (output, ()) = tokio::join!(run, finish);
+        let result = report(output, if succeeds { 0 } else { 7 });
+        assert_eq!(
+            result["status"],
+            if succeeds { "completed" } else { "failed" }
+        );
+        let client = Client::with_base_url(&server.origin).unwrap();
+        assert_eq!(
+            result,
+            serde_json::to_value(client.run(result["id"].as_str().unwrap()).await.unwrap())
+                .unwrap()
+        );
+        assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), calls + 1);
+        *server.fake.prompt_id.lock().unwrap() = None;
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn ambiguous_submission_is_not_replayed_and_jobs_can_reconcile_and_cancel() {
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    server
+        .fake
+        .fail_submit_response
+        .store(true, Ordering::SeqCst);
+    let uncertain = error(
+        server
+            .cli(&[
+                "--json",
+                "run",
+                "contract-workflow",
+                "--preset",
+                "fast",
+                "--wait",
+            ])
+            .await,
+        8,
     );
-    let reconciliation: Value = serde_json::from_slice(&other.stdout).unwrap();
-    assert_eq!(reconciliation["run"]["status"], "completed");
-    let result = waiter.wait_with_output().unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
+    assert_eq!(uncertain["kind"], "unknown_submission");
+    assert_eq!(uncertain["run"]["status"], "unknown_submission");
+    let id = uncertain["run"]["id"].as_str().unwrap();
+    assert!(uncertain["message"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("jobs reconcile {id}")));
+    assert_eq!(
+        report(server.cli(&["--json", "jobs", "reconcile", id]).await, 0)["status"],
+        "queued"
     );
-    let mut final_json = String::new();
-    stdout.read_to_string(&mut final_json).unwrap();
-    let completed: Value = serde_json::from_str(&final_json).unwrap();
-    assert_eq!(completed["status"], "completed");
-    let progress = String::from_utf8_lossy(&result.stderr);
-    let terminal = format!("{run_id}: completed\n");
-    assert_eq!(progress.matches(&terminal).count(), 1, "{progress}");
-    assert!(progress.ends_with(&terminal), "{progress}");
-    stopping.store(true, Ordering::SeqCst);
-    server.join().unwrap();
+    let bulk = report(server.cli(&["--json", "jobs", "reconcile"]).await, 0);
+    assert_eq!(bulk["runs"][0]["id"], id);
+    server.fake.running.store(true, Ordering::SeqCst);
+    let cancelled = report(server.cli(&["--json", "jobs", "cancel", id]).await, 0);
+    assert!(matches!(
+        cancelled["status"].as_str(),
+        Some("cancelling" | "cancelled")
+    ));
+    let cancelled = report(server.cli(&["--json", "jobs", "reconcile", id]).await, 0);
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(
+        report(server.cli(&["--json", "jobs", "wait", id]).await, 7)["status"],
+        "cancelled"
+    );
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_submission_reports_a_durable_run_without_waiting() {
+    let server = Server::start().await;
+    install_contract_workflow(&server.workflows);
+    let runs = server.state.harness().config().runs.clone();
+    write(&runs.join("contract-workflow"), "not a directory");
+    let failure = error(
+        server
+            .cli(&["--json", "run", "contract-workflow", "--preset", "fast"])
+            .await,
+        7,
+    );
+    assert_eq!(failure["kind"], "failed_submission");
+    assert_eq!(failure["run"]["status"], "failed");
+    assert!(failure["message"]
+        .as_str()
+        .unwrap()
+        .contains("jobs reconcile"));
+    assert_eq!(server.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    server.shutdown().await;
 }

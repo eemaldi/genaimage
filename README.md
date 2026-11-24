@@ -5,7 +5,7 @@ image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
 and the [architecture](docs/architecture.md). The loopback server offers a health
 endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
-The portal and LLM assistance are planned; the CLI migration is in progress.
+The portal and LLM assistance are planned.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.
@@ -17,8 +17,8 @@ or replace ComfyUI, models, weights, or custom nodes.
 
 `genaimage` is the Rust command-line application for scripts and reproducible
 operation. `genaimage serve` starts the local HTTP server. Health, workflow,
-preset and settings commands use that server; `run` and `jobs` still use the
-shared core directly. See the [CLI reference](docs/cli.md).
+preset, settings, run and job commands use that server. See the
+[CLI reference](docs/cli.md) for server selection, image uploads and JSON.
 
 ## Current scope
 

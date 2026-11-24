@@ -13,6 +13,8 @@ pub(crate) enum Command<'a> {
     Workflow(&'a WorkflowCommand),
     Presets(&'a str),
     ConfigShow,
+    Run(&'a crate::RunCommand),
+    Jobs(&'a crate::JobsCommand),
 }
 
 impl<'a> Command<'a> {
@@ -24,12 +26,16 @@ impl<'a> Command<'a> {
             crate::Command::Config {
                 command: ConfigCommand::Show,
             } => Some(Self::ConfigShow),
+            crate::Command::Run(command) => Some(Self::Run(command)),
+            crate::Command::Jobs { command } => Some(Self::Jobs(command)),
             _ => None,
         }
     }
 
     pub(crate) async fn execute(self, client: &Client, output: Output) -> Result<Status, Error> {
         match self {
+            Self::Run(command) => return crate::run_commands::run(client, output, command).await,
+            Self::Jobs(command) => return crate::run_commands::jobs(client, output, command).await,
             Self::Doctor => {
                 let health = client.health().await?;
                 output.write(&health, |out| {
