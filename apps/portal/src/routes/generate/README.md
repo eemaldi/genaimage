@@ -2,7 +2,7 @@
 
 `#/generate?workflow=<id>` opens a manifest-driven form. With no workflow
 selected, the page offers a picker. A preset applies only the keys it supplies;
-it does not replace other edits. The review is local and does not submit a run.
+it does not replace other edits. Review validates with the server but does not submit a run.
 
 The form separates editable values from the reviewed parameter snapshot.
 Fields distinguish absent values from empty text, zero and false, retain raw
@@ -15,5 +15,4 @@ matching. Steps and suggested options are control hints, not binding rules.
 
 Reference images are previewed from the selected local file after upload. The
 server returns metadata but does not serve stored image bytes, so a reference
-supplied by a manifest or preset can show its ID but not its preview. Server
-binding validation, run submission and shareable form state are not wired yet.
+supplied by a manifest or preset can show its ID but not its preview. See the [portal share link contract](../../../../../docs/architecture.md#generate-share-links-and-remix) for restoration and Remix.

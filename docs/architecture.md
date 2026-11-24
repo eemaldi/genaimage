@@ -691,6 +691,39 @@ supplies the original token. Values that cannot be read exactly are shown
 separately from identical fields and differences. Dialogs leave focus traversal
 inside native audio and video controls to the browser.
 
+### Generate share links and Remix
+
+`#/generate?workflow=<id>` opens an empty editor with manifest defaults.
+Versioned share links add `v=1`, `wv` (workflow version), optional `preset`
+and `modified=1`, and `p` (URL-encoded JSON). The `p` value is an array of
+`[name, source, value, seedMode?, chosenSeed?]` tuples. Sources are `d`
+(default), `p` (preset) and `u` (user). Ordinary scalars are JSON values;
+`null` means unset, `["int","<decimal>"]` holds a large integer,
+`["float","<number>"]` holds a whole-valued float and `["draft","<text>"]`
+retains invalid editor text. Seed modes are `l` (locked) and `r` (randomise).
+A randomised field can include its concrete reviewed seed as `chosenSeed`;
+it is visible and reused at the next explicit review unless the user requests
+another seed. Upload values are `sha256:<digest>` strings, not file contents.
+Unchanged defaults are omitted except when needed to describe a random seed.
+Preset-sourced values are explicit: restoration never applies the current
+preset behind the scenes. Review is blocked on unresolved values, and a
+workflow version change is shown as a notice. A share link never submits a run.
+The fragment contains clear-text parameter data: share only with intended
+recipients. Upload references only work where those uploads are stored.
+
+`apps/portal/src/routes/generate/share.ts` exports `encodeFormState(state)`
+and `buildGenerateUrl(run)`; both return the full route hash, not an origin.
+Remix should pass `await api.getRecordedRun(id, { exactBindings: true })`
+to `buildGenerateUrl` to keep exact numeric values. A run response does not identify source provenance, so
+Remix imports recorded parameters as user values and locks recorded seeds.
+The editor restores and validates them against the current manifest.
+
+On review, the server validates the concrete parameter snapshot. Submit sends
+those parameters explicitly, not a preset for the server to expand, and uses
+one idempotency key for the lifetime of that snapshot. An uncertain request
+can be retried explicitly with the same key; it is never retried automatically.
+Live output cards require both completed run status and indexed outputs.
+
 ### Accessibility checks
 
 Use a desktop-width route and a narrow screen with both menu states as review

@@ -333,12 +333,15 @@ export function createApiClient(
       json('get', '/api/v1/runs', { ...options, query }),
     getRun: (id: string, options?: RequestOptions) =>
       json('get', '/api/v1/runs/{id}', { ...options, path: { id } }),
-    getRecordedRun: (id: string, options?: RequestOptions) =>
+    getRecordedRun: (
+      id: string,
+      options?: RequestOptions & { exactBindings?: boolean },
+    ) =>
       json(
         'get',
         '/api/v1/runs/{id}',
         { ...options, path: { id } },
-        readExactIntegers,
+        (response) => readExactIntegers(response, options?.exactBindings),
       ),
     createRun: (
       body: SubmitRunRequest,

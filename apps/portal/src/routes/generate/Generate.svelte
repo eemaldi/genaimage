@@ -50,7 +50,7 @@
   <p role="status">Loading {id ? 'workflow' : 'workflows'}…</p>
 {:then result}
   {#if 'workflow' in result}
-    {#key result.workflow}<Form workflow={result.workflow} />{/key}
+    {#key query.toString()}<Form workflow={result.workflow} {query} />{/key}
   {:else}
     {#if result.catalogue.workflows.length}
       <form
