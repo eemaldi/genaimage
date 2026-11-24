@@ -2,6 +2,7 @@ mod common;
 
 use std::time::Duration;
 
+use base64::Engine as _;
 use common::ApiHarness;
 use futures_util::StreamExt;
 use genaimage_api::{
@@ -17,12 +18,19 @@ use serde_json::json;
 use tokio::time::{sleep, timeout};
 
 async fn configured(script: FakeLlmScript) -> (ApiHarness, FakeLlmServer) {
+    configured_with_vision(script, false).await
+}
+
+async fn configured_with_vision(
+    script: FakeLlmScript,
+    supports_vision: bool,
+) -> (ApiHarness, FakeLlmServer) {
     let script = script.with_models_response(json!({
         "object": "list",
         "data": [{
             "id": "assistant",
             "supports_tools": true,
-            "supports_vision": false
+            "supports_vision": supports_vision
         }]
     }));
     let llm = FakeLlmServer::start(script).await;
@@ -124,7 +132,10 @@ async fn streams_text_tool_proposals_and_persisted_terminal_over_sse() {
     };
     assert_eq!(terminal.status, AssistantMessageStatus::Complete);
     assert_eq!(terminal.model, "assistant");
-    assert!(!terminal.message_id.is_empty());
+    assert!(terminal
+        .message_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert!(stream.next().await.is_none());
 
     let detail = client
@@ -136,7 +147,7 @@ async fn streams_text_tool_proposals_and_persisted_terminal_over_sse() {
         .unwrap();
     assert_eq!(detail.messages.len(), 2);
     assert_eq!(detail.messages[0].role, AssistantMessageRole::User);
-    assert_eq!(detail.messages[1].id, terminal.message_id);
+    assert_eq!(detail.messages[1].id, terminal.message_id.unwrap());
     assert_eq!(detail.messages[1].status, AssistantMessageStatus::Complete);
     assert_eq!(detail.messages[1].model.as_deref(), Some("assistant"));
     assert_eq!(llm.chat_request_count(), 1);
@@ -180,7 +191,10 @@ async fn cancel_from_another_request_stops_stream_and_persists_partial_text() {
         _ => panic!("expected cancelled error event"),
     };
     assert_eq!(terminal.status, AssistantMessageStatus::Cancelled);
-    assert!(!terminal.message_id.is_empty());
+    assert!(terminal
+        .message_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert!(stream.next().await.is_none());
 
     let detail = client
@@ -190,7 +204,7 @@ async fn cancel_from_another_request_stops_stream_and_persists_partial_text() {
         )
         .await
         .unwrap();
-    assert_eq!(detail.messages[1].id, terminal.message_id);
+    assert_eq!(detail.messages[1].id, terminal.message_id.unwrap());
     assert!(matches!(
         &detail.messages[1].content,
         genaimage_api::AssistantChatMessage::Assistant { text, .. } if text == "partial"
@@ -208,10 +222,10 @@ async fn the_role_request_check_rejects_unsupported_images_before_provider_call(
         .send_assistant_message(
             &conversation.id,
             &SendAssistantMessageRequest {
-                content: vec![AssistantChatContent::Image {
-                    media_type: "image/png".into(),
-                    bytes: vec![1, 2, 3],
-                }],
+                content: vec![AssistantChatContent::image(
+                    "image/png",
+                    b"\x89PNG\r\n\x1a\nfixture",
+                )],
             },
         )
         .await
@@ -280,6 +294,222 @@ async fn not_configured_and_unknown_conversation_are_distinct_problems() {
         .await
         .unwrap_err();
     assert_problem(error, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn conversation_reads_cancel_and_delete_do_not_probe_the_llm() {
+    let api = ApiHarness::start().await;
+    let conversation = api
+        .core
+        .conversation_store()
+        .create(NewAssistantConversation {
+            title: "Persisted while offline".into(),
+            model: "unavailable-model".into(),
+            system_prompt_template: "system".into(),
+            system_prompt_sha256: "snapshot".into(),
+            system_prompt: "Explicit system prompt".into(),
+        })
+        .await
+        .unwrap();
+    let client = client(&api);
+
+    let page = client
+        .assistant_conversations(&AssistantConversationListQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(page.conversations[0].id, conversation.id);
+    let detail = client
+        .assistant_conversation(
+            &conversation.id,
+            &AssistantConversationDetailQuery::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.model, "unavailable-model");
+
+    let error = client
+        .cancel_assistant_conversation(&conversation.id)
+        .await
+        .unwrap_err();
+    assert_problem(error, StatusCode::CONFLICT);
+    client
+        .delete_assistant_conversation(&conversation.id)
+        .await
+        .unwrap();
+    let error = client
+        .assistant_conversation(
+            &conversation.id,
+            &AssistantConversationDetailQuery::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_problem(error, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn streaming_provider_errors_are_safe_terminal_error_events() {
+    let (api, _llm) =
+        configured(FakeLlmScript::default().with_chat_error(500, "secret-provider-diagnostic"))
+            .await;
+    let client = client(&api);
+    let conversation = create(&client, "Provider error").await;
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &text_request("fail"))
+        .await
+        .unwrap();
+    next_started(&mut stream).await;
+    let terminal = match stream.next().await.unwrap().unwrap() {
+        AssistantStreamEvent::Error(event) => event,
+        _ => panic!("expected error event"),
+    };
+    assert_eq!(terminal.status, AssistantMessageStatus::Failed);
+    assert!(terminal.message_id.is_some());
+    assert_eq!(
+        terminal.error.as_deref(),
+        Some("The assistant response failed.")
+    );
+    assert!(!format!("{terminal:?}").contains("secret-provider-diagnostic"));
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn terminal_persistence_failure_emits_an_error_without_a_message_id() {
+    let (api, _llm) = configured(FakeLlmScript::default().with_events([
+        FakeLlmEvent::text("partial"),
+        FakeLlmEvent::Delay(Duration::from_millis(500)),
+        FakeLlmEvent::finish("stop"),
+        FakeLlmEvent::Done,
+    ]))
+    .await;
+    let client = client(&api);
+    let conversation = create(&client, "Persistence error").await;
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &text_request("persist this"))
+        .await
+        .unwrap();
+    next_started(&mut stream).await;
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::Delta(event) if event.text == "partial"
+    ));
+    let database = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    database
+        .execute_batch("DROP TABLE assistant_messages;")
+        .unwrap();
+    let terminal = match timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    {
+        AssistantStreamEvent::Error(event) => event,
+        _ => panic!("expected error event"),
+    };
+    assert_eq!(terminal.status, AssistantMessageStatus::Failed);
+    assert!(terminal.message_id.is_none());
+    assert_eq!(
+        terminal.error.as_deref(),
+        Some("The assistant response could not be persisted.")
+    );
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn base64_images_are_decoded_for_llm_and_encoded_in_conversation_history() {
+    let image = b"\x89PNG\r\n\x1a\nfixture-image";
+    let (api, llm) = configured_with_vision(FakeLlmScript::text_chunks(["noted"]), true).await;
+    let client = client(&api);
+    let conversation = create(&client, "Image").await;
+    let mut stream = client
+        .send_assistant_message(
+            &conversation.id,
+            &SendAssistantMessageRequest {
+                content: vec![AssistantChatContent::image("image/png", image)],
+            },
+        )
+        .await
+        .unwrap();
+    next_started(&mut stream).await;
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::Delta(event) if event.text == "noted"
+    ));
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::Done(_)
+    ));
+
+    let detail = client
+        .assistant_conversation(
+            &conversation.id,
+            &AssistantConversationDetailQuery::default(),
+        )
+        .await
+        .unwrap();
+    let data = match &detail.messages[0].content {
+        genaimage_api::AssistantChatMessage::User(parts) => match &parts[0] {
+            AssistantChatContent::Image { media_type, data } => {
+                assert_eq!(media_type, "image/png");
+                data.clone()
+            }
+            _ => panic!("expected base64 image"),
+        },
+        _ => panic!("expected user message"),
+    };
+    assert_eq!(
+        data,
+        base64::engine::general_purpose::STANDARD.encode(image)
+    );
+    assert_eq!(
+        llm.recorded_requests()[0]["messages"][1]["content"][0]["image_url"]["url"],
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(image)
+        )
+    );
+}
+
+#[tokio::test]
+async fn assistant_images_reject_invalid_types_and_oversized_decoded_bytes() {
+    let (api, _llm) = configured_with_vision(FakeLlmScript::default(), true).await;
+    let client = client(&api);
+    let conversation = create(&client, "Image validation").await;
+
+    let invalid = client
+        .send_assistant_message(
+            &conversation.id,
+            &SendAssistantMessageRequest {
+                content: vec![AssistantChatContent::Image {
+                    media_type: "image/png".into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(b"not an image"),
+                }],
+            },
+        )
+        .await;
+    let invalid = match invalid {
+        Ok(_) => panic!("invalid image unexpectedly opened a stream"),
+        Err(error) => error,
+    };
+    assert_problem(invalid, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let mut oversized = vec![0; 20 * 1024 * 1024 + 1];
+    oversized[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    let oversized = client
+        .send_assistant_message(
+            &conversation.id,
+            &SendAssistantMessageRequest {
+                content: vec![AssistantChatContent::Image {
+                    media_type: "image/png".into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(oversized),
+                }],
+            },
+        )
+        .await;
+    let oversized = match oversized {
+        Ok(_) => panic!("oversized image unexpectedly opened a stream"),
+        Err(error) => error,
+    };
+    assert_problem(oversized, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]

@@ -25,6 +25,9 @@ use genaimage_core::{
 use crate::{AppState, Problem};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const MAX_ASSISTANT_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_ASSISTANT_IMAGE_BASE64_BYTES: usize = 4 * MAX_ASSISTANT_IMAGE_BYTES.div_ceil(3);
+pub(crate) const ASSISTANT_MESSAGE_BODY_LIMIT: usize = MAX_ASSISTANT_IMAGE_BASE64_BYTES + 64 * 1024;
 
 #[utoipa::path(
     post, path = "/assistant/conversations",
@@ -82,15 +85,13 @@ pub(super) async fn create(
         (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 503, description = "Text role unavailable", body = api::ProblemDetails, content_type = "application/problem+json")
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
     )
 )]
 pub(super) async fn list(
     State(state): State<AppState>,
     query: Result<Query<api::AssistantConversationListQuery>, QueryRejection>,
 ) -> Result<Json<api::AssistantConversationListResponse>, Problem> {
-    let _binding = text_binding(&state).await?;
     let query = parse_query(query)?;
     let page = state
         .conversation_service()
@@ -124,8 +125,7 @@ pub(super) async fn list(
         (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 503, description = "Text role unavailable", body = api::ProblemDetails, content_type = "application/problem+json")
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
     )
 )]
 pub(super) async fn get(
@@ -133,7 +133,6 @@ pub(super) async fn get(
     id: Result<Path<String>, PathRejection>,
     query: Result<Query<api::AssistantConversationDetailQuery>, QueryRejection>,
 ) -> Result<Json<api::AssistantConversationDetailResponse>, Problem> {
-    let _binding = text_binding(&state).await?;
     let id = parse_id(id)?;
     let query = parse_query(query)?;
     let detail = state
@@ -148,7 +147,7 @@ pub(super) async fn get(
     post, path = "/assistant/conversations/{id}/messages",
     operation_id = "assistant_conversations_send_message",
     tag = "assistant",
-    description = "Append a user message and stream the assistant turn over SSE. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains the persisted assistant message ID and status.",
+    description = "Append a user message and stream the assistant turn over SSE. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains status and the persisted assistant message ID when persistence succeeded; error events may omit message_id.",
     params(("id" = String, Path, description = "Conversation ID")),
     request_body = api::SendAssistantMessageRequest,
     responses(
@@ -185,7 +184,10 @@ pub(super) async fn send_message(
         .conversation_service()
         .send_message_with_binding(
             &id,
-            body.content.into_iter().map(content_from_api).collect(),
+            body.content
+                .into_iter()
+                .map(content_from_api)
+                .collect::<Result<Vec<_>, _>>()?,
             binding,
         )
         .await
@@ -208,15 +210,13 @@ pub(super) async fn send_message(
         (status = 409, description = "No generation in flight", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 503, description = "Text role unavailable", body = api::ProblemDetails, content_type = "application/problem+json")
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
     )
 )]
 pub(super) async fn cancel(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, Problem> {
-    let _binding = text_binding(&state).await?;
     let id = parse_id(id)?;
     state
         .conversation_service()
@@ -241,15 +241,13 @@ pub(super) async fn cancel(
         (status = 409, description = "Conversation conflict", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 503, description = "Text role unavailable", body = api::ProblemDetails, content_type = "application/problem+json")
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
     )
 )]
 pub(super) async fn delete(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, Problem> {
-    let _binding = text_binding(&state).await?;
     let id = parse_id(id)?;
     state
         .conversation_service()
@@ -277,9 +275,12 @@ fn sse_response(
     let initial = api::AssistantMessageStartedEvent {
         conversation_id: conversation_id.clone(),
         user_message_id: user_message_id.clone(),
-        model,
+        model: model.clone(),
     };
-    let stream = stream::once(async move {
+    let shutdown_conversation_id = conversation_id.clone();
+    let shutdown_user_message_id = user_message_id.clone();
+    let shutdown_model = model.clone();
+    let events = stream::once(async move {
         Ok::<_, Infallible>(
             Event::default()
                 .event("message_started")
@@ -290,9 +291,9 @@ fn sse_response(
     .chain(stream::unfold(Some(assistant), move |next| {
         let conversation_id = conversation_id.clone();
         let user_message_id = user_message_id.clone();
+        let model = model.clone();
         async move {
             let mut assistant = next?;
-            loop {
             match assistant.next().await {
                 Some(Ok(ChatDelta::Text(text))) => {
                     let event = Event::default()
@@ -303,7 +304,7 @@ fn sse_response(
                             text,
                         })
                         .expect("serialisable assistant SSE event");
-                    return Some((Ok::<_, Infallible>(event), Some(assistant)));
+                    Some((Ok::<_, Infallible>(event), Some(assistant)))
                 }
                 Some(Ok(ChatDelta::ToolCall(tool_call))) => {
                     let event = Event::default()
@@ -314,15 +315,31 @@ fn sse_response(
                             tool_call: tool_call_response(tool_call),
                         })
                         .expect("serialisable assistant SSE event");
-                    return Some((Ok::<_, Infallible>(event), Some(assistant)));
+                    Some((Ok::<_, Infallible>(event), Some(assistant)))
                 }
-                Some(Err(_)) => continue,
+                Some(Err(_)) => {
+                    tracing::warn!("assistant stream failed");
+                    let terminal = assistant.terminal_message().await.ok();
+                    let event = terminal_or_fallback_error_event(
+                        conversation_id,
+                        user_message_id,
+                        model,
+                        terminal,
+                    );
+                    Some((Ok::<_, Infallible>(event), None))
+                }
                 None => {
                     let terminal = match assistant.terminal_message().await {
                         Ok(terminal) => terminal,
-                        Err(error) => {
-                            tracing::error!(%error, "assistant terminal record was not available");
-                            return None;
+                        Err(_) => {
+                            tracing::error!("assistant terminal record was not available");
+                            let event = terminal_or_fallback_error_event(
+                                conversation_id,
+                                user_message_id,
+                                model,
+                                None,
+                            );
+                            return Some((Ok::<_, Infallible>(event), None));
                         }
                     };
                     let kind = if terminal.status == AssistantMessageStatus::Complete {
@@ -330,24 +347,54 @@ fn sse_response(
                     } else {
                         "error"
                     };
+                    let status = status_response(terminal.status);
+                    let error = (terminal.status != AssistantMessageStatus::Complete)
+                        .then(|| safe_terminal_error(terminal.status).to_owned());
                     let event = Event::default()
                         .event(kind)
                         .json_data(api::AssistantTerminalEvent {
                             conversation_id,
                             user_message_id,
-                            message_id: terminal.id,
-                            model: terminal.model.unwrap_or_default(),
-                            status: status_response(terminal.status),
-                            error: terminal.error,
+                            message_id: Some(terminal.id),
+                            model: terminal.model.unwrap_or(model),
+                            status,
+                            error,
                         })
                         .expect("serialisable assistant SSE event");
-                    return Some((Ok::<_, Infallible>(event), None));
-                }
+                    Some((Ok::<_, Infallible>(event), None))
                 }
             }
         }
-    }))
-    .take_until(async move { state.wait_for_shutdown().await });
+    }));
+    let stream = stream::unfold(
+        (Box::pin(events), Some(state)),
+        move |(mut events, state)| {
+            let conversation_id = shutdown_conversation_id.clone();
+            let user_message_id = shutdown_user_message_id.clone();
+            let model = shutdown_model.clone();
+            async move {
+                let state = state?;
+                tokio::select! {
+                    biased;
+                    item = events.next() => item.map(|event| (event, (events, Some(state)))),
+                    () = state.wait_for_shutdown() => {
+                        let event = Event::default()
+                            .event("error")
+                            .json_data(api::AssistantTerminalEvent {
+                                conversation_id,
+                                user_message_id,
+                                message_id: None,
+                                model,
+                                status: api::AssistantMessageStatus::Failed,
+                                error: Some("The server shut down before the assistant stream completed.".into()),
+                            })
+                            .expect("serialisable assistant SSE event");
+                        Some((Ok::<_, Infallible>(event), (events, None)))
+                    }
+                }
+            }
+        },
+    );
     (
         [
             (header::CACHE_CONTROL.as_str(), "no-cache"),
@@ -360,6 +407,44 @@ fn sse_response(
         ),
     )
         .into_response()
+}
+
+fn terminal_or_fallback_error_event(
+    conversation_id: String,
+    user_message_id: String,
+    model: String,
+    terminal: Option<AssistantMessage>,
+) -> Event {
+    let payload = match terminal {
+        Some(terminal) => api::AssistantTerminalEvent {
+            conversation_id,
+            user_message_id,
+            message_id: Some(terminal.id),
+            model: terminal.model.unwrap_or(model),
+            status: status_response(terminal.status),
+            error: Some(safe_terminal_error(terminal.status).to_owned()),
+        },
+        None => api::AssistantTerminalEvent {
+            conversation_id,
+            user_message_id,
+            message_id: None,
+            model,
+            status: api::AssistantMessageStatus::Failed,
+            error: Some("The assistant response could not be persisted.".into()),
+        },
+    };
+    Event::default()
+        .event("error")
+        .json_data(payload)
+        .expect("serialisable assistant SSE event")
+}
+
+fn safe_terminal_error(status: AssistantMessageStatus) -> &'static str {
+    match status {
+        AssistantMessageStatus::Complete => "The assistant response is complete.",
+        AssistantMessageStatus::Cancelled => "The assistant response was cancelled.",
+        AssistantMessageStatus::Failed => "The assistant response failed.",
+    }
 }
 
 fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem> {
@@ -476,20 +561,63 @@ fn status_response(value: AssistantMessageStatus) -> api::AssistantMessageStatus
     }
 }
 
-fn content_from_api(value: api::AssistantChatContent) -> ChatContent {
+fn content_from_api(value: api::AssistantChatContent) -> Result<ChatContent, Problem> {
     match value {
-        api::AssistantChatContent::Text(text) => ChatContent::Text(text),
-        api::AssistantChatContent::Image { media_type, bytes } => {
-            ChatContent::Image { media_type, bytes }
+        api::AssistantChatContent::Text(text) => Ok(ChatContent::Text(text)),
+        api::AssistantChatContent::Image { media_type, data } => {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+            if data.len() > MAX_ASSISTANT_IMAGE_BASE64_BYTES {
+                return Err(image_too_large());
+            }
+            let bytes = STANDARD
+                .decode(data)
+                .map_err(|_| image_unsupported_type())?;
+            if bytes.len() > MAX_ASSISTANT_IMAGE_BYTES {
+                return Err(image_too_large());
+            }
+            let detected = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                Some("image/png")
+            } else if bytes.starts_with(b"\xff\xd8\xff") {
+                Some("image/jpeg")
+            } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+                Some("image/webp")
+            } else {
+                None
+            };
+            if detected != Some(media_type.as_str()) {
+                return Err(image_unsupported_type());
+            }
+            Ok(ChatContent::Image { media_type, bytes })
         }
     }
+}
+
+fn image_too_large() -> Problem {
+    Problem::new(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "The decoded assistant image exceeds 20 MiB.",
+        "Use one PNG, JPEG or WebP image no larger than 20 MiB.",
+    )
+}
+
+fn image_unsupported_type() -> Problem {
+    Problem::new(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "The assistant image is not valid base64 PNG, JPEG or WebP data.",
+        "Encode one PNG, JPEG or WebP image as standard base64 and set its exact media_type.",
+    )
 }
 
 fn content_to_api(value: ChatContent) -> api::AssistantChatContent {
     match value {
         ChatContent::Text(text) => api::AssistantChatContent::Text(text),
         ChatContent::Image { media_type, bytes } => {
-            api::AssistantChatContent::Image { media_type, bytes }
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            api::AssistantChatContent::Image {
+                media_type,
+                data: STANDARD.encode(bytes),
+            }
         }
     }
 }

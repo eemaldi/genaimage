@@ -68,7 +68,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Append a user message and stream the assistant turn over SSE. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains the persisted assistant message ID and status. */
+        /** @description Append a user message and stream the assistant turn over SSE. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains status and the persisted assistant message ID when persistence succeeded; error events may omit message_id. */
         post: operations["assistant_conversations_send_message"];
         delete?: never;
         options?: never;
@@ -509,7 +509,8 @@ export interface components {
             text: string;
         } | {
             image: {
-                bytes: number[];
+                /** @description Standard base64-encoded image bytes. PNG, JPEG and WebP are accepted, up to 20 MiB decoded. */
+                data: string;
                 media_type: string;
             };
         };
@@ -589,7 +590,8 @@ export interface components {
         AssistantTerminalEvent: {
             conversation_id: string;
             error?: string | null;
-            message_id: string;
+            /** @description Omitted on an `error` event when no assistant message could be persisted. */
+            message_id?: string | null;
             model: string;
             status: components["schemas"]["AssistantMessageStatus"];
             user_message_id: string;
@@ -1161,15 +1163,6 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Text role unavailable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
         };
     };
     assistant_conversations_create: {
@@ -1331,13 +1324,6 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Text role unavailable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
         };
     };
     assistant_conversations_get: {
@@ -1419,15 +1405,6 @@ export interface operations {
             };
             /** @description Problem details */
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Text role unavailable */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1528,15 +1505,6 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Text role unavailable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
         };
     };
     assistant_conversations_get_head: {
@@ -1604,13 +1572,6 @@ export interface operations {
             };
             /** @description Problem details */
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Text role unavailable */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1702,15 +1663,6 @@ export interface operations {
             };
             /** @description Problem details */
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Text role unavailable */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };

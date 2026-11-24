@@ -96,7 +96,11 @@ pub enum AssistantMessageStatus {
 #[serde(rename_all = "snake_case")]
 pub enum AssistantChatContent {
     Text(String),
-    Image { media_type: String, bytes: Vec<u8> },
+    Image {
+        media_type: String,
+        /// Standard base64-encoded image bytes. PNG, JPEG and WebP are accepted, up to 20 MiB decoded.
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -152,9 +156,46 @@ pub struct AssistantToolCallEvent {
 pub struct AssistantTerminalEvent {
     pub conversation_id: String,
     pub user_message_id: String,
-    pub message_id: String,
+    /// Omitted on an `error` event when no assistant message could be persisted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub model: String,
     pub status: AssistantMessageStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl AssistantChatContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(text.into())
+    }
+
+    #[cfg(feature = "client")]
+    pub fn image(media_type: impl Into<String>, bytes: &[u8]) -> Self {
+        use base64::Engine as _;
+
+        Self::Image {
+            media_type: media_type.into(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "client"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_constructor_serializes_standard_base64_without_numeric_bytes() {
+        let content = AssistantChatContent::image("image/png", b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            serde_json::to_value(content).unwrap(),
+            serde_json::json!({
+                "image": {
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo="
+                }
+            })
+        );
+    }
 }

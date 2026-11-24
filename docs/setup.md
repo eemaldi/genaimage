@@ -102,6 +102,10 @@ If the configured text model changes after a conversation was created, new
 turns use the explicit current text model and each assistant message records
 the model used; the conversation's original model remains visible as its
 creation model. The assistant HTTP and SSE contract is in the OpenAPI document.
+Image turns use standard base64 strings for PNG, JPEG or WebP content and are
+limited to 20 MiB of decoded bytes per image. Stored conversation reads return
+the same base64 representation. SSE failure events contain safe summaries and
+may omit `message_id` when terminal persistence did not succeed.
 
 ### Settings API
 

@@ -1,4 +1,4 @@
-mod conversations;
+pub(crate) mod conversations;
 mod events;
 mod health;
 mod outputs;

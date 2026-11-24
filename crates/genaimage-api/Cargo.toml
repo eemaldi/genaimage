@@ -12,6 +12,7 @@ workspace = true
 client = ["dep:bytes", "dep:eventsource-stream", "dep:futures-util", "dep:reqwest", "dep:thiserror", "dep:url"]
 
 [dependencies]
+base64.workspace = true
 bytes = { workspace = true, optional = true }
 eventsource-stream = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
