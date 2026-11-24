@@ -348,9 +348,9 @@ export function createApiClient(
     validateWorkflow: async (
       id: string,
       body: WorkflowValidationRequest,
-      options?: RequestOptions,
+      options?: RequestOptions & { exactNumbers?: boolean },
     ) => {
-      requireExactNumberReads();
+      if (options?.exactNumbers) requireExactNumberReads();
       return json('post', '/api/v1/workflows/{id}/validate', {
         ...options,
         path: { id },

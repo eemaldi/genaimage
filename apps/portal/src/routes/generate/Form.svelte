@@ -372,6 +372,7 @@
     validating = true;
     try {
       const result = await api.validateWorkflow(workflow.id, bindings, {
+        exactNumbers: true,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;

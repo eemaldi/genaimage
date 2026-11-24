@@ -536,7 +536,7 @@ test('submits exactly the reviewed parameters and uses the same key after ambigu
   expect(fake.validateWorkflow).toHaveBeenCalledWith(
     'portrait',
     { parameters: expected, workflow_revision: workflow.revision },
-    expect.any(Object),
+    expect.objectContaining({ exactNumbers: true }),
   );
   expect(
     within(review()).getByText('Version: 1', { exact: false }),
@@ -1158,7 +1158,11 @@ test('blocks review of whole-valued floats if revivers cannot read the original 
     2,
   );
   await expect(
-    client.validateWorkflow('portrait', { parameters: { Scale: 2 } }),
+    client.validateWorkflow(
+      'portrait',
+      { parameters: { Scale: 2 } },
+      { exactNumbers: true },
+    ),
   ).rejects.toThrow('cannot read numbers exactly');
   await expect(
     client.createRun({ workflow: 'portrait', parameters: { Scale: 2 } }, 'key'),
