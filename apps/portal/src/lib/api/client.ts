@@ -148,22 +148,68 @@ export const workflowThumbnailUrl = (id: string) =>
   apiUrl('/api/v1/workflows/{id}/thumbnail', { id });
 
 // Read the original token before JSON number rounding can change a seed.
-async function readRecordedRun(response: Response) {
+async function readExactIntegers(response: Response, bindings = false) {
   return JSON.parse(
     await response.text(),
     (_key, value: unknown, context?: { source?: string }) => {
       if (
+        bindings &&
         typeof value === 'number' &&
         Number.isInteger(value) &&
-        !Number.isSafeInteger(value) &&
         context?.source &&
-        /^-?\d+$/.test(context.source)
+        /[.eE]/.test(context.source)
+      )
+        return new BindingFloat(value);
+      if (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        !Number.isSafeInteger(value)
       ) {
-        return BigInt(context.source);
+        if (context?.source && /^-?\d+$/.test(context.source))
+          return BigInt(context.source);
+        if (bindings && !context?.source)
+          throw new Error(
+            'This browser cannot read large JSON integers exactly.',
+          );
       }
       return value;
     },
   );
+}
+
+// A whole-valued float and an integer are distinct serde_json enum values.
+export class BindingFloat {
+  constructor(readonly value: number) {}
+  toString(): string {
+    const text = String(this.value);
+    return /[.eE]/.test(text) ? text : `${text}.0`;
+  }
+}
+
+async function readWorkflowBindings(response: Response) {
+  const details: components['schemas']['WorkflowDetails'] =
+    await readExactIntegers(response, true);
+  for (const parameter of Object.values(details.parameters)) {
+    for (const key of ['minimum', 'maximum', 'step'] as const) {
+      const value: unknown = parameter[key];
+      if (value instanceof BindingFloat) parameter[key] = value.value;
+      else if (typeof value === 'bigint') parameter[key] = Number(value);
+    }
+  }
+  return details;
+}
+
+export function supportsExactNumberWrites(): boolean {
+  return typeof (JSON as JsonWithRaw).rawJSON === 'function';
+}
+
+type JsonWithRaw = JSON & { rawJSON?: (source: string) => unknown };
+function writeBindingNumber(_key: string, value: unknown): unknown {
+  if (typeof value !== 'bigint' && !(value instanceof BindingFloat))
+    return value;
+  const raw = (JSON as JsonWithRaw).rawJSON;
+  if (!raw) throw new Error('This browser cannot send exact JSON numbers.');
+  return raw(value.toString());
 }
 
 /** Pages share `api`; inject fetch via this factory in tests. No request is retried. */
@@ -235,7 +281,7 @@ export function createApiClient(
       body = form;
     } else if (options.body !== undefined) {
       headers.set('Content-Type', 'application/json');
-      body = JSON.stringify(options.body);
+      body = JSON.stringify(options.body, writeBindingNumber);
     }
     return request(
       apiUrl(path, options.path, options.query),
@@ -263,8 +309,16 @@ export function createApiClient(
       json('get', '/api/v1/health', options),
     listWorkflows: (options: RequestOptions = {}) =>
       json('get', '/api/v1/workflows', options),
-    getWorkflow: (id: string, options?: RequestOptions) =>
-      json('get', '/api/v1/workflows/{id}', { ...options, path: { id } }),
+    getWorkflow: (
+      id: string,
+      options?: RequestOptions & { exactBindings?: boolean },
+    ) =>
+      json(
+        'get',
+        '/api/v1/workflows/{id}',
+        { ...options, path: { id } },
+        options?.exactBindings ? readWorkflowBindings : undefined,
+      ),
     validateWorkflow: (
       id: string,
       body: WorkflowValidationRequest,
@@ -284,7 +338,7 @@ export function createApiClient(
         'get',
         '/api/v1/runs/{id}',
         { ...options, path: { id } },
-        readRecordedRun,
+        readExactIntegers,
       ),
     createRun: (
       body: SubmitRunRequest,
