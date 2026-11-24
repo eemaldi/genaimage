@@ -13,7 +13,8 @@ import type {
   ResyncSignal,
 } from '../../lib/api/events';
 import type { components } from '../../lib/api/schema';
-import { buildGenerateUrl, encodeFormState, restoreFormState } from './share';
+import { encodeFormState, restoreFormState } from './share';
+import { buildGenerateUrl } from '../runs/remix';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import {
@@ -732,6 +733,30 @@ test('Remix locks recorded seeds and flags stale versions and unknown parameters
   });
   expect(within(panel).getByText('a'.repeat(64))).toBeTruthy();
   expect(fake.validateWorkflow.mock.calls[0][1].parameters?.Seed).toBe(seed);
+});
+
+test('the run-detail Remix adapter restores recorded fields without submitting', async () => {
+  const hash = buildGenerateUrl({
+    ...run,
+    parameters: {
+      Seed: seed,
+      Prompt: 'Coast  at\nnight',
+      Strength: new BindingFloat(1),
+      Tiling: true,
+    },
+  });
+  const query = new URLSearchParams(hash.split('?')[1]);
+  const restored = restoreFormState(workflow, query);
+  expect(restored.fields.get('Seed')?.value).toBe(seed);
+  expect(restored.fields.get('Prompt')?.value).toBe('Coast  at\nnight');
+  expect(restored.fields.get('Strength')?.value).toEqual(new BindingFloat(1));
+  mount(query.toString());
+  await screen.findByRole('heading', { name: workflow.title });
+  expect(control('Prompt').value).toBe('Coast  at\nnight');
+  expect(control('Seed').value).toBe(String(seed));
+  expect(control('Strength').value).toBe('1.0');
+  expect(fake.validateWorkflow).not.toHaveBeenCalled();
+  expect(fake.createRun).not.toHaveBeenCalled();
 });
 
 test('preserves rejected known shared values until the user corrects them', async () => {

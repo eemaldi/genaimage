@@ -9,7 +9,13 @@ import {
 import userEvent from '@testing-library/user-event';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { ApiNetworkError, ApiProblemError } from '../../lib/api/client';
+import {
+  ApiNetworkError,
+  ApiProblemError,
+  BindingFloat,
+} from '../../lib/api/client';
+import { restoreFormState } from '../generate/share';
+import type { Workflow } from '../generate/model';
 import type { EventEnvelope, ResyncSignal } from '../../lib/api/events';
 import { mockNativeDialog } from '../../test/dialog';
 import type { Run } from '../jobs/run-model';
@@ -249,7 +255,7 @@ test('confirms a new run without mutating its source', async () => {
   );
 });
 
-test('hides Remix after a provenance mismatch', async () => {
+test('offers Remix after a provenance mismatch', async () => {
   fake.client.rerunRun.mockRejectedValue(
     new ApiProblemError({
       type: 'urn:genaimage:problem:rerun-mismatch',
@@ -264,8 +270,11 @@ test('hides Remix after a provenance mismatch', async () => {
   await user.click(screen.getByRole('button', { name: 'Re-run' }));
   await user.click(screen.getByRole('button', { name: 'Confirm re-run' }));
   expect(await screen.findByText('Restore the original files.')).toBeTruthy();
-  expect(screen.queryByRole('link', { name: /Remix/i })).toBeNull();
-  expect(screen.getByText('Remix will be available soon.')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Remix' }).getAttribute('href')).toBe(
+    screen
+      .getByRole('link', { name: 'Remix in Generate' })
+      .getAttribute('href'),
+  );
 });
 
 test('retains the same idempotency key after an uncertain result', async () => {
@@ -285,10 +294,94 @@ test('retains the same idempotency key after an uncertain result', async () => {
   );
 });
 
-test('hides Remix until Generate is merged', async () => {
+test('remixes exact recorded bindings through the Generate decoder', async () => {
+  fake.client.getRecordedRun.mockImplementation((_id, options) =>
+    Promise.resolve(
+      options?.exactBindings
+        ? {
+            ...run,
+            parameters: {
+              seed: 18446744073709551615n,
+              prompt: 'Coast  at\nnight',
+              scale: new BindingFloat(1),
+            },
+          }
+        : run,
+    ),
+  );
+  await start();
+  const href = screen
+    .getByRole('link', { name: 'Remix in Generate' })
+    .getAttribute('href')!;
+  const query = new URLSearchParams(href.split('?')[1]);
+  const workflow: Workflow = {
+    id: 'landscape',
+    version: 'v1',
+    revision: 'revision',
+    schema_version: 2,
+    title: 'Landscape',
+    workflow: 'graph.json',
+    outputs: [],
+    presets: {},
+    parameters: {
+      seed: {
+        node: '1',
+        input: 'seed',
+        kind: 'seed',
+        required: true,
+        description: '',
+      },
+      prompt: {
+        node: '1',
+        input: 'prompt',
+        kind: 'string',
+        required: true,
+        description: '',
+      },
+      scale: {
+        node: '1',
+        input: 'scale',
+        kind: 'number',
+        required: true,
+        description: '',
+      },
+    },
+  };
+  const restored = restoreFormState(workflow, query);
+  expect(query.get('workflow')).toBe('landscape');
+  expect(restored.warnings).toEqual([]);
+  expect(restored.fields.get('seed')?.value).toBe(18446744073709551615n);
+  expect(restored.fields.get('seed')?.seedMode).toBe('locked');
+  expect(restored.fields.get('prompt')?.value).toBe('Coast  at\nnight');
+  expect(restored.fields.get('scale')?.value).toEqual(new BindingFloat(1));
+  expect(fake.client.getRecordedRun).toHaveBeenCalledWith(
+    'one',
+    expect.objectContaining({ exactBindings: true }),
+  );
+  expect(fake.client.rerunRun).not.toHaveBeenCalled();
+  expect(fake.navigate).not.toHaveBeenCalled();
+});
+
+test('does not offer Remix when exact binding reads fail', async () => {
+  fake.client.getRecordedRun.mockImplementation((_id, options) =>
+    options?.exactBindings
+      ? Promise.reject(new Error('Cannot read exactly'))
+      : Promise.resolve(run),
+  );
   await start();
   expect(screen.queryByRole('link', { name: /Remix/i })).toBeNull();
-  expect(screen.getByText('Remix will be available soon.')).toBeTruthy();
+  expect(screen.getByText(/Remix is unavailable/)).toBeTruthy();
+});
+
+test('does not silently Remix a run without a recorded parameter object', async () => {
+  fake.client.getRecordedRun.mockImplementation((_id, options) =>
+    Promise.resolve(
+      options?.exactBindings ? { ...run, parameters: null } : run,
+    ),
+  );
+  await start();
+  expect(screen.queryByRole('link', { name: /Remix/i })).toBeNull();
+  expect(screen.getByText(/Remix is unavailable/)).toBeTruthy();
 });
 
 test('downloads exact manifest bytes', async () => {
@@ -603,7 +696,7 @@ test('preserves prompt whitespace on the page and in the confirmation', async ()
 test('announces status changes politely and unsubscribes on unmount', async () => {
   await start();
   const region = document.querySelector('[aria-live="polite"]')!;
-  expect(region.textContent).toBe('');
+  expect(region.textContent).toContain('Outputs confirmed for this run.');
   fake.client.getRecordedRun.mockResolvedValue({ ...run, status: 'failed' });
   (events.resync as ReturnType<typeof writable<ResyncSignal | null>>).set({
     epoch: 11,
@@ -652,4 +745,25 @@ test('clears the history graph while switching to the archive source', async () 
   expect(
     screen.getByText(/Verified archive.*recorded before submission/),
   ).toBeTruthy();
+});
+
+test('announces when delayed outputs are confirmed', async () => {
+  let finish!: (page: { outputs: (typeof output)[] }) => void;
+  fake.client.listOutputs.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(RunDetail, { id: 'one' });
+  expect(
+    await screen.findByText('Completed · outputs not confirmed'),
+  ).toBeTruthy();
+  const region = document.querySelector('[aria-live="polite"]')!;
+  expect(region.textContent).not.toContain('Outputs confirmed');
+  finish({ outputs: [output] });
+  await waitFor(() =>
+    expect(region.textContent).toContain('Outputs confirmed for this run.'),
+  );
+  expect(screen.getByRole('link', { name: 'result.png' })).toBeTruthy();
 });

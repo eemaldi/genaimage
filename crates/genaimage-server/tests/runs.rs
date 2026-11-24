@@ -990,8 +990,38 @@ async fn rejected_deletion_rolls_back_but_lost_acknowledgement_stays_cancelling(
 async fn resolved_workflow_verifies_submission_digest_and_supports_legacy_runs() {
     let api = ApiHarness::start().await;
     install_workflow(&api);
+    let workflows = &api.core.config().workflows;
+    let graph_path = workflows.join("workflow.api.json");
+    let mut graph: Value = serde_json::from_slice(&std::fs::read(&graph_path).unwrap()).unwrap();
+    graph["9"]["inputs"]["images"] = json!(["3", 0]);
+    std::fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let manifest_path = workflows.join("contract.genaimage.json");
+    let mut workflow_manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    workflow_manifest["parameters"]["images"] =
+        json!({"node":"9", "input":"images", "kind":"string"});
+    workflow_manifest["parameters"]["prefix"] =
+        json!({"node":"9", "input":"filename_prefix", "kind":"string"});
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec(&workflow_manifest).unwrap(),
+    )
+    .unwrap();
+    let workflow: WorkflowDetails = api.get_json(WORKFLOW).await;
+    let mut body = request();
+    body["workflow_revision"] = json!(workflow.revision);
+    let validation: Value = api.post_json(&format!("{WORKFLOW}/validate"), &json!({"workflow_revision": body["workflow_revision"], "preset": "fast", "parameters": {"seed": 99}})).await;
+    assert_eq!(validation["valid"], true);
+    assert_eq!(validation["revision"], body["workflow_revision"]);
+    assert_eq!(
+        validation["inherited_inputs"],
+        json!([
+            {"parameter":"images", "node":"9", "input":"images", "source":{"kind":"connection", "node":"3", "output":0}},
+            {"parameter":"prefix", "node":"9", "input":"filename_prefix", "source":{"kind":"literal", "json":"\"genaimage\""}},
+        ])
+    );
     let source = run(
-        submit(&api, "workflow-read", &request()).await,
+        submit(&api, "workflow-read", &body).await,
         StatusCode::ACCEPTED,
     )
     .await;
@@ -1011,6 +1041,8 @@ async fn resolved_workflow_verifies_submission_digest_and_supports_legacy_runs()
         graph,
         *api.fake.submitted_graph.lock().unwrap().as_ref().unwrap()
     );
+    assert_eq!(graph["9"]["inputs"]["images"], json!(["3", 0]));
+    assert_eq!(graph["9"]["inputs"]["filename_prefix"], "genaimage");
     api.fake.complete.store(true, Ordering::SeqCst);
     let completed: RunResponse = api
         .post_json(&format!("{RUNS}/{}/reconcile", source.id), &Value::Null)

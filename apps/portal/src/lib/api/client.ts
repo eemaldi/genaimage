@@ -400,7 +400,7 @@ export function createApiClient(
         apiUrl('/api/v1/runs/{id}/resolved-workflow', { id }),
         options ?? {},
         async (response) => ({
-          graph: await readRecordedRun(response),
+          graph: await readExactIntegers(response),
           integrity: response.headers.get('x-genaimage-workflow-integrity'),
           etag: response.headers.get('etag'),
         }),

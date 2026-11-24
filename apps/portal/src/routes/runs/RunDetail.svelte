@@ -49,7 +49,8 @@
   let lifecycle = 0;
   let controller: AbortController;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let rerunUrl = $derived(run ? buildGenerateUrl(run) : undefined);
+  let rerunUrl = $state<string>();
+  let remixUnavailable = $state(false);
   let parameters = $derived(
     manifest && Object.hasOwn(manifest, 'parameters')
       ? manifest.parameters
@@ -186,8 +187,9 @@
     try {
       const record = await api.getRecordedRun(runId, { signal });
       if (signal.aborted || current !== generation) return;
-      if (run && run.status !== record.status) {
-        statusAnnouncement = `Run status changed to ${describeStatus(record.status).label}.${record.status === 'completed' ? ' Outputs are not yet confirmed.' : ''}`;
+      const statusChanged = !!run && run.status !== record.status;
+      if (statusChanged) {
+        statusAnnouncement = `Run status changed to ${describeStatus(record.status).label}.${record.status === 'completed' && !outputs.length ? ' Outputs are not yet confirmed.' : ''}`;
       }
       run = record;
       loading = false;
@@ -199,15 +201,45 @@
         ),
         api.listRuns({ limit: 200 }, { signal }),
         api.getRunManifestText(runId, { signal }),
+        api.getRecordedRun(runId, { signal, exactBindings: true }),
       ]);
       if (signal.aborted || current !== generation) return;
-      const [eventResult, outputResult, runResult, manifestResult] = requests;
+      const [
+        eventResult,
+        outputResult,
+        runResult,
+        manifestResult,
+        remixResult,
+      ] = requests;
+      try {
+        if (
+          remixResult.status !== 'fulfilled' ||
+          remixResult.value.id !== runId ||
+          remixResult.value.workflow_id !== record.workflow_id ||
+          remixResult.value.workflow_version !== record.workflow_version ||
+          !asObject(remixResult.value.parameters)
+        )
+          throw new Error('The recorded run could not be read exactly.');
+        rerunUrl = buildGenerateUrl(remixResult.value);
+        remixUnavailable = false;
+      } catch {
+        rerunUrl = undefined;
+        remixUnavailable = true;
+      }
       if (eventResult.status === 'fulfilled') {
         timeline = [...eventResult.value.events]
           .sort((a, b) => a.id - b.id)
           .slice(-eventLimit);
       }
       if (outputResult.status === 'fulfilled') {
+        if (
+          record.status === 'completed' &&
+          !outputs.length &&
+          outputResult.value.outputs.length
+        )
+          statusAnnouncement = statusChanged
+            ? `Run status changed to ${describeStatus(record.status).label}. Outputs confirmed for this run.`
+            : 'Outputs confirmed for this run.';
         outputs = outputResult.value.outputs;
         outputCursor = outputResult.value.next_cursor ?? undefined;
       }
@@ -278,6 +310,8 @@
       );
       if (current !== generation) return;
       const seen = new Set(outputs.map((item) => item.id));
+      if (run.status === 'completed' && !outputs.length && page.outputs.length)
+        statusAnnouncement = 'Outputs confirmed for this run.';
       outputs = [
         ...outputs,
         ...page.outputs.filter((item) => !seen.has(item.id)),
@@ -307,6 +341,8 @@
     relatives = [];
     manifest = undefined;
     manifestText = undefined;
+    rerunUrl = undefined;
+    remixUnavailable = false;
     manifestVerified = false;
     actionError = undefined;
     mismatch = false;
@@ -666,8 +702,12 @@
     </p>
   {:else}<Button onclick={() => (open = true)} disabled={busy}>Re-run</Button
     >{/if}
-  {#if remixAvailable && rerunUrl}<a href={rerunUrl}>Remix in Generate</a
-    >{:else}<p>Remix will be available soon.</p>{/if}
+  {#if remixAvailable && rerunUrl}<a href={rerunUrl}>Remix in Generate</a>
+  {:else if remixAvailable && remixUnavailable}<p>
+      Remix is unavailable because the recorded parameters could not be
+      represented exactly.
+    </p>
+  {:else if !remixAvailable}<p>Remix will be available soon.</p>{/if}
   {#if manifestText}<Button onclick={download}>Download manifest</Button
     >{:else if manifestError}<p>Run manifest is unavailable.</p>{/if}
   {#if actionNotice}<p role="status">{actionNotice}</p>{/if}

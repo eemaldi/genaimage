@@ -14,7 +14,9 @@ the browser. Whole-valued floats retain their JSON representation for enum
 matching. Browsers that cannot read the original JSON number token must be
 updated before reviewing or submitting; Workflow Detail still checks backend
 node availability.
-Steps and suggested options are control hints, not binding rules.
+Steps and suggested options are control hints, not binding rules. Imported
+multiline text remains visible in a multiline editor even when the manifest
+uses a single-line text widget.
 
 Reference images are previewed from the selected local file after upload. The
 server returns metadata but does not serve stored image bytes, so a reference
