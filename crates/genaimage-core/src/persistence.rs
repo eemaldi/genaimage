@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -960,6 +960,62 @@ const MIGRATION_12: &str = r#"
             SELECT RAISE(ABORT, 'output annotations are append-only');
         END;
 "#;
+const MIGRATION_13: &str = r#"
+    CREATE TABLE IF NOT EXISTS assistant_message_terminal_states (
+        message_id TEXT PRIMARY KEY REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('awaiting_confirmation'))
+    );
+
+    CREATE TABLE IF NOT EXISTS assistant_tool_confirmations (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+        tool_call_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        proposed_arguments_json TEXT NOT NULL,
+        json_schema TEXT NOT NULL,
+        source_message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        user_message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        model_step INTEGER NOT NULL CHECK (model_step > 0),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'invoking', 'succeeded', 'failed', 'rejected', 'outcome_unknown', 'expired')),
+        decision TEXT CHECK (decision IN ('confirm', 'edit', 'reject')),
+        effective_arguments_json TEXT,
+        decision_reason TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        UNIQUE(conversation_id, tool_call_id)
+    );
+    CREATE INDEX IF NOT EXISTS assistant_tool_confirmations_pending_idx
+        ON assistant_tool_confirmations(conversation_id, created_at)
+        WHERE status IN ('pending', 'invoking');
+
+    CREATE TABLE IF NOT EXISTS assistant_tool_call_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        confirmation_id TEXT,
+        tool_call_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        proposed_arguments_json TEXT NOT NULL,
+        validation_outcome TEXT NOT NULL,
+        validation_error TEXT,
+        decision TEXT NOT NULL,
+        effective_arguments_json TEXT,
+        decided_by TEXT,
+        invocation_ok INTEGER CHECK (invocation_ok IN (0, 1)),
+        invocation_result_json TEXT,
+        invocation_error TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        invoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS assistant_tool_call_audit_conversation_id_idx
+        ON assistant_tool_call_audit(conversation_id, id DESC);
+    CREATE TRIGGER IF NOT EXISTS assistant_tool_call_audit_no_update
+        BEFORE UPDATE ON assistant_tool_call_audit
+        BEGIN SELECT RAISE(ABORT, 'assistant tool audit records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS assistant_tool_call_audit_no_delete
+        BEFORE DELETE ON assistant_tool_call_audit
+        BEGIN SELECT RAISE(ABORT, 'assistant tool audit records are append-only'); END;
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -973,10 +1029,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_10,
     MIGRATION_11,
     MIGRATION_12,
+    MIGRATION_13,
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 9] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 12] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
@@ -985,7 +1042,10 @@ const EXPECTED_TABLES: [(&str, i64, &str); 9] = [
     ("run_submission_keys", 4, "SELECT key, fingerprint, run_id FROM run_submission_keys LIMIT 0"),
     ("assistant_conversations", 11, "SELECT id, title, created_at, updated_at, model, system_prompt_template, system_prompt_sha256, system_prompt FROM assistant_conversations LIMIT 0"),
     ("assistant_messages", 11, "SELECT id, conversation_id, seq, role, content_json, model, status, error, tool_call_id, created_at FROM assistant_messages LIMIT 0"),
+    ("assistant_message_terminal_states", 13, "SELECT message_id, status FROM assistant_message_terminal_states LIMIT 0"),
     ("output_annotations", 12, "SELECT id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response FROM output_annotations LIMIT 0"),
+    ("assistant_tool_confirmations", 13, "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json, json_schema, source_message_id, user_message_id, model_step, status, decision, effective_arguments_json, decision_reason, created_at, decided_at FROM assistant_tool_confirmations LIMIT 0"),
+    ("assistant_tool_call_audit", 13, "SELECT id, conversation_id, confirmation_id, tool_call_id, tool_name, proposed_arguments_json, validation_outcome, decision, invocation_ok, created_at FROM assistant_tool_call_audit LIMIT 0"),
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
@@ -1092,7 +1152,7 @@ fn inspect_settings_database_rejects_an_unrelated_sqlite_schema() {
 
 #[cfg(test)]
 #[test]
-fn migrates_version_ten_without_losing_existing_state() {
+fn migrates_version_twelve_to_thirteen_without_losing_existing_state() {
     let root = tempfile::Builder::new()
         .prefix(".migration-test-")
         .tempdir_in(std::env::current_dir().unwrap())
@@ -1102,14 +1162,14 @@ fn migrates_version_ten_without_losing_existing_state() {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .unwrap();
-    for migration in MIGRATIONS.iter().take(SCHEMA_VERSION as usize - 1) {
+    for migration in MIGRATIONS.iter().take(12) {
         connection.execute_batch(migration).unwrap();
     }
     connection
         .execute_batch("CREATE TABLE migration_sentinel (value TEXT); INSERT INTO migration_sentinel VALUES ('kept');")
         .unwrap();
     connection
-        .pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+        .pragma_update(None, "user_version", 12_i64)
         .unwrap();
     drop(connection);
 
@@ -1123,6 +1183,9 @@ fn migrates_version_ten_without_losing_existing_state() {
             assert_eq!(version, SCHEMA_VERSION);
             connection.prepare("SELECT id, model FROM assistant_conversations LIMIT 0")?;
             connection.prepare("SELECT conversation_id, content_json, tool_call_id FROM assistant_messages LIMIT 0")?;
+            connection.prepare("SELECT id, tool_call_id, status, decision FROM assistant_tool_confirmations LIMIT 0")?;
+            connection.prepare("SELECT id, tool_call_id, validation_outcome, decision FROM assistant_tool_call_audit LIMIT 0")?;
+            connection.prepare("SELECT id, output_id FROM output_annotations LIMIT 0")?;
             Ok(())
         })
         .unwrap();
@@ -1529,7 +1592,7 @@ mod submission_tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, SCHEMA_VERSION);
         connection
             .prepare("SELECT id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response FROM output_annotations LIMIT 0")
             .unwrap();

@@ -126,11 +126,18 @@ async fn streams_text_tool_proposals_and_persisted_terminal_over_sse() {
                 && event.tool_call.name == "review_output"
                 && event.tool_call.arguments["output_id"] == "out-1"
     ));
-    let terminal = match stream.next().await.unwrap().unwrap() {
-        AssistantStreamEvent::Done(event) => event,
-        _ => panic!("expected done"),
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::ToolResult(event)
+            if event.tool_call_id == "call-1" && !event.ok && event.error.is_some()
+    ));
+    let terminal = loop {
+        match stream.next().await.unwrap().unwrap() {
+            AssistantStreamEvent::Done(event) | AssistantStreamEvent::Error(event) => break event,
+            _ => {}
+        }
     };
-    assert_eq!(terminal.status, AssistantMessageStatus::Complete);
+    assert_eq!(terminal.status, AssistantMessageStatus::Failed);
     assert_eq!(terminal.model, "assistant");
     assert!(terminal
         .message_id
@@ -145,12 +152,24 @@ async fn streams_text_tool_proposals_and_persisted_terminal_over_sse() {
         )
         .await
         .unwrap();
-    assert_eq!(detail.messages.len(), 2);
     assert_eq!(detail.messages[0].role, AssistantMessageRole::User);
-    assert_eq!(detail.messages[1].id, terminal.message_id.unwrap());
-    assert_eq!(detail.messages[1].status, AssistantMessageStatus::Complete);
-    assert_eq!(detail.messages[1].model.as_deref(), Some("assistant"));
-    assert_eq!(llm.chat_request_count(), 1);
+    assert!(detail
+        .messages
+        .iter()
+        .any(|message| message.role == AssistantMessageRole::Tool));
+    assert_eq!(
+        detail.messages.last().unwrap().id,
+        terminal.message_id.unwrap()
+    );
+    assert_eq!(
+        detail.messages.last().unwrap().status,
+        AssistantMessageStatus::Failed
+    );
+    assert_eq!(
+        detail.messages.last().unwrap().model.as_deref(),
+        Some("assistant")
+    );
+    assert_eq!(llm.chat_request_count(), 8);
 }
 
 #[tokio::test]
@@ -665,4 +684,98 @@ async fn dropping_the_sse_client_persists_a_cancelled_partial_message() {
         genaimage_api::AssistantChatMessage::Assistant { text, .. }
             if text == "disconnect partial"
     ));
+}
+
+struct ConfirmationOnlyTool;
+
+#[genaimage_core::async_trait]
+impl genaimage_core::AssistantTool for ConfirmationOnlyTool {
+    fn name(&self) -> &str {
+        "confirm_me"
+    }
+    fn description(&self) -> &str {
+        "requires confirmation"
+    }
+    fn json_schema(&self) -> serde_json::Value {
+        json!({
+            "type":"object",
+            "properties":{"value":{"type":"integer"}},
+            "required":["value"],
+            "additionalProperties":false
+        })
+    }
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+    async fn invoke(
+        &self,
+        _context: genaimage_core::ToolContext,
+        _arguments: serde_json::Value,
+    ) -> genaimage_core::Result<serde_json::Value> {
+        panic!("confirmation-only test tool must not run")
+    }
+}
+
+#[tokio::test]
+async fn awaiting_confirmation_is_a_distinct_terminal_sse_event() {
+    let llm = FakeLlmServer::start(
+        FakeLlmScript::default()
+            .with_events([
+                FakeLlmEvent::tool_calls([FakeToolCallDelta::new(0)
+                    .id("confirm-1")
+                    .name("confirm_me")
+                    .arguments("{\"value\":7}")]),
+                FakeLlmEvent::finish("tool_calls"),
+                FakeLlmEvent::Done,
+            ])
+            .with_models_response(json!({
+                "object": "list",
+                "data": [{
+                    "id": "assistant",
+                    "supports_tools": true,
+                    "supports_vision": false
+                }]
+            })),
+    )
+    .await;
+    let base_url = llm.base_url();
+    let api = ApiHarness::start_with_assistant_tools(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", &base_url),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "assistant"),
+        ],
+        vec![std::sync::Arc::new(ConfirmationOnlyTool)],
+    )
+    .await;
+    let client = client(&api);
+    let conversation = create(&client, "Confirmation SSE").await;
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &text_request("confirm"))
+        .await
+        .unwrap();
+    next_started(&mut stream).await;
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::ToolCall(_)
+    ));
+    let required = match stream.next().await.unwrap().unwrap() {
+        AssistantStreamEvent::ConfirmationRequired(event) => event,
+        _ => panic!("expected confirmation_required"),
+    };
+    assert_eq!(
+        required.status,
+        genaimage_api::AssistantToolConfirmationStatus::Pending
+    );
+    let terminal = match stream.next().await.unwrap().unwrap() {
+        AssistantStreamEvent::AwaitingConfirmation(event) => event,
+        AssistantStreamEvent::Done(_) => panic!("awaiting confirmation must not be done"),
+        _ => panic!("expected awaiting_confirmation"),
+    };
+    assert_eq!(terminal.confirmation_id, required.confirmation_id);
+    assert_eq!(
+        terminal.status,
+        AssistantMessageStatus::AwaitingConfirmation
+    );
+    assert!(stream.next().await.is_none());
 }

@@ -28,8 +28,10 @@ async fn start(cli: &Cli, portal_dev_url: Option<&str>) -> Result<(), HarnessErr
         .map(genaimage_server::PortalDevProxy::new)
         .transpose()
         .map_err(|error| HarnessError::Configuration(error.to_string()))?;
-    let (harness, llm_roles) = open_harness(cli).await?;
-    let mut state = genaimage_server::AppState::new(harness.into()).with_llm_roles(llm_roles);
+    let (harness, llm_roles, assistant_tools) = open_harness(cli).await?;
+    let mut state = genaimage_server::AppState::new(harness.into())
+        .with_llm_roles(llm_roles)
+        .with_assistant_tools(assistant_tools)?;
     if let Some(proxy) = portal_dev {
         state = state.with_portal_dev(proxy);
     }
@@ -37,7 +39,16 @@ async fn start(cli: &Cli, portal_dev_url: Option<&str>) -> Result<(), HarnessErr
     Ok(())
 }
 
-async fn open_harness(cli: &Cli) -> Result<(Harness, LlmRoles), HarnessError> {
+async fn open_harness(
+    cli: &Cli,
+) -> Result<
+    (
+        Harness,
+        LlmRoles,
+        Vec<Arc<dyn genaimage_core::AssistantTool>>,
+    ),
+    HarnessError,
+> {
     let config = HarnessConfig::load_with_config(
         cli.workspace
             .as_deref()
@@ -66,6 +77,13 @@ async fn open_harness(cli: &Cli) -> Result<(Harness, LlmRoles), HarnessError> {
         .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;
     let bus = EventBus::default();
     let harness = Harness::with_event_bus_async(config, backend, bus.clone()).await?;
+    let builtins = genaimage_core::assistant::tools::builtin_assistant_tools(
+        std::sync::Arc::new(harness.clone()),
+        llm_roles.clone(),
+    );
+    for tool in builtins {
+        registry.register_assistant_tool(tool)?;
+    }
     for (name, task) in registry.forward_event_sinks(&bus) {
         tokio::spawn(async move {
             match task.await {
@@ -75,5 +93,5 @@ async fn open_harness(cli: &Cli) -> Result<(Harness, LlmRoles), HarnessError> {
             }
         });
     }
-    Ok((harness, llm_roles))
+    Ok((harness, llm_roles, registry.assistant_tools()))
 }

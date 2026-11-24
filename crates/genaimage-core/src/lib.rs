@@ -3,6 +3,7 @@ pub mod assistant;
 pub mod config;
 pub mod error;
 pub mod event;
+mod exact_number;
 pub mod extensions;
 pub mod image_backend;
 pub mod llm_roles;
@@ -11,6 +12,7 @@ pub mod orchestrator;
 pub mod persistence;
 #[doc(hidden)]
 pub mod safe_file;
+mod tool_schema;
 pub mod uploads;
 pub mod workflow;
 
@@ -24,7 +26,8 @@ pub use event::{
 };
 pub use extensions::{
     AssistantTool, ChatContent, ChatDelta, ChatMessage, ChatRequest, ChatStream, EventSink,
-    ExtensionRegistry, LlmModel, LlmProvider, SinkNotification, ToolCall, ToolDefinition,
+    ExtensionRegistry, LlmModel, LlmProvider, SinkNotification, ToolCall, ToolContext,
+    ToolDefinition,
 };
 pub use image_backend::ImageBackend;
 pub use llm_roles::{

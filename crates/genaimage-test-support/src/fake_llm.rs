@@ -198,7 +198,7 @@ impl FakeLlmScript {
 
 #[derive(Clone)]
 struct FakeLlmState {
-    script: Arc<Mutex<FakeLlmScript>>,
+    scripts: Arc<Mutex<Vec<FakeLlmScript>>>,
     requests: Arc<Mutex<Vec<Value>>>,
     chat_requests: Arc<AtomicUsize>,
     models_requests: Arc<AtomicUsize>,
@@ -208,9 +208,9 @@ struct FakeLlmState {
 }
 
 impl FakeLlmState {
-    fn new(script: FakeLlmScript) -> Self {
+    fn from_scripts(scripts: Vec<FakeLlmScript>) -> Self {
         Self {
-            script: Arc::new(Mutex::new(script)),
+            scripts: Arc::new(Mutex::new(scripts)),
             requests: Arc::new(Mutex::new(Vec::new())),
             chat_requests: Arc::new(AtomicUsize::new(0)),
             models_requests: Arc::new(AtomicUsize::new(0)),
@@ -225,7 +225,14 @@ async fn fake_chat(State(state): State<FakeLlmState>, Json(body): Json<Value>) -
     state.requests.lock().expect("request lock").push(body);
     state.chat_requests.fetch_add(1, Ordering::SeqCst);
     state.request_arrived.notify_waiters();
-    let script = state.script.lock().expect("script lock").clone();
+    let script = {
+        let mut scripts = state.scripts.lock().expect("script lock");
+        if scripts.len() > 1 {
+            scripts.remove(0)
+        } else {
+            scripts.first().expect("fake LLM script").clone()
+        }
+    };
     if !script.chat_response_delay.is_zero() {
         tokio::time::sleep(script.chat_response_delay).await;
     }
@@ -293,7 +300,13 @@ impl Drop for StreamProbe {
 
 async fn fake_models(State(state): State<FakeLlmState>) -> Response {
     state.models_requests.fetch_add(1, Ordering::SeqCst);
-    let script = state.script.lock().expect("script lock").clone();
+    let script = state
+        .scripts
+        .lock()
+        .expect("script lock")
+        .first()
+        .expect("fake LLM script")
+        .clone();
     if !script.models_response_delay.is_zero() {
         tokio::time::sleep(script.models_response_delay).await;
     }
@@ -312,7 +325,16 @@ pub struct FakeLlmServer {
 
 impl FakeLlmServer {
     pub async fn start(script: FakeLlmScript) -> Self {
-        let state = FakeLlmState::new(script);
+        Self::start_sequence([script]).await
+    }
+
+    pub async fn start_sequence(scripts: impl IntoIterator<Item = FakeLlmScript>) -> Self {
+        let scripts = scripts.into_iter().collect::<Vec<_>>();
+        assert!(
+            !scripts.is_empty(),
+            "at least one fake LLM script is required"
+        );
+        let state = FakeLlmState::from_scripts(scripts);
         let app = Router::new()
             .route("/v1/chat/completions", post(fake_chat))
             .route("/v1/models", get(fake_models))
@@ -342,7 +364,16 @@ impl FakeLlmServer {
     /// Replaces the script for subsequent requests. The previous requests and
     /// cancellation observations remain available for assertions.
     pub fn set_script(&self, script: FakeLlmScript) {
-        *self.state.script.lock().expect("script lock") = script;
+        self.set_scripts([script]);
+    }
+
+    pub fn set_scripts(&self, scripts: impl IntoIterator<Item = FakeLlmScript>) {
+        let scripts = scripts.into_iter().collect::<Vec<_>>();
+        assert!(
+            !scripts.is_empty(),
+            "at least one fake LLM script is required"
+        );
+        *self.state.scripts.lock().expect("script lock") = scripts;
     }
 
     /// Returns clones in request order, including the exact OpenAI wire body.

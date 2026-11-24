@@ -283,7 +283,9 @@ pub async fn suggest_workflows(
                     )));
                 }
             }
-            ChatDelta::ToolCall(_) => {
+            ChatDelta::ToolCall(_)
+            | ChatDelta::ToolResult { .. }
+            | ChatDelta::ConfirmationRequired { .. } => {
                 return Err(SuggestionError::MalformedResponse(
                     "tool calls are not accepted in a suggestion response".into(),
                 ));

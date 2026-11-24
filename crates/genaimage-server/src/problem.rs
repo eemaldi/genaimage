@@ -24,6 +24,8 @@ impl Problem {
                 detail: detail.into(),
                 recovery: recovery.into(),
                 errors: Vec::new(),
+                preview: None,
+                preview_token: None,
             }),
         }
     }
@@ -75,6 +77,16 @@ impl Problem {
 
     pub(crate) fn with_errors(mut self, errors: Vec<SettingError>) -> Self {
         self.details.errors = errors;
+        self
+    }
+
+    pub(crate) fn with_preview(
+        mut self,
+        preview: Option<serde_json::Value>,
+        preview_token: Option<String>,
+    ) -> Self {
+        self.details.preview = preview;
+        self.details.preview_token = preview_token;
         self
     }
 }

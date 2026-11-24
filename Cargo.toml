@@ -54,3 +54,6 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "deny"
 pedantic = "allow"
+
+[profile.release]
+strip = "symbols"

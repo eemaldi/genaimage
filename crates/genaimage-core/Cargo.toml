@@ -34,9 +34,9 @@ rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-jsonschema = { version = "0.18", default-features = false }
 serde_json = { workspace = true, features = ["arbitrary_precision"] }
 criterion = "0.5"
+jsonschema = { version = "0.18", default-features = false }
 
 [[bench]]
 name = "performance"

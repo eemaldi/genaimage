@@ -3,14 +3,20 @@ mod prompts;
 mod service;
 mod store;
 pub mod suggest;
+pub mod tools;
 mod vision;
 
 pub use prompts::{PromptTemplate, PromptTemplates, DEFAULT_SYSTEM_PROMPT, SYSTEM_PROMPT_TEMPLATE};
-pub use service::{AssistantStream, ConversationService};
+pub use service::{
+    AssistantConfirmationDecision, AssistantConfirmationPreview, AssistantStream,
+    ConversationService,
+};
 pub use store::{
     AssistantConversation, AssistantConversationDetail, AssistantConversationListQuery,
     AssistantConversationPage, AssistantMessage, AssistantMessageRole, AssistantMessageStatus,
-    ConversationStore, NewAssistantConversation, NewAssistantMessage,
+    AssistantToolAuditRecord, AssistantToolConfirmation, AssistantToolConfirmationStatus,
+    ConversationStore, NewAssistantConfirmation, NewAssistantConversation, NewAssistantMessage,
+    NewAssistantToolAudit,
 };
 pub use vision::{OutputAnnotation, VisionReviewService};
 

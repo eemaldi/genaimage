@@ -56,11 +56,37 @@ pub struct ToolCall {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolContext {
+    pub conversation_id: String,
+    pub tool_call_id: String,
+    /// Stable confirmation identifier. Confirmed tools can use this as an
+    /// idempotency key when resuming an interrupted invocation.
+    pub confirmation_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatDelta {
     Text(String),
     /// A complete call with parsed arguments, not an incremental JSON fragment.
     ToolCall(ToolCall),
+    ToolResult {
+        tool_call_id: String,
+        tool: String,
+        ok: bool,
+        result: Option<Value>,
+        error: Option<String>,
+    },
+    ConfirmationRequired {
+        confirmation_id: String,
+        conversation_id: String,
+        tool_call_id: String,
+        tool: String,
+        arguments: Value,
+        json_schema: Value,
+        preview: Option<Value>,
+        preview_token: String,
+    },
 }
 
 /// Dropping the stream must cancel in-flight provider work and release its resources.
@@ -86,17 +112,24 @@ pub trait LlmProvider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<LlmModel>>;
 }
 
-/// The tool runtime must validate arguments against the schema and obtain any
+/// The tool runtime validates arguments against the schema and obtains any
 /// required user confirmation before invoking the tool. `requires_confirmation`
 /// is metadata, not enforcement. An assistant must never submit a run without
 /// explicit user approval of the effective proposal, regardless of tool metadata.
+/// A confirmation tool may implement the read-only `preview` hook so the pause
+/// payload can show values resolved from presets, defaults and inherited inputs.
+/// The runtime supplies the invocation context after approval; tools must treat
+/// `confirmation_id` as an idempotency key for confirmed operations.
 #[async_trait]
 pub trait AssistantTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn json_schema(&self) -> Value;
     fn requires_confirmation(&self) -> bool;
-    async fn invoke(&self, arguments: Value) -> Result<Value>;
+    async fn preview(&self, _arguments: &Value) -> Result<Option<Value>> {
+        Ok(None)
+    }
+    async fn invoke(&self, context: ToolContext, arguments: Value) -> Result<Value>;
 }
 
 /// A sink must resynchronise its state when delivery reports a gap.
@@ -163,11 +196,21 @@ impl ExtensionRegistry {
 
     pub fn register_assistant_tool(&mut self, tool: Arc<dyn AssistantTool>) -> Result<()> {
         let name = tool.name().to_owned();
+        let schema = tool.json_schema();
+        crate::tool_schema::validate_schema(&schema).map_err(|error| {
+            HarnessError::Configuration(format!(
+                "assistant tool '{name}' has an unsupported JSON schema: {error}"
+            ))
+        })?;
         register(&mut self.assistant_tools, "assistant tool", &name, tool)
     }
 
     pub fn assistant_tool(&self, name: &str) -> Option<Arc<dyn AssistantTool>> {
         self.assistant_tools.get(name).cloned()
+    }
+
+    pub fn assistant_tools(&self) -> Vec<Arc<dyn AssistantTool>> {
+        self.assistant_tools.values().cloned().collect()
     }
 
     pub fn register_event_sink(&mut self, name: &str, sink: Arc<dyn EventSink>) -> Result<()> {

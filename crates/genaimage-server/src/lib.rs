@@ -22,7 +22,7 @@ use axum::{
 };
 use genaimage_core::{
     assistant::{ConversationService, PromptTemplates},
-    Harness, LlmRoles,
+    Harness, HarnessError, LlmRoles,
 };
 use tokio::task::JoinHandle;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -102,6 +102,14 @@ impl AppState {
     pub fn with_llm_roles(mut self, llm_roles: LlmRoles) -> Self {
         self.llm_roles = llm_roles;
         self
+    }
+
+    pub fn with_assistant_tools(
+        mut self,
+        tools: Vec<Arc<dyn genaimage_core::AssistantTool>>,
+    ) -> Result<Self, HarnessError> {
+        self.conversation_service = self.conversation_service.with_assistant_tools(tools)?;
+        Ok(self)
     }
 
     /// Serve the portal through Vite instead of using embedded assets.

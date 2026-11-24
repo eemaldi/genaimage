@@ -49,6 +49,22 @@ pub enum HarnessError {
     PromptAssistProvider(String),
     #[error("{0}")]
     ConversationConflict(String),
+    #[error("assistant tool confirmation '{confirmation_id}' was not found in conversation '{conversation_id}'")]
+    ToolConfirmationNotFound {
+        conversation_id: String,
+        confirmation_id: String,
+    },
+    #[error("{0}")]
+    ToolConfirmationConflict(String),
+    #[error("{detail}")]
+    ToolConfirmationPreviewMismatch {
+        detail: String,
+        preview: Option<serde_json::Value>,
+        preview_token: Option<String>,
+        conflict: bool,
+    },
+    #[error("{0}")]
+    InvalidToolArguments(String),
     #[error("assistant not configured: {0}")]
     AssistantNotConfigured(String),
     #[error("this idempotency key already belongs to a different request")]

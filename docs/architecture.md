@@ -181,6 +181,56 @@ restart, when core checks database ownership again. Each run mutation takes
 one active harness snapshot; submission gives that same snapshot to its
 monitor. Tasks from all snapshots share the listener's shutdown drain.
 
+### Assistant tool runtime
+
+The conversation service owns assistant tool orchestration. Registered
+`AssistantTool` implementations expose a name, description, JSON schema and
+confirmation metadata, and are invoked as
+`invoke(ToolContext, Value)`. Every request carrying tools is checked against
+the selected text model's advertised capabilities; tools are never silently
+dropped. A tool loop is bounded to eight model steps by default. Invalid and
+unknown calls are recorded and returned to the model as error tool results.
+
+Tools requiring confirmation are validated and persisted but not invoked. The
+message stream emits `confirmation_required` and completes its paused turn with
+`awaiting_confirmation`, which is not success. The user decides through
+`POST /api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}`.
+`confirm` uses the proposed arguments, `edit` must revalidate replacement
+arguments, and `reject` supplies a rejection tool result. Before either submit
+decision, the operator previews effective values and supplies a `preview_token`.
+`POST /api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}/preview`
+validates replacement arguments and the pinned workflow without making a
+decision or changing state, then returns the preview and a digest token over the
+confirmation ID, canonical arguments and preview content. The server recomputes
+and checks this token before claiming a confirmation; missing, mismatched or
+stale tokens leave it pending and return current preview information in the
+problem response. Decisions are single use and compare-and-set in SQLite. A new
+user message is rejected with 409 while a confirmation remains pending.
+
+Conversation SSE can emit `message_started`, `delta`, `tool_call`,
+`tool_result`, `confirmation_required`, `done` and `error`.
+`GET /api/v1/assistant/conversations/{id}/tool-calls` exposes the bounded,
+append-only audit trail. The `confirmation_id` passed in `ToolContext` is the
+stable idempotency key for a confirmed invocation; tools that submit external
+work must reuse it.
+
+The serve entry point registers the built-in read and generation tools in the
+core registry. `list_workflows` and `inspect_workflow` expose the bounded local
+catalogue; `propose_run` validates a pinned proposal and resolves preset,
+default and inherited inputs; `submit_run` requires confirmation and reuses its
+single confirmation ID as the submission idempotency key; `run_status` only
+exposes outputs for completed runs; `get_output` returns metadata without bytes;
+and `review_image` calls the exact configured vision role and appends a
+model-opinion annotation. Review is automatic because it is an append-only
+operator assessment rather than a generation submission, does not alter run
+provenance and uses no text-model fallback. A `submit_run` pause can include an
+optional read-only `preview` in `confirmation_required`; it contains every
+effective value the user is approving, while the original editable `arguments`
+remain available separately. The event and preview response carry the matching
+`preview_token`. Every built-in tool result is bounded to 32 KiB; oversized text
+and arrays are explicitly marked as truncated, while numbers and identifiers
+are never shortened and are instead omitted with a note when necessary.
+
 ### Live event stream
 
 `GET /api/v1/events` returns `text/event-stream` without compression, with
