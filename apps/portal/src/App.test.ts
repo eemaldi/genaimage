@@ -1,11 +1,19 @@
 import { render, screen, waitFor, cleanup } from '@testing-library/svelte';
-import { afterEach, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import axe from 'axe-core';
+import { afterEach, expect, it, vi } from 'vitest';
+import { mockNativeDialog } from './test/dialog';
 import App from './App.svelte';
 
 afterEach(() => {
   cleanup();
   window.location.hash = '';
+  localStorage.clear();
+  vi.unstubAllGlobals();
+  document.title = '';
 });
+
+mockNativeDialog();
 
 it('renders the current route and responds to hash changes', async () => {
   window.location.hash = '#/runs/first';
@@ -26,4 +34,84 @@ it('renders the current route and responds to hash changes', async () => {
       screen.getByRole('heading', { name: 'Page not found' }),
     ).toBeTruthy(),
   );
+});
+
+it('identifies the current section, preserves the hash on skip, and moves focus on navigation', async () => {
+  window.location.hash = '#/workflows/example';
+  const user = userEvent.setup();
+  render(App);
+  expect(
+    screen.getByRole('link', { name: 'Workflows', current: 'location' }),
+  ).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Assistant Planned' })).toBeTruthy();
+  await user.tab();
+  expect(document.activeElement).toBe(
+    screen.getByRole('link', { name: 'Skip to main content' }),
+  );
+  await user.keyboard('{Enter}');
+  expect(window.location.hash).toBe('#/workflows/example');
+  expect(document.activeElement).toBe(screen.getByRole('main'));
+  await user.click(screen.getByRole('link', { name: 'Gallery' }));
+  await screen.findByRole('link', { name: 'Gallery', current: 'page' });
+  await waitFor(() =>
+    expect(document.activeElement).toBe(screen.getByRole('main')),
+  );
+});
+
+it('exposes a collapsible menu control that closes on Escape and navigation', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: true }));
+  const user = userEvent.setup();
+  render(App);
+  const toggle = screen.getByRole('button', { name: 'Menu' });
+  const nav = screen.getByRole('navigation');
+  expect(toggle.getAttribute('aria-controls')).toBe(nav.id);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  await user.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  screen.getByRole('link', { name: 'Generate' }).focus();
+  await user.keyboard('{Escape}');
+  expect(document.activeElement).toBe(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  await user.keyboard('{Enter}');
+  await user.click(screen.getByRole('link', { name: 'Settings' }));
+  await screen.findByRole('heading', { name: 'Settings' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+});
+
+it('opens shortcut help and allows character shortcuts to be turned off', async () => {
+  const user = userEvent.setup();
+  render(App);
+  await user.keyboard('gj');
+  await screen.findByRole('heading', { name: 'Jobs' });
+  await user.keyboard('?');
+  expect(
+    screen.getByRole('dialog', { name: 'Keyboard shortcuts' }),
+  ).toBeTruthy();
+  await user.click(
+    screen.getByRole('checkbox', { name: 'Enable character-key shortcuts' }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  await user.keyboard('?gd');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(window.location.hash).toBe('#/jobs');
+  expect(localStorage.getItem('genaimage.disable-shortcuts')).toBe('true');
+  await user.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }));
+  expect(screen.getByRole('dialog')).toBeTruthy();
+});
+
+it('has no axe violations in the shell or shortcut help (contrast checked separately)', async () => {
+  document.title = 'GenAImage';
+  document.documentElement.lang = 'en-GB';
+  try {
+    const user = userEvent.setup();
+    render(App);
+    const options = { rules: { 'color-contrast': { enabled: false } } };
+    expect((await axe.run(document, options)).violations).toEqual([]);
+    await user.click(
+      screen.getByRole('button', { name: 'Keyboard shortcuts' }),
+    );
+    expect((await axe.run(document, options)).violations).toEqual([]);
+  } finally {
+    document.documentElement.removeAttribute('lang');
+  }
 });

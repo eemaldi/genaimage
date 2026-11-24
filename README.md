@@ -166,9 +166,9 @@ require Node.js 24 and npm.
 
 ### Portal development
 
-The Svelte 5 portal still contains placeholder pages. For hot module replacement
-(HMR), run the server on the port configured in Vite's `/api` proxy and open
-the loopback URL printed by Vite:
+The Svelte 5 portal has responsive navigation, system light/dark themes and
+placeholder pages. For hot module replacement (HMR), run the server on the
+port configured in Vite's `/api` proxy and open the loopback URL printed by Vite:
 
 ```bash
 GENAIMAGE_SERVER_PORT=8190 cargo run -p genaimage --no-default-features -- serve
@@ -183,7 +183,9 @@ with `serve --portal-dev-url http://127.0.0.1:5173`. GenAImage still handles
 `/api` locally. Its UI proxy forwards HTTP GET/HEAD, not WebSocket upgrades;
 refresh manually or open Vite directly for HMR. The flag works without the
 embedded portal feature. Routes use URL fragments, such as
-`#/generate?workflow=example`.
+`#/generate?workflow=example`. Use **Keyboard shortcuts** (or `?`) to view
+shortcuts or turn off character-key shortcuts. See the [portal UI handoff](docs/architecture.md#portal-ui)
+for reusable components.
 
 ## Project agent and skills
 
