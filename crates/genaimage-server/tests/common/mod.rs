@@ -72,6 +72,22 @@ impl ApiHarness {
         .await
     }
 
+    pub async fn start_with_builtin_assistant_tools_and_extra(
+        seconds: u64,
+        env: &[(&str, &str)],
+        extra: &str,
+    ) -> Self {
+        Self::start_configured_with_tools(
+            seconds,
+            env,
+            Duration::from_secs(2),
+            extra,
+            Vec::new(),
+            true,
+        )
+        .await
+    }
+
     pub async fn start_with_deadlines(seconds: u64, drain: Duration) -> Self {
         Self::start_configured(seconds, &[], drain, "").await
     }
