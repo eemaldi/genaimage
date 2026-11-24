@@ -1339,7 +1339,7 @@
         "description": "A declared workflow output.",
         "properties": {
           "declared_kind": {
-            "description": "Value declared in the manifest, or null when the effective value was defaulted.",
+            "description": "Absent if unknown, null if defaulted, or the value declared in the manifest.",
             "type": [
               "string",
               "null"
@@ -1375,7 +1375,7 @@
             ]
           },
           "declared_required": {
-            "description": "Value declared in the manifest, or null when the effective value was defaulted.",
+            "description": "Absent if unknown, null if defaulted, or the value declared in the manifest.",
             "type": [
               "boolean",
               "null"

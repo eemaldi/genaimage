@@ -98,7 +98,16 @@ async fn detail_reports_declared_and_effective_values_additively() {
     assert_eq!(raw["outputs"][0]["declared_kind"], Value::Null);
     assert_eq!(raw["outputs"][1]["declared_kind"], "image");
     let typed: WorkflowDetails = serde_json::from_value(raw.clone()).unwrap();
-    assert_eq!(typed.parameters["steps"].declared_required, Some(false));
+    assert_eq!(
+        typed.parameters["steps"].declared_required,
+        Some(Some(false))
+    );
+    assert_eq!(typed.parameters["seed"].declared_required, Some(None));
+    assert_eq!(typed.outputs[0].declared_kind, Some(None));
+    assert_eq!(
+        typed.outputs[1].declared_kind,
+        Some(Some("image".to_owned()))
+    );
     let mut old = raw;
     for parameter in old["parameters"].as_object_mut().unwrap().values_mut() {
         parameter
@@ -109,7 +118,14 @@ async fn detail_reports_declared_and_effective_values_additively() {
     for output in old["outputs"].as_array_mut().unwrap() {
         output.as_object_mut().unwrap().remove("declared_kind");
     }
-    assert!(serde_json::from_value::<WorkflowDetails>(old).is_ok());
+    let old: WorkflowDetails = serde_json::from_value(old).unwrap();
+    assert_eq!(old.parameters["seed"].declared_required, None);
+    assert_eq!(old.outputs[0].declared_kind, None);
+    let inspected = serde_json::to_value(old).unwrap();
+    assert!(inspected["parameters"]["seed"]
+        .get("declared_required")
+        .is_none());
+    assert!(inspected["outputs"][0].get("declared_kind").is_none());
     api.shutdown().await;
 }
 
@@ -411,7 +427,7 @@ async fn dot_segment_ids_are_discovery_diagnostics() {
 }
 
 #[tokio::test]
-async fn catalogue_indexes_thumbnails_and_refreshes_on_list() {
+async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
     let api = ApiHarness::start().await;
     install(&api, Some("image.png"));
     let dir = &api.core.config().workflows;
@@ -464,7 +480,7 @@ async fn catalogue_indexes_thumbnails_and_refreshes_on_list() {
         }
         assert_eq!(
             response
-                .expect("indexed lookup scanned another workflow")
+                .expect("workflow discovery blocked on another workflow's FIFO")
                 .unwrap()
                 .status(),
             StatusCode::OK
@@ -494,7 +510,6 @@ async fn catalogue_indexes_thumbnails_and_refreshes_on_list() {
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();
-    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let response = api.request(Method::GET, url).send().await.unwrap();
     let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
     assert!(problem.detail.contains("ambiguous"));
@@ -505,14 +520,26 @@ async fn catalogue_indexes_thumbnails_and_refreshes_on_list() {
         serde_json::to_vec(&invalid).unwrap(),
     )
     .unwrap();
-    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
-    assert_eq!(list.diagnostics.len(), 1);
     let response = api.request(Method::GET, url).send().await.unwrap();
     let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
     assert!(problem.detail.contains("invalid manifest"));
     std::fs::remove_file(dir.join("duplicate.genaimage.json")).unwrap();
+    assert_eq!(
+        api.request(Method::GET, url).send().await.unwrap().status(),
+        StatusCode::OK
+    );
+    let sibling = dir.join("workflow-1.genaimage.json");
+    let original = std::fs::read(&sibling).unwrap();
+    std::fs::write(&sibling, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let response = api.request(Method::GET, url).send().await.unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    assert!(problem.detail.contains("ambiguous"));
+    std::fs::write(&sibling, original).unwrap();
+    assert_eq!(
+        api.request(Method::GET, url).send().await.unwrap().status(),
+        StatusCode::OK
+    );
     std::fs::remove_file(&target).unwrap();
-    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     ApiHarness::assert_problem(
         api.request(Method::GET, url).send().await.unwrap(),
         StatusCode::NOT_FOUND,

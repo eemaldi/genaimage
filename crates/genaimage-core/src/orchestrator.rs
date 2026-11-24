@@ -26,8 +26,8 @@ use crate::{
     },
     uploads::{detected_type, UploadMetadata, UploadStore},
     workflow::{
-        BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError, ParameterKind,
-        WorkflowManifest,
+        read_regular_file, BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError,
+        ParameterKind, WorkflowManifest,
     },
     Event, EventBus, HarnessError, Result,
 };
@@ -325,8 +325,10 @@ impl Harness {
                 discovery.manifests.push(loaded.manifest);
             }
             Err(error) => {
-                if let Some(id) = sidecar_id(path) {
-                    ambiguous.insert(id);
+                if let Some(source) = sidecar_source(path) {
+                    if let Some(id) = source.get("id").and_then(Value::as_str) {
+                        ambiguous.insert(id.to_owned());
+                    }
                 }
                 discovery.diagnostics.push(WorkflowDiagnostic {
                     path: path.to_path_buf(),
@@ -1948,20 +1950,15 @@ fn read_manifest_path(output_dir: &Path) -> Result<PathBuf> {
         })
 }
 
-fn sidecar_id(path: &Path) -> Option<String> {
-    fs::read(path)
+fn sidecar_source(path: &Path) -> Option<Value> {
+    read_regular_file(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|manifest| {
-            manifest
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
 }
 
 fn sidecar_declares_id(path: &Path, id: &str) -> bool {
-    sidecar_id(path).as_deref() == Some(id)
+    sidecar_source(path)
+        .is_some_and(|manifest| manifest.get("id").and_then(Value::as_str) == Some(id))
 }
 
 fn visit_workflows(

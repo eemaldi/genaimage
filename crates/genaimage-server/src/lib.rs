@@ -6,11 +6,11 @@ mod problem;
 mod routes;
 mod security;
 mod settings;
+mod workflow_index;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     future::Future,
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -28,6 +28,7 @@ use tower_http::{
     trace::{DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
+use workflow_index::WorkflowIndex;
 
 pub use listener::{serve, serve_on_listener};
 pub use portal::PortalDevProxy;
@@ -43,11 +44,6 @@ pub struct AppState {
     workflow_index: Arc<Mutex<Option<WorkflowIndex>>>,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
-}
-
-struct WorkflowIndex {
-    harness: Arc<Harness>,
-    paths: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Default)]

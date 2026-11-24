@@ -9,7 +9,7 @@ pub use events::*;
 mod settings;
 pub use settings::*;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -105,6 +105,14 @@ pub struct WorkflowDetails {
     pub outputs: Vec<WorkflowOutput>,
 }
 
+fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// A workflow parameter, its binding constraints and advisory UI hints.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowParameter {
@@ -112,9 +120,13 @@ pub struct WorkflowParameter {
     pub input: String,
     pub kind: String,
     pub required: bool,
-    /// Value declared in the manifest, or null when the effective value was defaulted.
-    #[serde(default)]
-    pub declared_required: Option<bool>,
+    /// Absent if unknown, null if defaulted, or the value declared in the manifest.
+    #[serde(
+        default,
+        deserialize_with = "present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub declared_required: Option<Option<bool>>,
     pub description: String,
     pub default: Option<serde_json::Value>,
     pub allowed_values: Option<Vec<serde_json::Value>>,
@@ -133,9 +145,13 @@ pub struct WorkflowParameter {
 pub struct WorkflowOutput {
     pub node: String,
     pub kind: String,
-    /// Value declared in the manifest, or null when the effective value was defaulted.
-    #[serde(default)]
-    pub declared_kind: Option<String>,
+    /// Absent if unknown, null if defaulted, or the value declared in the manifest.
+    #[serde(
+        default,
+        deserialize_with = "present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub declared_kind: Option<Option<String>>,
 }
 
 /// Parameter overrides and an optional manifest preset to validate.

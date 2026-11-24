@@ -209,7 +209,8 @@ The workflows API is read-only apart from validation, which does not submit a ru
   constraints and UI hints, presets and outputs. The effective `required` and
   output `kind` remain available; `declared_required` and `declared_kind` are
   null when the manifest omitted those fields, otherwise they contain the
-  declared value. IDs are identifiers, not paths; URL-encode them as path
+  declared value. Responses from older servers may omit these fields; the CLI
+  preserves that unknown state when serialising them. IDs are identifiers, not paths; URL-encode them as path
   segments. An unknown ID returns 404 problem details.
   Duplicate IDs and invalid manifests claiming an ID must be fixed before that
   ID can be resolved.
@@ -225,10 +226,12 @@ The workflows API is read-only apart from validation, which does not submit a ru
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
   paths return 404 problem details. A discovery index is built on the first
-  thumbnail request and rebuilt on every catalogue list; indexed requests reload
-  the target workflow before serving. Changes to other catalogue members,
-  including newly added duplicates, take effect in the index on the next list.
-  Unknown or changed IDs fall back to a full discovery. A settings change
+  thumbnail request and rebuilt on every catalogue list. Before and after each
+  indexed lookup, the server fingerprints directory and manifest metadata; a
+  change rebuilds the index, including when a duplicate ID is added or an ID
+  changes. Indexed requests also reload the target workflow, while unknown or
+  ambiguous IDs fall back to a full discovery. Repeated changes during discovery
+  or lookup fail rather than serving an unverified result. A settings change
   switches to the new harness's index. On Unix, descriptor-relative no-follow
   opens reject symlinks below the configured workflow root, whose own symlinks
   are trusted and resolved before it is pinned. Non-regular files are rejected

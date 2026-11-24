@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
@@ -117,9 +118,42 @@ pub struct LoadedWorkflow {
     pub(crate) manifest_sha256: String,
 }
 
+pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    #[cfg(unix)]
+    let mut file: fs::File = {
+        use rustix::fs::{open, Mode, OFlags};
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?
+        .into()
+    };
+    #[cfg(not(unix))]
+    let mut file = {
+        if !fs::metadata(path)?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a regular file",
+            ));
+        }
+        fs::File::open(path)?
+    };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
-        let manifest_bytes = fs::read(manifest_path)?;
+        let manifest_bytes = read_regular_file(manifest_path)?;
         let manifest_source: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
             HarnessError::Workflow(format!(
                 "cannot parse manifest '{}': {error}",
@@ -162,7 +196,7 @@ impl LoadedWorkflow {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(&manifest.workflow);
-        let workflow_bytes = fs::read(&workflow_path).map_err(|error| {
+        let workflow_bytes = read_regular_file(&workflow_path).map_err(|error| {
             HarnessError::Workflow(format!(
                 "cannot read workflow '{}': {error}",
                 workflow_path.display()

@@ -85,11 +85,8 @@ pub(super) async fn list(
     let discovery = tokio::task::spawn_blocking(move || {
         let mut index = index.lock().expect("workflow index lock poisoned");
         *index = None;
-        let discovery = harness.discover_workflows()?;
-        *index = Some(WorkflowIndex {
-            harness,
-            paths: discovery.indexable_manifest_paths.clone(),
-        });
+        let (new_index, discovery) = WorkflowIndex::rebuild(harness)?;
+        *index = Some(new_index);
         Ok::<_, HarnessError>(discovery)
     })
     .await
@@ -160,12 +157,14 @@ pub(super) async fn details(
     let mut details: WorkflowDetails = serde_json::from_value(value).map_err(internal_error)?;
     for (name, parameter) in &mut details.parameters {
         parameter.declared_required =
-            workflow.manifest_source["parameters"][name]["required"].as_bool();
+            Some(workflow.manifest_source["parameters"][name]["required"].as_bool());
     }
     for (index, output) in details.outputs.iter_mut().enumerate() {
-        output.declared_kind = workflow.manifest_source["outputs"][index]["kind"]
-            .as_str()
-            .map(str::to_owned);
+        output.declared_kind = Some(
+            workflow.manifest_source["outputs"][index]["kind"]
+                .as_str()
+                .map(str::to_owned),
+        );
     }
     Ok(Json(details))
 }
@@ -293,31 +292,8 @@ pub(super) async fn thumbnail(
     let search_id = id.clone();
     let lookup_harness = harness.clone();
     let workflow = tokio::task::spawn_blocking(move || {
-        let path = {
-            let mut index = index.lock().expect("workflow index lock poisoned");
-            if !index
-                .as_ref()
-                .is_some_and(|cached| std::sync::Arc::ptr_eq(&cached.harness, &lookup_harness))
-            {
-                *index = None;
-                let discovery = lookup_harness.discover_workflows()?;
-                *index = Some(WorkflowIndex {
-                    harness: lookup_harness.clone(),
-                    paths: discovery.indexable_manifest_paths,
-                });
-            }
-            index
-                .as_ref()
-                .and_then(|cached| cached.paths.get(&search_id).cloned())
-        };
-        if let Some(path) = path {
-            if let Ok(workflow) = LoadedWorkflow::load(&path) {
-                if workflow.manifest.id == search_id {
-                    return Ok(Some(workflow));
-                }
-            }
-        }
-        lookup_harness.load_workflow_by_id(&search_id)
+        let mut index = index.lock().expect("workflow index lock poisoned");
+        WorkflowIndex::load(&mut index, lookup_harness, &search_id)
     })
     .await
     .map_err(internal_error)?
