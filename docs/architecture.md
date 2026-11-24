@@ -59,7 +59,12 @@ genaimage local config module -> genaimage-core (configuration only)
 - `genaimage-llm` is planned for [#50](https://github.com/eemaldi/genaimage/issues/50)
   and is not a workspace member today.
 
-The CLI uses the loopback API; the planned browser portal will use the same API.
+The CLI uses the loopback API; the browser portal will use the same API. The
+portal scaffold in `apps/portal` is a Svelte 5, TypeScript and Vite application
+with hash routes and placeholder pages. It has no feature or API client yet.
+During development Vite binds to loopback and proxies `/api` to port 8190;
+see [portal development](../README.md#portal-development). Built assets are not
+embedded or served by the Rust server yet ([#40](https://github.com/eemaldi/genaimage/issues/40)).
 The server uses the core and local adapters rather than reimplementing run
 orchestration or assistant logic.
 
@@ -208,7 +213,7 @@ The versioned [OpenAPI 3.1 contract](api/openapi.json) is served at
 together with `utoipa-axum`; regenerate it with
 `cargo run -p genaimage-server --example openapi`. CI checks for drift,
 structural errors and coverage through the actual router. The SSE response describes event names and links
-to the `EventEnvelope` and `ResyncEvent` schemas. The browser portal is planned.
+to the `EventEnvelope` and `ResyncEvent` schemas. Portal API integration is planned.
 
 ### Uploads API
 

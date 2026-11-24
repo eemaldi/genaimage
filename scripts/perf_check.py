@@ -2,6 +2,7 @@
 """Report informational performance-budget measurements for the release CLI."""
 
 import argparse
+import gzip
 import json
 import math
 import os
@@ -9,13 +10,16 @@ import statistics
 import subprocess
 import sys
 import time
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 ROOT = Path(__file__).resolve().parent.parent
 COLD_START_BUDGET_MS = 150.0
 IDLE_RSS_BUDGET_MB = 40.0
 BINARY_SIZE_BUDGET_MB = 25.0
+PORTAL_JS_BUDGET_KB = 150.0
 
 
 def cargo_target_dir():
@@ -111,6 +115,44 @@ def launch_sample(binary, time_executable=None):
     return elapsed_ms, None
 
 
+class PortalAssetParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.assets = []
+        self.has_entry = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "script" and attrs.get("type", "").lower() == "module" and attrs.get("src"):
+            self.has_entry = True
+            self.assets.append(attrs["src"])
+        elif tag == "link" and "modulepreload" in attrs.get("rel", "").lower().split() and attrs.get("href"):
+            self.assets.append(attrs["href"])
+
+
+def portal_initial_js_gzip_bytes(dist):
+    """Sum separately gzipped entry and modulepreload assets; return None if unbuilt."""
+    try:
+        html = (dist / "index.html").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    parser = PortalAssetParser()
+    parser.feed(html)
+    if not parser.has_entry:
+        raise ValueError("portal index.html references no module entry script")
+    base = dist.resolve()
+    assets = set()
+    for reference in parser.assets:
+        url = urlsplit(reference)
+        if url.scheme or url.netloc:
+            raise ValueError(f"external portal JavaScript cannot be measured: {reference}")
+        path = (base / unquote(url.path).lstrip("/")).resolve()
+        if base not in path.parents:
+            raise ValueError(f"invalid portal asset path: {reference}")
+        assets.add(path)
+    return sum(len(gzip.compress(path.read_bytes(), mtime=0)) for path in assets)
+
+
 def read_criterion_estimates(target_dir):
     results = []
     estimates = sorted((target_dir / "criterion").glob("*/new/estimates.json"))
@@ -140,7 +182,7 @@ def budget_status(value, budget):
     return "OVER BUDGET" if value >= budget else "WITHIN BUDGET"
 
 
-def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmarks=()):
+def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmarks=(), portal_js_bytes=None):
     rows = [
         "## Performance budget (informational)",
         "",
@@ -153,8 +195,12 @@ def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmark
             else "| Idle RSS approximation | Not available on this platform | < 40 MB | NOT MEASURED |"
         ),
         f"| Release binary size | {binary_size_mb:.2f} MB | < 25 MB | {budget_status(binary_size_mb, BINARY_SIZE_BUDGET_MB)} |",
-        "| Portal initial JavaScript | Not measurable yet (portal does not exist yet) | < 150 KB gzip | NOT MEASURED |",
-        "| p95 non-ComfyUI API latency | Not measurable yet (server/API does not exist yet) | < 20 ms | NOT MEASURED |",
+        (
+            f"| Portal initial JavaScript | {portal_js_bytes / 1_000:.2f} KB gzip | < 150 KB gzip | {budget_status(portal_js_bytes / 1_000, PORTAL_JS_BUDGET_KB)} |"
+            if portal_js_bytes is not None
+            else "| Portal initial JavaScript | Not available (portal build not found) | < 150 KB gzip | NOT MEASURED |"
+        ),
+        "| p95 non-ComfyUI API latency | Not measured (API latency benchmark not implemented) | < 20 ms | NOT MEASURED |",
         "",
         "Cold start uses `genaimage --version`; RSS is the executable's peak, not idle server memory. Over-budget measurements are informational and do not fail this run.",
         "",
@@ -209,7 +255,8 @@ def main(argv=None):
         idle_rss_mb = statistics.median(rss_samples) if rss_samples else None
         binary_size_mb = binary.stat().st_size / 1_000_000
         benchmarks = read_criterion_estimates(cargo_target_dir())
-        report = render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmarks)
+        portal_js_bytes = portal_initial_js_gzip_bytes(ROOT / "apps/portal/dist")
+        report = render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmarks, portal_js_bytes)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Performance measurement failed: {error}", file=sys.stderr)
         return 1

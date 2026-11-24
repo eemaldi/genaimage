@@ -5,7 +5,8 @@ image generation. The target is a loopback server with an embedded web portal,
 a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
 and the [architecture](docs/architecture.md). The loopback server offers a health
 endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
-The portal and LLM assistance are planned.
+A portal scaffold is available for development; embedding, feature pages and
+LLM assistance are planned.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.
@@ -114,12 +115,11 @@ cargo run -p genaimage-server --example openapi
 ```
 
 The routes and contract are registered together; CI checks the generated
-contract, its structure and its operations against the real router. Once the
-portal exists and has a pinned `openapi-typescript` development dependency,
-run `npm ci` in `apps/portal` and `python3 scripts/generate_portal_types.py`
-to regenerate `apps/portal/src/lib/api/schema.d.ts`. CI checks the generated
-file with `python3 scripts/generate_portal_types.py --check` when the portal
-is present; it does not install an unpinned generator.
+contract, its structure and its operations against the real router. Run `npm ci`
+in `apps/portal` and `python3 scripts/generate_portal_types.py` from the
+repository root to regenerate `apps/portal/src/lib/api/schema.d.ts`. CI checks
+the generated file with `python3 scripts/generate_portal_types.py --check`,
+using the portal's pinned generator.
 
 ## Persistent records
 
@@ -153,9 +153,31 @@ python3 scripts/ci_check.py
 ```
 
 The command verifies repository links and skill mirrors, formats and lints the
-Rust workspace, runs Rust tests, and checks the Python skill helpers. If
-`apps/portal/package.json` exists, it also installs portal dependencies and runs
-its lint, test and build checks; those steps require Node.js 22 and npm.
+Rust workspace, runs Rust tests, and checks the Python skill helpers. It also
+installs locked portal dependencies, checks generated API types, and runs portal
+lint, type-check, tests and build; those steps require Node.js 24 and npm.
+
+### Portal development
+
+The Svelte 5 portal scaffold contains placeholder pages only; it cannot yet
+operate the harness. Run the server on the proxy's port in one terminal and
+the Vite server in another:
+
+```bash
+GENAIMAGE_SERVER_PORT=8190 cargo run -p genaimage -- serve
+# Separate terminal:
+cd apps/portal
+npm ci
+npm run dev
+```
+
+Open the loopback URL printed by Vite. Its `/api` proxy targets
+`http://127.0.0.1:8190`; the normal server default remains port 3000.
+Routes use URL fragments, including query strings such as
+`#/generate?workflow=example`. `npm run lint`, `npm test` and `npm run build`
+check the scaffold. Embedding the built portal in the server is planned in
+[#40](https://github.com/eemaldi/genaimage/issues/40); the design system and
+feature pages are also future work.
 
 ## Project agent and skills
 

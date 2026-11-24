@@ -26,7 +26,8 @@ Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 
 Health, events, workflows, runs, outputs, uploads and settings are available.
 The [OpenAPI 3.1 contract](api/openapi.json) is also served at
-`GET /api/v1/openapi.json`. The portal is planned.
+`GET /api/v1/openapi.json`. The portal scaffold is development-only; serving
+embedded assets is planned.
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.
 Other loopback IPs are not implicitly allowed. On HTTP port 80 the port may be
@@ -222,6 +223,6 @@ cargo run -p genaimage -- doctor
 ## 4. Verification
 
 Run `python3 scripts/ci_check.py`. It expects Python 3.11 or newer and the Rust
-toolchain with rustfmt and clippy. If `apps/portal/package.json` exists, Node.js
-22, npm and a lockfile are also required; the script installs locked dependencies
-and runs portal checks.
+toolchain with rustfmt and clippy. Node.js 24 and npm are also required; the
+script installs locked dependencies and runs portal checks. For the portal's
+loopback development server and API proxy, see [portal development](../README.md#portal-development).

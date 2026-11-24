@@ -1,3 +1,4 @@
+import gzip
 import json
 import unittest
 from pathlib import Path
@@ -18,8 +19,8 @@ class PerformanceReportTests(unittest.TestCase):
     def test_unavailable_measurements_are_not_marked_as_passing(self):
         report = perf_check.render_report(100.0, None, 10.0, 5)
 
-        self.assertIn("portal does not exist yet", report)
-        self.assertIn("server/API does not exist yet", report)
+        self.assertIn("portal build not found", report)
+        self.assertIn("API latency benchmark not implemented", report)
         self.assertIn("Idle RSS approximation | Not available on this platform", report)
         self.assertEqual(report.count("| NOT MEASURED |"), 3)
 
@@ -30,6 +31,7 @@ class PerformanceReportTests(unittest.TestCase):
             mock.patch.object(perf_check, "launch_sample", return_value=(151.0, 41.0)), \
             mock.patch.object(perf_check, "find_gnu_time", return_value=None), \
             mock.patch.object(perf_check, "read_criterion_estimates", return_value=[]), \
+            mock.patch.object(perf_check, "portal_initial_js_gzip_bytes", return_value=None), \
             mock.patch("builtins.print"), \
             mock.patch.dict(perf_check.os.environ, {"GITHUB_STEP_SUMMARY": ""}):
             self.assertEqual(perf_check.main(["--no-build", "--quick"]), 0)
@@ -63,6 +65,44 @@ class PerformanceReportTests(unittest.TestCase):
         with mock.patch.dict(perf_check.os.environ, {"CARGO_TARGET_DIR": "../target-rv24"}):
             expected = perf_check.ROOT / "../target-rv24" / "release" / "genaimage"
             self.assertEqual(perf_check.release_binary(), expected)
+
+
+class PortalPerformanceTests(unittest.TestCase):
+    def test_sums_entry_and_preloads_once_with_separate_gzip_streams(self):
+        dist = Path('/project/dist')
+        html = '''<script type="module" src="/assets/entry.js?hash=1"></script>
+                  <link rel="modulepreload" href="./assets/shared.js">
+                  <link href="/assets/shared.js" rel="modulepreload">
+                  <link rel="stylesheet" href="/assets/style.css">'''
+        files = {dist / 'assets/entry.js': b'entry' * 100,
+                 dist / 'assets/shared.js': b'shared' * 100}
+        with mock.patch.object(Path, 'read_text', return_value=html), \
+             mock.patch.object(Path, 'read_bytes', lambda path: files[path]):
+            size = perf_check.portal_initial_js_gzip_bytes(dist)
+        self.assertEqual(size, sum(len(gzip.compress(data, mtime=0)) for data in files.values()))
+
+    def test_missing_build_is_not_measured(self):
+        with mock.patch.object(Path, 'read_text', side_effect=FileNotFoundError):
+            self.assertIsNone(perf_check.portal_initial_js_gzip_bytes(Path('/project/dist')))
+
+    def test_broken_or_external_assets_do_not_report_success(self):
+        for html in ('<script type="module" src="https://example.com/a.js"></script>',
+                     '<script type="module" src="/../outside.js"></script>',
+                     '<link rel="modulepreload" href="/assets/chunk.js">',
+                     '<html></html>'):
+            with self.subTest(html=html), mock.patch.object(Path, 'read_text', return_value=html):
+                with self.assertRaises(ValueError):
+                    perf_check.portal_initial_js_gzip_bytes(Path('/project/dist'))
+        with mock.patch.object(Path, 'read_text', return_value='<script type="module" src="/missing.js"></script>'), \
+             mock.patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+            with self.assertRaises(FileNotFoundError):
+                perf_check.portal_initial_js_gzip_bytes(Path('/project/dist'))
+
+    def test_reports_portal_budget_boundary(self):
+        report = perf_check.render_report(1, 1, 1, 5, portal_js_bytes=150_000)
+        self.assertIn('| Portal initial JavaScript | 150.00 KB gzip | < 150 KB gzip | OVER BUDGET |', report)
+        report = perf_check.render_report(1, 1, 1, 5, portal_js_bytes=149_999)
+        self.assertIn('| WITHIN BUDGET |', report.split('Portal initial JavaScript')[1].splitlines()[0])
 
 
 if __name__ == "__main__":
