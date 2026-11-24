@@ -190,6 +190,18 @@ impl Output {
         }
     }
 
+    pub(crate) fn report_local(self, error: &impl std::fmt::Display) -> ExitCode {
+        if self.json {
+            eprintln!(
+                "{}",
+                serde_json::json!({ "status": "error", "error": error.to_string() })
+            );
+        } else {
+            eprintln!("Error: {error}");
+        }
+        Status::LocalFailure.into()
+    }
+
     pub(crate) fn report(self, error: &Error) -> ExitCode {
         let (status, report) = error.describe();
         let mut stderr = io::stderr().lock();

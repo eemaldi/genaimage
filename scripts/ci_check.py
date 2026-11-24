@@ -124,6 +124,141 @@ def check_skill_lock():
     return []
 
 
+def rust_tokens(source):
+    """Tokenise enough Rust to check paths and visibility outside comments and literals."""
+    tokens = []
+    position = 0
+    line = 1
+    while position < len(source):
+        start = position
+        char = source[position]
+        if source.startswith("//", position):
+            end = source.find("\n", position)
+            position = len(source) if end < 0 else end
+        elif source.startswith("/*", position):
+            position += 2
+            depth = 1
+            while depth and position < len(source):
+                if source.startswith("/*", position):
+                    depth += 1
+                    position += 2
+                elif source.startswith("*/", position):
+                    depth -= 1
+                    position += 2
+                else:
+                    position += 1
+            if depth:
+                raise ValueError(f"line {line}: unterminated block comment")
+        else:
+            raw = re.match(r'(?:br|r)(#*)"', source[position:])
+            quoted = re.match(r'(?:b)?"', source[position:])
+            character = re.match(r"(?:b)?'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'", source[position:])
+            if raw:
+                delimiter = '"' + raw.group(1)
+                end = source.find(delimiter, position + raw.end())
+                if end < 0:
+                    raise ValueError(f"line {line}: unterminated raw string")
+                position = end + len(delimiter)
+            elif quoted:
+                position += quoted.end()
+                while position < len(source) and source[position] != '"':
+                    if source[position] == "\\":
+                        position += 1
+                    position += 1
+                if position >= len(source):
+                    raise ValueError(f"line {line}: unterminated string")
+                position += 1
+            elif character:
+                position += character.end()
+            elif char.isspace():
+                position += 1
+            else:
+                identifier = re.match(r"(?:r#)?[a-zA-Z_][a-zA-Z_0-9]*", source[position:])
+                if identifier:
+                    text = identifier.group()
+                    if text.startswith("r#"):
+                        text = text[2:]
+                    position += identifier.end()
+                elif source.startswith(("::", "->"), position):
+                    text = source[position:position + 2]
+                    position += 2
+                else:
+                    text = char
+                    position += 1
+                tokens.append((text, line))
+        line += source.count("\n", start, position)
+    return tokens
+
+
+def check_cli_client_boundary():
+    source = ROOT / "crates" / "genaimage" / "src"
+    local_modules = {
+        "serve": "pub ( crate ) async fn execute ( cli : & Cli ) -> ExitCode {".split(),
+        "config_local": "pub ( crate ) fn execute ( cli : & Cli , force : bool ) -> ExitCode {".split(),
+    }
+    forbidden = {"genaimage_core", "genaimage_comfyui", "genaimage_server"}
+    errors = []
+    for path in sorted(source.rglob("*.rs")):
+        relative = path.relative_to(ROOT)
+        local = path.parent == source and path.stem in local_modules
+        main = path == source / "main.rs"
+        try:
+            tokens = rust_tokens(path.read_text(encoding="utf-8"))
+        except ValueError as error:
+            errors.append(f"{relative}: {error}")
+            continue
+        words = [token for token, _ in tokens]
+        public_dispatches = 0
+        in_use = False
+        attribute_depth = 0
+        for index, (word, line) in enumerate(tokens):
+            if word == "[" and (attribute_depth or
+                                words[max(0, index - 1):index] == ["#"] or
+                                words[max(0, index - 2):index] == ["#", "!"]):
+                attribute_depth += 1
+            elif word == "]" and attribute_depth:
+                attribute_depth -= 1
+            if word == "use":
+                in_use = True
+            elif word == ";":
+                in_use = False
+            if not local and word in forbidden:
+                errors.append(f"{relative}:{line}: client module references a local-only crate")
+            # Reject all file-inclusion macros, including aliases and computed paths.
+            if (not local and word in {"include", "include_str", "include_bytes"}
+                    and (in_use or words[index + 1:index + 2] == ["!"])):
+                errors.append(f"{relative}:{line}: client modules must not use include macros")
+            if (not local and attribute_depth and word == "path"
+                    and words[index + 1:index + 2] == ["="]):
+                errors.append(f"{relative}:{line}: client modules must not use path attributes")
+            local_reference = (word in local_modules and (
+                in_use or (index > 0 and words[index - 1] in {"mod", "::"})
+                or words[index + 1:index + 2] == ["::"]
+            ))
+            server_function = local and words[max(0, index - 2):index + 2] == [
+                "genaimage_server", "::", "serve", "("
+            ]
+            if local_reference and not server_function:
+                declaration = (main and index > 0 and words[index - 1] == "mod"
+                               and words[index + 1:index + 2] == [";"]
+                               and (index < 2 or words[index - 2] not in {"pub", ")"}))
+                call = (main and (index == 0 or words[index - 1] != "::")
+                        and words[index + 1:index + 4] == ["::", "execute", "("])
+                if not declaration and not call:
+                    errors.append(f"{relative}:{line}: only main may call local dispatch functions")
+            if local and word == "macro_export":
+                errors.append(f"{relative}:{line}: local modules must not export macros")
+            if local and word == "pub":
+                signature = local_modules[path.stem]
+                if words[index:index + len(signature)] == signature:
+                    public_dispatches += 1
+                else:
+                    errors.append(f"{relative}:{line}: local modules may expose only their dispatch function")
+        if local and public_dispatches != 1:
+            errors.append(f"{relative}: expected exactly one narrow public dispatch function")
+    return errors
+
+
 def run_command(label, command, cwd=ROOT):
     print(f"==> {label}", flush=True)
     environment = os.environ.copy()
@@ -191,6 +326,7 @@ def main():
         ("Skill mirrors", check_skill_mirrors),
         ("Skill lock", check_skill_lock),
         ("OpenAPI structure", check_openapi.check),
+        ("CLI client boundary", check_cli_client_boundary),
         ("Portal lockfile", lambda: check_portal_lockfile(portal) if portal_present else []),
         ("Prerequisites", lambda: check_runtime_tooling(portal_present)),
     ]
