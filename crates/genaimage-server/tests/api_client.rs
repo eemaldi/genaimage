@@ -326,3 +326,62 @@ async fn submission_does_not_follow_a_post_preserving_redirect() {
     shutdown.send(()).unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn tls_scheme_mismatch_does_not_report_server_not_running() {
+    let api = ApiHarness::start().await;
+    let https_origin = api.origin.replacen("http://", "https://", 1);
+    let client = Client::with_base_url(&https_origin).unwrap();
+    let error = tokio::time::timeout(DEADLINE, client.health())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, Error::Connect { .. }), "{error}");
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn submission_with_lost_response_is_not_replayed() {
+    use std::{io, sync::atomic::AtomicUsize};
+
+    use http_body_util::BodyExt;
+    use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request, Response};
+    use hyper_util::rt::TokioIo;
+    use tokio::{net::TcpListener, sync::oneshot, time::timeout};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client =
+        Client::with_base_url(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+    let (shutdown, mut done) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let received = AtomicUsize::new(0);
+        loop {
+            let socket = tokio::select! {
+                accepted = listener.accept() => accepted.unwrap().0,
+                _ = &mut done => break,
+            };
+            let service = service_fn(|request: Request<Incoming>| async {
+                assert_eq!(request.uri().path(), "/api/v1/runs");
+                assert_eq!(request.headers()["idempotency-key"], "lost-response");
+                let body = request.into_body().collect().await.unwrap().to_bytes();
+                let submission: SubmitRunRequest = serde_json::from_slice(&body).unwrap();
+                assert_eq!(submission.workflow, WORKFLOW);
+                received.fetch_add(1, Ordering::SeqCst);
+                Err::<Response<axum::body::Body>, _>(io::Error::other("drop response"))
+            });
+            assert!(http1::Builder::new()
+                .serve_connection(TokioIo::new(socket), service)
+                .await
+                .is_err());
+        }
+        received.into_inner()
+    });
+
+    let error = timeout(DEADLINE, client.submit_run("lost-response", &submission()))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, Error::Http(_)), "{error}");
+    shutdown.send(()).unwrap();
+    assert_eq!(timeout(DEADLINE, server).await.unwrap().unwrap(), 1);
+}

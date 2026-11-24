@@ -6,7 +6,7 @@ mod media;
 pub use events::{EventStream, EventsQuery, StreamEvent};
 pub use media::{HeadEndpoint, OutputRequest};
 
-use std::{net::SocketAddr, time::Duration};
+use std::{error::Error as StdError, io, net::SocketAddr, time::Duration};
 
 use reqwest::{header, Method, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
@@ -32,6 +32,12 @@ pub enum Error {
     InvalidId(String),
     #[error("Cannot connect to the GenAImage server at {base_url}. Start it with `genaimage serve` and check the address.")]
     ServerNotRunning {
+        base_url: Url,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("Could not establish an HTTP connection to the GenAImage server at {base_url}. Check the URL scheme and address: {source}")]
+    Connect {
         base_url: Url,
         #[source]
         source: reqwest::Error,
@@ -261,13 +267,18 @@ impl Client {
         let request = request.build()?;
         let head = request.method() == Method::HEAD;
         let response = self.http.execute(request).await.map_err(|source| {
-            if source.is_connect() {
+            if !source.is_connect() {
+                Error::Http(source)
+            } else if connection_refused(&source) {
                 Error::ServerNotRunning {
                     base_url: self.base_url.clone(),
                     source,
                 }
             } else {
-                Error::Http(source)
+                Error::Connect {
+                    base_url: self.base_url.clone(),
+                    source,
+                }
             }
         })?;
         let status = response.status();
@@ -284,6 +295,20 @@ impl Client {
         };
         Err(Error::HttpStatus { status, source })
     }
+}
+
+fn connection_refused(error: &reqwest::Error) -> bool {
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        if error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::ConnectionRefused)
+        {
+            return true;
+        }
+        cause = error.source();
+    }
+    false
 }
 
 fn has_content_type(response: &Response, expected: &str) -> bool {

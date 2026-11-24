@@ -40,9 +40,11 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
   `client` feature (reqwest with rustls). The server uses the wire types
   without enabling the client in production. The client defaults to
   `http://127.0.0.1:3000`; `Client::with_base_url` accepts a custom loopback
-  origin. It returns typed problem details and streams media responses without
-  buffering. Live events are a typed SSE stream with explicit cursor replay
-  and resync handling, not automatic reconnection. Run submissions require a
+  origin. A confirmed connection refusal suggests starting `genaimage serve`;
+  other connection failures are reported separately. The client returns typed
+  problem details and streams media responses without buffering.
+  Live events are a typed SSE stream with explicit cursor replay and resync
+  handling, not automatic reconnection. Run submissions require a
   caller-supplied idempotency key and are never retried by the client.
   Workflow IDs `.` and `..` cannot be used in client URL paths because HTTP
   URL parsers treat them as path navigation.
