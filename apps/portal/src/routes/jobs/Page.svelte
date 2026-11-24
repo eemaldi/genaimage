@@ -370,8 +370,9 @@
   {#if confirmation?.rerun}
     <p>
       Review these parameters before submitting a new run. The original run will
-      not be changed. If ComfyUI accepted the original prompt very late, this
-      could duplicate it.
+      not be changed. The prompt was absent from queue and history after the
+      waiting period, but ComfyUI cannot prove absence. It could still accept
+      the original prompt very late, so submitting again could duplicate it.
     </p>
     <p>
       <strong>Workflow:</strong>

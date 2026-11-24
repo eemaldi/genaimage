@@ -282,13 +282,11 @@ pub(super) async fn reconcile(
     let harness = state.harness();
     let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        let result = harness
-            .reconcile_until(&id, &task_state.lifecycle.deadline)
-            .await?;
-        if result.outcome == ReconcileOutcome::Active {
-            task_state.ensure_run_monitor(harness, result.run.id.clone());
-        }
-        Ok(result)
+        harness
+            .reconcile_until_with_active(&id, &task_state.lifecycle.deadline, &|run| {
+                task_state.ensure_run_monitor(harness.clone(), run.id.clone());
+            })
+            .await
     })
     .await?;
     Ok(Json(reconcile_response(result)))
@@ -317,15 +315,11 @@ pub(super) async fn reconcile_all(
     let harness = state.harness();
     let task_state = state.clone();
     let results = run_mutation(&state, async move {
-        let results = harness
-            .reconcile_all_until(&task_state.lifecycle.deadline)
-            .await?;
-        for result in &results {
-            if result.outcome == ReconcileOutcome::Active {
-                task_state.ensure_run_monitor(harness.clone(), result.run.id.clone());
-            }
-        }
-        Ok(results)
+        harness
+            .reconcile_all_until_with_active(&task_state.lifecycle.deadline, &|run| {
+                task_state.ensure_run_monitor(harness.clone(), run.id.clone());
+            })
+            .await
     })
     .await?;
     Ok(Json(api::ReconcileRunsWithOutcomesResponse {

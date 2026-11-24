@@ -328,8 +328,9 @@ Reconciliation reports an `outcome` separately from the durable run `status`:
 | `still_ambiguous` | The evidence did not settle the run's state, for example because history has an incomplete entry and the prompt is not in the queue. |
 
 Explicit reconciliation records a `run_reconciled` event with the outcome;
-background polling does not write these audit events. An active outcome ensures
-one server monitor is running for the original run. The settle window starts
+background polling does not write these audit events. The server starts a
+monitor as soon as queue evidence is reflected in an active run record, even
+if reading history or reconciling another run later fails. The settle window starts
 at the persisted submission attempt and lasts for its configured ComfyUI
 request timeout plus 10 seconds (70 seconds with default settings). For
 older records without a recorded attempt, absence alone remains inconclusive.
@@ -338,8 +339,9 @@ An absent prompt within the window returns
 
 ComfyUI denotes absent history with an empty object; unexpected envelopes
 are inconclusive. Success requires valid output references and either positive
-completion status or a legacy outputs-only entry. `not_found` is not proof
-that the prompt was never accepted: admission can still happen very late.
+completion status or a legacy outputs-only entry. `not_found` means absent from queue
+and history after the settle window. ComfyUI cannot prove absence, so very late
+admission is still possible and a later reconcile can adopt the original run.
 Jobs requires explicit confirmation after `not_found` and only offers the
 separate run when server-side rerun support is available. Neither reconcile
 endpoint resubmits a prompt.

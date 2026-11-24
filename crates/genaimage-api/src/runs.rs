@@ -113,7 +113,8 @@ pub enum ReconcileOutcome {
     Active,
     /// A live submission owner still holds the run.
     InProgressElsewhere,
-    /// An unknown submission was absent from both queue and history.
+    /// The prompt was absent from queue and history after the settle window.
+    /// ComfyUI cannot prove absence; very late admission is still possible.
     NotFound,
     /// The backend evidence did not settle the run's state.
     StillAmbiguous,

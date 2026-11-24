@@ -67,6 +67,7 @@ pub struct FakeComfyState {
     pub object_info_hangs: Arc<AtomicBool>,
     pub object_info_override: Arc<Mutex<Option<Value>>>,
     pub queue_override: Arc<Mutex<Option<Value>>>,
+    pub fail_next_history: Arc<AtomicBool>,
     pub history_overrides: Arc<Mutex<BTreeMap<String, Value>>>,
     pub progress: broadcast::Sender<Value>,
     connected: Arc<Notify>,
@@ -108,6 +109,7 @@ impl Default for FakeComfyState {
             object_info_hangs: Default::default(),
             object_info_override: Default::default(),
             queue_override: Default::default(),
+            fail_next_history: Default::default(),
             history_overrides: Default::default(),
             progress: broadcast::channel(32).0,
             connected: Arc::new(Notify::new()),
@@ -349,6 +351,9 @@ async fn fake_history(
     State(state): State<FakeComfyState>,
     AxumPath(prompt_id): AxumPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if state.fail_next_history.swap(false, Ordering::SeqCst) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if let Some(history) = state
         .history_overrides
         .lock()

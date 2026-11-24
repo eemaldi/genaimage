@@ -204,6 +204,51 @@ async fn late_queue_admission_is_ambiguous_until_adopted_and_monitored() {
 }
 
 #[tokio::test]
+async fn history_error_after_adoption_does_not_prevent_completion_sse() {
+    use futures_util::StreamExt;
+    use genaimage_api::client::{Client, EventsQuery, StreamEvent};
+    for bulk in [false, true] {
+        let api = ApiHarness::start().await;
+        install_workflow(&api);
+        api.fake.fail_submit_response.store(true, Ordering::SeqCst);
+        let submitted = run(
+            submit(&api, "recover", &request()).await,
+            StatusCode::ACCEPTED,
+        )
+        .await;
+        assert_eq!(submitted.status, RunStatus::UnknownSubmission);
+        let client = Client::with_base_url(&api.origin).unwrap();
+        let mut stream = client.events(&EventsQuery::default()).await.unwrap();
+        api.fake.fail_next_history.store(true, Ordering::SeqCst);
+        let path = if bulk {
+            format!("{RUNS}/reconcile")
+        } else {
+            format!("{RUNS}/{}/reconcile", submitted.id)
+        };
+        let response = api.request(Method::POST, &path).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "bulk={bulk}");
+        assert_eq!(
+            client.run(&submitted.id).await.unwrap().status,
+            RunStatus::Queued
+        );
+        api.fake.wait_for_progress_listener(DEADLINE).await.unwrap();
+        api.fake.complete.store(true, Ordering::SeqCst);
+        tokio::time::timeout(DEADLINE, async {
+            while let Some(item) = stream.next().await {
+                if let StreamEvent::Event(envelope) = item.unwrap() {
+                    if matches!(envelope.event, genaimage_api::Event::RunCompleted { run } if run.id == submitted.id) {
+                        return;
+                    }
+                }
+            }
+            panic!("stream closed before completion, bulk={bulk}");
+        }).await.expect("completion SSE event after a failed reconcile");
+        drop(stream);
+        api.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn distinguishes_missing_history_from_incomplete_history_without_resubmitting() {
     let api = ApiHarness::start().await;
     install_workflow(&api);

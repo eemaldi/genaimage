@@ -514,7 +514,7 @@ async fn queue_and_history_gap_after_cancel_leaves_run_open_for_later_success() 
 }
 
 #[tokio::test]
-async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
+async fn settled_not_found_still_allows_late_adoption_from_queue_or_history() {
     for seen_in_queue in [false, true] {
         let (_workspace, harness, state, request) = setup(true);
         let run = harness.submit(request).await.unwrap();
@@ -542,11 +542,13 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
             assert_eq!(events.last().unwrap().event_type, "run_reconciled");
             assert_eq!(events.last().unwrap().payload, json!({"outcome": expected}));
         }
+        // Admission can still happen after the window and a not-found result.
         if seen_in_queue {
             state.lock().unwrap().queue_position = Some(QueuePosition::Pending);
             let result = harness.reconcile(&run.id).await.unwrap();
             assert_eq!(result.run.status, RunStatus::Queued);
             assert_eq!(result.outcome, ReconcileOutcome::Active);
+            assert_eq!(result.run.prompt_id, run.prompt_id);
             state.lock().unwrap().queue_position = None;
             let result = harness.reconcile(&run.id).await.unwrap();
             assert_eq!(result.run.status, RunStatus::Queued);
