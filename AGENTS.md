@@ -19,8 +19,9 @@ ComfyUI image generation, assisted by local LLMs. Read
   server in `crates/genaimage-server`; the local `config init` module uses only
   core configuration and error types to write an example configuration.
 - The server binds to loopback only and currently serves health, workflows, runs,
-  outputs, uploads, settings, live events, an OpenAPI contract and an embedded
-  Svelte portal shell. Portal page features are still being built.
+  outputs, uploads, settings, live events, an OpenAPI contract and the embedded
+  Svelte portal in `apps/portal`: dashboard, generate, jobs, gallery, workflows,
+  run detail and settings. The assistant page is planned.
   ComfyUI and the planned OpenAI-compatible local LLM service remain separate
   processes. Docker Compose support is planned for local dependencies, not public
   exposure.
@@ -42,6 +43,17 @@ ComfyUI image generation, assisted by local LLMs. Read
   never blindly retry it.
 - Preserve source workflows and previously written run/production records.
   Create new versions instead of overwriting them.
+- Operator surfaces, including the portal and the CLI, follow these rules:
+  - Never rebuild a submission from current workflow data. Pin it to the
+    reviewed `workflow_revision`, and use the server's verified
+    `POST /api/v1/runs/{id}/rerun` for identical re-runs.
+  - Generate one idempotency key per reviewed request and keep it until the
+    outcome is definitive. Retry with the same key, never a new one.
+  - Show a run as successful only once the backend has confirmed its outputs.
+  - Keep numbers exact. Do not round large seeds, and do not turn `2.0` into
+    `2` or `-0.0` into `0`.
+  - Show every submitted value before submission, including inherited workflow
+    inputs.
 - Keep the harness thin and fast. The target budgets are cold start < 150 ms,
   idle RSS < 40 MB, binary < 25 MB, portal initial JS < 150 KB gzip and p95
   non-ComfyUI API latency < 20 ms.
@@ -69,3 +81,6 @@ dependency.
 - Before default Cargo builds, run `npm ci && npm run build` in `apps/portal`.
   Use `--no-default-features` for API-only builds.
 - Run the repository CI checks locally with `python3 scripts/ci_check.py`.
+- When rebasing, regenerate `docs/api/openapi.json` and
+  `apps/portal/src/lib/api/schema.d.ts`; never merge them by hand.
+- To supervise an epic through subagents, use the `epic-supervision` skill.
