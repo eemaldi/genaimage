@@ -21,8 +21,8 @@ learnings come from what slowed those epics down.
    routing style, whether a page PR may include small API changes, how many
    developers run in parallel, and whether to close the epic at the end.
 4. Track each work item as a todo with dependencies. Run independent items in
-   waves of at most three. Split very hard issues into parts A and B that share
-   one branch and one PR.
+   waves of at most three. Split hard and very hard issues into Easy or Medium
+   components (see section 2).
 
 ## 2. Pick a model tier
 
@@ -30,13 +30,28 @@ Use the user's pool if they gave one. The usual pool is:
 
 | Difficulty | Model | Reasoning |
 | --- | --- | --- |
-| Easy | `gpt-6-luna` | `xhigh` |
-| Medium | `gpt-6.1-terra` | `high` |
-| Hard | `gpt-6.2-sol` | `medium` |
+| Easy | `gpt-6-luna` | `max` |
+| Medium | `mai-code-2` | `high` |
+| Hard and very hard | No single model. Break the task down. | — |
 
-Always use `long_context`. Reviewers should be at the developer's tier or
-above. Use Sol for anything that touches run submission, reconciliation,
-idempotency, provenance or numeric exactness.
+Use the `long_context` tier whenever the chosen model supports it.
+
+You must not give a hard or very hard task to a single subagent. Break it into
+simpler components that are Easy or Medium. Give each component its own
+subagent, with a clear contract between components. Run each component's tasks
+in order on the same branch, or on separate branches if they are truly
+independent. Here are splits that worked:
+
+- Backend prerequisite, then UI.
+- A form's widgets, then review and submit.
+- Core and server, then the client and portal.
+
+Give anything that touches run submission, reconciliation, idempotency,
+provenance or numeric exactness to Medium, never Easy. Review it at Medium.
+
+Reviewers work at the developer's tier or above, which in practice means
+`mai-code-2` at `high`. If a reviewer is asked to review a whole split feature,
+point it at the integrated branch.
 
 ## 3. Write the developer prompt
 
