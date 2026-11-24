@@ -1488,7 +1488,7 @@
   "paths": {
     "/api/v1/events": {
       "get": {
-        "description": "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
+        "description": "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Pass bus_id with the replay cursor to detect server restarts even when the numeric ID is still in range. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
         "operationId": "events_events",
         "parameters": [
           {
@@ -1502,6 +1502,15 @@
           {
             "in": "query",
             "name": "last_event_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Originating bus UUID. Requires an event ID in last_event_id or Last-Event-ID.",
+            "in": "query",
+            "name": "bus_id",
             "required": false,
             "schema": {
               "type": "string"
@@ -1607,7 +1616,7 @@
         ]
       },
       "head": {
-        "description": "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
+        "description": "SSE event names: run_queued, run_started, run_progress, run_output, run_completed, run_failed, run_cancelled, run_unknown_submission, backend_health_changed, settings_changed; resync terminates the stream. Pass bus_id with the replay cursor to detect server restarts even when the numeric ID is still in range. Ordinary data uses the EventEnvelope schema; resync data uses the ResyncEvent schema (see components/schemas). Connected and heartbeat frames are comments.",
         "operationId": "events_events_head",
         "parameters": [
           {
@@ -1621,6 +1630,15 @@
           {
             "in": "query",
             "name": "last_event_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Originating bus UUID. Requires an event ID in last_event_id or Last-Event-ID.",
+            "in": "query",
+            "name": "bus_id",
             "required": false,
             "schema": {
               "type": "string"

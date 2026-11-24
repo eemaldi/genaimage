@@ -137,10 +137,13 @@ async fn streams_new_events_without_compression_and_ends_on_shutdown() {
 #[tokio::test]
 async fn filters_replay_and_live_events_by_run_id() {
     let api = ApiHarness::start().await;
-    let cursor = publish(&api, 0).id;
+    let cursor = publish(&api, 0);
     run_output(&api, "other");
     let replayed = run_output(&api, "wanted");
-    let path = format!("{EVENTS}?run_id=wanted&last_event_id={cursor}");
+    let path = format!(
+        "{EVENTS}?run_id=wanted&last_event_id={}&bus_id={}",
+        cursor.id, cursor.bus_id
+    );
     let mut client = SseClient::connect(api.request(Method::GET, &path)).await;
     publish(&api, 1);
     run_output(&api, "other");
@@ -186,6 +189,25 @@ async fn header_resume_precedes_query_and_hands_over_to_live_delivery() {
 }
 
 #[tokio::test]
+async fn cursor_from_previous_bus_gets_resync_even_at_current_latest_id() {
+    let old_bus = genaimage_core::EventBus::default();
+    let old = old_bus.publish(Event::SettingsChanged {
+        settings: json!({}),
+    });
+    let api = ApiHarness::start().await;
+    let current = publish(&api, 1);
+    assert_eq!(old.id, current.id);
+    assert_ne!(old.bus_id, current.bus_id);
+
+    let path = format!("{EVENTS}?last_event_id={}&bus_id={}", old.id, old.bus_id);
+    let mut client = SseClient::connect(api.request(Method::GET, &path)).await;
+    let payload = assert_resync(&client.frame().await.unwrap(), "bus_changed");
+    assert_eq!(payload["requested"], old.bus_id.to_string());
+    assert_eq!(payload["current"], current.bus_id.to_string());
+    assert_eq!(client.frame().await, None);
+}
+
+#[tokio::test]
 async fn out_of_range_cursors_get_resync_then_eof() {
     let api = ApiHarness::start().await;
     let first = publish(&api, 0).id;
@@ -221,6 +243,14 @@ async fn invalid_cursors_return_problem_details() {
             &format!("{EVENTS}?last_event_id=18446744073709551616"),
         ),
         api.request(Method::GET, &format!("{EVENTS}?run_id=one&run_id=two")),
+        api.request(
+            Method::GET,
+            &format!("{EVENTS}?last_event_id=1&bus_id=invalid"),
+        ),
+        api.request(
+            Method::GET,
+            &format!("{EVENTS}?bus_id={}", api.core.events().cursor().bus_id),
+        ),
     ] {
         let response = timeout(DEADLINE, request.send()).await.unwrap().unwrap();
         ApiHarness::assert_problem(response, StatusCode::BAD_REQUEST).await;
