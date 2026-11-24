@@ -35,6 +35,8 @@ struct FakeState {
     interrupt_requested: bool,
     downloads: usize,
     submit_gate: Option<Arc<Gate>>,
+    object_info_gate: Option<Arc<Gate>>,
+    uploaded_inputs: Vec<Vec<u8>>,
     queue_gate: Option<Arc<Gate>>,
     history_gate: Option<Arc<Gate>>,
     download_gate: Option<Arc<Gate>>,
@@ -93,7 +95,11 @@ impl ImageBackend for FakeImageBackend {
     }
 
     async fn object_info(&self) -> Result<Value> {
-        Ok(json!({"KSampler": {}, "SaveImage": {}}))
+        let gate = self.state.lock().unwrap().object_info_gate.take();
+        if let Some(gate) = gate {
+            gate.wait().await;
+        }
+        Ok(json!({"KSampler": {}, "SaveImage": {}, "LoadImage": {}}))
     }
 
     async fn submit(
@@ -215,6 +221,20 @@ impl ImageBackend for FakeImageBackend {
         panic!("the fixture has no image inputs to upload")
     }
 
+    async fn upload_image_bytes(
+        &self,
+        bytes: Vec<u8>,
+        filename: &str,
+        _mime: &str,
+    ) -> Result<UploadResponse> {
+        self.state.lock().unwrap().uploaded_inputs.push(bytes);
+        Ok(UploadResponse {
+            name: filename.to_owned(),
+            subfolder: String::new(),
+            kind: "input".into(),
+        })
+    }
+
     async fn download_output(&self, output: &OutputReference) -> Result<Vec<u8>> {
         let gate = self.state.lock().unwrap().download_gate.clone();
         if let Some(gate) = gate {
@@ -297,6 +317,87 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
         version: None,
     };
     (workspace, harness, state, request)
+}
+
+#[tokio::test]
+async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_change() {
+    let (workspace, harness, state, mut request) = setup(true);
+    let root = &harness.config.workflows;
+    let graph_path = root.join("workflow.api.json");
+    let manifest_path = root.join("contract.genaimage.json");
+    let mut graph: Value = serde_json::from_slice(&fs::read(&graph_path).unwrap()).unwrap();
+    graph["12"] = json!({"class_type": "LoadImage", "inputs": {"image": "default.png"}});
+    fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["parameters"]["reference"] =
+        json!({"node":"12", "input":"image", "kind":"image_upload", "required":true});
+    let original_manifest = serde_json::to_vec(&manifest).unwrap();
+    fs::write(&manifest_path, &original_manifest).unwrap();
+    let reference = workspace.path().join("reference.png");
+    fs::write(&reference, b"original").unwrap();
+    request
+        .parameters
+        .insert("reference".into(), json!("reference.png"));
+    let source = harness.submit(request).await.unwrap();
+    assert_eq!(source.status, RunStatus::UnknownSubmission);
+    let before = serde_json::to_value(harness.repository.get(&source.id).unwrap()).unwrap();
+    let source_preflight = Path::new(&source.output_dir).join("preflight.json");
+    let preflight_before = fs::read(&source_preflight).unwrap();
+
+    let (gate, mut entered) = new_gate();
+    {
+        let mut state = state.lock().unwrap();
+        state.object_info_gate = Some(gate.clone());
+        state.submission = None;
+        state.lose_submit_response = false;
+    }
+    let rerun = {
+        let harness = harness.clone();
+        let id = source.id.clone();
+        tokio::spawn(async move { harness.rerun("rerun".into(), id).await.unwrap() })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    fs::write(&reference, b"modified").unwrap();
+    fs::write(&graph_path, b"{}").unwrap();
+    fs::write(&manifest_path, b"{}").unwrap();
+    gate.release.add_permits(1);
+    let result = rerun.await.unwrap();
+    let run = result.run;
+    assert!(!result.replayed);
+    assert_ne!(run.id, source.id);
+    assert_ne!(run.prompt_id, source.prompt_id);
+    assert_eq!(run.rerun_of.as_deref(), Some(source.id.as_str()));
+    assert_eq!(run.parameters, source.parameters);
+    assert_eq!(run.workflow_version, source.workflow_version);
+    assert_eq!(run.workflow_sha256, source.workflow_sha256);
+    assert_eq!(
+        run.workflow_manifest_sha256,
+        source.workflow_manifest_sha256
+    );
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.uploaded_inputs,
+            [b"original".to_vec(), b"original".to_vec()]
+        );
+        let prompt = &state.submission.as_ref().unwrap().0;
+        assert_eq!(prompt["3"]["inputs"], json!({"seed": 123, "steps": 10}));
+    }
+    assert_eq!(
+        fs::read(Path::new(&run.output_dir).join("workflow-manifest.json")).unwrap(),
+        original_manifest
+    );
+    assert_eq!(
+        serde_json::to_value(harness.repository.get(&source.id).unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(fs::read(source_preflight).unwrap(), preflight_before);
+    let replay = harness.rerun("rerun".into(), source.id).await.unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.run.id, run.id);
 }
 
 #[tokio::test(start_paused = true)]
@@ -655,7 +756,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
+    db.execute_batch("ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {
@@ -1392,7 +1493,7 @@ async fn legacy_submitting_record_requires_backend_evidence() {
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
+    db.execute_batch("ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
     drop(db);
     let lock_dir = config.state_database.with_extension("sqlite3.submissions");
     fs::remove_dir_all(&lock_dir).unwrap();

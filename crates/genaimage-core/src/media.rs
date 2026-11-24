@@ -161,7 +161,7 @@ async fn blocking<T: Send + 'static>(
         .map_err(std::io::Error::other)?
 }
 
-fn open_stored(root: &Path, path: &Path) -> Result<File> {
+pub(crate) fn open_stored(root: &Path, path: &Path) -> Result<File> {
     path.strip_prefix(root)
         .ok()
         .and_then(|path| open_regular_beneath(root, root, path))

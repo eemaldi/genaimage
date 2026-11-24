@@ -167,6 +167,21 @@ impl Client {
                     .json(body),
             )
             .await?;
+        Self::submission_result(run)
+    }
+
+    /// Creates a new run from verified provenance. Keep the same key when checking an uncertain response.
+    pub async fn rerun_run(&self, id: &str, idempotency_key: &str) -> Result<RunResponse, Error> {
+        let run = self
+            .json(
+                self.request(Method::POST, &["runs", id, "rerun"])?
+                    .header("idempotency-key", idempotency_key),
+            )
+            .await?;
+        Self::submission_result(run)
+    }
+
+    fn submission_result(run: RunResponse) -> Result<RunResponse, Error> {
         match run.status {
             RunStatus::Created | RunStatus::Submitting | RunStatus::UnknownSubmission => {
                 Err(Error::UnknownSubmission(Box::new(run)))

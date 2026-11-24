@@ -157,7 +157,8 @@ export function createApiClient(
     read: (response: Response) => Promise<T>,
   ): Promise<T> {
     const guidance =
-      init.method === 'POST' && url === '/api/v1/runs'
+      init.method === 'POST' &&
+      (url === '/api/v1/runs' || /^\/api\/v1\/runs\/[^/]+\/rerun$/.test(url))
         ? 'The submission may have gone through. Check the run list and reconcile before submitting again.'
         : 'Check that the local GenAImage server is running and up to date.';
     let response: Response;
@@ -257,6 +258,12 @@ export function createApiClient(
       json('post', '/api/v1/runs', {
         ...options,
         body,
+        header: { 'Idempotency-Key': idempotencyKey },
+      }),
+    rerunRun: (id: string, idempotencyKey: string, options?: RequestOptions) =>
+      json('post', '/api/v1/runs/{id}/rerun', {
+        ...options,
+        path: { id },
         header: { 'Idempotency-Key': idempotencyKey },
       }),
     cancelRun: (id: string, options?: RequestOptions) =>

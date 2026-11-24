@@ -853,6 +853,7 @@ dependencies = [
  "hex",
  "image",
  "jsonschema",
+ "mime_guess",
  "rusqlite",
  "rustix",
  "serde",

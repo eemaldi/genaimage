@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +80,13 @@ pub struct RunRecord {
     pub workflow_id: String,
     pub workflow_version: String,
     pub workflow_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub preflight_sha256: Option<String>,
     pub generation_mode: GenerationMode,
     pub status: RunStatus,
     pub parameters: Value,
@@ -125,6 +132,8 @@ pub struct NewRun {
     pub workflow_id: String,
     pub workflow_version: String,
     pub workflow_sha256: String,
+    pub workflow_manifest_sha256: Option<String>,
+    pub rerun_of: Option<String>,
     pub generation_mode: GenerationMode,
     pub status: RunStatus,
     pub parameters: Value,
@@ -744,8 +753,8 @@ fn insert_run(connection: &Connection, run: &NewRun, owned: bool) -> Result<RunR
             INSERT INTO runs (
                 id, prompt_id, client_id, workflow_id, workflow_version,
                 workflow_sha256, generation_mode, status, parameters_json,
-                output_dir, created_at, updated_at, uses_submission_lock
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)
+                output_dir, created_at, updated_at, uses_submission_lock, workflow_manifest_sha256, rerun_of
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14)
             "#,
         params![
             run.id,
@@ -760,6 +769,8 @@ fn insert_run(connection: &Connection, run: &NewRun, owned: bool) -> Result<RunR
             run.output_dir,
             now,
             owned,
+            run.workflow_manifest_sha256,
+            run.rerun_of,
         ],
     )?;
     load_run(connection, &run.id)
@@ -849,6 +860,11 @@ const MIGRATION_7: &str = "
     );
     CREATE INDEX outputs_created_id_idx ON outputs(created_at, id);
 ";
+const MIGRATION_8: &str = "
+    ALTER TABLE runs ADD COLUMN workflow_manifest_sha256 TEXT;
+    ALTER TABLE runs ADD COLUMN rerun_of TEXT REFERENCES runs(id);
+    ALTER TABLE runs ADD COLUMN preflight_sha256 TEXT;
+";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -857,6 +873,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_5,
     MIGRATION_6,
     MIGRATION_7,
+    MIGRATION_8,
 ];
 
 // The first version that must already contain each table before migration.
@@ -870,6 +887,10 @@ const EXPECTED_TABLES: [(&str, i64, &str); 6] = [
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
+    (
+        8,
+        "SELECT workflow_manifest_sha256, rerun_of, preflight_sha256 FROM runs LIMIT 0",
+    ),
     (5, "SELECT node_warnings_json FROM runs LIMIT 0"),
     (
         6,
@@ -1050,6 +1071,19 @@ impl AsyncRunRepository {
     pub(crate) async fn insert_owned_submission(&self, run: NewRun) -> Result<RunRecord> {
         self.call(move |repo| repo.insert_owned_submission(&run))
             .await
+    }
+
+    pub(crate) async fn record_preflight(&self, id: String, checksum: String) -> Result<()> {
+        self.call(move |repo| {
+            repo.guarded(|connection| {
+                connection.execute(
+                    "UPDATE runs SET preflight_sha256 = ?2 WHERE id = ?1 AND preflight_sha256 IS NULL",
+                    params![id, checksum],
+                )?;
+                Ok(())
+            })
+        })
+        .await
     }
 
     pub(crate) async fn uses_submission_lock(&self, id: &str) -> Result<bool> {
@@ -1242,6 +1276,9 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         workflow_id: row.get("workflow_id")?,
         workflow_version: row.get("workflow_version")?,
         workflow_sha256: row.get("workflow_sha256")?,
+        workflow_manifest_sha256: row.get("workflow_manifest_sha256")?,
+        rerun_of: row.get("rerun_of")?,
+        preflight_sha256: row.get("preflight_sha256")?,
         generation_mode: parse_generation_mode(&row.get::<_, String>("generation_mode")?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
         status: RunStatus::parse(&row.get::<_, String>("status")?)
@@ -1343,6 +1380,8 @@ mod submission_tests {
                         workflow_id: "workflow".into(),
                         workflow_version: "1".into(),
                         workflow_sha256: "hash".into(),
+                        workflow_manifest_sha256: None,
+                        rerun_of: None,
                         generation_mode: GenerationMode::Generic,
                         status: RunStatus::Submitting,
                         parameters: serde_json::json!({}),

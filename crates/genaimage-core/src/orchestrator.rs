@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -69,6 +70,33 @@ pub struct KeyedSubmission {
     pub run: RunRecord,
     pub replayed: bool,
 }
+
+enum SubmissionRequest {
+    New(RunRequest),
+    Rerun(String),
+}
+
+#[derive(Deserialize)]
+struct RecordedInputs {
+    preset: Option<String>,
+    parameters: Value,
+    source_inputs: Vec<InputFileRecord>,
+}
+
+struct VerifiedInput {
+    record: InputFileRecord,
+    bytes: Vec<u8>,
+    filename: String,
+    media_type: String,
+}
+
+const WORKFLOW_MISMATCH: HarnessError =
+    HarnessError::RerunMismatch("The workflow graph or bindings no longer match the source run.");
+const INPUT_MISMATCH: HarnessError =
+    HarnessError::RerunMismatch("An input image is missing or no longer matches the source run.");
+const MISSING_PROVENANCE: HarnessError = HarnessError::RerunMismatch(
+    "The workflow bindings or recorded inputs cannot be verified for the source run.",
+);
 
 struct TransitionGuard {
     bus: EventBus,
@@ -428,7 +456,11 @@ impl Harness {
 
     pub async fn submit(&self, request: RunRequest) -> Result<RunRecord> {
         Ok(self
-            .submit_inner(request, None, &CancellationToken::new())
+            .submit_inner(
+                SubmissionRequest::New(request),
+                None,
+                &CancellationToken::new(),
+            )
             .await?
             .run)
     }
@@ -454,7 +486,46 @@ impl Harness {
         request: RunRequest,
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
-        let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&request)?));
+        self.submit_keyed_request(key, SubmissionRequest::New(request), deadline)
+            .await
+    }
+
+    /// Submit a distinct run from recorded provenance, independent of source status.
+    /// Dropping the caller does not cancel the attempt.
+    pub async fn rerun(&self, key: String, id: String) -> Result<KeyedSubmission> {
+        let harness = self.clone();
+        tokio::spawn(async move {
+            harness
+                .rerun_until(key, id, &CancellationToken::new())
+                .await
+        })
+        .await
+        .map_err(transition_task_error)?
+    }
+
+    /// As with `submit_keyed_until`, await this through durable finalisation.
+    pub async fn rerun_until(
+        &self,
+        key: String,
+        id: String,
+        deadline: &CancellationToken,
+    ) -> Result<KeyedSubmission> {
+        self.submit_keyed_request(key, SubmissionRequest::Rerun(id), deadline)
+            .await
+    }
+
+    async fn submit_keyed_request(
+        &self,
+        key: String,
+        request: SubmissionRequest,
+        deadline: &CancellationToken,
+    ) -> Result<KeyedSubmission> {
+        let fingerprint = match &request {
+            // Keep existing fingerprints stable. The tuple cannot serialise as a submit body.
+            SubmissionRequest::New(request) => serde_json::to_vec(request)?,
+            SubmissionRequest::Rerun(id) => serde_json::to_vec(&("rerun", id))?,
+        };
+        let fingerprint = hex::encode(Sha256::digest(fingerprint));
         let lock = self
             .events
             .run_lock(&self.database_identity, &key, RunLockKind::SubmitKey);
@@ -576,58 +647,226 @@ impl Harness {
         Ok((errors, uploads))
     }
 
+    async fn rerun_provenance(&self, run: &RunRecord) -> Result<(String, RecordedInputs)> {
+        if let Some(hash) = &run.workflow_manifest_sha256 {
+            let expected = run.preflight_sha256.as_ref().ok_or(MISSING_PROVENANCE)?;
+            let path = Path::new(&run.output_dir).join("preflight.json");
+            let mut file = crate::media::open_stored(&self.config.runs, &path)
+                .map_err(|_| MISSING_PROVENANCE)?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|_| MISSING_PROVENANCE)?;
+            if hex::encode(Sha256::digest(&bytes)) != *expected {
+                return Err(MISSING_PROVENANCE);
+            }
+            let inputs = serde_json::from_slice(&bytes).map_err(|_| MISSING_PROVENANCE)?;
+            return Ok((hash.clone(), inputs));
+        }
+        // A legacy run needs indexed completion provenance. The sidecar used
+        // to be reread after binding, so also check the archived bound graph.
+        let mut stored = self
+            .open_run_manifest(&run.id)
+            .await
+            .map_err(|error| match error {
+                HarnessError::ManifestNotFound | HarnessError::MediaIntegrity => MISSING_PROVENANCE,
+                other => other,
+            })?;
+        if !stored.integrity_verified {
+            return Err(MISSING_PROVENANCE);
+        }
+        let manifest: artifacts::RunManifest =
+            serde_json::from_reader(&mut stored.media.file).map_err(|_| MISSING_PROVENANCE)?;
+        if manifest.run_id != run.id
+            || manifest.workflow.id != run.workflow_id
+            || manifest.workflow.version != run.workflow_version
+            || manifest.workflow.sha256 != run.workflow_sha256
+            // Legacy path uploads hashed the file separately after upload.
+            || manifest.source_inputs.iter().any(|input| input.upload_id.is_none())
+        {
+            return Err(MISSING_PROVENANCE);
+        }
+        Ok((
+            manifest.workflow.manifest_sha256,
+            RecordedInputs {
+                preset: manifest.preset,
+                parameters: manifest.parameters,
+                source_inputs: manifest.source_inputs,
+            },
+        ))
+    }
+
+    fn verify_legacy_bindings(
+        &self,
+        run: &RunRecord,
+        loaded: &LoadedWorkflow,
+        bound: &BoundWorkflow,
+        inputs: &[InputFileRecord],
+    ) -> Result<()> {
+        let path = Path::new(&run.output_dir).join("resolved-workflow.json");
+        let file =
+            crate::media::open_stored(&self.config.runs, &path).map_err(|_| MISSING_PROVENANCE)?;
+        let archived: Value = serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|_| MISSING_PROVENANCE)?;
+        let names = inputs
+            .iter()
+            .map(|input| (input.parameter.clone(), input.uploaded_name.clone()))
+            .collect();
+        let mut resolved = BoundWorkflow {
+            workflow: bound.workflow.clone(),
+            parameters: bound.parameters.clone(),
+            image_uploads: bound.image_uploads.clone(),
+        };
+        loaded
+            .apply_uploaded_images(&mut resolved, &names)
+            .map_err(|_| MISSING_PROVENANCE)?;
+        if resolved.workflow != archived {
+            return Err(WORKFLOW_MISMATCH);
+        }
+        Ok(())
+    }
+
+    async fn verified_rerun_inputs(
+        &self,
+        bound: &BoundWorkflow,
+        inputs: Vec<InputFileRecord>,
+    ) -> Result<Vec<VerifiedInput>> {
+        let count = inputs.len();
+        let mut inputs: BTreeMap<_, _> = inputs
+            .into_iter()
+            .map(|record| (record.parameter.clone(), record))
+            .collect();
+        if count != inputs.len() || count != bound.image_uploads.len() {
+            return Err(INPUT_MISMATCH);
+        }
+        let store = self.uploads();
+        let mut verified = Vec::new();
+        for (parameter, path) in &bound.image_uploads {
+            let mut record = inputs.remove(parameter).ok_or(INPUT_MISMATCH)?;
+            record.uploaded_name.clear();
+            let input = if let Some(id) = &record.upload_id {
+                if path.to_str() != Some(id.as_str()) {
+                    return Err(INPUT_MISMATCH);
+                }
+                let metadata = store
+                    .metadata(id)
+                    .await
+                    .map_err(|_| INPUT_MISMATCH)?
+                    .ok_or(INPUT_MISMATCH)?;
+                if metadata.sha256 != record.sha256 || metadata.byte_size != record.byte_size {
+                    return Err(INPUT_MISMATCH);
+                }
+                let bytes = store
+                    .verified_bytes(&metadata)
+                    .await
+                    .map_err(|_| INPUT_MISMATCH)?;
+                VerifiedInput {
+                    record,
+                    bytes,
+                    filename: format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension()),
+                    media_type: metadata.media_type,
+                }
+            } else {
+                let path = resolve_input_path(&self.config.workspace, path);
+                if path.to_str() != Some(record.source_path.as_str()) {
+                    return Err(INPUT_MISMATCH);
+                }
+                let mut input = snapshot_local_input(parameter, &path, Some(record.byte_size))
+                    .map_err(|_| INPUT_MISMATCH)?;
+                if record.sha256 != input.record.sha256
+                    || record.byte_size != input.record.byte_size
+                {
+                    return Err(INPUT_MISMATCH);
+                }
+                let extension = Path::new(&input.filename)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| format!(".{s}"))
+                    .unwrap_or_default();
+                input.filename = format!("genaimage-{}{extension}", Uuid::new_v4());
+                input.record = record;
+                input
+            };
+            verified.push(input);
+        }
+        Ok(verified)
+    }
+
     async fn upload_bound_images(
         &self,
         loaded: &LoadedWorkflow,
         bound: &mut BoundWorkflow,
         stored: Option<BTreeMap<String, UploadMetadata>>,
+        snapshots: Option<Vec<VerifiedInput>>,
         deadline: &CancellationToken,
     ) -> Result<Vec<InputFileRecord>> {
         let mut source_inputs = Vec::new();
         let mut uploaded_names = BTreeMap::new();
-        if let Some(stored) = stored {
-            let store = self.uploads();
-            for (parameter, metadata) in stored {
-                let upload_source = async {
-                    let bytes = store.verified_bytes(&metadata).await?;
-                    // A distinct input name for this attempt avoids reusing an existing backend file.
+        let store = self.uploads();
+        let snapshots = match (snapshots, stored) {
+            (Some(snapshots), _) => snapshots,
+            (None, Some(stored)) => {
+                let mut snapshots = Vec::new();
+                for (parameter, metadata) in stored {
+                    let bytes = before_deadline(deadline, async {
+                        Ok(store.verified_bytes(&metadata).await?)
+                    })
+                    .await
+                    .map_err(|error| upload_failure(&parameter, error))?;
                     let filename = format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension());
-                    self.backend
-                        .upload_image_bytes(bytes, &filename, &metadata.media_type)
-                        .await
-                };
-                let upload = before_deadline(deadline, upload_source).await.map_err(|error| {
-                    HarnessError::Workflow(format!("Reference upload for parameter '{parameter}' failed before prompt submission: {error}"))
-                })?;
-                if upload.kind != "input"
-                    || !upload.subfolder.is_empty()
-                    || !single_path_component(&upload.name)
-                    || upload.name.contains([':', '[', ']'])
-                    || upload.name.chars().any(char::is_control)
-                {
-                    return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{parameter}'; no prompt was submitted.")));
+                    snapshots.push(VerifiedInput {
+                        bytes,
+                        filename,
+                        media_type: metadata.media_type,
+                        record: InputFileRecord {
+                            parameter,
+                            source_path: String::new(),
+                            upload_id: Some(metadata.upload_id),
+                            sha256: metadata.sha256,
+                            original_filename: Some(metadata.original_filename),
+                            byte_size: metadata.byte_size,
+                            uploaded_name: String::new(),
+                        },
+                    });
                 }
-                source_inputs.push(InputFileRecord {
-                    parameter: parameter.clone(),
-                    source_path: String::new(),
-                    upload_id: Some(metadata.upload_id),
-                    sha256: metadata.sha256,
-                    original_filename: Some(metadata.original_filename),
-                    byte_size: metadata.byte_size,
-                    uploaded_name: upload.name.clone(),
-                });
-                uploaded_names.insert(parameter, upload.name);
+                snapshots
             }
-        } else {
-            for (parameter, relative_path) in &bound.image_uploads {
-                let path = resolve_input_path(&self.config.workspace, relative_path);
-                let upload = self.backend.upload_image(&path).await?;
-                let mut source = artifacts::checksum_file(&path)?;
-                source.parameter = parameter.clone();
-                source.uploaded_name = upload.name.clone();
-                source_inputs.push(source);
-                uploaded_names.insert(parameter.clone(), upload.name);
+            (None, None) => bound
+                .image_uploads
+                .iter()
+                .map(|(parameter, path)| {
+                    snapshot_local_input(
+                        parameter,
+                        &resolve_input_path(&self.config.workspace, path),
+                        None,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?,
+        };
+        for VerifiedInput {
+            mut record,
+            bytes,
+            filename,
+            media_type,
+        } in snapshots
+        {
+            let upload = before_deadline(
+                deadline,
+                self.backend
+                    .upload_image_bytes(bytes, &filename, &media_type),
+            )
+            .await
+            .map_err(|error| upload_failure(&record.parameter, error))?;
+            if upload.kind != "input"
+                || !upload.subfolder.is_empty()
+                || !single_path_component(&upload.name)
+                || upload.name.contains([':', '[', ']'])
+                || upload.name.chars().any(char::is_control)
+            {
+                return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{}'; no prompt was submitted.", record.parameter)));
             }
+            uploaded_names.insert(record.parameter.clone(), upload.name.clone());
+            record.uploaded_name = upload.name;
+            source_inputs.push(record);
         }
         loaded.apply_uploaded_images(bound, &uploaded_names)?;
         Ok(source_inputs)
@@ -635,12 +874,48 @@ impl Harness {
 
     async fn submit_inner(
         &self,
-        request: RunRequest,
+        submission: SubmissionRequest,
         keyed: Option<(String, String)>,
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
         let repository = self.repository.as_async();
-        let loaded = if keyed.is_some() {
+        let (request, source) = match submission {
+            SubmissionRequest::New(request) => (request, None),
+            SubmissionRequest::Rerun(id) => {
+                let run = repository.get(&id).await?;
+                let (manifest_hash, provenance) = self.rerun_provenance(&run).await?;
+                if provenance.parameters != run.parameters {
+                    return Err(MISSING_PROVENANCE);
+                }
+                let request = RunRequest {
+                    workflow: run.workflow_id.clone(),
+                    preset: provenance.preset,
+                    parameters: serde_json::from_value(run.parameters.clone())
+                        .map_err(|_| MISSING_PROVENANCE)?,
+                    version: None,
+                };
+                (
+                    request,
+                    Some((run, manifest_hash, provenance.source_inputs)),
+                )
+            }
+        };
+        let loaded = if let Some((run, manifest_hash, _)) = &source {
+            if !single_path_component(&request.workflow) {
+                return Err(WORKFLOW_MISMATCH);
+            }
+            let loaded = self
+                .load_workflow_by_id(&request.workflow)
+                .map_err(|_| WORKFLOW_MISMATCH)?
+                .ok_or(WORKFLOW_MISMATCH)?;
+            if loaded.manifest.version != run.workflow_version
+                || loaded.workflow_sha256 != run.workflow_sha256
+                || loaded.manifest_sha256 != *manifest_hash
+            {
+                return Err(WORKFLOW_MISMATCH);
+            }
+            loaded
+        } else if keyed.is_some() {
             if !single_path_component(&request.workflow) {
                 return Err(HarnessError::InvalidRunRequest(
                     "Select a configured workflow by ID, not by path.".into(),
@@ -661,7 +936,7 @@ impl Harness {
         } else {
             self.load_workflow(&request.workflow)?
         };
-        let stored = if keyed.is_some() {
+        let stored = if keyed.is_some() && source.is_none() {
             let (errors, uploads) = self
                 .check_api_bindings(&loaded, request.preset.as_deref(), &request.parameters)
                 .await?;
@@ -678,9 +953,30 @@ impl Harness {
         } else {
             None
         };
-        let mut bound = loaded.bind(request.preset.as_deref(), &request.parameters)?;
-        before_deadline(deadline, self.validate_workflow_nodes(&bound.workflow)).await?;
+        let mut bound = loaded
+            .bind(request.preset.as_deref(), &request.parameters)
+            .map_err(|error| {
+                if source.is_some() {
+                    WORKFLOW_MISMATCH
+                } else {
+                    error
+                }
+            })?;
         let parameters = serde_json::to_value(&bound.parameters)?;
+        let (rerun_of, snapshots) = if let Some((run, _, inputs)) = source {
+            if parameters != run.parameters {
+                return Err(WORKFLOW_MISMATCH);
+            }
+            if run.workflow_manifest_sha256.is_none() {
+                self.verify_legacy_bindings(&run, &loaded, &bound, &inputs)?;
+            }
+            let snapshots =
+                before_deadline(deadline, self.verified_rerun_inputs(&bound, inputs)).await?;
+            (Some(run.id), Some(snapshots))
+        } else {
+            (None, None)
+        };
+        before_deadline(deadline, self.validate_workflow_nodes(&bound.workflow)).await?;
 
         let run_id = format!("run-{}", Uuid::new_v4());
         let prompt_id = Uuid::new_v4().to_string();
@@ -701,6 +997,8 @@ impl Harness {
             workflow_id: loaded.manifest.id.clone(),
             workflow_version: loaded.manifest.version.clone(),
             workflow_sha256: loaded.workflow_sha256.clone(),
+            workflow_manifest_sha256: Some(loaded.manifest_sha256.clone()),
+            rerun_of,
             generation_mode: GenerationMode::Generic,
             status: RunStatus::Submitting,
             parameters: parameters.clone(),
@@ -709,7 +1007,7 @@ impl Harness {
         let is_keyed = keyed.is_some();
         let prepare_files = async {
             let source_inputs = self
-                .upload_bound_images(&loaded, &mut bound, stored, deadline)
+                .upload_bound_images(&loaded, &mut bound, stored, snapshots, deadline)
                 .await?;
             if is_keyed {
                 fs::create_dir_all(self.config.runs.join(&loaded.manifest.id))?;
@@ -720,14 +1018,13 @@ impl Harness {
             artifacts::initialise_run_files(
                 &output_dir,
                 &bound,
-                &loaded.manifest_path,
+                &loaded,
                 request.preset.as_deref(),
                 &parameters,
                 &source_inputs,
             )
-            .await
         };
-        let run = if let Some((key, fingerprint)) = keyed {
+        let (run, preflight) = if let Some((key, fingerprint)) = keyed {
             let run = match repository
                 .reserve_submission(key, fingerprint, new_run)
                 .await?
@@ -741,31 +1038,40 @@ impl Harness {
                 SubmissionReservation::New(run) => run,
             };
             // The mapping is already durable: never release it, even after a local failure.
-            if let Err(error) = prepare_files.await {
-                let message = error.to_string();
-                let Some((run, transition)) = self
-                    .transition_to_terminal(&run.id, RunStatus::Failed, Some(&message), None)
-                    .await?
-                else {
+            let preflight = match prepare_files.await {
+                Ok(preflight) => preflight,
+                Err(error) => {
+                    let message = error.to_string();
+                    let Some((run, transition)) = self
+                        .transition_to_terminal(&run.id, RunStatus::Failed, Some(&message), None)
+                        .await?
+                    else {
+                        return Ok(KeyedSubmission {
+                            run: repository.get(&run.id).await?,
+                            replayed: false,
+                        });
+                    };
+                    repository
+                        .record_event(&run.id, "preparation_failed", Some(&message), &Value::Null)
+                        .await?;
+                    transition.publish(Event::RunFailed { run: run.clone() });
                     return Ok(KeyedSubmission {
-                        run: repository.get(&run.id).await?,
+                        run,
                         replayed: false,
                     });
-                };
-                repository
-                    .record_event(&run.id, "preparation_failed", Some(&message), &Value::Null)
-                    .await?;
-                transition.publish(Event::RunFailed { run: run.clone() });
-                return Ok(KeyedSubmission {
-                    run,
-                    replayed: false,
-                });
-            }
-            run
+                }
+            };
+            (run, preflight)
         } else {
-            prepare_files.await?;
-            repository.insert_owned_submission(new_run).await?
+            let preflight = prepare_files.await?;
+            (
+                repository.insert_owned_submission(new_run).await?,
+                preflight,
+            )
         };
+        repository
+            .record_preflight(run.id.clone(), preflight)
+            .await?;
         repository
             .record_event(
                 &run.id,
@@ -1521,6 +1827,54 @@ fn resolve_input_path(workspace: &Path, path: &Path) -> PathBuf {
     } else {
         workspace.join(path)
     }
+}
+
+fn upload_failure(parameter: &str, error: HarnessError) -> HarnessError {
+    HarnessError::Workflow(format!(
+        "Reference upload for parameter '{parameter}' failed before prompt submission: {error}"
+    ))
+}
+
+fn snapshot_local_input(
+    parameter: &str,
+    path: &Path,
+    expected_size: Option<u64>,
+) -> Result<VerifiedInput> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || expected_size.is_some_and(|size| size != metadata.len()) {
+        return Err(INPUT_MISMATCH);
+    }
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(metadata.len().saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err(INPUT_MISMATCH);
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| HarnessError::InvalidPath {
+            path: path.to_path_buf(),
+            reason: "file name is not valid UTF-8".into(),
+        })?;
+    Ok(VerifiedInput {
+        record: InputFileRecord {
+            parameter: parameter.into(),
+            source_path: path.display().to_string(),
+            upload_id: None,
+            original_filename: None,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            byte_size: metadata.len(),
+            uploaded_name: String::new(),
+        },
+        bytes,
+        filename: filename.into(),
+        media_type: mime_guess::from_path(path)
+            .first_raw()
+            .unwrap_or("application/octet-stream")
+            .into(),
+    })
 }
 
 fn read_source_inputs(output_dir: &Path) -> Result<Vec<InputFileRecord>> {

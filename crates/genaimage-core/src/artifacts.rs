@@ -35,6 +35,8 @@ pub struct InputFileRecord {
 pub struct RunManifest {
     pub schema_version: u32,
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
     pub prompt_id: String,
     pub client_id: String,
     pub workflow: WorkflowManifestRecord,
@@ -57,17 +59,17 @@ pub struct WorkflowManifestRecord {
     pub manifest_path: String,
 }
 
-pub async fn initialise_run_files(
+pub(crate) fn initialise_run_files(
     output_dir: &Path,
     bound: &BoundWorkflow,
-    workflow_manifest_path: &Path,
+    loaded: &crate::workflow::LoadedWorkflow,
     preset: Option<&str>,
     parameters: &Value,
     inputs: &[InputFileRecord],
-) -> Result<()> {
+) -> Result<String> {
     create_new_atomic(
         &output_dir.join("workflow-manifest.json"),
-        fs::read(workflow_manifest_path)?.as_slice(),
+        &loaded.manifest_bytes,
     )?;
     create_new_atomic(
         &output_dir.join("resolved-workflow.json"),
@@ -75,15 +77,14 @@ pub async fn initialise_run_files(
     )?;
     let preflight = serde_json::json!({
         "schema_version": 1,
-        "workflow_manifest_path": workflow_manifest_path.display().to_string(),
+        "workflow_manifest_path": loaded.manifest_path.display().to_string(),
         "preset": preset,
         "parameters": parameters,
         "source_inputs": inputs
     });
-    create_new_atomic(
-        &output_dir.join("preflight.json"),
-        serde_json::to_vec_pretty(&preflight)?.as_slice(),
-    )
+    let bytes = serde_json::to_vec_pretty(&preflight)?;
+    create_new_atomic(&output_dir.join("preflight.json"), &bytes)?;
+    Ok(sha256_hex(&bytes))
 }
 
 pub(crate) async fn materialise_history(
@@ -144,13 +145,17 @@ pub(crate) async fn materialise_history(
     let manifest = RunManifest {
         schema_version: RUN_MANIFEST_VERSION,
         run_id: run.id.clone(),
+        rerun_of: run.rerun_of.clone(),
         prompt_id: run.prompt_id.clone(),
         client_id: run.client_id.clone(),
         workflow: WorkflowManifestRecord {
             id: run.workflow_id.clone(),
             version: run.workflow_version.clone(),
             sha256: run.workflow_sha256.clone(),
-            manifest_sha256: sha256_hex(&fs::read(output_dir.join("workflow-manifest.json"))?),
+            manifest_sha256: match &run.workflow_manifest_sha256 {
+                Some(hash) => hash.clone(),
+                None => sha256_hex(&fs::read(output_dir.join("workflow-manifest.json"))?),
+            },
             manifest_path: workflow_manifest_path.display().to_string(),
         },
         preset: read_preflight_field(&output_dir, "preset")?

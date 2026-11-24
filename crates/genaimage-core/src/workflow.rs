@@ -112,6 +112,8 @@ pub struct LoadedWorkflow {
     pub manifest: WorkflowManifest,
     pub workflow: Value,
     pub workflow_sha256: String,
+    pub(crate) manifest_bytes: Vec<u8>,
+    pub(crate) manifest_sha256: String,
 }
 
 impl LoadedWorkflow {
@@ -168,6 +170,8 @@ impl LoadedWorkflow {
             workflow_path,
             manifest,
             workflow_sha256: sha256_hex(&workflow_bytes),
+            manifest_sha256: sha256_hex(&manifest_bytes),
+            manifest_bytes,
             workflow,
         };
         loaded.validate()?;

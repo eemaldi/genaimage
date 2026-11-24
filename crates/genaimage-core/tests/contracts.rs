@@ -774,6 +774,8 @@ fn legacy_generic_run_and_manifest_are_still_readable() {
             workflow_id: run.workflow_id,
             workflow_version: run.workflow_version,
             workflow_sha256: run.workflow_sha256,
+            workflow_manifest_sha256: None,
+            rerun_of: None,
             generation_mode: run.generation_mode,
             status: RunStatus::Queued,
             parameters: run.parameters,

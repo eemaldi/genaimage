@@ -140,6 +140,53 @@ describe('portal API client', () => {
     },
   );
 
+  it.each([200, 201])(
+    'sends one bodyless keyed re-run (HTTP %s)',
+    async (status) => {
+      const fetcher = mockFetch().mockResolvedValueOnce(
+        Response.json({ id: 'new', rerun_of: 'a/#?' }, { status }),
+      );
+      const signal = new AbortController().signal;
+      await expect(
+        createApiClient(fetcher).rerunRun('a/#?', 'key', { signal }),
+      ).resolves.toEqual({ id: 'new', rerun_of: 'a/#?' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const [url, init] = fetcher.mock.calls[0];
+      expect(url).toBe('/api/v1/runs/a%2F%23%3F/rerun');
+      expect(init).toMatchObject({ method: 'POST', redirect: 'error', signal });
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('key');
+      expect(new Headers(init?.headers).has('Content-Type')).toBe(false);
+    },
+  );
+
+  it('does not retry a re-run after a conflict or an ambiguous network error', async () => {
+    const problem = {
+      status: 409,
+      type: 'urn:genaimage:problem:rerun-mismatch',
+      title: 'Conflict',
+      detail: 'The re-run cannot be verified.',
+      recovery: 'Use Remix.',
+    };
+    const fetcher = mockFetch()
+      .mockResolvedValueOnce(
+        Response.json(problem, {
+          status: 409,
+          headers: { 'Content-Type': 'application/problem+json' },
+        }),
+      )
+      .mockRejectedValue(new TypeError('Disconnected'));
+    const api = createApiClient(fetcher);
+    await expect(api.rerunRun('original', 'key')).rejects.toMatchObject({
+      problem,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await expect(api.rerunRun('original', 'key')).rejects.toBeInstanceOf(
+      ApiNetworkError,
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it('sends uploads as multipart and lets the browser set the boundary', async () => {
     const fetcher = mockFetch().mockResolvedValueOnce(
       Response.json({ id: 'upload-1' }, { status: 201 }),
