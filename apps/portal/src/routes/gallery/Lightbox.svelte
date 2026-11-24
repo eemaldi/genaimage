@@ -43,6 +43,7 @@
     output?.content_type.startsWith('image/') ?? false,
   );
   let runId = $derived(output?.run_id);
+  let nextAction = $derived(nextLoading ? undefined : next);
 
   $effect(() => {
     if (!open || !runId) return;
@@ -147,7 +148,7 @@
       if (event.key === 'ArrowUp') viewport.scrollTop -= 48;
       if (event.key === 'ArrowDown') viewport.scrollTop += 48;
     } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-      const navigate = event.key === 'ArrowLeft' ? previous : next;
+      const navigate = event.key === 'ArrowLeft' ? previous : nextAction;
       if (navigate) {
         event.preventDefault();
         navigate();
@@ -160,7 +161,10 @@
 <Dialog bind:open title="Output preview" {returnFocus}>
   <div class="actions">
     <Button onclick={previous} disabled={!previous}>Previous</Button>
-    <Button onclick={next} disabled={!next}>Next</Button>
+    <!-- Keep focus here while the next page loads or the final output opens. -->
+    <Button aria-disabled={!nextAction} onclick={() => nextAction?.()}
+      >Next</Button
+    >
     {#if output}<a
         href={outputMediaUrl(output.id)}
         download={output.source_filename}>Download original</a
@@ -224,6 +228,11 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
+  }
+  .actions :global(.ui-button[aria-disabled='true']) {
+    cursor: not-allowed;
+    opacity: 0.65;
+    background: var(--surface);
   }
   .hint,
   output {

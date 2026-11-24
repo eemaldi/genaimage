@@ -290,25 +290,40 @@ function twoPages() {
   );
 }
 
-it('advances across a page boundary using the same cursor as the grid', async () => {
-  twoPages();
+it('keeps Next focused across a delayed cursor page and accepts ArrowRight afterwards', async () => {
+  const first = Array.from({ length: 100 }, (_, i) => output(102 - i));
+  let resolvePage!: (value: ReturnType<typeof page>) => void;
+  const delayed = new Promise<ReturnType<typeof page>>((resolve) => {
+    resolvePage = resolve;
+  });
+  list.mockImplementation(async (query) =>
+    query?.cursor === 'second' ? delayed : page(first, 'second'),
+  );
   route('#/gallery?output=run-3%3A3');
   const dialog = await screen.findByRole('dialog', { name: 'Output preview' });
-  await within(dialog).findByRole('heading', { name: 'File 3' });
   const next = within(dialog).getByRole('button', { name: 'Next' });
-  await waitFor(() => expect((next as HTMLButtonElement).disabled).toBe(false));
-  await fireEvent.keyDown(
-    within(dialog).getByRole('button', { name: 'Close' }),
-    { key: 'ArrowRight' },
-  );
+  await waitFor(() => expect(next.getAttribute('aria-disabled')).toBe('false'));
+  next.focus();
+  const user = userEvent.setup();
+  await user.keyboard('{Enter}');
+  expect(within(dialog).getByText('Loading the next output…')).toBeTruthy();
+  expect(next.getAttribute('aria-disabled')).toBe('true');
+  expect((next as HTMLButtonElement).disabled).toBe(false);
+  expect(document.activeElement).toBe(next);
+  await user.keyboard('{Enter}{ArrowRight}');
   expect(
-    await within(dialog).findByRole('heading', { name: 'File 2' }),
-  ).toBeTruthy();
-  expect(list).toHaveBeenCalledWith(
-    expect.objectContaining({ cursor: 'second' }),
-    expect.anything(),
-  );
-  expect(location.hash).toBe('#/gallery?output=run-2%3A2');
+    list.mock.calls.filter(([query]) => query?.cursor === 'second'),
+  ).toHaveLength(1);
+  expect(location.hash).toBe('#/gallery?output=run-3%3A3');
+
+  resolvePage(page([output(2), output(1)]));
+  await within(dialog).findByRole('heading', { name: 'File 2' });
+  expect(document.activeElement).toBe(next);
+  await user.keyboard('{ArrowRight}');
+  await within(dialog).findByRole('heading', { name: 'File 1' });
+  expect(document.activeElement).toBe(next);
+  expect(next.getAttribute('aria-disabled')).toBe('true');
+  expect(location.hash).toBe('#/gallery?output=run-1%3A1');
 });
 
 it('does not navigate to an unrelated output before a deep-linked position is known', async () => {
@@ -320,15 +335,15 @@ it('does not navigate to an unrelated output before a deep-linked position is kn
   expect(
     within(dialog).getByText(/unavailable until this output appears/),
   ).toBeTruthy();
-  for (const direction of ['Previous', 'Next']) {
-    expect(
-      (
-        within(dialog).getByRole('button', {
-          name: direction,
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
-  }
+  expect(
+    (
+      within(dialog).getByRole('button', {
+        name: 'Previous',
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  const next = within(dialog).getByRole('button', { name: 'Next' });
+  expect(next.getAttribute('aria-disabled')).toBe('true');
   await fireEvent.keyDown(
     within(dialog).getByRole('button', { name: 'Close' }),
     { key: 'ArrowRight' },
@@ -336,16 +351,8 @@ it('does not navigate to an unrelated output before a deep-linked position is kn
   expect(location.hash).toBe('#/gallery?output=run-2%3A2');
   const grid = await screen.findByRole('region', { name: 'Gallery outputs' });
   await scroll(grid, gridGeometry(720).rowHeight * 23);
-  await waitFor(() =>
-    expect(
-      (
-        within(dialog).getByRole('button', {
-          name: 'Next',
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(false),
-  );
-  await fireEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+  await waitFor(() => expect(next.getAttribute('aria-disabled')).toBe('false'));
+  await fireEvent.click(next);
   expect(
     await within(dialog).findByRole('heading', { name: 'File 1' }),
   ).toBeTruthy();
