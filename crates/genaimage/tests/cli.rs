@@ -278,6 +278,7 @@ async fn workflows_are_discovered_inspected_and_validated_by_id() {
     assert_eq!(
         report(server.cli(&args).await, 0),
         json!({
+            "revision": details["revision"],
             "valid": true, "parameter_errors": [],
             "node_check": {"status": "available", "missing_classes": [], "reason": null}
         })

@@ -5,7 +5,8 @@ use std::{sync::atomic::Ordering, time::Duration};
 use common::{install_workflow, ApiHarness};
 use genaimage_api::{
     ReconcileOutcome, ReconcileRunResponse, ReconcileRunsWithOutcomesResponse, RunEventsResponse,
-    RunListResponse, RunResponse, RunStatus,
+    RunListResponse, RunResponse, RunStatus, WorkflowDetails, WorkflowListResponse,
+    WorkflowValidationResponse,
 };
 use genaimage_core::Event;
 use reqwest::{header, Method, Response, StatusCode};
@@ -30,6 +31,117 @@ async fn submit(api: &ApiHarness, key: &str, body: &Value) -> Response {
 async fn run(response: Response, expected: StatusCode) -> RunResponse {
     assert_eq!(response.status(), expected);
     response.json().await.unwrap()
+}
+
+const WORKFLOW: &str = "/api/v1/workflows/contract-workflow";
+
+async fn validate(api: &ApiHarness, body: &Value) -> Response {
+    api.request(Method::POST, &format!("{WORKFLOW}/validate"))
+        .json(body)
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn assert_workflow_changed(response: Response) {
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-changed",
+    )
+    .await;
+    assert!(problem.recovery.contains("review it again"));
+}
+
+#[tokio::test]
+async fn graph_replacement_blocks_pinned_submit_and_validate_before_backend_io() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let reviewed: WorkflowDetails = api.get_json(WORKFLOW).await;
+    assert!(reviewed.revision.is_some());
+    let catalogue: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(catalogue.workflows[0].revision, reviewed.revision);
+
+    let graph = api.core.config().workflows.join("workflow.api.json");
+    let mut replacement: Value = serde_json::from_slice(&std::fs::read(&graph).unwrap()).unwrap();
+    replacement["9"]["inputs"]["filename_prefix"] = json!("replacement");
+    std::fs::write(&graph, serde_json::to_vec(&replacement).unwrap()).unwrap();
+
+    let mut body = request();
+    body["workflow_revision"] = json!(reviewed.revision);
+    assert_workflow_changed(submit(&api, "graph-changed", &body).await).await;
+    assert_workflow_changed(validate(&api, &json!({"workflow_revision": reviewed.revision})).await)
+        .await;
+    assert_eq!(api.fake.object_info_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    assert!(api.get_json::<RunListResponse>(RUNS).await.runs.is_empty());
+
+    let updated: WorkflowDetails = api.get_json(WORKFLOW).await;
+    let catalogue: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(catalogue.workflows[0].revision, updated.revision);
+    assert_ne!(updated.revision, reviewed.revision);
+    let response = validate(
+        &api,
+        &json!({"preset":"fast", "workflow_revision": updated.revision}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let validation: WorkflowValidationResponse = response.json().await.unwrap();
+    assert!(validation.valid);
+    assert_eq!(validation.revision, updated.revision);
+    body["workflow_revision"] = json!(validation.revision);
+    // The rejected attempt does not reserve the key.
+    run(
+        submit(&api, "graph-changed", &body).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn sidecar_change_blocks_stale_revision_but_unpinned_submit_uses_current_defaults() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let path = api.core.config().workflows.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["parameters"]["steps"]["default"] = json!(11);
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let reviewed: WorkflowDetails = api.get_json(WORKFLOW).await;
+    assert!(reviewed.revision.is_some());
+    let mut body = json!({"workflow":"contract-workflow", "parameters":{"seed":99}, "workflow_revision":reviewed.revision});
+    let original = run(submit(&api, "pinned", &body).await, StatusCode::ACCEPTED).await;
+    assert_eq!(original.parameters["steps"], 11);
+    let node_checks = api.fake.object_info_calls.load(Ordering::SeqCst);
+
+    manifest["parameters"]["steps"]["default"] = json!(12);
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert_workflow_changed(submit(&api, "stale", &body).await).await;
+    assert_eq!(
+        api.fake.object_info_calls.load(Ordering::SeqCst),
+        node_checks
+    );
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+
+    let replayed = run(submit(&api, "pinned", &body).await, StatusCode::OK).await;
+    assert_eq!(replayed.id, original.id);
+    assert_eq!(replayed.parameters["steps"], 11);
+    let updated: WorkflowDetails = api.get_json(WORKFLOW).await;
+    assert_ne!(updated.revision, reviewed.revision);
+    body["workflow_revision"] = json!(updated.revision);
+    let conflict =
+        ApiHarness::assert_problem(submit(&api, "pinned", &body).await, StatusCode::CONFLICT).await;
+    assert_eq!(conflict.problem_type, "about:blank");
+    assert!(conflict.detail.contains("idempotency key"));
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+
+    body.as_object_mut().unwrap().remove("workflow_revision");
+    let unpinned = run(submit(&api, "legacy", &body).await, StatusCode::ACCEPTED).await;
+    assert_eq!(unpinned.parameters["steps"], 12);
+    assert_eq!(unpinned.workflow_sha256, original.workflow_sha256);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
 }
 
 #[tokio::test]

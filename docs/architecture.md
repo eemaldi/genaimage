@@ -202,13 +202,13 @@ again with a fresh stream and snapshot. Resync frames are not subject to
 The workflows API is read-only apart from validation, which does not submit a run:
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
-  tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
+  tags, category, `revision` and optional `thumbnail_url`) and non-fatal `diagnostics` for
   manifests and references that cannot be inspected, including IDs `.` and `..`
   which browsers normalise as URL path segments. An unreadable directory or
   manifest makes the catalogue incomplete; its diagnostic identifies the problem.
   The API does not generate detail URLs.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
-  constraints and UI hints, presets and outputs. The effective `required` and
+  constraints and UI hints, presets and outputs, plus `revision`. The effective `required` and
   output `kind` remain available; `declared_required` and `declared_kind` are
   null when the manifest omitted those fields, otherwise they contain the
   declared value. Responses from older servers may omit these fields; the CLI
@@ -220,13 +220,16 @@ The workflows API is read-only apart from validation, which does not submit a ru
   uniqueness, detail, validation, submission and rerun refuse the ID with a hint
   to repair the path or its permissions.
 - `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
-  `preset` and `parameters` (an object of overrides). Preset values are overridden
-  by parameters and manifest defaults fill remaining values. It returns `valid`,
+  `preset`, `parameters` (an object of overrides) and `workflow_revision`. Preset
+  values are overridden by parameters and manifest defaults fill remaining values.
+  HTTP 200 returns the `revision` of the snapshot checked, `valid`,
   `parameter_errors` (each with `parameter` and `reason`), and `node_check`.
   The node status is `available`, `missing` (with `missing_classes`) or
   `unavailable` (with a reason); an unavailable or timed-out check is not valid.
   An unknown preset or malformed request returns problem details. Validation
-  neither uploads images nor submits generation.
+  neither uploads images nor submits generation. When `workflow_revision` is
+  supplied, validation checks it before contacting ComfyUI and returns the same
+  workflow-changed problem as submission if the snapshot no longer matches.
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
@@ -298,7 +301,14 @@ and a recovery hint.
 A submission body is `application/json`, for example
 `{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
 configured manifest ID, not a local path. `preset`, `parameters` (default `{}`)
-and `version` (an optional new output directory name) are optional. Server-side
+and `version` (an optional new output directory name) are optional. Pass the
+reviewed workflow’s opaque `revision` as `workflow_revision` to pin the
+submission to its exact API graph and sidecar bytes. A stale revision returns
+HTTP 409 `application/problem+json` with type
+`urn:genaimage:problem:workflow-changed` before backend I/O. Reload the
+workflow and review the resolved parameters again before submitting. Omitting
+`workflow_revision` (or sending `null`) is unpinned: core uses the current
+workflow and its defaults. The CLI currently submits unpinned. Server-side
 image file paths are not accepted. Use the `upload_id` string returned by the
 uploads API as the value of an `image_upload` parameter, for example
 `"parameters":{"reference":"sha256:<digest>"}`. Workflow validation reports
@@ -315,7 +325,9 @@ omitted defaults do not change the key's meaning). The core reserves the key
 and creates the run atomically in SQLite before uploading references or sending
 the prompt. Keys remain
 bound to their runs across restarts. A replay returns HTTP 200 and the original
-run's **current** state; a different request for a reserved key returns 409.
+run's **current** state without rechecking the workflow revision. The revision
+is part of the request fingerprint: changing it under the same key returns the
+existing idempotency conflict (HTTP 409, `about:blank`).
 Validation rejected before reservation does not consume the key. If artefact
 preparation fails after reservation, the run is recorded as `failed` and is not
 sent. Before sending a reference to ComfyUI, the core verifies the SHA-256 of
@@ -583,6 +595,13 @@ without submitting or reconciling the run.
 SQLite holds operational queue and event state. Portable run manifests record
 resolved inputs, workflow, identifiers, outputs and checksums; preserve them
 across reconnects and migrations.
+
+The workflow revision is derived from the existing graph and sidecar
+SHA-256 fingerprints. Pinned submission verifies the revision on the same
+in-memory snapshot that core binds and uses to build the prompt. The run
+record already stores both fingerprints, so no additional provenance field
+is needed. The revision covers the two files, not backend model weights or
+other external assets referenced by the graph.
 
 Re-run uses the source's recorded workflow ID and version, preset reference,
 resolved parameters (including seed) and image references. The core verifies

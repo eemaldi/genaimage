@@ -1115,6 +1115,13 @@
           "workflow": {
             "description": "Manifest ID, not a local path.",
             "type": "string"
+          },
+          "workflow_revision": {
+            "description": "Revision from the reviewed workflow. Omit for unpinned submission.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1222,6 +1229,10 @@
             },
             "type": "object"
           },
+          "revision": {
+            "description": "Opaque revision of the API graph and manifest.",
+            "type": "string"
+          },
           "schema_version": {
             "format": "int32",
             "minimum": 0,
@@ -1256,6 +1267,7 @@
           "schema_version",
           "id",
           "version",
+          "revision",
           "title",
           "workflow",
           "parameters",
@@ -1490,6 +1502,10 @@
           "name": {
             "type": "string"
           },
+          "revision": {
+            "description": "Opaque revision of the API graph and manifest.",
+            "type": "string"
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -1512,7 +1528,8 @@
         "required": [
           "id",
           "name",
-          "version"
+          "version",
+          "revision"
         ],
         "type": "object"
       },
@@ -1528,6 +1545,13 @@
             "type": "object"
           },
           "preset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflow_revision": {
+            "description": "Revision from the reviewed workflow. Omit for unpinned validation.",
             "type": [
               "string",
               "null"
@@ -1548,11 +1572,16 @@
             },
             "type": "array"
           },
+          "revision": {
+            "description": "Opaque revision of the API graph and manifest that were validated.",
+            "type": "string"
+          },
           "valid": {
             "type": "boolean"
           }
         },
         "required": [
+          "revision",
           "valid",
           "parameter_errors",
           "node_check"
@@ -3324,7 +3353,7 @@
         ]
       },
       "post": {
-        "description": "Submit explicit bindings; use the same key for retries.",
+        "description": "Submit explicit bindings, optionally pinned to a reviewed workflow revision; use the same key for retries.",
         "operationId": "runs_submit",
         "parameters": [
           {
@@ -3422,7 +3451,7 @@
                 }
               }
             },
-            "description": "Problem details"
+            "description": "Workflow revision mismatch or idempotency key conflict"
           },
           "413": {
             "content": {
@@ -5890,6 +5919,16 @@
               }
             },
             "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow revision mismatch"
           },
           "413": {
             "content": {

@@ -11,6 +11,9 @@ use utoipa::ToSchema;
 pub struct SubmitRunRequest {
     /// Manifest ID, not a local path.
     pub workflow: String,
+    /// Revision from the reviewed workflow. Omit for unpinned submission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_revision: Option<String>,
     #[serde(default)]
     pub preset: Option<String>,
     #[serde(default)]

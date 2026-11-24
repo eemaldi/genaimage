@@ -52,12 +52,19 @@ fn not_found(id: &str) -> Problem {
     )
 }
 
-async fn load(harness: std::sync::Arc<Harness>, id: String) -> Result<LoadedWorkflow, Problem> {
+async fn load(
+    harness: std::sync::Arc<Harness>,
+    id: String,
+    revision: Option<String>,
+) -> Result<LoadedWorkflow, Problem> {
     let search_id = id.clone();
-    tokio::task::spawn_blocking(move || harness.load_workflow_by_id(&search_id))
+    tokio::task::spawn_blocking(move || harness.load_api_workflow(&search_id, revision.as_deref()))
         .await
         .map_err(internal_error)?
-        .map_err(internal_error)?
+        .map_err(|error| match error {
+            HarnessError::WorkflowChanged => Problem::workflow_changed(),
+            error => internal_error(error),
+        })?
         .ok_or_else(|| not_found(&id))
 }
 
@@ -87,9 +94,10 @@ pub(super) async fn list(
         .map_err(internal_error)?;
     Ok(Json(WorkflowListResponse {
         workflows: discovery
-            .manifests
+            .workflows
             .into_iter()
-            .map(|manifest| {
+            .map(|workflow| {
+                let manifest = workflow.manifest;
                 let thumbnail_url = manifest
                     .thumbnail
                     .as_ref()
@@ -108,6 +116,7 @@ pub(super) async fn list(
                     category: manifest.category,
                     thumbnail_url,
                     version: manifest.version,
+                    revision: Some(workflow.revision),
                 }
             })
             .collect(),
@@ -145,8 +154,18 @@ pub(super) async fn details(
     id: Result<AxumPath<String>, PathRejection>,
 ) -> Result<Json<WorkflowDetails>, Problem> {
     let id = parse_id(id)?;
-    let workflow = load(state.harness(), id).await?;
-    let value = serde_json::to_value(workflow.manifest).map_err(internal_error)?;
+    let workflow = load(state.harness(), id, None).await?;
+    #[derive(serde::Serialize)]
+    struct Details<'a> {
+        #[serde(flatten)]
+        manifest: &'a genaimage_core::workflow::WorkflowManifest,
+        revision: String,
+    }
+    let value = serde_json::to_value(Details {
+        manifest: &workflow.manifest,
+        revision: workflow.revision(),
+    })
+    .map_err(internal_error)?;
     let mut details: WorkflowDetails = serde_json::from_value(value).map_err(internal_error)?;
     for (name, parameter) in &mut details.parameters {
         parameter.declared_required =
@@ -175,6 +194,7 @@ pub(super) async fn details(
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow revision mismatch", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -190,14 +210,14 @@ pub(super) async fn validate(
 ) -> Result<Json<WorkflowValidationResponse>, Problem> {
     let id = parse_id(id)?;
     let harness = state.harness();
-    let workflow = load(harness.clone(), id).await?;
     let Json(request) = request.map_err(|error| {
         Problem::new(
             error.status(),
             error.body_text(),
-            "Send a JSON object with parameters and an optional preset.",
+            "Send a JSON object with optional parameters, preset and workflow_revision.",
         )
     })?;
+    let workflow = load(harness.clone(), id, request.workflow_revision).await?;
     let errors = harness
         .validate_api_bindings(&workflow, request.preset.as_deref(), &request.parameters)
         .await
@@ -250,6 +270,7 @@ pub(super) async fn validate(
         },
     };
     Ok(Json(WorkflowValidationResponse {
+        revision: Some(workflow.revision()),
         valid: parameter_errors.is_empty()
             && node_check.status == WorkflowNodeCheckStatus::Available,
         parameter_errors,

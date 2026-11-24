@@ -26,8 +26,8 @@ use crate::{
     },
     uploads::{detected_type, UploadMetadata, UploadStore},
     workflow::{
-        read_regular_file, BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError,
-        ParameterKind, WorkflowManifest,
+        read_regular_file, workflow_revision, BoundWorkflow, GenerationMode, LoadedWorkflow,
+        ParameterError, ParameterKind, WorkflowManifest,
     },
     Event, EventBus, HarnessError, Result,
 };
@@ -41,6 +41,9 @@ pub struct RunRequest {
     pub parameters: BTreeMap<String, Value>,
     #[serde(default)]
     pub version: Option<String>,
+    // Omitting the field preserves idempotency fingerprints for unpinned requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_revision: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -150,7 +153,7 @@ fn transition_task_error(error: tokio::task::JoinError) -> HarnessError {
 
 #[derive(Debug, Default)]
 pub struct WorkflowDiscovery {
-    pub manifests: Vec<WorkflowManifest>,
+    pub workflows: Vec<DiscoveredWorkflow>,
     /// Paths of unique, valid IDs safe to resolve from this discovery snapshot.
     pub indexable_manifest_paths: BTreeMap<String, PathBuf>,
     /// IDs blocked by duplicates or invalid manifests in this snapshot.
@@ -162,6 +165,12 @@ pub struct WorkflowDiscovery {
     /// Failures that prevent an authoritative uniqueness check.
     pub traversal_failures: Vec<WorkflowTraversalFailure>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiscoveredWorkflow {
+    pub manifest: WorkflowManifest,
+    pub revision: String,
 }
 
 #[derive(Clone, Debug)]
@@ -384,7 +393,10 @@ impl Harness {
                 {
                     ambiguous.insert(id);
                 }
-                discovery.manifests.push(loaded.manifest);
+                discovery.workflows.push(DiscoveredWorkflow {
+                    revision: loaded.revision(),
+                    manifest: loaded.manifest,
+                });
             }
             WorkflowVisit::Manifest(Err(error)) => {
                 if let Some(source) = sidecar_source(path) {
@@ -413,8 +425,8 @@ impl Harness {
             .traversal_failures
             .sort_by(|left, right| left.path.cmp(&right.path));
         discovery
-            .manifests
-            .sort_by(|left, right| left.id.cmp(&right.id));
+            .workflows
+            .sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
         discovery
             .diagnostics
             .sort_by(|left, right| left.path.cmp(&right.path));
@@ -529,6 +541,24 @@ impl Harness {
             _ => Err(HarnessError::Workflow(format!(
                 "workflow id '{id}' is ambiguous; resolve duplicate manifests"
             ))),
+        }
+    }
+
+    /// Resolve and optionally pin a workflow by ID before using the returned snapshot.
+    pub fn load_api_workflow(
+        &self,
+        id: &str,
+        revision: Option<&str>,
+    ) -> Result<Option<LoadedWorkflow>> {
+        match self.load_workflow_by_id(id) {
+            Ok(Some(loaded)) => {
+                loaded.verify_revision(revision)?;
+                Ok(Some(loaded))
+            }
+            Ok(None) | Err(HarnessError::Workflow(_)) if revision.is_some() => {
+                Err(HarnessError::WorkflowChanged)
+            }
+            result => result,
         }
     }
 
@@ -951,6 +981,7 @@ impl Harness {
                     parameters: serde_json::from_value(run.parameters.clone())
                         .map_err(|_| MISSING_PROVENANCE)?,
                     version: None,
+                    workflow_revision: None,
                 };
                 (
                     request,
@@ -970,8 +1001,7 @@ impl Harness {
                 })?
                 .ok_or(WORKFLOW_MISMATCH)?;
             if loaded.manifest.version != run.workflow_version
-                || loaded.workflow_sha256 != run.workflow_sha256
-                || loaded.manifest_sha256 != *manifest_hash
+                || loaded.revision() != workflow_revision(&run.workflow_sha256, manifest_hash)
             {
                 return Err(WORKFLOW_MISMATCH);
             }
@@ -990,12 +1020,14 @@ impl Harness {
             }) {
                 return Err(HarnessError::InvalidRunRequest("Use a version containing only letters, digits, hyphens, underscores or dots, other than '.' and '..'.".into()));
             }
-            self.load_workflow_by_id(&request.workflow)?
+            self.load_api_workflow(&request.workflow, request.workflow_revision.as_deref())?
                 .ok_or_else(|| {
                     HarnessError::Workflow(format!("workflow '{}' was not found", request.workflow))
                 })?
         } else {
-            self.load_workflow(&request.workflow)?
+            let loaded = self.load_workflow(&request.workflow)?;
+            loaded.verify_revision(request.workflow_revision.as_deref())?;
+            loaded
         };
         let stored = if keyed.is_some() && source.is_none() {
             let (errors, uploads) = self

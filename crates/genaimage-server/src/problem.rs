@@ -28,6 +28,15 @@ impl Problem {
         }
     }
 
+    pub(crate) fn workflow_changed() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            genaimage_core::HarnessError::WorkflowChanged.to_string(),
+            "Reload the workflow and review it again before submitting.",
+        )
+        .with_type("urn:genaimage:problem:workflow-changed")
+    }
+
     pub(crate) fn invalid_path(error: PathRejection, recovery: &str) -> Self {
         Self::new(error.status(), error.body_text(), recovery)
     }

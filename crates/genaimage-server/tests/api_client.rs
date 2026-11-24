@@ -18,6 +18,7 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 fn submission() -> SubmitRunRequest {
     SubmitRunRequest {
+        workflow_revision: None,
         workflow: WORKFLOW.into(),
         preset: Some("fast".into()),
         parameters: [("seed".into(), json!(99))].into(),
@@ -43,12 +44,16 @@ async fn health_openapi_and_workflows() {
     std::fs::write(&manifest, serde_json::to_vec(&body).unwrap()).unwrap();
     std::fs::write(dir.join("thumb.png"), PNG).unwrap();
 
-    assert_eq!(client.workflows().await.unwrap().workflows[0].id, id);
-    assert_eq!(client.workflow(id).await.unwrap().id, id);
+    let list = client.workflows().await.unwrap();
+    let workflow = client.workflow(id).await.unwrap();
+    assert_eq!(workflow.id, id);
+    assert!(workflow.revision.is_some());
+    assert_eq!(list.workflows[0].revision, workflow.revision);
     let validation = client
         .validate_workflow(
             id,
             &WorkflowValidationRequest {
+                workflow_revision: workflow.revision.clone(),
                 preset: Some("fast".into()),
                 ..Default::default()
             },
@@ -56,6 +61,7 @@ async fn health_openapi_and_workflows() {
         .await
         .unwrap();
     assert!(validation.valid);
+    assert_eq!(validation.revision, workflow.revision);
     assert_eq!(
         client
             .workflow_thumbnail(id)

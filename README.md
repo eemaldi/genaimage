@@ -114,7 +114,13 @@ For an API-only source build without Node.js or portal assets, pass
 ## HTTP API
 
 The local API publishes its [OpenAPI 3.1 contract](docs/api/openapi.json) at
-`GET /api/v1/openapi.json`. Regenerate the checked-in contract after API changes:
+`GET /api/v1/openapi.json`. To pin a reviewed workflow, pass its `revision` as
+`workflow_revision` on validation and submission. A stale revision returns
+HTTP 409 (`urn:genaimage:problem:workflow-changed`); reload and review before
+submitting again. Omitting the field leaves the request unpinned. See the
+[Workflows API notes](docs/architecture.md#workflows-api) for details.
+
+Regenerate the checked-in contract after API changes:
 
 ```bash
 cargo run -p genaimage-server --no-default-features --example openapi

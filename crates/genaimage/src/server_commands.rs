@@ -123,6 +123,7 @@ impl<'a> Command<'a> {
                 parameters,
             }) => {
                 let request = WorkflowValidationRequest {
+                    workflow_revision: None,
                     preset: preset.clone(),
                     parameters: crate::parse_parameters(parameters).map_err(Error::Input)?,
                 };

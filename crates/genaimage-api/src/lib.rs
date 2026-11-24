@@ -78,6 +78,10 @@ pub struct WorkflowSummary {
     pub category: Option<String>,
     pub thumbnail_url: Option<String>,
     pub version: String,
+    /// Opaque revision of the API graph and manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(required = true, value_type = String)]
+    pub revision: Option<String>,
 }
 
 /// A manifest that could not be loaded during discovery.
@@ -93,6 +97,10 @@ pub struct WorkflowDetails {
     pub schema_version: u32,
     pub id: String,
     pub version: String,
+    /// Opaque revision of the API graph and manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(required = true, value_type = String)]
+    pub revision: Option<String>,
     pub title: String,
     pub workflow: String,
     pub description: Option<String>,
@@ -158,6 +166,9 @@ pub struct WorkflowOutput {
 #[derive(Debug, Default, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowValidationRequest {
+    /// Revision from the reviewed workflow. Omit for unpinned validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_revision: Option<String>,
     #[serde(default)]
     pub preset: Option<String>,
     #[serde(default)]
@@ -167,6 +178,10 @@ pub struct WorkflowValidationRequest {
 /// The result of validating bindings and checking backend node availability.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WorkflowValidationResponse {
+    /// Opaque revision of the API graph and manifest that were validated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(required = true, value_type = String)]
+    pub revision: Option<String>,
     pub valid: bool,
     pub parameter_errors: Vec<WorkflowParameterError>,
     pub node_check: WorkflowNodeCheck,

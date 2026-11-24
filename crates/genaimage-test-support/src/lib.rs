@@ -63,6 +63,7 @@ pub struct FakeComfyState {
     pub reject_delete: Arc<AtomicBool>,
     pub delete_calls: Arc<AtomicUsize>,
     pub missing_classes: Arc<Mutex<Vec<String>>>,
+    pub object_info_calls: Arc<AtomicUsize>,
     pub object_info_unavailable: Arc<AtomicBool>,
     pub object_info_hangs: Arc<AtomicBool>,
     pub object_info_override: Arc<Mutex<Option<Value>>>,
@@ -105,6 +106,7 @@ impl Default for FakeComfyState {
             reject_delete: Default::default(),
             delete_calls: Default::default(),
             missing_classes: Default::default(),
+            object_info_calls: Default::default(),
             object_info_unavailable: Default::default(),
             object_info_hangs: Default::default(),
             object_info_override: Default::default(),
@@ -170,6 +172,7 @@ async fn fake_system(State(state): State<FakeComfyState>) -> Response {
 }
 
 async fn fake_object_info(State(state): State<FakeComfyState>) -> Response {
+    state.object_info_calls.fetch_add(1, Ordering::SeqCst);
     if state.object_info_hangs.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();

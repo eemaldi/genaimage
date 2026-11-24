@@ -173,13 +173,21 @@ impl ApiHarness {
     }
 
     pub async fn assert_problem(response: Response, status: StatusCode) -> ProblemDetails {
+        Self::assert_typed_problem(response, status, "about:blank").await
+    }
+
+    pub async fn assert_typed_problem(
+        response: Response,
+        status: StatusCode,
+        problem_type: &str,
+    ) -> ProblemDetails {
         assert_eq!(response.status(), status);
         assert_eq!(
             response.headers()[header::CONTENT_TYPE],
             "application/problem+json"
         );
         let problem: ProblemDetails = response.json().await.unwrap();
-        assert_eq!(problem.problem_type, "about:blank");
+        assert_eq!(problem.problem_type, problem_type);
         assert_eq!(problem.status, status.as_u16());
         assert!(!problem.detail.is_empty());
         assert!(!problem.recovery.is_empty());
