@@ -31,6 +31,9 @@ vi.mock('../../lib/api/client', async (original) => {
       getRecordedRun: vi.fn(),
       listOutputs: vi.fn(),
       getOutputMetadata: vi.fn(),
+      getOutputAnnotations: vi.fn(),
+      health: vi.fn(),
+      reviewOutput: vi.fn(),
     },
   };
 });
@@ -48,6 +51,7 @@ const resync = writable<ResyncSignal | null>(null);
 const listeners = new Map<string, (event: EventEnvelope) => void>();
 const list = vi.mocked(api.listOutputs);
 const metadata = vi.mocked(api.getOutputMetadata);
+const annotations = vi.mocked(api.getOutputAnnotations);
 
 function output(i: number, contentType = 'image/png'): Output {
   return {
@@ -117,6 +121,26 @@ beforeEach(() => {
   metadata.mockImplementation(async (id) =>
     output(Number(id.split(':').at(-1))),
   );
+  annotations.mockResolvedValue({ annotations: [] });
+  vi.mocked(api.health).mockResolvedValue({
+    self: 'ok',
+    image_backend: 'ok',
+    llm: 'ok',
+    llm_vision: { status: 'ok', model: 'vision-local-v1' },
+  });
+  vi.mocked(api.reviewOutput).mockImplementation(async (id) => ({
+    id: 1,
+    output_id: id,
+    run_id: 'run-1',
+    kind: 'vision_review',
+    model: 'vision-local-v1',
+    created_at: '2026-03-01T10:15:00Z',
+    caption: 'A reviewed image.',
+    adherence_critique: 'The composition is close to the prompt.',
+    tags: ['reviewed'],
+    prompt: 'Review the output.',
+    raw_response: '{"caption":"A reviewed image."}',
+  }));
   vi.mocked(api.getRecordedRun).mockImplementation(async (id) =>
     run(id, { seed: id === 'run-2' ? 20 : 10, steps: 4 }),
   );
@@ -256,6 +280,24 @@ it('loads the next cursor when scrolled near the end', async () => {
   expect(list).toHaveBeenLastCalledWith(
     expect.objectContaining({ cursor: 'opaque' }),
     expect.anything(),
+  );
+});
+
+it('loads annotations only when an output is opened, never for gallery grid items', async () => {
+  route();
+  await screen.findByRole('region', { name: 'Gallery outputs' });
+  expect(annotations).not.toHaveBeenCalled();
+
+  await userEvent.click(screen.getByRole('link', { name: 'Open File 2' }));
+  expect(
+    await screen.findByText(
+      'No model opinions have been recorded for this output.',
+    ),
+  ).toBeTruthy();
+  expect(annotations).toHaveBeenCalledTimes(1);
+  expect(annotations).toHaveBeenCalledWith(
+    'run-2:2',
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
 });
 

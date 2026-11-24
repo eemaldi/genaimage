@@ -759,8 +759,13 @@ its position is known; neighbour navigation remains disabled until it is in the
 loaded results. The gallery reads recorded run parameters with the typed client's
 `getRecordedRun`, preserving large JSON integers as `bigint` where the browser
 supplies the original token. Values that cannot be read exactly are shown
-separately from identical fields and differences. Dialogs leave focus traversal
-inside native audio and video controls to the browser.
+separately from identical fields and differences. Vision annotations are loaded
+only when an output is opened in the lightbox or its review panel is expanded on
+run detail; the gallery grid never requests annotations. They are labelled as
+model opinions, separate from run provenance, with the sent prompt and raw
+response kept in collapsed details. Model text is rendered as text, and review
+is disabled with a Settings hint when no vision model is available. Dialogs
+leave focus traversal inside native audio and video controls to the browser.
 
 ### Generate share links and Remix
 

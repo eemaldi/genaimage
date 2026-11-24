@@ -5,6 +5,7 @@
   import Button from '../../lib/ui/Button.svelte';
   import Dialog from '../../lib/ui/Dialog.svelte';
   import ProblemDetails from '../../lib/ui/ProblemDetails.svelte';
+  import OutputReviewPanel from '../../lib/output-review/OutputReviewPanel.svelte';
   import { galleryProblem, type Output } from './gallery-model';
   import Media from './Media.svelte';
   import { formatRecordedValue, parameterDiff } from './parameter-diff';
@@ -217,6 +218,12 @@
         </dl>
       {/if}
     </details>
+    <OutputReviewPanel
+      outputId={id}
+      contentType={output?.content_type ?? ''}
+      byteSize={output?.byte_size ?? 0}
+      initiallyOpen={true}
+    />
   {:else}
     <p role="status">Loading output…</p>
   {/if}

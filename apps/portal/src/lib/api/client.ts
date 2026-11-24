@@ -435,6 +435,16 @@ export function createApiClient(
         ...options,
         path: { id },
       }),
+    getOutputAnnotations: (id: string, options?: RequestOptions) =>
+      json('get', '/api/v1/outputs/{id}/annotations', {
+        ...options,
+        path: { id },
+      }),
+    reviewOutput: (id: string, options?: RequestOptions) =>
+      json('post', '/api/v1/outputs/{id}/review', {
+        ...options,
+        path: { id },
+      }),
     // Preserve the original bytes API for callers that need a Blob.
     getOutput: (id: string, options?: RequestOptions) =>
       request(outputMediaUrl(id), options ?? {}, (response) => response.blob()),
