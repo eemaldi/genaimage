@@ -5,6 +5,7 @@ mod outputs;
 pub(crate) mod prompt;
 mod runs;
 mod settings;
+mod suggestions;
 mod uploads;
 mod workflows;
 
@@ -93,6 +94,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(health::health))
         .routes(routes!(events::events))
         .routes(routes!(conversations::list, conversations::create))
+        .routes(routes!(suggestions::suggest))
         .routes(routes!(conversations::get))
         .routes(routes!(conversations::send_message))
         .routes(routes!(conversations::cancel))

@@ -785,6 +785,44 @@ impl Harness {
         UploadStore::new(&self.config.uploads, self.config.server.max_upload_bytes)
     }
 
+    /// Validate a proposal, including upload IDs when image parameters are present.
+    pub async fn validate_proposal_with_uploads(
+        &self,
+        workflow: &LoadedWorkflow,
+        preset: Option<&str>,
+        parameters: &BTreeMap<String, Value>,
+    ) -> std::result::Result<
+        crate::assistant::suggest::ValidatedProposal,
+        Vec<crate::assistant::suggest::ProposalIssue>,
+    > {
+        let proposal = crate::assistant::suggest::validate_proposal_with_options(
+            workflow,
+            preset,
+            parameters,
+            crate::assistant::suggest::ImageUploadPolicy::Allow,
+        )?;
+        let errors = self
+            .validate_api_bindings(workflow, preset, parameters)
+            .await
+            .map_err(|error| {
+                vec![crate::assistant::suggest::ProposalIssue {
+                    field: "parameters".into(),
+                    reason: error.to_string(),
+                }]
+            })?;
+        if errors.is_empty() {
+            Ok(proposal)
+        } else {
+            Err(errors
+                .into_iter()
+                .map(|error| crate::assistant::suggest::ProposalIssue {
+                    field: format!("parameters.{}", error.parameter),
+                    reason: error.reason,
+                })
+                .collect())
+        }
+    }
+
     /// Validate server bindings without uploading anything to the backend.
     pub async fn validate_api_bindings(
         &self,

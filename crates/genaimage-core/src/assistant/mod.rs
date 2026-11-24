@@ -2,6 +2,7 @@ pub mod prompt_assist;
 mod prompts;
 mod service;
 mod store;
+pub mod suggest;
 mod vision;
 
 pub use prompts::{PromptTemplate, PromptTemplates, DEFAULT_SYSTEM_PROMPT, SYSTEM_PROMPT_TEMPLATE};

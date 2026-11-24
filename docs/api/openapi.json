@@ -1,6 +1,12 @@
 {
   "components": {
     "schemas": {
+      "AppliedFalse": {
+        "enum": [
+          false
+        ],
+        "type": "boolean"
+      },
       "AssistantChatContent": {
         "oneOf": [
           {
@@ -335,6 +341,21 @@
         ],
         "type": "string"
       },
+      "AssistantPromptTemplate": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "sha256"
+        ],
+        "type": "object"
+      },
       "AssistantTerminalEvent": {
         "properties": {
           "conversation_id": {
@@ -476,6 +497,25 @@
         },
         "required": [
           "title"
+        ],
+        "type": "object"
+      },
+      "DroppedWorkflowSuggestion": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow_id",
+          "field",
+          "reason"
         ],
         "type": "object"
       },
@@ -1895,6 +1935,67 @@
         ],
         "type": "object"
       },
+      "SuggestWorkflowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "description": "At most 4,000 Unicode characters and 16 KiB of UTF-8.",
+            "maxLength": 4000,
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 5,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "type": "object"
+      },
+      "SuggestWorkflowResponse": {
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedFalse",
+            "description": "Always false. This endpoint proposes values and never submits a run."
+          },
+          "dropped": {
+            "items": {
+              "$ref": "#/components/schemas/DroppedWorkflowSuggestion"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowSuggestion"
+            },
+            "maxItems": 5,
+            "type": "array"
+          },
+          "template": {
+            "$ref": "#/components/schemas/AssistantPromptTemplate"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "model",
+          "template",
+          "suggestions",
+          "dropped",
+          "truncated",
+          "applied"
+        ],
+        "type": "object"
+      },
       "ThumbnailSizeSchema": {
         "enum": [
           128,
@@ -2315,6 +2416,55 @@
         "required": [
           "parameter",
           "reason"
+        ],
+        "type": "object"
+      },
+      "WorkflowSuggestion": {
+        "properties": {
+          "parameter_notes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "parameters": {
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "preset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "maximum": 5,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "description": "Opaque revision of the workflow snapshot used for validation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow_id",
+          "workflow_revision",
+          "rank",
+          "parameters",
+          "rationale"
         ],
         "type": "object"
       },
@@ -3373,6 +3523,137 @@
               }
             },
             "description": "Assistant unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/suggest": {
+      "post": {
+        "description": "Rank and validate workflow and parameter proposals for an intent. Image parameters and presets that bind them are excluded from the LLM catalogue and cannot be selected by a suggestion. The returned values are a reviewable proposal only; this endpoint never submits or modifies a run.",
+        "operationId": "assistant_suggest_workflows",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestWorkflowResponse"
+                }
+              }
+            },
+            "description": "Validated workflow suggestions; applied is always false"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid suggestion request"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The selected text role cannot accept the request"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The LLM response was unavailable or malformed"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Text role unavailable"
           }
         },
         "tags": [

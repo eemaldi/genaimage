@@ -93,6 +93,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Rank and validate workflow and parameter proposals for an intent. Image parameters and presets that bind them are excluded from the LLM catalogue and cannot be selected by a suggestion. The returned values are a reviewable proposal only; this endpoint never submits or modifies a run. */
+        post: operations["assistant_suggest_workflows"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -557,6 +574,8 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {boolean} */
+        AppliedFalse: false;
         AssistantChatContent: {
             text: string;
         } | {
@@ -639,6 +658,10 @@ export interface components {
         };
         /** @enum {string} */
         AssistantMessageStatus: "complete" | "cancelled" | "failed";
+        AssistantPromptTemplate: {
+            name: string;
+            sha256: string;
+        };
         AssistantTerminalEvent: {
             conversation_id: string;
             error?: string | null;
@@ -676,6 +699,11 @@ export interface components {
         BinaryData: string;
         CreateAssistantConversationRequest: {
             title: string;
+        };
+        DroppedWorkflowSuggestion: {
+            field: string;
+            reason: string;
+            workflow_id: string;
         };
         Event: {
             run: components["schemas"]["EventRun"];
@@ -1058,6 +1086,20 @@ export interface components {
             /** @description Revision from the reviewed workflow. Omit for unpinned submission. */
             workflow_revision?: string | null;
         };
+        SuggestWorkflowRequest: {
+            /** @description At most 4,000 Unicode characters and 16 KiB of UTF-8. */
+            intent: string;
+            limit?: number | null;
+        };
+        SuggestWorkflowResponse: {
+            /** @description Always false. This endpoint proposes values and never submits a run. */
+            applied: components["schemas"]["AppliedFalse"];
+            dropped: components["schemas"]["DroppedWorkflowSuggestion"][];
+            model: string;
+            suggestions: components["schemas"]["WorkflowSuggestion"][];
+            template: components["schemas"]["AssistantPromptTemplate"];
+            truncated: boolean;
+        };
         /** @enum {integer} */
         ThumbnailSizeSchema: 128 | 256 | 512 | 1024;
         UploadBody: {
@@ -1174,6 +1216,20 @@ export interface components {
         WorkflowParameterError: {
             parameter: string;
             reason: string;
+        };
+        WorkflowSuggestion: {
+            parameter_notes?: {
+                [key: string]: string;
+            };
+            parameters: {
+                [key: string]: unknown;
+            };
+            preset?: string | null;
+            rank: number;
+            rationale: string;
+            workflow_id: string;
+            /** @description Opaque revision of the workflow snapshot used for validation. */
+            workflow_revision: string;
         };
         /** @description Descriptive catalogue information for one workflow. */
         WorkflowSummary: {
@@ -2038,6 +2094,120 @@ export interface operations {
                 };
             };
             /** @description Assistant unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    assistant_suggest_workflows: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuggestWorkflowRequest"];
+            };
+        };
+        responses: {
+            /** @description Validated workflow suggestions; applied is always false */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestWorkflowResponse"];
+                };
+            };
+            /** @description Invalid suggestion request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The selected text role cannot accept the request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The LLM response was unavailable or malformed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Text role unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;

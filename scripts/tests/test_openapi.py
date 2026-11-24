@@ -13,6 +13,19 @@ class OpenApiTests(unittest.TestCase):
     def test_contract_structure(self):
         self.assertEqual(check_openapi.validate_spec(self.spec), [])
 
+
+    def test_workflow_suggestion_invariants_are_in_contract(self):
+        schemas = self.spec['components']['schemas']
+        response = schemas['SuggestWorkflowResponse']['properties']
+        suggestion = schemas['WorkflowSuggestion']['properties']
+        request = schemas['SuggestWorkflowRequest']['properties']
+        self.assertEqual(response['suggestions']['maxItems'], 5)
+        self.assertEqual(response['applied']['$ref'], '#/components/schemas/AppliedFalse')
+        self.assertEqual(schemas['AppliedFalse']['enum'], [False])
+        self.assertEqual(suggestion['rank']['minimum'], 1)
+        self.assertEqual(suggestion['rank']['maximum'], 5)
+        self.assertEqual(request['intent']['maxLength'], 4000)
+
     def test_invalid_refs_and_operation_ids_are_detected(self):
         spec = copy.deepcopy(self.spec)
         spec['components']['schemas']['Bad'] = {'$ref': '#/components/schemas/Missing'}
