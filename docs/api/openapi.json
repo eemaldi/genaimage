@@ -617,17 +617,22 @@
             "properties": {
               "outcome": {
                 "$ref": "#/components/schemas/ReconcileOutcome"
+              },
+              "settles_at": {
+                "description": "Earliest time to check again when an absent submission is still settling.",
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
-            "required": [
-              "outcome"
-            ],
             "type": "object"
           }
         ],
         "description": "A refreshed run snapshot with the outcome of this reconciliation."
       },
-      "ReconcileRunsResponse": {
+      "ReconcileRunsWithOutcomesResponse": {
         "description": "Current snapshots and outcomes of the runs examined during bulk reconciliation.",
         "properties": {
           "runs": {
@@ -3341,7 +3346,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReconcileRunsResponse"
+                  "$ref": "#/components/schemas/ReconcileRunsWithOutcomesResponse"
                 }
               }
             },

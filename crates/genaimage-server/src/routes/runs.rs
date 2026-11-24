@@ -67,24 +67,26 @@ pub(super) async fn submit(
     let harness = state.harness();
     let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        let result = harness.submit_keyed_until(key, RunRequest {
-            workflow: body.workflow,
-            preset: body.preset,
-            parameters: body.parameters,
-            version: body.version,
-        }, &task_state.lifecycle.deadline).await?;
-        if !result.replayed && matches!(result.run.status, RunStatus::Queued | RunStatus::Cancelling) {
-            let id = result.run.id.clone();
-            let monitor_state = task_state.clone();
-            task_state.spawn_run_task(async move {
-                let lifecycle = &monitor_state.lifecycle;
-                if let Err(error) = harness.monitor_run(&id, &lifecycle.shutdown, &lifecycle.deadline).await {
-                    tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
-                }
-            });
+        let result = harness
+            .submit_keyed_until(
+                key,
+                RunRequest {
+                    workflow: body.workflow,
+                    preset: body.preset,
+                    parameters: body.parameters,
+                    version: body.version,
+                },
+                &task_state.lifecycle.deadline,
+            )
+            .await?;
+        if !result.replayed
+            && matches!(result.run.status, RunStatus::Queued | RunStatus::Cancelling)
+        {
+            task_state.ensure_run_monitor(harness, result.run.id.clone());
         }
         Ok::<_, HarnessError>(result)
-    }).await?;
+    })
+    .await?;
     let status = if result.replayed {
         StatusCode::OK
     } else {
@@ -278,9 +280,15 @@ pub(super) async fn reconcile(
 ) -> Result<Json<api::ReconcileRunResponse>, Problem> {
     let id = parse_id(id)?;
     let harness = state.harness();
-    let deadline = state.lifecycle.deadline.clone();
+    let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        harness.reconcile_until(&id, &deadline).await
+        let result = harness
+            .reconcile_until(&id, &task_state.lifecycle.deadline)
+            .await?;
+        if result.outcome == ReconcileOutcome::Active {
+            task_state.ensure_run_monitor(harness, result.run.id.clone());
+        }
+        Ok(result)
     })
     .await?;
     Ok(Json(reconcile_response(result)))
@@ -292,7 +300,7 @@ pub(super) async fn reconcile(
     tag = "runs",
     description = "Reconcile runs against ComfyUI.",
     responses(
-        (status = 200, body = api::ReconcileRunsResponse),
+        (status = 200, body = api::ReconcileRunsWithOutcomesResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -305,14 +313,22 @@ pub(super) async fn reconcile(
 )]
 pub(super) async fn reconcile_all(
     State(state): State<AppState>,
-) -> Result<Json<api::ReconcileRunsResponse>, Problem> {
+) -> Result<Json<api::ReconcileRunsWithOutcomesResponse>, Problem> {
     let harness = state.harness();
-    let deadline = state.lifecycle.deadline.clone();
+    let task_state = state.clone();
     let results = run_mutation(&state, async move {
-        harness.reconcile_all_until(&deadline).await
+        let results = harness
+            .reconcile_all_until(&task_state.lifecycle.deadline)
+            .await?;
+        for result in &results {
+            if result.outcome == ReconcileOutcome::Active {
+                task_state.ensure_run_monitor(harness.clone(), result.run.id.clone());
+            }
+        }
+        Ok(results)
     })
     .await?;
-    Ok(Json(api::ReconcileRunsResponse {
+    Ok(Json(api::ReconcileRunsWithOutcomesResponse {
         runs: results.into_iter().map(reconcile_response).collect(),
     }))
 }
@@ -320,6 +336,7 @@ pub(super) async fn reconcile_all(
 fn reconcile_response(result: ReconcileResult) -> api::ReconcileRunResponse {
     api::ReconcileRunResponse {
         run: run_response(result.run),
+        settles_at: result.settles_at,
         outcome: match result.outcome {
             ReconcileOutcome::Terminal => api::ReconcileOutcome::Terminal,
             ReconcileOutcome::Active => api::ReconcileOutcome::Active,

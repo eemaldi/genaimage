@@ -239,6 +239,7 @@ and `cancelled`.
   without one, `{runs}` contains such a record for each non-terminal run examined.
   Outcomes are `terminal`, `active`, `in_progress_elsewhere`, `not_found` and
   `still_ambiguous`; see [troubleshooting](troubleshooting.md#a-run-is-unknown_submission).
+  An optional `settles_at` gives the earliest time to check again.
   This is not a resubmission. A successful reconciliation request can still
   return a non-successful run status.
 

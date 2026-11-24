@@ -523,6 +523,12 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         assert!(
             matches!(replay.recv().await.unwrap().event, Event::RunUnknownSubmission { run } if run.status == RunStatus::UnknownSubmission)
         );
+        state.lock().unwrap().history_outcome = HistoryOutcome::NotFound;
+        let settling = harness.reconcile(&run.id).await.unwrap();
+        assert_eq!(settling.outcome, ReconcileOutcome::StillAmbiguous);
+        assert!(settling.settles_at.unwrap() > Utc::now());
+        let db = rusqlite::Connection::open(&harness.config().state_database).unwrap();
+        db.execute("UPDATE run_events SET created_at = '2000-01-01T00:00:00Z' WHERE run_id = ?1 AND event_type = 'submission_attempted'", [&run.id]).unwrap();
         for (history, expected) in [
             (HistoryOutcome::Unresolved, ReconcileOutcome::StillAmbiguous),
             (HistoryOutcome::NotFound, ReconcileOutcome::NotFound),

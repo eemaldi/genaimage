@@ -81,6 +81,7 @@ export function createRunList(
   let overflow = false;
   let ready = false;
   let stopped = false;
+  const membershipChecks = new Map<string, string>();
 
   function publish(next: List) {
     set((state = next));
@@ -104,15 +105,24 @@ export function createRunList(
     if (index < 0) {
       // Let the server decide membership and ordering for new/filtered rows.
       if (
-        event.type !== 'run_progress' &&
         matches(event.run) &&
         (!state.next ||
           compareTime(
             event.run.created_at,
             state.rows.at(-1)?.run.created_at ?? '',
           ) >= 0)
-      )
+      ) {
+        const { id, updated_at, status } = event.run;
+        const revision = `${updated_at}/${status}`;
+        if (membershipChecks.get(id) === revision) return;
+        membershipChecks.delete(id);
+        membershipChecks.set(id, revision);
+        if (membershipChecks.size > 512) {
+          const oldest = membershipChecks.keys().next();
+          if (!oldest.done) membershipChecks.delete(oldest.value);
+        }
         scheduleRefresh();
+      }
       return;
     }
     const row = mergeRunEvent(state.rows[index], event);
@@ -140,6 +150,7 @@ export function createRunList(
     request = controller;
     if (nextQuery) {
       query = nextQuery;
+      membershipChecks.clear();
       pending = [];
       overflow = false;
     }
@@ -201,6 +212,7 @@ export function createRunList(
     source.resync.subscribe((signal) => {
       if (!signal || signal.epoch === epoch) return;
       epoch = signal.epoch;
+      membershipChecks.clear();
       pending = [];
       overflow = false;
       publish({ ...state, rows: state.rows.map(({ run }) => ({ run })) });

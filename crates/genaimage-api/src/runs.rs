@@ -124,11 +124,25 @@ pub enum ReconcileOutcome {
 pub struct ReconcileRunResponse {
     #[serde(flatten)]
     pub run: RunResponse,
+    #[serde(default = "inconclusive_outcome")]
     pub outcome: ReconcileOutcome,
+    /// Earliest time to check again when an absent submission is still settling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settles_at: Option<DateTime<Utc>>,
+}
+
+fn inconclusive_outcome() -> ReconcileOutcome {
+    ReconcileOutcome::StillAmbiguous
+}
+
+/// Current snapshots of the runs examined during bulk reconciliation.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReconcileRunsResponse {
+    pub runs: Vec<RunResponse>,
 }
 
 /// Current snapshots and outcomes of the runs examined during bulk reconciliation.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
-pub struct ReconcileRunsResponse {
+pub struct ReconcileRunsWithOutcomesResponse {
     pub runs: Vec<ReconcileRunResponse>,
 }

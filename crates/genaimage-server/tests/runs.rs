@@ -4,7 +4,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use common::{install_workflow, ApiHarness};
 use genaimage_api::{
-    ReconcileOutcome, ReconcileRunResponse, ReconcileRunsResponse, RunEventsResponse,
+    ReconcileOutcome, ReconcileRunResponse, ReconcileRunsWithOutcomesResponse, RunEventsResponse,
     RunListResponse, RunResponse, RunStatus,
 };
 use genaimage_core::Event;
@@ -143,7 +143,7 @@ async fn ambiguous_timeout_is_persisted_and_only_reconciled_never_resubmitted() 
     assert_eq!(reconcile.run.status, RunStatus::Queued);
     assert_eq!(reconcile.outcome, ReconcileOutcome::Active);
     api.fake.complete.store(true, Ordering::SeqCst);
-    let bulk: ReconcileRunsResponse = api
+    let bulk: ReconcileRunsWithOutcomesResponse = api
         .post_json(&format!("{RUNS}/reconcile"), &Value::Null)
         .await;
     assert_eq!(bulk.runs.len(), 1);
@@ -151,6 +151,55 @@ async fn ambiguous_timeout_is_persisted_and_only_reconciled_never_resubmitted() 
     assert_eq!(bulk.runs[0].run.status, RunStatus::Completed);
     assert_eq!(bulk.runs[0].outcome, ReconcileOutcome::Terminal);
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn late_queue_admission_is_ambiguous_until_adopted_and_monitored() {
+    use futures_util::StreamExt;
+    use genaimage_api::client::{Client, EventsQuery, StreamEvent};
+    let api = ApiHarness::start_with_backend_timeout(1).await;
+    install_workflow(&api);
+    api.fake.hang_submit_response.store(true, Ordering::SeqCst);
+    api.fake
+        .defer_prompt_admission
+        .store(true, Ordering::SeqCst);
+    let submitted = run(submit(&api, "late", &request()).await, StatusCode::ACCEPTED).await;
+    let client = Client::with_base_url(&api.origin).unwrap();
+    let mut stream = client.events(&EventsQuery::default()).await.unwrap();
+    let settling = client
+        .reconcile_run_with_outcome(&submitted.id)
+        .await
+        .unwrap();
+    assert_eq!(settling.outcome, ReconcileOutcome::StillAmbiguous);
+    assert!(settling.settles_at.is_some());
+    // Simulate ComfyUI finishing admission only after both absence reads.
+    *api.fake.prompt_id.lock().unwrap() = Some(submitted.prompt_id.clone());
+    let bulk = client.reconcile_runs_with_outcomes().await.unwrap();
+    assert_eq!(bulk.runs[0].outcome, ReconcileOutcome::Active);
+    assert_eq!(
+        client
+            .reconcile_run_with_outcome(&submitted.id)
+            .await
+            .unwrap()
+            .outcome,
+        ReconcileOutcome::Active
+    );
+    api.fake.wait_for_progress_listener(DEADLINE).await.unwrap();
+    assert_eq!(api.fake.progress.receiver_count(), 1);
+    api.fake.complete.store(true, Ordering::SeqCst);
+    tokio::time::timeout(DEADLINE, async {
+        while let Some(item) = stream.next().await {
+            if let StreamEvent::Event(envelope) = item.unwrap() {
+                if matches!(envelope.event, genaimage_api::Event::RunCompleted { run } if run.id == submitted.id) {
+                    return;
+                }
+            }
+        }
+        panic!("the event stream closed before completion");
+    }).await.expect("completion SSE event");
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    drop(stream);
     api.shutdown().await;
 }
 
@@ -167,12 +216,18 @@ async fn distinguishes_missing_history_from_incomplete_history_without_resubmitt
     let path = format!("{RUNS}/{}", submitted.id);
     *api.fake.queue_override.lock().unwrap() =
         Some(json!({"queue_pending": [], "queue_running": []}));
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute("UPDATE run_events SET created_at = '2000-01-01T00:00:00Z' WHERE run_id = ?1 AND event_type = 'submission_attempted'", [&submitted.id]).unwrap();
     for (history, expected) in [
         (
             json!({submitted.prompt_id.clone(): {"status": {"completed": false}}}),
             ReconcileOutcome::StillAmbiguous,
         ),
         (json!(null), ReconcileOutcome::StillAmbiguous),
+        (
+            json!({"error": "backend busy"}),
+            ReconcileOutcome::StillAmbiguous,
+        ),
         (json!({}), ReconcileOutcome::NotFound),
     ] {
         api.fake
@@ -187,7 +242,7 @@ async fn distinguishes_missing_history_from_incomplete_history_without_resubmitt
         assert_eq!(result.run.updated_at, submitted.updated_at);
         assert_eq!(result.outcome, expected);
     }
-    let bulk: ReconcileRunsResponse = api
+    let bulk: ReconcileRunsWithOutcomesResponse = api
         .post_json(&format!("{RUNS}/reconcile"), &Value::Null)
         .await;
     assert_eq!(bulk.runs[0].run.id, submitted.id);

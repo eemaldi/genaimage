@@ -533,10 +533,15 @@ export interface components {
         ReconcileOutcome: "terminal" | "active" | "in_progress_elsewhere" | "not_found" | "still_ambiguous";
         /** @description A refreshed run snapshot with the outcome of this reconciliation. */
         ReconcileRunResponse: components["schemas"]["RunResponse"] & {
-            outcome: components["schemas"]["ReconcileOutcome"];
+            outcome?: components["schemas"]["ReconcileOutcome"];
+            /**
+             * Format: date-time
+             * @description Earliest time to check again when an absent submission is still settling.
+             */
+            settles_at?: string | null;
         };
         /** @description Current snapshots and outcomes of the runs examined during bulk reconciliation. */
-        ReconcileRunsResponse: {
+        ReconcileRunsWithOutcomesResponse: {
             runs: components["schemas"]["ReconcileRunResponse"][];
         };
         ResyncEvent: {
@@ -2220,7 +2225,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReconcileRunsResponse"];
+                    "application/json": components["schemas"]["ReconcileRunsWithOutcomesResponse"];
                 };
             };
             /** @description Problem details */

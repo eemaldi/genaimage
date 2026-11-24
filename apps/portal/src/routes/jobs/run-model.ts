@@ -1,4 +1,3 @@
-import type { SubmitRunRequest } from '../../lib/api/client';
 import type { components } from '../../lib/api/schema';
 
 export type Run = components['schemas']['RunResponse'];
@@ -28,28 +27,3 @@ export function describeStatus(status: string) {
 
 export const canCancel = (status: string) =>
   status === 'queued' || status === 'running';
-
-export function submissionFrom(run: Run): SubmitRunRequest | undefined {
-  const { workflow_id, parameters } = run;
-  if (
-    !workflow_id ||
-    !parameters ||
-    typeof parameters !== 'object' ||
-    Array.isArray(parameters)
-  )
-    return;
-  const bindings = parameters as Record<string, unknown>;
-  // Effective workflow bindings are scalar; file inputs use upload IDs.
-  if (
-    !Object.values(bindings).every(
-      (value) =>
-        typeof value === 'string' ||
-        typeof value === 'boolean' ||
-        (typeof value === 'number' &&
-          Number.isFinite(value) &&
-          (!Number.isInteger(value) || Number.isSafeInteger(value))),
-    )
-  )
-    return;
-  return { workflow: workflow_id, parameters: bindings };
-}

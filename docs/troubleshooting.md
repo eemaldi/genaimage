@@ -45,12 +45,14 @@ Check the reconciliation `outcome`, not just the run status:
 - `active`: the prompt was found pending or running. Keep tracking the original run.
 - `terminal`: the run has ended. Check its status and outputs.
 - `in_progress_elsewhere`: the original submission is still in progress. Wait before checking again.
-- `still_ambiguous`: the evidence is inconclusive. Investigate ComfyUI before taking further action.
+- `still_ambiguous`: the evidence is inconclusive. If `settles_at` is shown,
+  wait until then before reconciling again; otherwise investigate ComfyUI.
 - `not_found`: the prompt was absent from queue and history during this check.
-  This does not prove that ComfyUI never accepted it. The original record stays
+  This does not prove that ComfyUI never accepted it. Very late admission can
+  still cause duplicate generation. The original record stays
   `unknown_submission`. If you decide to submit again, review the parameters
-  and confirm a separate run in Jobs. If the bindings cannot be recovered,
-  review and enter them in Generate instead. GenAImage does not retry automatically.
+  and confirm a separate run in Jobs when server-side rerun is available.
+  GenAImage does not retry automatically.
 
 ## A run is stuck after restart
 

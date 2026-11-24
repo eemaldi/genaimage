@@ -41,6 +41,7 @@ pub struct FakeComfyState {
     pub cancelled: Arc<AtomicBool>,
     pub running: Arc<AtomicBool>,
     pub fail_submit_response: Arc<AtomicBool>,
+    pub defer_prompt_admission: Arc<AtomicBool>,
     pub hang_submit_response: Arc<AtomicBool>,
     pub redirect_submit_response: Arc<AtomicBool>,
     pub prompt_calls: Arc<AtomicUsize>,
@@ -81,6 +82,7 @@ impl Default for FakeComfyState {
             cancelled: Default::default(),
             running: Default::default(),
             fail_submit_response: Default::default(),
+            defer_prompt_admission: Default::default(),
             hang_submit_response: Default::default(),
             redirect_submit_response: Default::default(),
             prompt_calls: Default::default(),
@@ -241,7 +243,9 @@ async fn fake_upload(State(state): State<FakeComfyState>, mut multipart: Multipa
 async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {
     state.prompt_calls.fetch_add(1, Ordering::SeqCst);
     let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
-    *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    if !state.defer_prompt_admission.load(Ordering::SeqCst) {
+        *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    }
     if state.hang_submit_response.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();

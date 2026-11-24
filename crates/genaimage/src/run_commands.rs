@@ -246,11 +246,11 @@ pub(crate) async fn jobs(
         JobsCommand::Reconcile {
             run_id: Some(run_id),
         } => {
-            let result = client.reconcile_run(run_id).await?;
+            let result = client.reconcile_run_with_outcome(run_id).await?;
             output.write(&result, |out| write_reconciled_run(out, &result))?;
         }
         JobsCommand::Reconcile { run_id: None } => {
-            let result = client.reconcile_runs().await?;
+            let result = client.reconcile_runs_with_outcomes().await?;
             output.write(&result, |out| {
                 if result.runs.is_empty() {
                     writeln!(out, "No runs found.")?;
@@ -409,7 +409,15 @@ fn write_reconciled_run(out: &mut dyn Write, result: &ReconcileRunResponse) -> i
         ReconcileOutcome::NotFound => "Prompt not found in queue or history",
         ReconcileOutcome::StillAmbiguous => "Run state is still ambiguous",
     };
-    writeln!(out, "  Reconciliation: {outcome}")
+    writeln!(out, "  Reconciliation: {outcome}")?;
+    if let Some(instant) = result.settles_at {
+        writeln!(
+            out,
+            "  Reconcile again at or after {}",
+            instant.to_rfc3339()
+        )?;
+    }
+    Ok(())
 }
 
 fn write_summary(out: &mut dyn Write, run: &RunResponse) -> io::Result<()> {

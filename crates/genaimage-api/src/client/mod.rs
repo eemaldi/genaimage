@@ -16,9 +16,9 @@ use url::{Host, Url};
 
 use crate::{
     HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
-    ReconcileRunsResponse, RunEventsQuery, RunEventsResponse, RunListQuery, RunListResponse,
-    RunResponse, RunStatus, SettingsPatch, SettingsResponse, SettingsTestResponse,
-    SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
+    ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse,
+    RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse,
+    SettingsTestResponse, SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
     WorkflowValidationRequest, WorkflowValidationResponse,
 };
 
@@ -194,12 +194,27 @@ impl Client {
             .await
     }
 
-    pub async fn reconcile_run(&self, id: &str) -> Result<ReconcileRunResponse, Error> {
+    pub async fn reconcile_run(&self, id: &str) -> Result<RunResponse, Error> {
         self.json(self.request(Method::POST, &["runs", id, "reconcile"])?)
             .await
     }
 
     pub async fn reconcile_runs(&self) -> Result<ReconcileRunsResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", "reconcile"])?)
+            .await
+    }
+
+    pub async fn reconcile_run_with_outcome(
+        &self,
+        id: &str,
+    ) -> Result<ReconcileRunResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", id, "reconcile"])?)
+            .await
+    }
+
+    pub async fn reconcile_runs_with_outcomes(
+        &self,
+    ) -> Result<ReconcileRunsWithOutcomesResponse, Error> {
         self.json(self.request(Method::POST, &["runs", "reconcile"])?)
             .await
     }

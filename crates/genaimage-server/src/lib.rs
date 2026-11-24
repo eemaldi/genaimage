@@ -8,6 +8,7 @@ mod security;
 mod settings;
 
 use std::{
+    collections::HashSet,
     future::Future,
     sync::{Arc, Mutex},
     time::Duration,
@@ -48,6 +49,19 @@ struct Lifecycle {
     shutdown: CancellationToken,
     deadline: CancellationToken,
     tasks: TaskTracker,
+    monitors: Mutex<HashSet<String>>,
+}
+
+struct MonitorRegistration(Arc<Lifecycle>, String);
+
+impl Drop for MonitorRegistration {
+    fn drop(&mut self) {
+        self.0
+            .monitors
+            .lock()
+            .expect("monitor lock")
+            .remove(&self.1);
+    }
 }
 
 impl AppState {
@@ -101,6 +115,25 @@ impl AppState {
             return None;
         }
         Some(self.lifecycle.tasks.spawn(future))
+    }
+
+    fn ensure_run_monitor(&self, harness: Arc<Harness>, id: String) {
+        if !self
+            .lifecycle
+            .monitors
+            .lock()
+            .expect("monitor lock")
+            .insert(id.clone())
+        {
+            return;
+        }
+        let registration = MonitorRegistration(self.lifecycle.clone(), id);
+        self.spawn_run_task(async move {
+            let MonitorRegistration(lifecycle, id) = &registration;
+            if let Err(error) = harness.monitor_run(id, &lifecycle.shutdown, &lifecycle.deadline).await {
+                tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
+            }
+        });
     }
 
     async fn drain_run_tasks(&self, timeout: Duration) {

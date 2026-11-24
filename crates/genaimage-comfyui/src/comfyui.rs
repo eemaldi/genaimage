@@ -591,24 +591,46 @@ fn extract_outputs(outputs: &Map<String, Value>) -> Vec<OutputReference> {
                 let Some(filename) = value
                     .get("filename")
                     .and_then(Value::as_str)
+                    .filter(|name| {
+                        !name.trim().is_empty()
+                            && !matches!(*name, "." | "..")
+                            && !name.contains(['/', '\\'])
+                            && !name.chars().any(char::is_control)
+                    })
                     .map(str::to_owned)
                 else {
                     continue;
+                };
+                let subfolder = match value.get("subfolder") {
+                    None => "",
+                    Some(Value::String(path))
+                        if path.is_empty()
+                            || path.split(['/', '\\']).all(|part| {
+                                !part.is_empty()
+                                    && !matches!(part, "." | "..")
+                                    && !part.contains(':')
+                                    && !part.chars().any(char::is_control)
+                            }) =>
+                    {
+                        path
+                    }
+                    _ => continue,
+                };
+                let output_type = match value.get("type") {
+                    None => "output",
+                    Some(Value::String(kind))
+                        if matches!(kind.as_str(), "output" | "temp" | "input") =>
+                    {
+                        kind
+                    }
+                    _ => continue,
                 };
                 references.push(OutputReference {
                     node_id: node_id.clone(),
                     kind: kind.clone(),
                     filename,
-                    subfolder: value
-                        .get("subfolder")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    output_type: value
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("output")
-                        .to_owned(),
+                    subfolder: subfolder.to_owned(),
+                    output_type: output_type.to_owned(),
                 });
             }
         }
@@ -619,13 +641,18 @@ fn extract_outputs(outputs: &Map<String, Value>) -> Vec<OutputReference> {
 fn parse_history(prompt_id: &str, raw: Value) -> HistorySnapshot {
     let entry = raw.get(prompt_id);
     let status = entry.and_then(|entry| entry.get("status"));
-    let explicit_status = status
-        .and_then(|status| status.get("status_str"))
-        .and_then(Value::as_str);
-    let complete = status
-        .and_then(|status| status.get("completed"))
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| entry.is_some_and(|entry| entry.get("outputs").is_some()));
+    let status_field = status.and_then(|status| status.get("status_str"));
+    let explicit_status = status_field.and_then(Value::as_str);
+    let complete = match status.and_then(|status| status.get("completed")) {
+        Some(value) => {
+            value == true && (status_field.is_none() || explicit_status == Some("success"))
+        }
+        None => status.is_none() || explicit_status == Some("success"),
+    };
+    let outputs = entry
+        .and_then(|entry| entry.get("outputs"))
+        .and_then(Value::as_object)
+        .map_or_else(Vec::new, extract_outputs);
     let messages = status
         .and_then(|status| status.get("messages"))
         .and_then(Value::as_array);
@@ -641,7 +668,7 @@ fn parse_history(prompt_id: &str, raw: Value) -> HistorySnapshot {
             })
         })
     };
-    let outcome = if raw.is_object() && entry.is_none() {
+    let outcome = if raw.as_object().is_some_and(Map::is_empty) {
         HistoryOutcome::NotFound
     } else if has_message("execution_error") {
         HistoryOutcome::Failed
@@ -652,15 +679,11 @@ fn parse_history(prompt_id: &str, raw: Value) -> HistorySnapshot {
         HistoryOutcome::Cancelled
     } else if explicit_status == Some("error") {
         HistoryOutcome::Failed
-    } else if complete && matches!(explicit_status, None | Some("success")) {
+    } else if complete && !outputs.is_empty() {
         HistoryOutcome::Completed
     } else {
         HistoryOutcome::Unresolved
     };
-    let outputs = entry
-        .and_then(|entry| entry.get("outputs"))
-        .and_then(Value::as_object)
-        .map_or_else(Vec::new, extract_outputs);
     HistorySnapshot {
         prompt_id: prompt_id.to_owned(),
         outcome,
@@ -705,6 +728,52 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn history_requires_valid_outputs_and_only_empty_objects_mean_absence() {
+        assert_eq!(
+            parse_history("p", json!({})).outcome,
+            HistoryOutcome::NotFound
+        );
+        assert_eq!(
+            parse_history("p", json!({"error": "backend busy"})).outcome,
+            HistoryOutcome::Unresolved
+        );
+        for outputs in [
+            json!(null),
+            json!({}),
+            json!([]),
+            json!({"9": {"images": [{"filename": ""}, {"filename": "../x.png"}, {"filename": 12}]}}),
+        ] {
+            for status in [
+                json!(null),
+                json!({"completed": true, "status_str": "success"}),
+            ] {
+                assert_eq!(
+                    parse_history("p", json!({"p": {"status": status, "outputs": outputs}}))
+                        .outcome,
+                    HistoryOutcome::Unresolved
+                );
+            }
+            assert_eq!(
+                parse_history("p", json!({"p": {"outputs": outputs}})).outcome,
+                HistoryOutcome::Unresolved
+            );
+        }
+        let outputs = json!({"9": {"images": [{"filename": "image.png"}]}});
+        assert_eq!(
+            parse_history("p", json!({"p": {"outputs": outputs}})).outcome,
+            HistoryOutcome::Completed
+        );
+        assert_eq!(
+            parse_history(
+                "p",
+                json!({"p": {"status": {"completed": false}, "outputs": outputs}})
+            )
+            .outcome,
+            HistoryOutcome::Unresolved
+        );
+    }
+
+    #[test]
     fn history_distinguishes_interruption_from_failure_and_requires_the_target_prompt() {
         for (kind, id, expected) in [
             ("execution_interrupted", "target", HistoryOutcome::Cancelled),
@@ -717,7 +786,7 @@ mod tests {
             }}});
             assert_eq!(
                 parse_history("absent", raw.clone()).outcome,
-                HistoryOutcome::NotFound
+                HistoryOutcome::Unresolved
             );
             assert_eq!(parse_history("target", raw).outcome, expected);
         }

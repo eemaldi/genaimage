@@ -5,11 +5,7 @@
     SvelteSet,
     SvelteURLSearchParams,
   } from 'svelte/reactivity';
-  import {
-    api,
-    ApiProblemError,
-    type SubmitRunRequest,
-  } from '../../lib/api/client';
+  import { api, ApiProblemError } from '../../lib/api/client';
   import { events } from '../../lib/api/events';
   import Button from '../../lib/ui/Button.svelte';
   import Dialog from '../../lib/ui/Dialog.svelte';
@@ -21,13 +17,7 @@
   import type { RouteProps } from '../../router';
   import StatusBadge from './StatusBadge.svelte';
   import { createRunList } from './run-list';
-  import {
-    canCancel,
-    isRunStatus,
-    statuses,
-    submissionFrom,
-    type Run,
-  } from './run-model';
+  import { canCancel, isRunStatus, statuses, type Run } from './run-model';
 
   let { query }: RouteProps = $props();
   const list = createRunList(api, events);
@@ -62,15 +52,17 @@
     return `#/jobs${params.size ? `?${params}` : ''}`;
   }
   const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
-  const generateHref = (id: string) =>
-    `#/generate?workflow=${encodeURIComponent(id)}`;
   const time = (timestamp: string) =>
     Number.isFinite(Date.parse(timestamp))
       ? date.format(new Date(timestamp))
       : 'Not available';
   const revision = (run: Run) => `${run.prompt_id}/${run.updated_at}`;
 
-  type Confirmation = { run: Run; body?: SubmitRunRequest };
+  type Confirmation = { run: Run; rerun: boolean };
+  // The server-side rerun endpoint owns binding and fingerprint verification.
+  const rerunClient = api as typeof api & {
+    rerunRun?: (id: string, key: string) => Promise<Run>;
+  };
   const grants = new SvelteMap<string, string>();
   let reconcileEpoch = 0;
   onDestroy(
@@ -88,7 +80,6 @@
   let notice = $state<{
     message: string;
     newId?: string;
-    generate?: string;
     problem?: Problem;
   }>();
 
@@ -102,8 +93,8 @@
         };
   }
 
-  function confirm(run: Run, body?: SubmitRunRequest) {
-    confirmation = { run, body };
+  function confirm(run: Run, rerun = false) {
+    confirmation = { run, rerun };
     open = true;
   }
 
@@ -148,8 +139,9 @@
           break;
         default:
           notice = {
-            message:
-              'The submission is still ambiguous. Reconciliation could not establish whether ComfyUI accepted it.',
+            message: result.settles_at
+              ? `The submission is still ambiguous. Reconcile again at or after ${time(result.settles_at)}.`
+              : 'The submission is still ambiguous. Reconciliation could not establish whether ComfyUI accepted it.',
           };
       }
       list.update(result);
@@ -165,14 +157,15 @@
 
   async function perform() {
     if (!confirmation) return;
-    const { run, body } = confirmation;
+    const { run, rerun } = confirmation;
     const latest = $list.rows.find((row) => row.run.id === run.id)?.run;
     if (busy.has(run.id)) return;
     open = false;
     if (
       !latest ||
-      (body
-        ? latest.status !== 'unknown_submission' ||
+      (rerun
+        ? !rerunClient.rerunRun ||
+          latest.status !== 'unknown_submission' ||
           grants.get(run.id) !== revision(latest) ||
           revision(latest) !== revision(run) ||
           attempted.has(run.id)
@@ -186,7 +179,7 @@
     }
     busy.add(run.id);
     try {
-      if (body) {
+      if (rerun && rerunClient.rerunRun) {
         const current = await api.getRun(run.id);
         if (
           current.status !== 'unknown_submission' ||
@@ -199,21 +192,6 @@
           };
           return;
         }
-        const configured = await api.getWorkflow(body.workflow);
-        if (
-          configured.version !== run.workflow_version ||
-          Object.keys(configured.parameters).some(
-            (key) => !Object.hasOwn(body.parameters ?? {}, key),
-          )
-        ) {
-          notice = {
-            message:
-              'The configured workflow has changed or the original run lacks some bindings. Nothing was submitted. Review the parameters in Generate instead.',
-            generate: generateHref(run.workflow_id),
-          };
-          grants.delete(run.id);
-          return;
-        }
         if (grants.get(run.id) !== revision(run)) {
           notice = {
             message:
@@ -223,7 +201,7 @@
         }
         const key = crypto.randomUUID();
         attempted.add(run.id);
-        const result = await api.createRun(body, key);
+        const result = await rerunClient.rerunRun(run.id, key);
         notice = {
           message: 'New run recorded. The original run was not changed.',
           newId: result.id,
@@ -243,12 +221,12 @@
       }
     } catch (error) {
       notice = {
-        message: body
+        message: rerun
           ? 'A new run was not confirmed. Check Jobs before taking further action.'
           : 'Cancellation could not be confirmed.',
         problem: problem(
           error,
-          body ? 'Could not submit a new run' : 'Could not cancel the run',
+          rerun ? 'Could not submit a new run' : 'Could not cancel the run',
         ),
       };
       void list.refresh();
@@ -289,7 +267,6 @@
     <p role="status">
       {notice.message}
       {#if notice.newId}<a href={runHref(notice.newId)}>View new run</a>{/if}
-      {#if notice.generate}<a href={notice.generate}>Open Generate</a>{/if}
     </p>
     {#if notice.problem}<ProblemDetails problem={notice.problem} />{/if}
   </div>
@@ -353,18 +330,19 @@
             >Reconcile</Button
           >
           {#if grants.get(run.id) === revision(run) && !attempted.has(run.id)}
-            {@const body = submissionFrom(run)}
-            {#if body}
+            <p>
+              ComfyUI could still accept the original prompt very late.
+              Submitting again could duplicate it.
+            </p>
+            {#if rerunClient.rerunRun}
               <Button
-                onclick={() => confirm(run, body)}
+                onclick={() => confirm(run, true)}
                 disabled={busy.has(run.id)}>Submit as new run</Button
               >
             {:else}
               <p>
-                The original run does not have all the parameters needed to
-                recreate it. <a href={generateHref(run.workflow_id)}
-                  >Open Generate</a
-                > to review and enter the bindings.
+                Submitting as a new run is unavailable until the server can
+                verify the original workflow and inputs.
               </p>
             {/if}
           {/if}
@@ -386,20 +364,21 @@
 
 <Dialog
   bind:open
-  title={confirmation?.body ? 'Submit as new run' : 'Cancel run'}
+  title={confirmation?.rerun ? 'Submit as new run' : 'Cancel run'}
   returnFocus={() => heading.focus()}
 >
-  {#if confirmation?.body}
+  {#if confirmation?.rerun}
     <p>
       Review these parameters before submitting a new run. The original run will
-      not be changed.
+      not be changed. If ComfyUI accepted the original prompt very late, this
+      could duplicate it.
     </p>
     <p>
       <strong>Workflow:</strong>
       {confirmation.run.workflow_id} (version {confirmation.run
         .workflow_version})
     </p>
-    <pre>{JSON.stringify(confirmation.body.parameters, null, 2)}</pre>
+    <pre>{JSON.stringify(confirmation.run.parameters, null, 2)}</pre>
     <Button variant="primary" onclick={perform}>Confirm new run</Button>
   {:else if confirmation}
     <p>Request cancellation of {confirmation.run.id}?</p>

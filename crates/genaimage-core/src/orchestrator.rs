@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -45,6 +46,7 @@ pub struct ReconcileResult {
     pub run: RunRecord,
     pub outputs: Vec<OutputRecord>,
     pub outcome: ReconcileOutcome,
+    pub settles_at: Option<DateTime<Utc>>,
 }
 
 /// What this check established, independently of the durable run status.
@@ -57,6 +59,8 @@ pub enum ReconcileOutcome {
     NotFound,
     StillAmbiguous,
 }
+
+const ADMISSION_GRACE_SECONDS: u64 = 10;
 
 /// Result of a durable submission and whether its key was already reserved.
 pub struct KeyedSubmission {
@@ -772,6 +776,14 @@ impl Harness {
             )
             .await?;
 
+        repository
+            .record_event(
+                &run.id,
+                "submission_attempted",
+                None,
+                &json!({"timeout_seconds": self.config.comfyui.request_timeout_seconds}),
+            )
+            .await?;
         let response = tokio::select! {
             biased;
             _ = deadline.cancelled() => Err(HarnessError::ShuttingDown),
@@ -943,7 +955,7 @@ impl Harness {
             .events
             .run_lock(&self.database_identity, run_id, RunLockKind::Reconcile);
         let _guard = before_deadline(deadline, async { Ok(lock.lock().await) }).await?;
-        let (run, outcome) = self.inspect_run(run_id, deadline).await?;
+        let (run, outcome, settles_at) = self.inspect_run(run_id, deadline).await?;
         let repository = self.repository.as_async();
         let outputs = repository.outputs(run_id).await?;
         // Polling uses the same inspection without writing an event every second.
@@ -961,6 +973,7 @@ impl Harness {
             run,
             outputs,
             outcome,
+            settles_at,
         })
     }
 
@@ -968,18 +981,19 @@ impl Harness {
         &self,
         run_id: &str,
         deadline: &CancellationToken,
-    ) -> Result<(RunRecord, ReconcileOutcome)> {
+    ) -> Result<(RunRecord, ReconcileOutcome, Option<DateTime<Utc>>)> {
         let repository = self.repository.as_async();
         let (mut run, live_owner) = self
             .recover_submission(repository.get(run_id).await?)
             .await?;
         if run.status.is_terminal() {
-            return Ok((run, ReconcileOutcome::Terminal));
+            return Ok((run, ReconcileOutcome::Terminal, None));
         }
         if live_owner {
-            return Ok((run, ReconcileOutcome::InProgressElsewhere));
+            return Ok((run, ReconcileOutcome::InProgressElsewhere, None));
         }
         let prompt_id = run.prompt_id.clone();
+        let observed_at = Utc::now();
         let queue = before_deadline(deadline, self.backend.queue()).await?;
         let queued = queue.contains(&prompt_id);
         let transition_status = if queue.is_running(&prompt_id) {
@@ -1028,7 +1042,7 @@ impl Harness {
                 transition.disarm();
                 run = repository.get(run_id).await?;
                 if run.status.is_terminal() {
-                    return Ok((run, ReconcileOutcome::Terminal));
+                    return Ok((run, ReconcileOutcome::Terminal, None));
                 }
             }
         }
@@ -1042,6 +1056,7 @@ impl Harness {
         }
         match history.outcome {
             HistoryOutcome::NotFound | HistoryOutcome::Unresolved => {}
+            HistoryOutcome::Completed if history.outputs.is_empty() => {}
             HistoryOutcome::Cancelled => {
                 let message = format!(
                     "{} confirmed cancellation of the prompt",
@@ -1110,6 +1125,7 @@ impl Harness {
             }
         }
         let run = repository.get(run_id).await?;
+        let mut settles_at = None;
         let outcome = if run.status.is_terminal() {
             ReconcileOutcome::Terminal
         } else if prompt_id != run.prompt_id {
@@ -1125,11 +1141,25 @@ impl Harness {
             && run.status == RunStatus::UnknownSubmission
             && history.outcome == HistoryOutcome::NotFound
         {
-            ReconcileOutcome::NotFound
+            let eligible_at = repository.submission_attempt(run_id).await?.and_then(
+                |(attempted_at, timeout_seconds)| {
+                    timeout_seconds
+                        .checked_add(ADMISSION_GRACE_SECONDS)
+                        .and_then(|seconds| i64::try_from(seconds).ok())
+                        .and_then(TimeDelta::try_seconds)
+                        .and_then(|delta| attempted_at.checked_add_signed(delta))
+                },
+            );
+            if eligible_at.is_some_and(|instant| instant <= observed_at) {
+                ReconcileOutcome::NotFound
+            } else {
+                settles_at = eligible_at;
+                ReconcileOutcome::StillAmbiguous
+            }
         } else {
             ReconcileOutcome::StillAmbiguous
         };
-        Ok((run, outcome))
+        Ok((run, outcome, settles_at))
     }
 
     async fn transition_to_terminal(

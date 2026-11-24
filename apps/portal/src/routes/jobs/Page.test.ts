@@ -23,10 +23,9 @@ const fake = vi.hoisted(() => ({
   client: {
     listRuns: vi.fn<typeof api.listRuns>(),
     getRun: vi.fn<typeof api.getRun>(),
-    getWorkflow: vi.fn<typeof api.getWorkflow>(),
     cancelRun: vi.fn<typeof api.cancelRun>(),
     reconcileRun: vi.fn<typeof api.reconcileRun>(),
-    createRun: vi.fn<typeof api.createRun>(),
+    rerunRun: vi.fn<(id: string, key: string) => Promise<Run>>(),
   },
   listeners: new Map<string, (event: EventEnvelope) => void>(),
 }));
@@ -219,9 +218,10 @@ test('requires a not-found outcome and explicit review before creating a new run
   client.reconcileRun.mockResolvedValueOnce({
     ...unknown,
     outcome: 'still_ambiguous',
+    settles_at: '2026-11-24T12:01:10Z',
   });
   await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
-  expect(await screen.findByText(/still ambiguous/)).toBeTruthy();
+  expect(await screen.findByText(/Reconcile again at or after/)).toBeTruthy();
   expect(
     screen.queryByRole('button', { name: 'Submit as new run' }),
   ).toBeNull();
@@ -236,20 +236,11 @@ test('requires a not-found outcome and explicit review before creating a new run
   });
   await userEvent.click(submit);
   expect(screen.getByRole('dialog').textContent).toContain('A lighthouse');
-  expect(client.createRun).not.toHaveBeenCalled();
+  expect(screen.getByRole('dialog').textContent).toContain('could duplicate');
+  expect(client.rerunRun).not.toHaveBeenCalled();
   client.getRun.mockResolvedValueOnce(unknown);
-  client.getWorkflow.mockResolvedValueOnce({
-    id: 'example',
-    title: 'Example',
-    version: '1',
-    workflow: 'workflow.json',
-    outputs: [],
-    parameters: {},
-    presets: {},
-    schema_version: 2,
-  });
   const newRun = { ...original, id: 'run-new', status: 'queued' as const };
-  client.createRun.mockResolvedValueOnce(newRun);
+  client.rerunRun.mockResolvedValueOnce(newRun);
   await userEvent.click(
     screen.getByRole('button', { name: 'Confirm new run' }),
   );
@@ -258,11 +249,11 @@ test('requires a not-found outcome and explicit review before creating a new run
       'href',
     ),
   ).toBe('#/runs/run-new');
-  expect(client.createRun).toHaveBeenCalledExactlyOnceWith(
-    { workflow: 'example', parameters: original.parameters },
+  expect(client.rerunRun).toHaveBeenCalledExactlyOnceWith(
+    original.id,
     expect.stringMatching(/^[a-f0-9-]{36}$/),
   );
-  expect(client.createRun.mock.calls[0][1]).not.toBe(original.prompt_id);
+  expect(client.rerunRun.mock.calls[0][1]).not.toBe(original.prompt_id);
   expect(client.cancelRun).not.toHaveBeenCalled();
   await waitFor(() =>
     expect(
@@ -271,26 +262,21 @@ test('requires a not-found outcome and explicit review before creating a new run
   );
 });
 
-test('links to Generate when a not-found run lacks reusable parameters', async () => {
-  const unknown = {
-    ...original,
-    status: 'unknown_submission' as const,
-    parameters: null,
-  };
-  await start(unknown);
-  client.reconcileRun.mockResolvedValueOnce({
-    ...unknown,
-    outcome: 'not_found',
-  });
-  await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
-  expect(
-    (await screen.findByRole('link', { name: 'Open Generate' })).getAttribute(
-      'href',
-    ),
-  ).toBe('#/generate?workflow=example');
-  expect(
-    screen.queryByRole('button', { name: 'Submit as new run' }),
-  ).toBeNull();
+test('refetches for an unseen matching progress revision and coalesces repeats', async () => {
+  const query = new URLSearchParams('status=running');
+  client.listRuns.mockResolvedValue({ runs: [] });
+  render(Page, { query, params: {} });
+  await screen.findByText(/No runs match/);
+  progress(1);
+  progress(2);
+  await waitFor(() => expect(client.listRuns).toHaveBeenCalledTimes(2));
+  progress(3);
+  const revised = { ...eventRun, updated_at: '2026-11-24T12:00:01Z' };
+  client.listRuns.mockResolvedValue({ runs: [revised] });
+  progress(4, revised);
+  progress(5, revised);
+  await screen.findByRole('link', { name: original.id });
+  expect(client.listRuns).toHaveBeenCalledTimes(3);
 });
 
 test('does not portray an unrecognised status as successful', async () => {

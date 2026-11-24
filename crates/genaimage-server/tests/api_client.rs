@@ -99,12 +99,7 @@ async fn submits_lists_reconciles_and_cancels_runs_with_streaming_media() {
     );
     api.fake.complete.store(true, Ordering::SeqCst);
     assert_eq!(
-        client
-            .reconcile_run(&submitted.id)
-            .await
-            .unwrap()
-            .run
-            .status,
+        client.reconcile_run(&submitted.id).await.unwrap().status,
         RunStatus::Completed
     );
 
@@ -160,10 +155,7 @@ async fn submits_lists_reconciles_and_cancels_runs_with_streaming_media() {
         RunStatus::Cancelling
     );
     let reconciled = client.reconcile_runs().await.unwrap();
-    assert!(reconciled
-        .runs
-        .iter()
-        .any(|result| result.run.id == second.id));
+    assert!(reconciled.runs.iter().any(|run| run.id == second.id));
     api.shutdown().await;
 }
 
@@ -270,7 +262,7 @@ async fn uncertain_submission_returns_the_durable_run_for_reconciliation() {
     };
     assert_eq!(run.status, RunStatus::UnknownSubmission);
     assert_eq!(
-        client.reconcile_run(&run.id).await.unwrap().run.status,
+        client.reconcile_run(&run.id).await.unwrap().status,
         RunStatus::Queued
     );
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
@@ -392,4 +384,39 @@ async fn submission_with_lost_response_is_not_replayed() {
     assert!(matches!(error, Error::Http(_)), "{error}");
     shutdown.send(()).unwrap();
     assert_eq!(timeout(DEADLINE, server).await.unwrap().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn legacy_reconciliation_responses_remain_compatible_and_inconclusive() {
+    use axum::{routing::post, Json, Router};
+    use genaimage_api::ReconcileOutcome;
+    let run = json!({"id": "run-old", "status": "unknown_submission", "prompt_id": "prompt-old",
+        "workflow_id": "old", "workflow_version": "1", "workflow_sha256": "hash", "parameters": {},
+        "created_at": "2026-11-24T13:00:00Z", "updated_at": "2026-11-24T13:00:01Z"});
+    let single = run.clone();
+    let router = Router::new()
+        .route(
+            "/api/v1/runs/{id}/reconcile",
+            post(move || async move { Json(single) }),
+        )
+        .route(
+            "/api/v1/runs/reconcile",
+            post(move || async move { Json(json!({"runs": [run]})) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client =
+        Client::with_base_url(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    assert_eq!(
+        client.reconcile_run("run-old").await.unwrap().status,
+        RunStatus::UnknownSubmission
+    );
+    assert_eq!(client.reconcile_runs().await.unwrap().runs[0].id, "run-old");
+    let single = client.reconcile_run_with_outcome("run-old").await.unwrap();
+    assert_eq!(single.outcome, ReconcileOutcome::StillAmbiguous);
+    assert!(single.settles_at.is_none());
+    let bulk = client.reconcile_runs_with_outcomes().await.unwrap();
+    assert_eq!(bulk.runs[0].outcome, ReconcileOutcome::StillAmbiguous);
+    assert!(bulk.runs[0].settles_at.is_none());
+    server.abort();
 }
