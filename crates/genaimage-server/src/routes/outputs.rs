@@ -201,6 +201,44 @@ pub(super) async fn thumbnail(
 }
 
 #[utoipa::path(
+    get, path = "/runs/{id}/resolved-workflow",
+    operation_id = "outputs_resolved_workflow",
+    tag = "outputs",
+    description = "Fetch the archived resolved workflow. Its integrity is unverified: the run record does not contain a digest of these bytes.",
+    params(("id" = String, Path, description = "Run ID"), ("If-None-Match" = Option<String>, Header)),
+    responses(
+        (status = 200, description = "Unverified archived resolved workflow", body = Object, headers(("ETag" = String), ("X-Genaimage-Workflow-Integrity" = String, description = "Always unverified"))),
+        (status = 304, description = "Not modified"),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn resolved_workflow(
+    State(state): State<AppState>,
+    id: Result<Path<String>, PathRejection>,
+    headers: HeaderMap,
+) -> Result<Response, Problem> {
+    let file = state
+        .harness()
+        .open_resolved_workflow(&parse_id(id)?)
+        .await
+        .map_err(problem)?;
+    let mut response = respond(file, "application/json", REVALIDATE, false, None, &headers).await?;
+    response.headers_mut().insert(
+        "x-genaimage-workflow-integrity",
+        axum::http::HeaderValue::from_static("unverified"),
+    );
+    Ok(response)
+}
+
+#[utoipa::path(
     get, path = "/runs/{id}/manifest",
     operation_id = "outputs_manifest",
     tag = "outputs",

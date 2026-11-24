@@ -985,3 +985,38 @@ async fn rejected_deletion_rolls_back_but_lost_acknowledgement_stays_cancelling(
     assert_eq!(api.fake.delete_calls.load(Ordering::SeqCst), 2);
     api.shutdown().await;
 }
+
+#[tokio::test]
+async fn resolved_workflow_is_available_for_active_runs_and_marked_unverified() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let source = run(
+        submit(&api, "workflow-read", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let path = format!("{RUNS}/{}/resolved-workflow", source.id);
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-genaimage-workflow-integrity"],
+        "unverified"
+    );
+    let graph: Value = response.json().await.unwrap();
+    assert!(graph.is_object());
+    let record = api.core.repository().get(&source.id).unwrap();
+    std::fs::write(
+        std::path::Path::new(&record.output_dir).join("resolved-workflow.json"),
+        b"not json",
+    )
+    .unwrap();
+    let response = api.request(Method::GET, &path).send().await.unwrap();
+    ApiHarness::assert_problem(response, StatusCode::CONFLICT).await;
+    let response = api
+        .request(Method::GET, &format!("{RUNS}/missing/resolved-workflow"))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    api.shutdown().await;
+}

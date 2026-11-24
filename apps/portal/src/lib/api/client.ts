@@ -395,8 +395,26 @@ export function createApiClient(
       json('post', '/api/v1/runs/{id}/reconcile', { ...options, path: { id } }),
     reconcileRuns: (options: RequestOptions = {}) =>
       json('post', '/api/v1/runs/reconcile', options),
+    getResolvedWorkflow: (id: string, options?: RequestOptions) =>
+      json(
+        'get',
+        '/api/v1/runs/{id}/resolved-workflow',
+        { ...options, path: { id } },
+        readRecordedRun,
+      ),
     getRunManifest: (id: string, options?: RequestOptions) =>
       json('get', '/api/v1/runs/{id}/manifest', { ...options, path: { id } }),
+    getRunManifestText: (id: string, options?: RequestOptions) =>
+      request(
+        apiUrl('/api/v1/runs/{id}/manifest', { id }),
+        options ?? {},
+        async (response) => ({
+          text: await response.text(),
+          integrityVerified: !response.headers.has(
+            'x-genaimage-manifest-integrity',
+          ),
+        }),
+      ),
     listRunEvents: (
       id: string,
       query?: RunEventsQuery,

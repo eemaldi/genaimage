@@ -138,6 +138,28 @@ impl Harness {
         .await
     }
 
+    /// Open the archived resolved workflow. Older run records do not include a
+    /// digest of this file, so callers must identify it as unverified.
+    pub async fn open_resolved_workflow(&self, id: &str) -> Result<MediaFile> {
+        let run = self.repository().as_async().get(id).await?;
+        let path = PathBuf::from(run.output_dir).join("resolved-workflow.json");
+        let root = self.config().runs.clone();
+        let data = self.config().data_dir.clone();
+        blocking(move || {
+            let file = open_stored(&root, &path)?;
+            let mut workflow = snapshot(file, &data, Some(MAX_SOURCE_BYTES))?;
+            let json: serde_json::Value =
+                serde_json::from_reader(BufReader::new(&mut workflow.file))
+                    .map_err(|_| HarnessError::MediaIntegrity)?;
+            if !json.is_object() {
+                return Err(HarnessError::MediaIntegrity);
+            }
+            workflow.file.rewind()?;
+            Ok(workflow)
+        })
+        .await
+    }
+
     pub async fn open_thumbnail(&self, id: &str, size: ThumbnailSize) -> Result<MediaFile> {
         let output = self.repository().as_async().output(id).await?.output;
         let root = self.config().runs.clone();
