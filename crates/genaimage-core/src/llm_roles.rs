@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, RwLock,
 };
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use crate::{HarnessError, LlmProvider, Result};
 
 pub const LLM_PROVIDER: &str = "openai-compatible";
 const MODEL_CACHE_TTL: Duration = Duration::from_secs(30);
+const MODEL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LlmRole {
@@ -170,7 +171,22 @@ pub struct LlmRoles {
     capability_overrides: std::collections::BTreeMap<String, LlmCapabilityOverride>,
     cache: Arc<RwLock<ProbeCache>>,
     probe: Arc<Mutex<()>>,
+    completed_probes: Arc<AtomicUsize>,
+    probe_timeout: Duration,
     background_refreshing: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for LlmRoles {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LlmRoles")
+            .field("configured", &self.base_configured)
+            .field("text_model", &self.text_model)
+            .field("vision_model", &self.vision_model)
+            .field("capability_overrides", &self.capability_overrides)
+            .field("probe_timeout", &self.probe_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LlmRoles {
@@ -184,6 +200,9 @@ impl LlmRoles {
             capability_overrides: config.capabilities.clone(),
             cache: Arc::new(RwLock::new(ProbeCache::Pending)),
             probe: Arc::new(Mutex::new(())),
+            completed_probes: Arc::new(AtomicUsize::new(0)),
+            probe_timeout: MODEL_PROBE_TIMEOUT
+                .min(Duration::from_secs(config.connect_timeout_secs.max(1))),
             background_refreshing: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -261,38 +280,30 @@ impl LlmRoles {
         let provider = self.provider.as_ref().ok_or_else(|| {
             HarnessError::Configuration("LLM is not configured; set llm.base_url".into())
         })?;
-        let now = Instant::now();
-        if !force && self.cache.read().expect("LLM cache lock").fresh(now) {
-            return match &*self.cache.read().expect("LLM cache lock") {
-                ProbeCache::Ready { models, .. } => Ok(models.clone()),
-                ProbeCache::Failed { reason, .. } => Err(HarnessError::Backend {
-                    backend: "llm".into(),
-                    message: reason.clone(),
-                }),
-                ProbeCache::Pending => unreachable!(),
-            };
+        let observed_probe = self.completed_probes.load(Ordering::Acquire);
+        if !force {
+            if let Some(result) = self.cached_result() {
+                return result;
+            }
         }
         let _probe = self.probe.lock().await;
-        let now = Instant::now();
-        if !force && self.cache.read().expect("LLM cache lock").fresh(now) {
-            return match &*self.cache.read().expect("LLM cache lock") {
-                ProbeCache::Ready { models, .. } => Ok(models.clone()),
-                ProbeCache::Failed { reason, .. } => Err(HarnessError::Backend {
-                    backend: "llm".into(),
-                    message: reason.clone(),
-                }),
-                ProbeCache::Pending => unreachable!(),
-            };
+        if (!force && self.cached_result().is_some())
+            || self.completed_probes.load(Ordering::Acquire) != observed_probe
+        {
+            return self
+                .cached_result()
+                .expect("a completed probe has a cache result");
         }
-        match provider.list_models().await {
-            Ok(models) => {
+        let probe = tokio::time::timeout(self.probe_timeout, provider.list_models()).await;
+        let result = match probe {
+            Ok(Ok(models)) => {
                 *self.cache.write().expect("LLM cache lock") = ProbeCache::Ready {
                     models: models.clone(),
                     at: Instant::now(),
                 };
                 Ok(models)
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let reason = error.to_string();
                 *self.cache.write().expect("LLM cache lock") = ProbeCache::Failed {
                     reason: reason.clone(),
@@ -303,7 +314,38 @@ impl LlmRoles {
                     message: reason,
                 })
             }
+            Err(_) => {
+                let reason = format!(
+                    "model listing timed out after {} seconds",
+                    self.probe_timeout.as_secs_f64()
+                );
+                *self.cache.write().expect("LLM cache lock") = ProbeCache::Failed {
+                    reason: reason.clone(),
+                    at: Instant::now(),
+                };
+                Err(HarnessError::Backend {
+                    backend: "llm".into(),
+                    message: reason,
+                })
+            }
+        };
+        self.completed_probes.fetch_add(1, Ordering::AcqRel);
+        result
+    }
+
+    fn cached_result(&self) -> Option<Result<Vec<LlmModel>>> {
+        let cache = self.cache.read().expect("LLM cache lock");
+        if !cache.fresh(Instant::now()) {
+            return None;
         }
+        Some(match &*cache {
+            ProbeCache::Ready { models, .. } => Ok(models.clone()),
+            ProbeCache::Failed { reason, .. } => Err(HarnessError::Backend {
+                backend: "llm".into(),
+                message: reason.clone(),
+            }),
+            ProbeCache::Pending => unreachable!(),
+        })
     }
 
     pub fn refresh_in_background(&self) {
@@ -542,7 +584,10 @@ mod tests {
             ],
             ..FakeProvider::default()
         });
-        let roles = LlmRoles::new(&config(), Some(provider.clone()));
+        let mut debug_config = config();
+        debug_config.api_key = Some("roles-debug-secret".into());
+        let roles = LlmRoles::new(&debug_config, Some(provider.clone()));
+        assert!(!format!("{roles:?}").contains("roles-debug-secret"));
         assert!(matches!(
             roles.text().await,
             Err(AssistantUnavailable::CapabilityUnsupported {

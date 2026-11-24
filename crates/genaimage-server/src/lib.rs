@@ -47,6 +47,16 @@ pub struct AppState {
     lifecycle: Arc<Lifecycle>,
 }
 
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppState")
+            .field("settings", &self.settings)
+            .field("llm_roles", &self.llm_roles)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Default)]
 struct Lifecycle {
     admission: Mutex<()>,

@@ -142,6 +142,10 @@ impl ApiHarness {
         self.workspace.path()
     }
 
+    pub fn state_debug(&self) -> String {
+        format!("{:?}", self.state)
+    }
+
     /// The URL supplies Host; non-GET/HEAD requests use a same-origin Origin.
     pub fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
         let origin = if method != Method::GET && method != Method::HEAD {

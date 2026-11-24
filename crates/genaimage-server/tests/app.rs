@@ -3,7 +3,7 @@ mod common;
 use std::{
     collections::BTreeMap,
     future::{poll_fn, Future},
-    sync::atomic::Ordering,
+    sync::{atomic::Ordering, Arc},
     task::Poll,
     time::Duration,
 };
@@ -14,7 +14,8 @@ use genaimage_api::{
     SettingsTestResponse,
 };
 use genaimage_comfyui::ComfyUiClient;
-use genaimage_core::{Event, ImageBackend, RunRequest, RunStatus};
+use genaimage_core::{config::LlmConfig, Event, ImageBackend, LlmRoles, RunRequest, RunStatus};
+use genaimage_llm::{OpenAiCompatibleProvider, OpenAiCompatibleProviderOptions};
 use genaimage_test_support::{FakeComfyServer, FakeComfyState, FakeLlmScript, FakeLlmServer};
 use reqwest::{header, Method, StatusCode};
 use serde_json::json;
@@ -65,6 +66,39 @@ async fn health_reports_a_reachable_fake_and_emits_an_event() {
         matches!(e.event, Event::BackendHealthChanged { .. })
     })
     .await;
+}
+
+#[tokio::test]
+async fn concurrent_role_lookups_single_flight_the_model_probe() {
+    let llm = FakeLlmServer::start(
+        FakeLlmScript::default()
+            .with_models_response(json!({
+                "object": "list",
+                "data": [{ "id": "assistant", "supports_tools": true }]
+            }))
+            .with_models_response_delay(Duration::from_millis(100)),
+    )
+    .await;
+    let config = LlmConfig {
+        base_url: llm.base_url(),
+        text_model: "assistant".into(),
+        ..LlmConfig::default()
+    };
+    let provider = Arc::new(
+        OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+            base_url: config.base_url.clone(),
+            ..OpenAiCompatibleProviderOptions::default()
+        })
+        .unwrap(),
+    );
+    let roles = LlmRoles::new(
+        &config,
+        Some(provider as Arc<dyn genaimage_core::LlmProvider>),
+    );
+    let (first, second) = tokio::join!(roles.text(), roles.text());
+    assert_eq!(first.unwrap().model(), "assistant");
+    assert_eq!(second.unwrap().model(), "assistant");
+    assert_eq!(llm.models_request_count(), 1);
 }
 
 #[tokio::test]
@@ -560,6 +594,8 @@ async fn settings_expose_only_llm_api_key_presence() {
     assert!(!body.contains("never-return-this-secret"));
     let current: SettingsResponse = api.get_json(SETTINGS).await;
     assert!(current.api_key_set);
+    assert!(!format!("{:?}", api.core).contains("never-return-this-secret"));
+    assert!(!api.state_debug().contains("never-return-this-secret"));
     assert!(!current.settings.contains_key("llm.api_key"));
     assert!(current.restart_required.contains(&"llm.api_key".into()));
     api.shutdown().await;

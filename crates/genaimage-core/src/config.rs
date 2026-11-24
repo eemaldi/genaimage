@@ -936,8 +936,18 @@ mod tests {
         assert_eq!(capabilities.tools, Some(true));
         assert_eq!(capabilities.vision, Some(false));
         let debug = format!("{config:?}");
+        let llm_debug = format!("{:?}", config.llm);
+        let harness_debug = format!(
+            "{:?}",
+            HarnessConfig {
+                llm: config.llm.clone(),
+                ..HarnessConfig::default()
+            }
+        );
         let json = serde_json::to_string(&config).unwrap();
         assert!(!debug.contains("top-secret"));
+        assert!(!llm_debug.contains("top-secret"));
+        assert!(!harness_debug.contains("top-secret"));
         assert!(!json.contains("top-secret"));
         assert!(!config.settings_values().contains_key("llm.api_key"));
     }

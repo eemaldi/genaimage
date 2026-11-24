@@ -294,6 +294,20 @@ pub struct SettingsUpdate {
     api_key_edit: Option<Option<String>>,
 }
 
+impl std::fmt::Debug for SettingsUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SettingsUpdate")
+            .field("config", &self.config)
+            .field("edits", &self.edits)
+            .field(
+                "api_key_edit",
+                &self.api_key_edit.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 impl SettingsUpdate {
     pub fn config(&self) -> &ResolvedConfig {
         &self.config
@@ -632,6 +646,7 @@ mod tests {
                 json!("write-only-secret"),
             )]))
             .unwrap();
+        assert!(!format!("{set:?}").contains("write-only-secret"));
         assert!(!serde_json::to_string(set.config())
             .unwrap()
             .contains("write-only-secret"));

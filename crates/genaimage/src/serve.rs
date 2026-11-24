@@ -60,6 +60,7 @@ async fn open_harness(cli: &Cli) -> Result<(Harness, LlmRoles), HarnessError> {
         &config.llm,
         registry.llm_provider(genaimage_core::LLM_PROVIDER),
     );
+    llm_roles.refresh_in_background();
     let backend = registry
         .image_backend(genaimage_core::extensions::COMFYUI_BACKEND)
         .ok_or_else(|| HarnessError::Configuration("no configured ComfyUI backend".into()))?;

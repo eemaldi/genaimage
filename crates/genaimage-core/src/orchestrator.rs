@@ -205,6 +205,16 @@ pub struct Harness {
     database_identity: PathBuf,
 }
 
+impl std::fmt::Debug for Harness {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Harness")
+            .field("config", &self.config)
+            .field("database_identity", &self.database_identity)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Harness {
     pub fn new(config: ResolvedConfig, backend: Arc<dyn ImageBackend>) -> Result<Self> {
         Self::with_event_bus(config, backend, EventBus::default())

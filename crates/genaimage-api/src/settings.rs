@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,9 +7,24 @@ use utoipa::ToSchema;
 use crate::{HealthStatus, ImageBackendHealthReason, LlmModel};
 
 /// Sparse changes using dotted TOML keys. Omitted values remain unchanged.
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Deserialize, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct SettingsPatch(pub BTreeMap<String, Value>);
+
+impl fmt::Debug for SettingsPatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_map()
+            .entries(self.0.iter().map(|(key, value)| {
+                if key == "llm.api_key" {
+                    (key, &"<redacted>" as &dyn fmt::Debug)
+                } else {
+                    (key, value as &dyn fmt::Debug)
+                }
+            }))
+            .finish()
+    }
+}
 
 /// Effective settings for the next start, including values already applied live.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -63,4 +78,22 @@ pub struct SettingsTestResponse {
 pub struct SettingError {
     pub key: String,
     pub reason: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn settings_patch_debug_redacts_write_only_api_key() {
+        let patch = SettingsPatch(BTreeMap::from([
+            ("llm.api_key".into(), json!("debug-secret")),
+            ("llm.text_model".into(), json!("model")),
+        ]));
+        let debug = format!("{patch:?}");
+        assert!(!debug.contains("debug-secret"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(debug.contains("model"), "{debug}");
+    }
 }

@@ -113,6 +113,7 @@ pub struct FakeLlmScript {
     chat_error: Option<(StatusCode, String)>,
     models_error: Option<(StatusCode, String)>,
     chat_response_delay: Duration,
+    models_response_delay: Duration,
 }
 
 impl Default for FakeLlmScript {
@@ -144,6 +145,7 @@ impl FakeLlmScript {
             chat_error: None,
             models_error: None,
             chat_response_delay: Duration::ZERO,
+            models_response_delay: Duration::ZERO,
         }
     }
 
@@ -162,6 +164,12 @@ impl FakeLlmScript {
             "object": "list",
             "data": ids.into_iter().map(|id| json!({ "id": id.into() })).collect::<Vec<_>>()
         });
+        self
+    }
+
+    /// Delays the model-listing response, exercising probe concurrency and deadlines.
+    pub fn with_models_response_delay(mut self, delay: Duration) -> Self {
+        self.models_response_delay = delay;
         self
     }
 
@@ -193,6 +201,7 @@ struct FakeLlmState {
     script: Arc<Mutex<FakeLlmScript>>,
     requests: Arc<Mutex<Vec<Value>>>,
     chat_requests: Arc<AtomicUsize>,
+    models_requests: Arc<AtomicUsize>,
     stream_disconnects: Arc<AtomicUsize>,
     request_arrived: Arc<Notify>,
     stream_dropped: Arc<Notify>,
@@ -204,6 +213,7 @@ impl FakeLlmState {
             script: Arc::new(Mutex::new(script)),
             requests: Arc::new(Mutex::new(Vec::new())),
             chat_requests: Arc::new(AtomicUsize::new(0)),
+            models_requests: Arc::new(AtomicUsize::new(0)),
             stream_disconnects: Arc::new(AtomicUsize::new(0)),
             request_arrived: Arc::new(Notify::new()),
             stream_dropped: Arc::new(Notify::new()),
@@ -282,7 +292,11 @@ impl Drop for StreamProbe {
 }
 
 async fn fake_models(State(state): State<FakeLlmState>) -> Response {
+    state.models_requests.fetch_add(1, Ordering::SeqCst);
     let script = state.script.lock().expect("script lock").clone();
+    if !script.models_response_delay.is_zero() {
+        tokio::time::sleep(script.models_response_delay).await;
+    }
     if let Some((status, message)) = script.models_error {
         return (status, Json(json!({ "error": { "message": message } }))).into_response();
     }
@@ -338,6 +352,10 @@ impl FakeLlmServer {
 
     pub fn chat_request_count(&self) -> usize {
         self.state.chat_requests.load(Ordering::SeqCst)
+    }
+
+    pub fn models_request_count(&self) -> usize {
+        self.state.models_requests.load(Ordering::SeqCst)
     }
 
     pub fn stream_disconnects(&self) -> usize {
