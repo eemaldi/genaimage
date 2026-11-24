@@ -749,9 +749,11 @@ name = "genaimage"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "genaimage-api",
  "genaimage-comfyui",
  "genaimage-core",
  "genaimage-server",
+ "genaimage-test-support",
  "serde",
  "serde_json",
  "tempfile",
@@ -858,6 +860,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

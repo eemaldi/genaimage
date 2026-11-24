@@ -4,6 +4,9 @@
 //! scenarios. Subscribe to progress before sending JSON on `progress`.
 //! The default queue and history represent the most recently submitted prompt.
 
+mod api_fixture;
+pub use api_fixture::{install_contract_workflow, ApiFixture};
+
 use axum::{
     body::Bytes,
     extract::{

@@ -34,7 +34,8 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
 - `genaimage` provides the existing scripted CLI. It supplies the ComfyUI
   adapter factory to the extension registry and passes the selected backend to
   the core harness. `genaimage serve` passes this harness to `genaimage-server`;
-  the other commands continue to call the core directly.
+  `run` and `jobs` still call the core directly. The [CLI reference](cli.md)
+  lists the health, workflow, preset and settings commands that use the API.
 - `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
   exposes an async `genaimage_api::client::Client` with the opt-in
   `client` feature (reqwest with rustls). The server uses the wire types

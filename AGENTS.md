@@ -13,9 +13,10 @@ ComfyUI image generation, assisted by local LLMs. Read
   orchestration in operator surfaces.
 - `crates/genaimage-comfyui` implements the core transport port using ComfyUI
   HTTP and WebSocket connections.
-- `crates/genaimage` is the scripted interface. Operator commands still call the
-  adapter and core directly; `genaimage serve` starts the local Axum server in
-  `crates/genaimage-server`, with shared wire types in `crates/genaimage-api`.
+- `crates/genaimage` is the scripted interface. Health, workflow, preset and
+  settings commands call the server through `crates/genaimage-api`; `run` and
+  `jobs` still use the core directly. `genaimage serve` starts the local Axum
+  server in `crates/genaimage-server`.
 - The server binds to loopback only and currently serves health, workflows, runs,
   outputs, uploads, settings, live events and an OpenAPI contract. The embedded
   Svelte portal is planned.

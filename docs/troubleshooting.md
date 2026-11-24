@@ -24,7 +24,7 @@ restart ComfyUI and retry validation. The harness never installs a node for you.
 Run:
 
 ```bash
-genaimage workflow inspect <workflow>
+genaimage workflow inspect <ID> --json
 ```
 
 Provide every parameter marked required through a preset or `--set NAME=JSON`.
@@ -51,12 +51,12 @@ remains available, and the event is kept in the run history.
 
 ## A legacy workflow is missing from the list
 
-`workflow list` warns on stderr about sidecars it could not load and still
+`workflow list` shows discovery diagnostics with the catalogue and still
 lists valid workflows. Upgrade a version 1 sidecar as described in the
 [manifest guide](workflow-manifest.md#upgrading-from-version-1), then run
-`workflow validate <manifest-path>` again. If an
-invalid sidecar shares an ID with a valid one, select an explicit manifest path
-rather than using the shared ID.
+`workflow validate <ID>` again. If an invalid sidecar shares an ID with a
+valid one, repair it or move it out of the server’s workflow directory before
+using that ID. See the [CLI reference](cli.md).
 
 The obsolete `paths.characters` setting is rejected. Remove it; this does not
 change the state database or existing run manifests. See the [setup guide](setup.md)

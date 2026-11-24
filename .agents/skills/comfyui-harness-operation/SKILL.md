@@ -6,27 +6,31 @@ description: Operate the local GenAImage CLI safely with explicit workflow bindi
 # ComfyUI harness operation
 
 Use this skill to operate GenAImage through its current CLI, which calls the
-shared Rust core directly. ComfyUI is a separate, already running process; the
-harness does not install or replace ComfyUI, models, weights or custom nodes.
+loopback server for health, workflow, preset and settings commands. `run`
+and `jobs` still call the shared Rust core directly. ComfyUI is a separate,
+already running process; the harness does not install or replace ComfyUI,
+models, weights or custom nodes.
 Current ComfyUI profiles accept loopback hosts only.
 
 ## Prepare a run
 
 1. Read `AGENTS.md` and `docs/workflow-manifest.md`. Use a ComfyUI API-format
    JSON workflow with a strict `*.genaimage.json` sidecar, not a UI export.
-2. Inspect the host, available workflows, parameter bindings and presets:
+2. Start `genaimage serve` if needed. Inspect the host, available workflows,
+   parameter bindings and presets (using catalogue IDs):
 
    ```text
    genaimage doctor
    genaimage workflow list
-   genaimage workflow validate <workflow-id-or-manifest>
-   genaimage workflow inspect <workflow-id-or-manifest>
-   genaimage presets <workflow-id-or-manifest>
+   genaimage workflow validate <workflow-id>
+   genaimage workflow inspect <workflow-id>
+   genaimage presets <workflow-id>
    ```
 
-   Use `--workspace <path>` to select a workspace, `--json` for machine-readable
-   output, and `genaimage config show` to inspect configuration. The CLI can
-   create example configuration with `genaimage config init`; do not use
+   Select the workspace when starting the server with `--workspace <path>`.
+   Use `--server` or `GENAIMAGE_SERVER` to select the API origin, `--json` for
+   machine-readable output, and `genaimage config show` to inspect settings.
+   Create example configuration with `genaimage config init`; do not use
    `--force` to replace existing configuration without the user's direction.
 3. Check required typed parameters, defaults, presets, local image inputs and
    node/input bindings. The CLI's `--set NAME=JSON` overrides the preset; values
