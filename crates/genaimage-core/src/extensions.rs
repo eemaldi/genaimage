@@ -85,6 +85,7 @@ pub enum ChatDelta {
         arguments: Value,
         json_schema: Value,
         preview: Option<Value>,
+        preview_token: String,
     },
 }
 

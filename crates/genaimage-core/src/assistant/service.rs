@@ -8,6 +8,7 @@ use std::{
 use chrono::Utc;
 use futures_util::{FutureExt, StreamExt};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot, watch};
 #[cfg(test)]
 use tokio::sync::{Notify, Semaphore};
@@ -109,9 +110,20 @@ impl futures_core::Stream for AssistantStream {
 
 #[derive(Clone, Debug)]
 pub enum AssistantConfirmationDecision {
-    Confirm,
-    Edit(Value),
+    Confirm {
+        preview_token: String,
+    },
+    Edit {
+        arguments: Value,
+        preview_token: String,
+    },
     Reject(Option<String>),
+}
+
+#[derive(Clone, Debug)]
+pub struct AssistantConfirmationPreview {
+    pub preview: Option<Value>,
+    pub preview_token: String,
 }
 
 #[derive(Clone)]
@@ -278,6 +290,44 @@ impl ConversationService {
         limit: Option<usize>,
     ) -> Result<Vec<super::AssistantToolAuditRecord>> {
         self.store.list_tool_audit(conversation_id, limit).await
+    }
+
+    pub async fn preview_confirmation(
+        &self,
+        conversation_id: &str,
+        confirmation_id: &str,
+        arguments: Value,
+    ) -> Result<AssistantConfirmationPreview> {
+        let confirmation = self
+            .store
+            .get_confirmation(conversation_id, confirmation_id)
+            .await?;
+        if confirmation.status != AssistantToolConfirmationStatus::Pending {
+            return Err(HarnessError::ToolConfirmationConflict(format!(
+                "confirmation '{}' is not pending",
+                confirmation.id
+            )));
+        }
+        validate_arguments(&confirmation.json_schema, &arguments)
+            .map_err(HarnessError::InvalidToolArguments)?;
+        let tool = self.tools.get(&confirmation.tool).ok_or_else(|| {
+            HarnessError::ToolConfirmationConflict(format!(
+                "Assistant tool '{}' is no longer registered.",
+                confirmation.tool
+            ))
+        })?;
+        match confirmation_preview(Arc::clone(tool), &confirmation.id, &arguments).await {
+            Ok(preview) => Ok(preview),
+            Err(error) => Err(HarnessError::ToolConfirmationPreviewMismatch {
+                detail: error.to_string(),
+                preview: Some(json!({
+                    "valid": false,
+                    "issues": [{"field": "preview", "reason": error.to_string()}]
+                })),
+                preview_token: None,
+                conflict: matches!(error, HarnessError::WorkflowChanged),
+            }),
+        }
     }
 
     pub async fn send_message(
@@ -747,10 +797,25 @@ async fn supervise_confirmation(
     }
 
     let (decision_name, effective, reason) = match decision {
-        AssistantConfirmationDecision::Confirm => {
+        AssistantConfirmationDecision::Confirm { preview_token } => {
+            if let Err(error) = verify_confirmation_preview(
+                &service,
+                &confirmation,
+                &confirmation.proposed_arguments,
+                &preview_token,
+            )
+            .await
+            {
+                fail_setup(&_finished_placeholder, &mut started, error);
+                drop(lease);
+                return;
+            }
             ("confirm", confirmation.proposed_arguments.clone(), None)
         }
-        AssistantConfirmationDecision::Edit(arguments) => {
+        AssistantConfirmationDecision::Edit {
+            arguments,
+            preview_token,
+        } => {
             if let Err(error) = validate_arguments(&confirmation.json_schema, &arguments) {
                 let _ = service
                     .store
@@ -780,37 +845,13 @@ async fn supervise_confirmation(
                 drop(lease);
                 return;
             }
-            if let Some(tool) = service.tools.get(&confirmation.tool) {
-                if let Err(error) = tool.preview(&arguments).await {
-                    let error = error.to_string();
-                    let _ = service
-                        .store
-                        .append_tool_audit(NewAssistantToolAudit {
-                            conversation_id: conversation_id.clone(),
-                            confirmation_id: Some(confirmation.id.clone()),
-                            tool_call_id: confirmation.tool_call_id.clone(),
-                            tool: confirmation.tool.clone(),
-                            proposed_arguments: confirmation.proposed_arguments.clone(),
-                            validation_outcome: "valid_schema".into(),
-                            validation_error: Some(error.clone()),
-                            decision: "edit_invalid".into(),
-                            effective_arguments: Some(arguments.clone()),
-                            decided_by: Some("user".into()),
-                            invocation_ok: None,
-                            invocation_result: None,
-                            invocation_error: None,
-                            decided_at: Some(Utc::now()),
-                            invoked_at: None,
-                        })
-                        .await;
-                    fail_setup(
-                        &_finished_placeholder,
-                        &mut started,
-                        HarnessError::InvalidToolArguments(error),
-                    );
-                    drop(lease);
-                    return;
-                }
+            if let Err(error) =
+                verify_confirmation_preview(&service, &confirmation, &arguments, &preview_token)
+                    .await
+            {
+                fail_setup(&_finished_placeholder, &mut started, error);
+                drop(lease);
+                return;
             }
             ("edit", arguments, None)
         }
@@ -1282,12 +1323,13 @@ async fn process_tool_calls(
                 &sender,
                 &cancellation,
                 Ok(ChatDelta::ConfirmationRequired {
-                    confirmation_id: confirmation.id,
+                    confirmation_id: confirmation.id.clone(),
                     conversation_id: conversation_id.to_owned(),
                     tool_call_id: call.id.clone(),
                     tool: call.name.clone(),
                     arguments: call.arguments.clone(),
                     json_schema: tool.json_schema(),
+                    preview_token: preview_token(&confirmation.id, &call.arguments, &preview),
                     preview,
                 }),
             )
@@ -1430,6 +1472,61 @@ fn confirmation_context(
         decision_reason: None,
         created_at: now,
         decided_at: None,
+    }
+}
+
+async fn confirmation_preview(
+    tool: Arc<dyn AssistantTool>,
+    confirmation_id: &str,
+    arguments: &Value,
+) -> Result<AssistantConfirmationPreview> {
+    let preview = tool.preview(arguments).await?;
+    Ok(AssistantConfirmationPreview {
+        preview_token: preview_token(confirmation_id, arguments, &preview),
+        preview,
+    })
+}
+
+fn preview_token(confirmation_id: &str, arguments: &Value, preview: &Option<Value>) -> String {
+    let canonical = json!({
+        "arguments": arguments,
+        "confirmation_id": confirmation_id,
+        "preview": preview
+    });
+    hex::encode(Sha256::digest(
+        serde_json::to_vec(&canonical).expect("JSON values are serialisable"),
+    ))
+}
+
+async fn verify_confirmation_preview(
+    service: &ConversationService,
+    confirmation: &AssistantToolConfirmation,
+    arguments: &Value,
+    supplied_token: &str,
+) -> Result<AssistantConfirmationPreview> {
+    let tool = service.tools.get(&confirmation.tool).ok_or_else(|| {
+        HarnessError::ToolConfirmationConflict(format!(
+            "Assistant tool '{}' is no longer registered.",
+            confirmation.tool
+        ))
+    })?;
+    match confirmation_preview(Arc::clone(tool), &confirmation.id, arguments).await {
+        Ok(current) if current.preview_token == supplied_token => Ok(current),
+        Ok(current) => Err(HarnessError::ToolConfirmationPreviewMismatch {
+            detail: "The confirmation preview does not match these arguments; preview them again before deciding.".into(),
+            preview: current.preview,
+            preview_token: Some(current.preview_token),
+            conflict: false,
+        }),
+        Err(error) => Err(HarnessError::ToolConfirmationPreviewMismatch {
+            detail: error.to_string(),
+            preview: Some(json!({
+                "valid": false,
+                "issues": [{"field": "preview", "reason": error.to_string()}]
+            })),
+            preview_token: None,
+            conflict: matches!(error, HarnessError::WorkflowChanged),
+        }),
     }
 }
 

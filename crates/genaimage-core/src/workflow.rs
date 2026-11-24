@@ -6,7 +6,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{HarnessError, Result};
@@ -66,9 +66,9 @@ pub struct ParameterDefinition {
     #[serde(default)]
     pub allowed_values: Option<Vec<Value>>,
     #[serde(default)]
-    pub minimum: Option<f64>,
+    pub minimum: Option<Number>,
     #[serde(default)]
-    pub maximum: Option<f64>,
+    pub maximum: Option<Number>,
     #[serde(default)]
     pub widget: Option<String>,
     #[serde(default)]
@@ -565,16 +565,16 @@ impl ParameterDefinition {
                 )));
             }
         }
-        if let Some(number) = value.as_f64() {
-            if let Some(minimum) = self.minimum {
-                if number < minimum {
+        if let Some(number) = value.as_number() {
+            if let Some(minimum) = self.minimum.as_ref() {
+                if crate::exact_number::compare_numbers(number, minimum).is_lt() {
                     return Err(HarnessError::Workflow(format!(
                         "parameter '{name}' is below minimum {minimum}"
                     )));
                 }
             }
-            if let Some(maximum) = self.maximum {
-                if number > maximum {
+            if let Some(maximum) = self.maximum.as_ref() {
+                if crate::exact_number::compare_numbers(number, maximum).is_gt() {
                     return Err(HarnessError::Workflow(format!(
                         "parameter '{name}' is above maximum {maximum}"
                     )));

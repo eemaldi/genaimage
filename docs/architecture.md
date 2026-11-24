@@ -196,9 +196,16 @@ message stream emits `confirmation_required` and completes its paused turn with
 `awaiting_confirmation`, which is not success. The user decides through
 `POST /api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}`.
 `confirm` uses the proposed arguments, `edit` must revalidate replacement
-arguments, and `reject` supplies a rejection tool result. Decisions are single
-use and compare-and-set in SQLite. A new user message is rejected with 409
-while a confirmation remains pending.
+arguments, and `reject` supplies a rejection tool result. Before either submit
+decision, the operator previews effective values and supplies a `preview_token`.
+`POST /api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}/preview`
+validates replacement arguments and the pinned workflow without making a
+decision or changing state, then returns the preview and a digest token over the
+confirmation ID, canonical arguments and preview content. The server recomputes
+and checks this token before claiming a confirmation; missing, mismatched or
+stale tokens leave it pending and return current preview information in the
+problem response. Decisions are single use and compare-and-set in SQLite. A new
+user message is rejected with 409 while a confirmation remains pending.
 
 Conversation SSE can emit `message_started`, `delta`, `tool_call`,
 `tool_result`, `confirmation_required`, `done` and `error`.
@@ -219,7 +226,10 @@ operator assessment rather than a generation submission, does not alter run
 provenance and uses no text-model fallback. A `submit_run` pause can include an
 optional read-only `preview` in `confirmation_required`; it contains every
 effective value the user is approving, while the original editable `arguments`
-remain available separately.
+remain available separately. The event and preview response carry the matching
+`preview_token`. Every built-in tool result is bounded to 32 KiB; oversized text
+and arrays are explicitly marked as truncated, while numbers and identifiers
+are never shortened and are instead omitted with a note when necessary.
 
 ### Live event stream
 

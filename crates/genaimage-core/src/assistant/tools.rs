@@ -12,7 +12,13 @@ use crate::{
 };
 
 const WORKFLOW_LIST_LIMIT: usize = 50;
-const RUN_OUTPUT_LIMIT: usize = 200;
+const RUN_OUTPUT_LIMIT: usize = 50;
+const MAX_TOOL_RESULT_BYTES: usize = 32 * 1024;
+const MAX_TOOL_WORKING_BYTES: usize = 28 * 1024;
+const MAX_TOOL_STRING_BYTES: usize = 2 * 1024;
+const MAX_TOOL_ARRAY_ITEMS: usize = 50;
+const MAX_TOOL_OBJECT_FIELDS: usize = 100;
+const MAX_TOOL_NOTES: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,7 +108,7 @@ impl AssistantTool for ListWorkflowsTool {
         workflows.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
         let truncated = workflows.len() > WORKFLOW_LIST_LIMIT;
         workflows.truncate(WORKFLOW_LIST_LIMIT);
-        Ok(json!({
+        Ok(bounded_tool_result(json!({
             "workflows": workflows.into_iter().map(|workflow| json!({
                 "id": workflow.manifest.id,
                 "name": workflow.manifest.title,
@@ -111,7 +117,7 @@ impl AssistantTool for ListWorkflowsTool {
                 "revision": workflow.revision
             })).collect::<Vec<_>>(),
             "truncated": truncated
-        }))
+        })))
     }
 }
 
@@ -164,12 +170,12 @@ impl AssistantTool for InspectWorkflowTool {
                 (name.clone(), parameter)
             })
             .collect::<BTreeMap<_, _>>();
-        Ok(json!({
+        Ok(bounded_tool_result(json!({
             "workflow_id": workflow.manifest.id,
             "revision": workflow.revision(),
             "parameters": parameters,
             "presets": workflow.manifest.presets
-        }))
+        })))
     }
 }
 
@@ -197,7 +203,9 @@ impl AssistantTool for ProposeRunTool {
 
     async fn invoke(&self, _context: ToolContext, arguments: Value) -> Result<Value> {
         let arguments: RunArguments = serde_json::from_value(arguments)?;
-        resolve_run_proposal(&self.harness, arguments).await
+        resolve_run_proposal(&self.harness, arguments)
+            .await
+            .map(bounded_tool_result)
     }
 }
 
@@ -251,10 +259,10 @@ impl AssistantTool for SubmitRunTool {
                 },
             )
             .await?;
-        Ok(json!({
+        Ok(bounded_tool_result(json!({
             "run_id": submission.run.id,
             "status": submission.run.status.as_str()
-        }))
+        })))
     }
 }
 
@@ -310,7 +318,7 @@ impl AssistantTool for RunStatusTool {
         } else {
             Vec::new()
         };
-        Ok(json!({
+        Ok(bounded_tool_result(json!({
             "run_id": run.id,
             "status": run.status.as_str(),
             "outputs": outputs,
@@ -319,7 +327,7 @@ impl AssistantTool for RunStatusTool {
                 "outcome": result.outcome,
                 "settles_at": result.settles_at
             }))
-        }))
+        })))
     }
 }
 
@@ -353,7 +361,7 @@ impl AssistantTool for GetOutputTool {
             .as_async()
             .output(&arguments.output_id)
             .await?;
-        Ok(output_metadata(output))
+        Ok(bounded_tool_result(output_metadata(output)))
     }
 }
 
@@ -390,7 +398,7 @@ impl AssistantTool for ReviewImageTool {
         let annotation = VisionReviewService::new(self.harness.as_ref().clone())
             .review_output(&binding, &arguments.output_id)
             .await?;
-        Ok(serde_json::to_value(annotation)?)
+        Ok(bounded_tool_result(serde_json::to_value(annotation)?))
     }
 }
 
@@ -523,4 +531,249 @@ fn output_id_schema() -> Value {
         "required": ["output_id"],
         "additionalProperties": false
     })
+}
+
+fn bounded_tool_result(value: Value) -> Value {
+    let mut notes = Vec::new();
+    let mut remaining = MAX_TOOL_WORKING_BYTES;
+    let bounded =
+        bound_tool_value(value, "$", 0, &mut remaining, &mut notes).unwrap_or(Value::Null);
+    let mut result = match bounded {
+        Value::Object(values) => Value::Object(values),
+        other => json!({"result": other}),
+    };
+    if !notes.is_empty() {
+        let object = result.as_object_mut().expect("tool results are objects");
+        object.insert("truncated".into(), Value::Bool(true));
+        object.insert(
+            "truncation_notes".into(),
+            Value::Array(
+                notes
+                    .into_iter()
+                    .take(MAX_TOOL_NOTES)
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    while serde_json::to_vec(&result)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > MAX_TOOL_RESULT_BYTES
+    {
+        let Some(object) = result.as_object_mut() else {
+            return json!({
+                "truncated": true,
+                "truncation_notes": ["The complete result could not fit within 32768 bytes."]
+            });
+        };
+        let removable = object
+            .iter()
+            .filter(|(name, _)| !matches!(name.as_str(), "truncated" | "truncation_notes"))
+            .max_by_key(|(_, value)| {
+                serde_json::to_vec(value)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0)
+            })
+            .map(|(name, _)| name.clone());
+        let Some(removable) = removable else {
+            return json!({
+                "truncated": true,
+                "truncation_notes": ["The complete result could not fit within 32768 bytes."]
+            });
+        };
+        object.remove(&removable);
+        object.insert("truncated".into(), Value::Bool(true));
+        let notes = object
+            .entry("truncation_notes")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Value::Array(notes) = notes {
+            if notes.len() < MAX_TOOL_NOTES {
+                notes.push(Value::String(format!(
+                    "Omitted $.{removable} because the complete tool result exceeded 32768 bytes."
+                )));
+            }
+        }
+    }
+    result
+}
+
+fn bound_tool_value(
+    value: Value,
+    path: &str,
+    depth: usize,
+    remaining: &mut usize,
+    notes: &mut Vec<String>,
+) -> Option<Value> {
+    if depth > 16 {
+        note(notes, format!("Omitted {path}: nesting limit reached."));
+        return None;
+    }
+    match value {
+        Value::String(text) => bound_tool_string(text, path, remaining, notes),
+        Value::Array(values) => {
+            let truncated = values.len() > MAX_TOOL_ARRAY_ITEMS;
+            let mut bounded = Vec::new();
+            for (index, value) in values.into_iter().take(MAX_TOOL_ARRAY_ITEMS).enumerate() {
+                let child_path = format!("{path}[{index}]");
+                match bound_tool_value(value, &child_path, depth + 1, remaining, notes) {
+                    Some(value) => bounded.push(value),
+                    None => note(
+                        notes,
+                        format!("Omitted {child_path} without truncating its value."),
+                    ),
+                }
+            }
+            if truncated {
+                note(
+                    notes,
+                    format!("Truncated {path} to the first {MAX_TOOL_ARRAY_ITEMS} array entries."),
+                );
+            }
+            Some(Value::Array(bounded))
+        }
+        Value::Object(values) => {
+            let mut bounded = serde_json::Map::new();
+            let field_count = values.len();
+            for (name, value) in values.into_iter().take(MAX_TOOL_OBJECT_FIELDS) {
+                let child_path = format!("{path}.{name}");
+                if let Some(value) =
+                    bound_tool_value(value, &child_path, depth + 1, remaining, notes)
+                {
+                    bounded.insert(name, value);
+                } else {
+                    note(
+                        notes,
+                        format!(
+                            "Omitted {child_path}; numbers and identifiers are never shortened."
+                        ),
+                    );
+                }
+            }
+            if field_count > MAX_TOOL_OBJECT_FIELDS {
+                note(
+                    notes,
+                    format!(
+                        "Truncated {path} to the first {MAX_TOOL_OBJECT_FIELDS} object fields."
+                    ),
+                );
+            }
+            Some(Value::Object(bounded))
+        }
+        other => reserve_value(other, path, remaining, notes),
+    }
+}
+
+fn bound_tool_string(
+    text: String,
+    path: &str,
+    remaining: &mut usize,
+    notes: &mut Vec<String>,
+) -> Option<Value> {
+    let oversized = text.len() > MAX_TOOL_STRING_BYTES;
+    if oversized && is_identifier_path(path) {
+        note(
+            notes,
+            format!("Omitted {path}: an oversized identifier was not shortened."),
+        );
+        return None;
+    }
+    let value = if oversized {
+        let mut end = MAX_TOOL_STRING_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        note(
+            notes,
+            format!("Truncated {path} to {MAX_TOOL_STRING_BYTES} UTF-8 bytes."),
+        );
+        format!("{}…", &text[..end])
+    } else {
+        text
+    };
+    reserve_value(Value::String(value), path, remaining, notes)
+}
+
+fn reserve_value(
+    value: Value,
+    path: &str,
+    remaining: &mut usize,
+    notes: &mut Vec<String>,
+) -> Option<Value> {
+    let size = serde_json::to_vec(&value).map(|bytes| bytes.len()).ok()?;
+    if size > *remaining {
+        note(notes, format!("Omitted {path} because it exceeded the 32768-byte result budget; its value was not shortened."));
+        return None;
+    }
+    *remaining -= size;
+    Some(value)
+}
+
+fn is_identifier_path(path: &str) -> bool {
+    path.rsplit('.').next().is_some_and(|name| {
+        matches!(name, "id" | "revision" | "sha256" | "source_filename")
+            || name.ends_with("_id")
+            || name.ends_with("_revision")
+    })
+}
+
+fn note(notes: &mut Vec<String>, message: String) {
+    if notes.len() < MAX_TOOL_NOTES {
+        notes.push(message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_results_truncate_text_and_arrays_without_changing_exact_values() {
+        let large = "x".repeat(MAX_TOOL_STRING_BYTES + 200);
+        let result = bounded_tool_result(json!({
+            "workflow_id": "workflow-exact",
+            "description": large,
+            "seed": 9007199254740993_u64,
+            "items": (0..60).map(|index| json!({"index": index})).collect::<Vec<_>>(),
+            "oversized_id": "y".repeat(5000),
+            "payload": "z".repeat(MAX_TOOL_RESULT_BYTES * 2)
+        }));
+
+        let bytes = serde_json::to_vec(&result).unwrap();
+        assert!(
+            bytes.len() <= MAX_TOOL_RESULT_BYTES,
+            "{} bytes",
+            bytes.len()
+        );
+        assert_eq!(result["workflow_id"], "workflow-exact");
+        assert_eq!(result["seed"], json!(9007199254740993_u64));
+        assert_eq!(
+            result["items"].as_array().unwrap().len(),
+            MAX_TOOL_ARRAY_ITEMS
+        );
+        assert_eq!(result["truncated"], true);
+        assert!(result.get("oversized_id").is_none());
+        assert!(result["description"].as_str().unwrap().ends_with('…'));
+        assert!(result["payload"].as_str().unwrap().ends_with('…'));
+        assert!(result["truncation_notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("items")));
+    }
+
+    #[test]
+    fn oversized_identifiers_are_omitted_with_an_explicit_note() {
+        let result = bounded_tool_result(json!({
+            "run_id": "r".repeat(MAX_TOOL_STRING_BYTES + 1),
+            "status": "queued"
+        }));
+        assert!(result.get("run_id").is_none());
+        assert_eq!(result["status"], "queued");
+        assert!(result["truncation_notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("identifier")));
+    }
 }

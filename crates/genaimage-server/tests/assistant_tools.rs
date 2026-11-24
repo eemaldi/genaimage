@@ -159,7 +159,7 @@ async fn pause_submit(
     llm: &FakeLlmServer,
     client: &Client,
     arguments: Value,
-) -> (String, String, Value) {
+) -> (String, String, String, Value) {
     let conversation = create(client).await;
     llm.set_scripts([
         tool_script("submit", "submit_run", arguments),
@@ -174,6 +174,7 @@ async fn pause_submit(
     (
         conversation.id,
         required.confirmation_id,
+        required.preview_token,
         required.arguments,
     )
 }
@@ -204,6 +205,7 @@ async fn full_builtin_flow_previews_effective_values_and_reuses_confirmation_key
         .unwrap();
     let required = pause(&mut stream).await;
     let confirmation_id = required.confirmation_id.clone();
+    let preview_token = required.preview_token.clone();
     assert_eq!(
         required.arguments["parameters"]["seed"],
         json!(9007199254740993_u64)
@@ -237,6 +239,7 @@ async fn full_builtin_flow_previews_effective_values_and_reuses_confirmation_key
                 decision: AssistantConfirmationDecisionKind::Confirm,
                 arguments: None,
                 reason: None,
+                preview_token: Some(preview_token.clone()),
             },
         )
         .await
@@ -288,7 +291,7 @@ async fn edit_uses_only_edited_values_and_reject_creates_no_run() {
     let (api, llm) = configured_with_builtin_tools().await;
     let revision = install_exact_workflow(&api);
     let client = client(&api);
-    let (conversation, confirmation_id, _) = pause_submit(
+    let (conversation, confirmation_id, _preview_token, _) = pause_submit(
         &llm,
         &client,
         json!({
@@ -311,8 +314,21 @@ async fn edit_uses_only_edited_values_and_reject_creates_no_run() {
             &confirmation_id,
             &AssistantConfirmationRequest {
                 decision: AssistantConfirmationDecisionKind::Edit,
-                arguments: Some(edited),
+                arguments: Some(edited.clone()),
                 reason: None,
+                preview_token: Some(
+                    client
+                        .preview_assistant_confirmation(
+                            &conversation,
+                            &confirmation_id,
+                            &genaimage_api::AssistantConfirmationPreviewRequest {
+                                arguments: edited,
+                            },
+                        )
+                        .await
+                        .unwrap()
+                        .preview_token,
+                ),
             },
         )
         .await
@@ -334,7 +350,8 @@ async fn edit_uses_only_edited_values_and_reject_creates_no_run() {
         "workflow_revision": rejection_revision,
         "parameters": {"seed": 5, "steps": 10, "ratio": 1.5}
     });
-    let (rejected, rejected_id, _) = pause_submit(&llm, &client, rejected_args).await;
+    let (rejected, rejected_id, _rejected_token, _) =
+        pause_submit(&llm, &client, rejected_args).await;
     let mut rejected_stream = client
         .decide_assistant_confirmation(
             &rejected,
@@ -343,6 +360,7 @@ async fn edit_uses_only_edited_values_and_reject_creates_no_run() {
                 decision: AssistantConfirmationDecisionKind::Reject,
                 arguments: None,
                 reason: Some("not approved".into()),
+                preview_token: None,
             },
         )
         .await
@@ -365,7 +383,7 @@ async fn revision_mismatch_at_invocation_fails_without_submission() {
     let (api, llm) = configured_with_builtin_tools().await;
     let revision = install_exact_workflow(&api);
     let client = client(&api);
-    let (conversation, confirmation_id, _) = pause_submit(
+    let (conversation, confirmation_id, preview_token, _) = pause_submit(
         &llm,
         &client,
         json!({
@@ -381,7 +399,7 @@ async fn revision_mismatch_at_invocation_fails_without_submission() {
     manifest["description"] = json!("changed after review");
     std::fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
 
-    let mut stream = client
+    let error = match client
         .decide_assistant_confirmation(
             &conversation,
             &confirmation_id,
@@ -389,24 +407,42 @@ async fn revision_mismatch_at_invocation_fails_without_submission() {
                 decision: AssistantConfirmationDecisionKind::Confirm,
                 arguments: None,
                 reason: None,
+                preview_token: Some(preview_token.clone()),
             },
         )
         .await
-        .unwrap();
-    let mut failed = false;
-    while let Some(event) = stream.next().await {
-        match event.unwrap() {
-            AssistantStreamEvent::ToolResult(event) if !event.ok => {
-                assert!(event.error.unwrap().contains("workflow changed"));
-                failed = true;
-            }
-            AssistantStreamEvent::Done(_) => break,
-            _ => {}
-        }
-    }
-    assert!(failed);
+    {
+        Ok(_) => panic!("stale confirmation unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    let Error::Problem(problem) = error else {
+        panic!("expected stale-preview problem");
+    };
+    assert_eq!(problem.status, StatusCode::CONFLICT.as_u16());
+    assert!(problem
+        .preview
+        .as_ref()
+        .is_some_and(|preview| preview["valid"] == false));
+    assert!(client
+        .assistant_conversation(
+            &conversation,
+            &genaimage_api::AssistantConversationDetailQuery::default(),
+        )
+        .await
+        .is_ok());
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
     assert!(api.core.list_runs(10).unwrap().is_empty());
+    let audit = client
+        .assistant_tool_calls(
+            &conversation,
+            &genaimage_api::AssistantToolAuditQuery::default(),
+        )
+        .await
+        .unwrap();
+    assert!(audit.tool_calls.iter().any(|row| {
+        row.confirmation_id.as_deref() == Some(confirmation_id.as_str())
+            && row.confirmation_status.as_deref() == Some("pending")
+    }));
 }
 
 #[tokio::test]
@@ -439,11 +475,13 @@ async fn submit_without_confirmation_fails_closed_and_double_confirm_creates_one
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
 
     let client = client(&api);
-    let (conversation, confirmation_id, _) = pause_submit(&llm, &client, arguments).await;
+    let (conversation, confirmation_id, preview_token, _) =
+        pause_submit(&llm, &client, arguments).await;
     let decision = AssistantConfirmationRequest {
         decision: AssistantConfirmationDecisionKind::Confirm,
         arguments: None,
         reason: None,
+        preview_token: Some(preview_token.clone()),
     };
     let mut first = client
         .decide_assistant_confirmation(&conversation, &confirmation_id, &decision)
@@ -470,7 +508,7 @@ async fn simulated_crash_marks_outcome_unknown_and_never_reinvokes() {
     let (api, llm) = configured_with_builtin_tools().await;
     let revision = install_exact_workflow(&api);
     let client = client(&api);
-    let (conversation, confirmation_id, _) = pause_submit(
+    let (conversation, confirmation_id, preview_token, _) = pause_submit(
         &llm,
         &client,
         json!({
@@ -512,6 +550,7 @@ async fn simulated_crash_marks_outcome_unknown_and_never_reinvokes() {
                 decision: AssistantConfirmationDecisionKind::Confirm,
                 arguments: None,
                 reason: None,
+                preview_token: Some(preview_token.clone()),
             },
         )
         .await
@@ -683,4 +722,166 @@ async fn review_image_returns_an_error_when_vision_is_unavailable_without_text_f
     assert!(requests
         .iter()
         .all(|request| !request.to_string().contains("image_url")));
+}
+
+#[tokio::test]
+async fn edit_requires_a_fresh_token_bound_to_its_arguments() {
+    let (_api, llm) = configured_with_builtin_tools().await;
+    let api = _api;
+    let revision = install_exact_workflow(&api);
+    let client = client(&api);
+    let original = json!({
+        "workflow_id": "contract-workflow",
+        "workflow_revision": revision,
+        "preset": "fast",
+        "parameters": {"seed": 10, "ratio": 1.0}
+    });
+    let (conversation, confirmation_id, original_token, _) =
+        pause_submit(&llm, &client, original.clone()).await;
+    assert!(!original_token.is_empty());
+
+    let missing_confirm = client
+        .decide_assistant_confirmation(
+            &conversation,
+            &confirmation_id,
+            &AssistantConfirmationRequest {
+                decision: AssistantConfirmationDecisionKind::Confirm,
+                arguments: None,
+                reason: None,
+                preview_token: None,
+            },
+        )
+        .await;
+    assert!(matches!(
+        missing_confirm,
+        Err(Error::Problem(problem))
+            if problem.status == StatusCode::UNPROCESSABLE_ENTITY.as_u16()
+    ));
+
+    let missing = client
+        .decide_assistant_confirmation(
+            &conversation,
+            &confirmation_id,
+            &AssistantConfirmationRequest {
+                decision: AssistantConfirmationDecisionKind::Edit,
+                arguments: Some(original.clone()),
+                reason: None,
+                preview_token: None,
+            },
+        )
+        .await;
+    let invalid_preview = client
+        .preview_assistant_confirmation(
+            &conversation,
+            &confirmation_id,
+            &genaimage_api::AssistantConfirmationPreviewRequest {
+                arguments: json!({
+                    "workflow_id": "contract-workflow",
+                    "workflow_revision": revision,
+                    "preset": "fast",
+                    "parameters": {"seed": 10, "steps": 0, "ratio": 1.0}
+                }),
+            },
+        )
+        .await;
+    let invalid_preview = match invalid_preview {
+        Ok(_) => panic!("invalid preview unexpectedly succeeded"),
+        Err(Error::Problem(problem)) => problem,
+        Err(error) => panic!("unexpected error: {error}"),
+    };
+    assert_eq!(
+        invalid_preview.status,
+        StatusCode::UNPROCESSABLE_ENTITY.as_u16()
+    );
+    assert!(invalid_preview.preview.is_some());
+
+    let missing = match missing {
+        Ok(_) => panic!("edit without token unexpectedly succeeded"),
+        Err(Error::Problem(problem)) => problem,
+        Err(error) => panic!("unexpected error: {error}"),
+    };
+    assert_eq!(missing.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+    let different = json!({
+        "workflow_id": "contract-workflow",
+        "workflow_revision": revision,
+        "preset": "fast",
+        "parameters": {"seed": 11, "ratio": 1.0}
+    });
+    let mismatched = client
+        .decide_assistant_confirmation(
+            &conversation,
+            &confirmation_id,
+            &AssistantConfirmationRequest {
+                decision: AssistantConfirmationDecisionKind::Edit,
+                arguments: Some(different.clone()),
+                reason: None,
+                preview_token: Some(original_token),
+            },
+        )
+        .await;
+    let mismatched = match mismatched {
+        Ok(_) => panic!("token for different arguments unexpectedly succeeded"),
+        Err(Error::Problem(problem)) => problem,
+        Err(error) => panic!("unexpected error: {error}"),
+    };
+    assert_eq!(mismatched.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    assert!(mismatched.preview.is_some());
+    assert!(mismatched.preview_token.is_some());
+    assert!(
+        client
+            .preview_assistant_confirmation(
+                &conversation,
+                &confirmation_id,
+                &genaimage_api::AssistantConfirmationPreviewRequest {
+                    arguments: different
+                },
+            )
+            .await
+            .is_ok(),
+        "confirmation must remain pending after rejected tokens"
+    );
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn propose_run_rejects_integer_above_an_exact_manifest_maximum() {
+    let (api, _llm) = configured_with_builtin_tools().await;
+    install_exact_workflow(&api);
+    let path = api.core.config().workflows.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["parameters"]["seed"]["maximum"] = Value::Number("9007199254740992".parse().unwrap());
+    std::fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    let revision = api
+        .core
+        .load_workflow_by_id("contract-workflow")
+        .unwrap()
+        .unwrap()
+        .revision();
+    let roles = LlmRoles::new(&api.core.config().llm, None);
+    let propose =
+        genaimage_core::assistant::tools::builtin_assistant_tools(api.core.clone(), roles)
+            .into_iter()
+            .find(|tool| tool.name() == "propose_run")
+            .unwrap();
+    let error = propose
+        .invoke(
+            ToolContext {
+                conversation_id: "proposal".into(),
+                tool_call_id: "propose".into(),
+                confirmation_id: None,
+            },
+            json!({
+                "workflow_id": "contract-workflow",
+                "workflow_revision": revision,
+                "parameters": {
+                    "seed": 9007199254740993_u64,
+                    "steps": 10,
+                    "ratio": 1.5
+                }
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("above maximum"), "{error}");
 }

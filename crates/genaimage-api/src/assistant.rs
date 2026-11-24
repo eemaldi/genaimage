@@ -247,6 +247,21 @@ pub struct AssistantConfirmationRequest {
     pub arguments: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantConfirmationPreviewRequest {
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantConfirmationPreviewResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
+    pub preview_token: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -339,6 +354,7 @@ pub struct AssistantConfirmationRequiredEvent {
     pub json_schema: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<serde_json::Value>,
+    pub preview_token: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

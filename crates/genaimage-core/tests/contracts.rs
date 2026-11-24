@@ -828,3 +828,23 @@ fn legacy_database_requires_verified_claim_and_remains_bound() {
         .with_identity(temp.path(), "ComfyUI", "http://127.0.0.1:8188/", false)
         .unwrap();
 }
+
+#[test]
+fn numeric_bounds_compare_large_integer_values_exactly() {
+    let temp = TempDir::new().expect("temp directory");
+    let mut manifest = valid_manifest("workflow.api.json");
+    manifest["parameters"]["seed"]["maximum"] = Value::Number("9007199254740992".parse().unwrap());
+    let path = create_workflow(&temp, manifest, valid_workflow());
+    let loaded = LoadedWorkflow::load(&path).expect("valid workflow");
+    let parameters = BTreeMap::from([(
+        "seed".to_owned(),
+        Value::Number("9007199254740993".parse().unwrap()),
+    )]);
+
+    assert!(loaded.bind(Some("fast"), &parameters).is_err());
+    assert!(loaded
+        .validate_bindings(Some("fast"), &parameters)
+        .unwrap()
+        .iter()
+        .any(|error| error.parameter == "seed" && error.reason.contains("above maximum")));
+}

@@ -76,6 +76,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Side-effect-free validation of confirmation replacement arguments. The response is not a decision and leaves the confirmation pending. */
+        post: operations["assistant_confirmation_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistant/conversations/{id}/messages": {
         parameters: {
             query?: never;
@@ -645,9 +662,17 @@ export interface components {
         };
         /** @enum {string} */
         AssistantConfirmationDecisionKind: "confirm" | "edit" | "reject";
+        AssistantConfirmationPreviewRequest: {
+            arguments: unknown;
+        };
+        AssistantConfirmationPreviewResponse: {
+            preview?: unknown;
+            preview_token: string;
+        };
         AssistantConfirmationRequest: {
             arguments?: unknown;
             decision: components["schemas"]["AssistantConfirmationDecisionKind"];
+            preview_token?: string | null;
             reason?: string | null;
         };
         AssistantConfirmationRequiredEvent: {
@@ -656,6 +681,7 @@ export interface components {
             conversation_id: string;
             json_schema: unknown;
             preview?: unknown;
+            preview_token: string;
             status: components["schemas"]["AssistantToolConfirmationStatus"];
             tool: string;
             tool_call_id: string;
@@ -972,6 +998,8 @@ export interface components {
         ProblemDetails: {
             detail: string;
             errors?: components["schemas"]["SettingError"][];
+            preview?: unknown;
+            preview_token?: string | null;
             recovery: string;
             /** Format: int32 */
             status: number;
@@ -2018,6 +2046,62 @@ export interface operations {
             };
             /** @description Text role unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    assistant_confirmation_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+                /** @description Confirmation ID */
+                confirmation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantConfirmationPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Reviewed preview and token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantConfirmationPreviewResponse"];
+                };
+            };
+            /** @description Confirmation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Confirmation is not pending or workflow changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Invalid arguments or preview */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

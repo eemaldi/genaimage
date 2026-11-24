@@ -161,12 +161,40 @@
         ],
         "type": "string"
       },
+      "AssistantConfirmationPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {}
+        },
+        "required": [
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "AssistantConfirmationPreviewResponse": {
+        "properties": {
+          "preview": {},
+          "preview_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview_token"
+        ],
+        "type": "object"
+      },
       "AssistantConfirmationRequest": {
         "additionalProperties": false,
         "properties": {
           "arguments": {},
           "decision": {
             "$ref": "#/components/schemas/AssistantConfirmationDecisionKind"
+          },
+          "preview_token": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
             "type": [
@@ -191,6 +219,9 @@
           },
           "json_schema": {},
           "preview": {},
+          "preview_token": {
+            "type": "string"
+          },
           "status": {
             "$ref": "#/components/schemas/AssistantToolConfirmationStatus"
           },
@@ -208,7 +239,8 @@
           "tool_call_id",
           "tool",
           "arguments",
-          "json_schema"
+          "json_schema",
+          "preview_token"
         ],
         "type": "object"
       },
@@ -1443,6 +1475,13 @@
               "$ref": "#/components/schemas/SettingError"
             },
             "type": "array"
+          },
+          "preview": {},
+          "preview_token": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "recovery": {
             "type": "string"
@@ -3573,6 +3612,87 @@
               }
             },
             "description": "Text role unavailable"
+          }
+        },
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}/preview": {
+      "post": {
+        "description": "Side-effect-free validation of confirmation replacement arguments. The response is not a decision and leaves the confirmation pending.",
+        "operationId": "assistant_confirmation_preview",
+        "parameters": [
+          {
+            "description": "Conversation ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Confirmation ID",
+            "in": "path",
+            "name": "confirmation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantConfirmationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantConfirmationPreviewResponse"
+                }
+              }
+            },
+            "description": "Reviewed preview and token"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Confirmation not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Confirmation is not pending or workflow changed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid arguments or preview"
           }
         },
         "tags": [

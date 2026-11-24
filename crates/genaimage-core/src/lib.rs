@@ -3,6 +3,7 @@ pub mod assistant;
 pub mod config;
 pub mod error;
 pub mod event;
+mod exact_number;
 pub mod extensions;
 pub mod image_backend;
 pub mod llm_roles;

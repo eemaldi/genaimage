@@ -84,6 +84,10 @@ pub struct ProblemDetails {
     pub recovery: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<SettingError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
 }
 
 /// A workflow catalogue and non-fatal discovery errors.
@@ -163,8 +167,10 @@ pub struct WorkflowParameter {
     pub description: String,
     pub default: Option<serde_json::Value>,
     pub allowed_values: Option<Vec<serde_json::Value>>,
-    pub minimum: Option<f64>,
-    pub maximum: Option<f64>,
+    #[schema(value_type = f64, required = false, nullable = true)]
+    pub minimum: Option<serde_json::Value>,
+    #[schema(value_type = f64, required = false, nullable = true)]
+    pub maximum: Option<serde_json::Value>,
     pub widget: Option<String>,
     pub step: Option<f64>,
     pub options: Option<Vec<serde_json::Value>>,

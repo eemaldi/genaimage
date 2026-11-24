@@ -228,11 +228,43 @@ pub(super) async fn decide_confirmation(
             "Send one confirmation decision as application/json.",
         )
     })?;
+    let token = || {
+        body.preview_token.clone().filter(|token| !token.trim().is_empty()).ok_or_else(|| {
+            Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "A reviewed preview_token is required for confirm and edit decisions.",
+                "Call the confirmation preview endpoint, review the effective values and retry with its token.",
+            )
+        })
+    };
     let decision = match body.decision {
-        api::AssistantConfirmationDecisionKind::Confirm if body.arguments.is_none() && body.reason.is_none() => AssistantConfirmationDecision::Confirm,
-        api::AssistantConfirmationDecisionKind::Edit => AssistantConfirmationDecision::Edit(body.arguments.ok_or_else(|| Problem::new(StatusCode::BAD_REQUEST, "Edit decisions require arguments.", "Send an arguments JSON object."))?),
-        api::AssistantConfirmationDecisionKind::Reject if body.arguments.is_none() => AssistantConfirmationDecision::Reject(body.reason),
-        _ => return Err(Problem::new(StatusCode::BAD_REQUEST, "Fields do not match the confirmation decision.", "Confirm accepts no extra fields; edit requires arguments; reject optionally accepts reason.")),
+        api::AssistantConfirmationDecisionKind::Confirm
+            if body.arguments.is_none() && body.reason.is_none() =>
+        {
+            AssistantConfirmationDecision::Confirm {
+                preview_token: token()?,
+            }
+        }
+        api::AssistantConfirmationDecisionKind::Edit if body.reason.is_none() => {
+            AssistantConfirmationDecision::Edit {
+                arguments: body.arguments.ok_or_else(|| Problem::new(
+                    StatusCode::BAD_REQUEST,
+                    "Edit decisions require arguments.",
+                    "Send an arguments JSON object.",
+                ))?,
+                preview_token: token()?,
+            }
+        }
+        api::AssistantConfirmationDecisionKind::Reject
+            if body.arguments.is_none() && body.preview_token.is_none() =>
+        {
+            AssistantConfirmationDecision::Reject(body.reason)
+        }
+        _ => return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Fields do not match the confirmation decision.",
+            "Confirm and edit require preview_token; edit requires arguments; reject accepts only an optional reason.",
+        )),
     };
     let binding = text_binding(&state).await?;
     let model = binding.model().to_owned();
@@ -242,6 +274,48 @@ pub(super) async fn decide_confirmation(
         .await
         .map_err(problem)?;
     Ok(sse_response(state, id, model, assistant))
+}
+
+#[utoipa::path(
+    post, path = "/assistant/conversations/{id}/confirmations/{confirmation_id}/preview",
+    operation_id = "assistant_confirmation_preview", tag = "assistant",
+    description = "Side-effect-free validation of confirmation replacement arguments. The response is not a decision and leaves the confirmation pending.",
+    params(("id" = String, Path, description = "Conversation ID"), ("confirmation_id" = String, Path, description = "Confirmation ID")),
+    request_body = api::AssistantConfirmationPreviewRequest,
+    responses(
+        (status = 200, description = "Reviewed preview and token", body = api::AssistantConfirmationPreviewResponse),
+        (status = 404, description = "Confirmation not found", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Confirmation is not pending or workflow changed", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Invalid arguments or preview", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn preview_confirmation(
+    State(state): State<AppState>,
+    ids: Result<Path<(String, String)>, PathRejection>,
+    body: Result<Json<api::AssistantConfirmationPreviewRequest>, JsonRejection>,
+) -> Result<Json<api::AssistantConfirmationPreviewResponse>, Problem> {
+    let Path((id, confirmation_id)) = ids.map_err(|error| {
+        Problem::invalid_path(
+            error,
+            "Use conversation and confirmation IDs returned by the assistant API.",
+        )
+    })?;
+    let Json(body) = body.map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Send replacement arguments as application/json.",
+        )
+    })?;
+    let preview = state
+        .conversation_service()
+        .preview_confirmation(&id, &confirmation_id, body.arguments)
+        .await
+        .map_err(problem)?;
+    Ok(Json(api::AssistantConfirmationPreviewResponse {
+        preview: preview.preview,
+        preview_token: preview.preview_token,
+    }))
 }
 
 #[utoipa::path(
@@ -425,6 +499,7 @@ fn sse_response(
                     arguments,
                     json_schema,
                     preview,
+                    preview_token,
                 })) => {
                     let event = Event::default()
                         .event("confirmation_required")
@@ -437,6 +512,7 @@ fn sse_response(
                             arguments,
                             json_schema,
                             preview,
+                            preview_token,
                         })
                         .expect("serialisable assistant SSE event");
                     Some((Ok::<_, Infallible>(event), Some(assistant)))
@@ -628,6 +704,24 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::CONFLICT,
             "Wait for the current generation, cancel it, or reload the conversation before retrying.",
         ),
+        HarnessError::ToolConfirmationPreviewMismatch {
+            preview,
+            preview_token,
+            conflict,
+            ..
+        } => {
+            let problem = Problem::new(
+                if *conflict { StatusCode::CONFLICT } else { StatusCode::UNPROCESSABLE_ENTITY },
+                error.to_string(),
+                "Review the returned preview and use a freshly generated preview token before deciding.",
+            )
+            .with_type("urn:genaimage:problem:confirmation-preview-changed")
+            .with_preview(preview.clone(), preview_token.clone());
+            return problem;
+        }
+        HarnessError::WorkflowChanged => {
+            return Problem::workflow_changed();
+        }
         HarnessError::ToolConfirmationNotFound { .. } => (
             StatusCode::NOT_FOUND,
             "Use a confirmation ID returned by this conversation.",

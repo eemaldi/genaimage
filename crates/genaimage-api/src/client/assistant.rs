@@ -6,7 +6,8 @@ use reqwest::{header, Method};
 
 use super::{events::with_safe_preamble, has_content_type, Client, Error};
 use crate::{
-    AssistantAwaitingConfirmationEvent, AssistantConfirmationRequest,
+    AssistantAwaitingConfirmationEvent, AssistantConfirmationPreviewRequest,
+    AssistantConfirmationPreviewResponse, AssistantConfirmationRequest,
     AssistantConfirmationRequiredEvent, AssistantConversationDetailQuery,
     AssistantConversationDetailResponse, AssistantConversationListQuery,
     AssistantConversationListResponse, AssistantConversationResponse, AssistantDeltaEvent,
@@ -138,6 +139,29 @@ impl Client {
             .json(body);
         let response = self.send(request, false).await?;
         parse_assistant_stream(response).await
+    }
+
+    pub async fn preview_assistant_confirmation(
+        &self,
+        conversation_id: &str,
+        confirmation_id: &str,
+        body: &AssistantConfirmationPreviewRequest,
+    ) -> Result<AssistantConfirmationPreviewResponse, Error> {
+        self.json(
+            self.request(
+                Method::POST,
+                &[
+                    "assistant",
+                    "conversations",
+                    conversation_id,
+                    "confirmations",
+                    confirmation_id,
+                    "preview",
+                ],
+            )?
+            .json(body),
+        )
+        .await
     }
 
     pub async fn decide_assistant_confirmation(

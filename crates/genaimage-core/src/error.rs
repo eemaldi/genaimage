@@ -56,6 +56,13 @@ pub enum HarnessError {
     },
     #[error("{0}")]
     ToolConfirmationConflict(String),
+    #[error("{detail}")]
+    ToolConfirmationPreviewMismatch {
+        detail: String,
+        preview: Option<serde_json::Value>,
+        preview_token: Option<String>,
+        conflict: bool,
+    },
     #[error("{0}")]
     InvalidToolArguments(String),
     #[error("assistant not configured: {0}")]

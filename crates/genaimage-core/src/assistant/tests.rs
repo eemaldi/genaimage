@@ -810,12 +810,14 @@ async fn confirmation_pause_confirm_and_double_decision_are_enforced() {
             .unwrap(),
     )
     .await;
-    let confirmation_id = paused
+    let (confirmation_id, preview_token) = paused
         .iter()
         .find_map(|event| match event {
             ChatDelta::ConfirmationRequired {
-                confirmation_id, ..
-            } => Some(confirmation_id.clone()),
+                confirmation_id,
+                preview_token,
+                ..
+            } => Some((confirmation_id.clone(), preview_token.clone())),
             _ => None,
         })
         .unwrap();
@@ -836,7 +838,9 @@ async fn confirmation_pause_confirm_and_double_decision_are_enforced() {
             .decide_confirmation(
                 &conversation.id,
                 &confirmation_id,
-                crate::assistant::AssistantConfirmationDecision::Confirm,
+                crate::assistant::AssistantConfirmationDecision::Confirm {
+                    preview_token: preview_token.clone(),
+                },
             )
             .await
             .unwrap(),
@@ -856,7 +860,9 @@ async fn confirmation_pause_confirm_and_double_decision_are_enforced() {
         .decide_confirmation(
             &conversation.id,
             &confirmation_id,
-            crate::assistant::AssistantConfirmationDecision::Confirm,
+            crate::assistant::AssistantConfirmationDecision::Confirm {
+                preview_token: preview_token.clone(),
+            },
         )
         .await
         .err()
@@ -887,12 +893,14 @@ async fn edit_validates_arguments_and_reject_does_not_invoke() {
             .unwrap(),
     )
     .await;
-    let id = events
+    let (id, _preview_token) = events
         .iter()
         .find_map(|event| match event {
             ChatDelta::ConfirmationRequired {
-                confirmation_id, ..
-            } => Some(confirmation_id.clone()),
+                confirmation_id,
+                preview_token,
+                ..
+            } => Some((confirmation_id.clone(), preview_token.clone())),
             _ => None,
         })
         .unwrap();
@@ -900,23 +908,31 @@ async fn edit_validates_arguments_and_reject_does_not_invoke() {
         .decide_confirmation(
             &conversation.id,
             &id,
-            crate::assistant::AssistantConfirmationDecision::Edit(
-                serde_json::json!({"value":"bad"}),
-            ),
+            crate::assistant::AssistantConfirmationDecision::Edit {
+                arguments: serde_json::json!({"value":"bad"}),
+                preview_token: "not-used-for-schema-invalid".into(),
+            },
         )
         .await
         .err()
         .unwrap();
     assert!(matches!(invalid, HarnessError::InvalidToolArguments(_)));
     assert!(calls.lock().unwrap().is_empty());
+    let edited = serde_json::json!({"value":9});
+    let edited_token = service
+        .preview_confirmation(&conversation.id, &id, edited.clone())
+        .await
+        .unwrap()
+        .preview_token;
     collect(
         service
             .decide_confirmation(
                 &conversation.id,
                 &id,
-                crate::assistant::AssistantConfirmationDecision::Edit(
-                    serde_json::json!({"value":9}),
-                ),
+                crate::assistant::AssistantConfirmationDecision::Edit {
+                    arguments: edited,
+                    preview_token: edited_token,
+                },
             )
             .await
             .unwrap(),
@@ -948,12 +964,14 @@ async fn edit_validates_arguments_and_reject_does_not_invoke() {
             .unwrap(),
     )
     .await;
-    let id = events
+    let (id, _preview_token) = events
         .iter()
         .find_map(|event| match event {
             ChatDelta::ConfirmationRequired {
-                confirmation_id, ..
-            } => Some(confirmation_id.clone()),
+                confirmation_id,
+                preview_token,
+                ..
+            } => Some((confirmation_id.clone(), preview_token.clone())),
             _ => None,
         })
         .unwrap();
@@ -1113,12 +1131,14 @@ async fn a_model_that_loses_tool_support_cannot_claim_confirmation() {
             .unwrap(),
     )
     .await;
-    let confirmation_id = events
+    let (confirmation_id, preview_token) = events
         .iter()
         .find_map(|event| match event {
             ChatDelta::ConfirmationRequired {
-                confirmation_id, ..
-            } => Some(confirmation_id.clone()),
+                confirmation_id,
+                preview_token,
+                ..
+            } => Some((confirmation_id.clone(), preview_token.clone())),
             _ => None,
         })
         .unwrap();
@@ -1148,7 +1168,9 @@ async fn a_model_that_loses_tool_support_cannot_claim_confirmation() {
         .decide_confirmation_with_binding(
             &conversation.id,
             &confirmation_id,
-            crate::assistant::AssistantConfirmationDecision::Confirm,
+            crate::assistant::AssistantConfirmationDecision::Confirm {
+                preview_token: preview_token.clone(),
+            },
             binding,
         )
         .await
@@ -1192,12 +1214,14 @@ async fn a_crash_after_claim_recovers_as_outcome_unknown_without_reinvocation() 
             .unwrap(),
     )
     .await;
-    let confirmation_id = events
+    let (confirmation_id, preview_token) = events
         .iter()
         .find_map(|event| match event {
             ChatDelta::ConfirmationRequired {
-                confirmation_id, ..
-            } => Some(confirmation_id.clone()),
+                confirmation_id,
+                preview_token,
+                ..
+            } => Some((confirmation_id.clone(), preview_token.clone())),
             _ => None,
         })
         .unwrap();
@@ -1233,7 +1257,9 @@ async fn a_crash_after_claim_recovers_as_outcome_unknown_without_reinvocation() 
         .decide_confirmation(
             &conversation.id,
             &confirmation_id,
-            crate::assistant::AssistantConfirmationDecision::Confirm,
+            crate::assistant::AssistantConfirmationDecision::Confirm {
+                preview_token: preview_token.clone(),
+            },
         )
         .await
         .err()
@@ -1299,12 +1325,14 @@ async fn cancellation_during_confirmed_invocation_still_records_the_outcome() {
             .unwrap(),
     )
     .await;
-    let confirmation_id = events
+    let (confirmation_id, preview_token) = events
         .iter()
         .find_map(|event| match event {
             ChatDelta::ConfirmationRequired {
-                confirmation_id, ..
-            } => Some(confirmation_id.clone()),
+                confirmation_id,
+                preview_token,
+                ..
+            } => Some((confirmation_id.clone(), preview_token.clone())),
             _ => None,
         })
         .unwrap();
@@ -1312,7 +1340,9 @@ async fn cancellation_during_confirmed_invocation_still_records_the_outcome() {
         .decide_confirmation(
             &conversation.id,
             &confirmation_id,
-            crate::assistant::AssistantConfirmationDecision::Confirm,
+            crate::assistant::AssistantConfirmationDecision::Confirm {
+                preview_token: preview_token.clone(),
+            },
         )
         .await
         .unwrap();

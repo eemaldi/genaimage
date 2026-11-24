@@ -100,6 +100,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(suggestions::suggest))
         .routes(routes!(conversations::get))
         .routes(routes!(conversations::send_message))
+        .routes(routes!(conversations::preview_confirmation))
         .routes(routes!(conversations::decide_confirmation))
         .routes(routes!(conversations::tool_calls))
         .routes(routes!(conversations::cancel))
