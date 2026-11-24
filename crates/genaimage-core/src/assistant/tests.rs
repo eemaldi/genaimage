@@ -1340,3 +1340,46 @@ async fn cancellation_during_confirmed_invocation_still_records_the_outcome() {
             && row.invocation_result == Some(serde_json::json!({"completed":true}))
     }));
 }
+
+#[tokio::test]
+async fn conversation_service_rejects_unsupported_app_state_tool_schemas() {
+    struct AppTool;
+    #[async_trait]
+    impl crate::AssistantTool for AppTool {
+        fn name(&self) -> &str {
+            "app_tool"
+        }
+        fn description(&self) -> &str {
+            "invalid app tool"
+        }
+        fn json_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"string","format":"uuid"})
+        }
+        fn requires_confirmation(&self) -> bool {
+            false
+        }
+        async fn invoke(
+            &self,
+            _context: crate::ToolContext,
+            _arguments: serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            unreachable!()
+        }
+    }
+
+    let root = workspace();
+    let store = ConversationStore::open(&root.path().join("state.sqlite3"))
+        .await
+        .unwrap();
+    let service =
+        ConversationService::unbound(store, PromptTemplates::new(root.path().join("data")));
+    let error = service
+        .with_assistant_tools(vec![Arc::new(AppTool)])
+        .err()
+        .expect("unsupported AppState tool schema must fail registration");
+    assert!(matches!(
+        error,
+        HarnessError::Configuration(ref reason)
+            if reason.contains("app_tool") && reason.contains("unsupported keyword 'format'")
+    ));
+}

@@ -18,12 +18,35 @@ const SUPPORTED_KEYWORDS: &[&str] = &[
 ];
 
 pub(crate) fn validate_schema(schema: &Value) -> Result<(), String> {
+    validate_supported_numbers(schema, "$")?;
     validate_schema_at(schema, "$")
 }
 
 pub(crate) fn validate_instance(schema: &Value, arguments: &Value) -> Result<(), String> {
     validate_schema(schema).map_err(|error| format!("Tool JSON schema is invalid: {error}"))?;
+    validate_supported_numbers(arguments, "$")?;
     validate_instance_at(schema, arguments, "$")
+}
+
+fn validate_supported_numbers(value: &Value, path: &str) -> Result<(), String> {
+    match value {
+        Value::Number(number) if Decimal::try_parse(number).is_none() => Err(format!(
+            "{path}: unsupported arbitrary-precision number '{number}'"
+        )),
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                validate_supported_numbers(value, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                validate_supported_numbers(value, &format!("{path}.{key}"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn validate_schema_at(schema: &Value, path: &str) -> Result<(), String> {
@@ -186,7 +209,10 @@ fn validate_instance_at(schema: &Value, value: &Value, path: &str) -> Result<(),
         _ => unreachable!("schema type was validated"),
     }
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
-        if !allowed.contains(value) {
+        if !allowed
+            .iter()
+            .any(|candidate| json_values_equal(candidate, value))
+        {
             return Err(format!(
                 "{path}: value is not one of the allowed enum values"
             ));
@@ -299,11 +325,31 @@ fn validate_array(schema: &Map<String, Value>, value: &Value, path: &str) -> Res
 }
 
 fn is_integer(number: &Number) -> bool {
-    number.is_i64()
-        || number.is_u64()
-        || number
-            .as_f64()
-            .is_some_and(|number| number.is_finite() && number.fract() == 0.0)
+    Decimal::parse(number).is_integer()
+}
+
+fn json_values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => {
+            compare_numbers(left, right) == Ordering::Equal
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| json_values_equal(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| json_values_equal(left, right))
+                })
+        }
+        _ => left == right,
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -321,35 +367,143 @@ impl Ordering {
     const fn is_gt(self) -> bool {
         matches!(self, Self::Greater)
     }
+
+    const fn reverse(self) -> Self {
+        match self {
+            Self::Less => Self::Greater,
+            Self::Equal => Self::Equal,
+            Self::Greater => Self::Less,
+        }
+    }
 }
 
 fn compare_numbers(left: &Number, right: &Number) -> Ordering {
-    if let (Some(left), Some(right)) = (left.as_i64(), right.as_i64()) {
-        return compare(left, right);
-    }
-    if let (Some(left), Some(right)) = (left.as_u64(), right.as_u64()) {
-        return compare(left, right);
-    }
-    let left = left
-        .as_f64()
-        .expect("JSON numbers fit f64 for this comparison");
-    let right = right
-        .as_f64()
-        .expect("JSON numbers fit f64 for this comparison");
-    if left < right {
-        Ordering::Less
-    } else if left > right {
-        Ordering::Greater
-    } else {
-        Ordering::Equal
-    }
+    Decimal::parse(left).compare(&Decimal::parse(right))
 }
 
-fn compare<T: Ord>(left: T, right: T) -> Ordering {
-    match left.cmp(&right) {
-        std::cmp::Ordering::Less => Ordering::Less,
-        std::cmp::Ordering::Equal => Ordering::Equal,
-        std::cmp::Ordering::Greater => Ordering::Greater,
+#[derive(Debug)]
+struct Decimal {
+    negative: bool,
+    digits: String,
+    exponent: i64,
+    zero: bool,
+}
+
+impl Decimal {
+    fn parse(number: &Number) -> Self {
+        Self::try_parse(number).expect("numeric representation was checked")
+    }
+
+    fn try_parse(number: &Number) -> Option<Self> {
+        let source = number.to_string();
+        let (negative, unsigned) = source
+            .strip_prefix('-')
+            .map(|value| (true, value))
+            .unwrap_or((false, source.as_str()));
+        let (mantissa, exponent) =
+            if let Some((mantissa, exponent)) = unsigned.split_once(['e', 'E']) {
+                (mantissa, exponent.parse::<i64>().ok()?)
+            } else {
+                (unsigned, 0_i64)
+            };
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let mut digits = format!("{whole}{fraction}");
+        let mut exponent = exponent.checked_sub(i64::try_from(fraction.len()).ok()?)?;
+        let leading = digits.bytes().take_while(|byte| *byte == b'0').count();
+        digits.drain(..leading);
+        let zero = digits.is_empty();
+        if zero {
+            digits.push('0');
+            return Some(Self {
+                negative: false,
+                digits,
+                exponent: 0,
+                zero,
+            });
+        }
+        let trailing = digits
+            .bytes()
+            .rev()
+            .take_while(|byte| *byte == b'0')
+            .count();
+        if trailing != 0 {
+            digits.truncate(digits.len() - trailing);
+            exponent = exponent.checked_add(i64::try_from(trailing).ok()?)?;
+        }
+        exponent.checked_add(i64::try_from(digits.len()).ok()?)?;
+        Some(Self {
+            negative,
+            digits,
+            exponent,
+            zero,
+        })
+    }
+
+    fn is_integer(&self) -> bool {
+        self.zero || self.exponent >= 0
+    }
+
+    fn compare(&self, other: &Self) -> Ordering {
+        match (self.zero, other.zero) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => {
+                return if other.negative {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (false, true) => {
+                return if self.negative {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (false, false) => {}
+        }
+        if self.negative != other.negative {
+            return if self.negative {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        let magnitude = self.compare_magnitude(other);
+        if self.negative {
+            magnitude.reverse()
+        } else {
+            magnitude
+        }
+    }
+
+    fn compare_magnitude(&self, other: &Self) -> Ordering {
+        let left_position = self
+            .exponent
+            .saturating_add(i64::try_from(self.digits.len()).expect("JSON number length fits i64"));
+        let right_position = other.exponent.saturating_add(
+            i64::try_from(other.digits.len()).expect("JSON number length fits i64"),
+        );
+        if left_position != right_position {
+            return if left_position < right_position {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        let width = self.digits.len().max(other.digits.len());
+        for index in 0..width {
+            let left = self.digits.as_bytes().get(index).copied().unwrap_or(b'0');
+            let right = other.digits.as_bytes().get(index).copied().unwrap_or(b'0');
+            if left != right {
+                return if left < right {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                };
+            }
+        }
+        Ordering::Equal
     }
 }
 
@@ -434,6 +588,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compares_numeric_limits_without_loss_of_precision() {
+        let precise_max = json!({"type":"integer","maximum":9007199254740992.0});
+        validate_instance(&precise_max, &json!(9007199254740992_u64)).unwrap();
+        let error = validate_instance(&precise_max, &json!(9007199254740993_u64)).unwrap_err();
+        assert!(error.contains("maximum"), "{error}");
+
+        for (schema, valid, invalid) in [
+            (
+                json!({"type":"integer","minimum":i64::MIN}),
+                json!(i64::MIN),
+                serde_json::from_str::<Value>("-9223372036854775809").unwrap(),
+            ),
+            (
+                json!({"type":"integer","maximum":i64::MAX}),
+                json!(i64::MAX),
+                json!(u64::MAX),
+            ),
+            (
+                json!({"type":"integer","maximum":u64::MAX}),
+                json!(u64::MAX),
+                json!(serde_json::Number::from_f64(1e30).unwrap()),
+            ),
+            (json!({"type":"number","minimum":-0.0}), json!(0), json!(-1)),
+            (json!({"type":"integer","minimum":1.5}), json!(2), json!(1)),
+            (json!({"type":"integer","maximum":1.5}), json!(1), json!(2)),
+        ] {
+            validate_instance(&schema, &valid).unwrap();
+            assert!(validate_instance(&schema, &invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn enum_uses_recursive_json_schema_numeric_equality() {
+        let schema = json!({
+            "type":"array",
+            "enum":[[1, {"nested":[1, 2.0]}]]
+        });
+        validate_instance(&schema, &json!([1.0, {"nested":[1.0, 2]}])).unwrap();
+        assert!(validate_instance(&schema, &json!([1, {"nested":[1, 3]}])).is_err());
+    }
+
+    #[test]
+    fn rejects_unrepresentable_arbitrary_precision_numbers() {
+        let schema = json!({"type":"number"});
+        let number = serde_json::from_str::<Value>(
+            "1e999999999999999999999999999999999999999999999999999999999999",
+        )
+        .unwrap();
+        let error = validate_instance(&schema, &number).unwrap_err();
+        assert!(
+            error.contains("unsupported arbitrary-precision number"),
+            "{error}"
+        );
+    }
     #[test]
     fn rejects_unsupported_and_malformed_schemas() {
         for (schema, message) in [
