@@ -694,8 +694,9 @@ inside native audio and video controls to the browser.
 ### Generate share links and Remix
 
 `#/generate?workflow=<id>` opens an empty editor with manifest defaults.
-Versioned share links add `v=2`, `wv` (workflow version), optional `preset`
-and `modified=1`, and `p` (URL-encoded JSON). The `p` value is an array of
+Versioned share links add `v=2`, `wv` (workflow version), optional `wr`
+(workflow revision), optional `preset` and `modified=1`, and `p` (URL-encoded
+JSON). The `p` value is an array of
 `[name, source, value, seedMode?, chosenSeed?]` tuples. Sources are `d`
 (default), `p` (preset), `u` (user) and `n` (no source). Text and booleans
 use JSON scalars; `null` explicitly means unset, `['int','<decimal>']` and
@@ -710,7 +711,8 @@ same workflow version, and blocks review on missing fields or unset fields
 that now have a default until the user resolves them. Preset-sourced values
 are explicit; restoration never applies the current preset behind the scenes.
 Links over 32 KiB of encoded fragment or 256 tuples are rejected. Opening a
-share link never submits a run.
+share link never submits a run. A different revision is shown as a notice;
+it does not itself block review.
 The fragment contains clear-text parameter data: share only with intended
 recipients. Upload references only work where those uploads are stored.
 
@@ -721,14 +723,18 @@ to `buildGenerateUrl` to keep exact numeric values. A run response does not iden
 Remix imports recorded parameters as user values and locks recorded seeds.
 The editor restores and validates them against the current manifest.
 
-On review, the server validates the concrete parameter snapshot. Submit sends
-those parameters explicitly, not a preset for the server to expand, and uses
-one idempotency key for the lifetime of that snapshot. An uncertain request
+On review, the server validates the concrete parameter snapshot pinned to the
+loaded workflow revision. If validation or submission reports that revision
+has changed, Generate reloads the workflow, shows differences against the
+retained field values where possible, and requires a fresh review. Submit sends
+those parameters and the reviewed revision explicitly, not a preset for the
+server to expand, and uses one idempotency key for the lifetime of that snapshot. An uncertain request
 can be retried explicitly with the same key; it is never retried automatically.
 The exact pending request and key stay in this tab’s session storage across
 navigation and reload until the server returns a run or definitively rejects
 the request. Jobs is the status-check fallback because there is no lookup by
-idempotency key.
+idempotency key. A pending request from an older portal without a pinned revision
+is retained for status checks but cannot be safely retried.
 Live output cards require both completed run status and indexed outputs.
 
 ### Accessibility checks

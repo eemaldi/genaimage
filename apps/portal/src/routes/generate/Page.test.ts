@@ -71,6 +71,7 @@ const parameter = (
   ...extra,
 });
 const workflow: Workflow = {
+  revision: 'portrait-rev-1',
   id: 'portrait',
   version: '1',
   schema_version: 2,
@@ -162,6 +163,7 @@ beforeEach(() => {
   fake.getWorkflow.mockResolvedValue(workflow);
   fake.validateWorkflow.mockResolvedValue({
     valid: true,
+    revision: workflow.revision,
     parameter_errors: [],
     node_check: { ...available, missing_classes: [] },
   });
@@ -213,7 +215,14 @@ async function load() {
 
 test('offers an explicit picker and follows a changed workflow query', async () => {
   fake.listWorkflows.mockResolvedValue({
-    workflows: [{ id: 'portrait/copy', name: 'Portrait copy', version: '1' }],
+    workflows: [
+      {
+        id: 'portrait/copy',
+        name: 'Portrait copy',
+        version: '1',
+        revision: workflow.revision,
+      },
+    ],
     diagnostics: [],
   });
   const { rerender } = mount('');
@@ -458,6 +467,7 @@ async function applyAndReview() {
 test('maps server errors to advanced fields and blocks submission', async () => {
   fake.validateWorkflow.mockResolvedValueOnce({
     valid: false,
+    revision: workflow.revision,
     node_check: { ...available, missing_classes: [] },
     parameter_errors: [
       { parameter: 'Count', reason: 'The backend rejected this count.' },
@@ -495,7 +505,7 @@ test('submits exactly the reviewed parameters and uses the same key after ambigu
   };
   expect(fake.validateWorkflow).toHaveBeenCalledWith(
     'portrait',
-    { parameters: expected },
+    { parameters: expected, workflow_revision: workflow.revision },
     expect.any(Object),
   );
   expect(
@@ -510,7 +520,11 @@ test('submits exactly the reviewed parameters and uses the same key after ambigu
   });
   expect(fake.createRun).toHaveBeenCalledTimes(1);
   const [body, key] = fake.createRun.mock.calls[0];
-  expect(body).toEqual({ workflow: 'portrait', parameters: expected });
+  expect(body).toEqual({
+    workflow: 'portrait',
+    parameters: expected,
+    workflow_revision: workflow.revision,
+  });
   expect(
     screen
       .getByRole('link', { name: 'Check the run details' })
@@ -639,6 +653,7 @@ test('shares form provenance and a concrete seed without validating or submittin
   await user.click(screen.getByRole('button', { name: 'Copy share link' }));
   const shared = new URL(writeText.mock.calls[0][0]);
   expect(shared.hash).toContain('v=2');
+  expect(shared.hash).toContain(`wr=${workflow.revision}`);
   expect(shared.hash).toContain('modified=1');
   cleanup();
   fake.validateWorkflow.mockClear();
@@ -723,6 +738,7 @@ test('an edit during server validation prevents a stale response from enabling s
   expect(signal?.aborted).toBe(true);
   finish({
     valid: true,
+    revision: workflow.revision,
     parameter_errors: [],
     node_check: { ...available, missing_classes: [] },
   });
@@ -802,7 +818,10 @@ test('opens Generate from the catalogue and distinguishes defaulted, declared an
   expect(panel.getByText(/image \(declaration unavailable\)/)).toBeTruthy();
   expect(fake.validateWorkflow).toHaveBeenLastCalledWith(
     id,
-    { parameters: { Declared: false, Unknown: 'Explicit value' } },
+    {
+      parameters: { Declared: false, Unknown: 'Explicit value' },
+      workflow_revision: workflow.revision,
+    },
     expect.any(Object),
   );
   expect(fake.createRun).not.toHaveBeenCalled();
@@ -818,13 +837,16 @@ test('recovers the exact submission after checking Jobs and after a reload', asy
   await user.click(reviewButton());
   await user.click(await screen.findByRole('button', { name: 'Submit run' }));
   const [body, key] = fake.createRun.mock.calls[0];
+  expect(body.workflow_revision).toBe(workflow.revision);
   await user.click(
     await screen.findByRole('link', { name: 'check status in Jobs' }),
   );
   await screen.findByRole('heading', { name: 'Jobs' });
-  const oldHash = '#/generate?workflow=portrait';
-  location.hash = oldHash;
+  fake.getWorkflow.mockResolvedValue({ ...workflow, revision: 'new-revision' });
+  location.hash = '#/generate?workflow=portrait';
   await screen.findByRole('heading', { name: 'Pending submission' });
+  expect(screen.getByText(workflow.revision)).toBeTruthy();
+  expect(fake.createRun).toHaveBeenCalledTimes(1);
   cleanup();
   render(App);
   expect(await screen.findByText(String(seed))).toBeTruthy();
@@ -878,3 +900,84 @@ test.each(['1', 'old'])(
     expect(within(review()).getByText('(shared default)')).toBeTruthy();
   },
 );
+
+test('pins both requests and reloads a replacement workflow before allowing a new submission', async () => {
+  const user = await applyAndReview();
+  expect(within(review()).getByText(workflow.revision)).toBeTruthy();
+  expect(fake.validateWorkflow.mock.lastCall?.[1].workflow_revision).toBe(
+    workflow.revision,
+  );
+  const next = {
+    ...workflow,
+    revision: 'portrait-rev-2',
+    parameters: {
+      ...workflow.parameters,
+      Notes: { ...workflow.parameters.Notes, default: 'New manifest default' },
+    },
+  };
+  fake.getWorkflow.mockResolvedValueOnce(next);
+  fake.createRun.mockRejectedValueOnce(
+    new ApiProblemError({
+      type: 'urn:genaimage:problem:workflow-changed',
+      status: 409,
+      title: 'Workflow changed',
+      detail: 'The reviewed revision is no longer current.',
+      recovery: 'Reload and review again.',
+    }),
+  );
+  await user.click(submitButton());
+  await screen.findByText('The reviewed revision is no longer current.');
+  await screen.findByText(/Current manifest default: "New manifest default"/);
+  expect(
+    screen.getByText(/revision differs from the one in this link/),
+  ).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Submit run' })).toBeNull();
+  expect(sessionStorage.length).toBe(0);
+  expect(fake.getWorkflow).toHaveBeenCalledTimes(2);
+  expect(fake.createRun).toHaveBeenCalledTimes(1);
+  const [original, originalKey] = fake.createRun.mock.calls[0];
+  expect(original.workflow_revision).toBe(workflow.revision);
+  fake.validateWorkflow.mockResolvedValueOnce({
+    revision: next.revision,
+    valid: true,
+    parameter_errors: [],
+    node_check: { ...available, missing_classes: [] },
+  });
+  await user.click(reviewButton());
+  await user.click(await screen.findByRole('button', { name: 'Submit run' }));
+  expect(fake.validateWorkflow.mock.lastCall?.[1].workflow_revision).toBe(
+    next.revision,
+  );
+  const [submitted, key] = fake.createRun.mock.calls[1];
+  expect(submitted.workflow_revision).toBe(next.revision);
+  expect(submitted.parameters?.Notes).toBe('');
+  expect(key).not.toBe(originalKey);
+});
+
+test('loads the replacement if the revision changes before validation', async () => {
+  const user = await load();
+  await user.type(screen.getByLabelText('Prompt'), 'Keep this prompt');
+  fake.getWorkflow.mockResolvedValueOnce({
+    ...workflow,
+    revision: 'new-revision',
+  });
+  fake.validateWorkflow.mockRejectedValueOnce(
+    new ApiProblemError({
+      type: 'urn:genaimage:problem:workflow-changed',
+      status: 409,
+      title: 'Workflow changed',
+      detail: 'The loaded revision is no longer current.',
+      recovery: 'Reload and review again.',
+    }),
+  );
+  await user.click(reviewButton());
+  expect((await screen.findByRole('alert')).textContent).toContain(
+    'Workflow changed',
+  );
+  expect((await screen.findByLabelText<HTMLInputElement>('Prompt')).value).toBe(
+    'Keep this prompt',
+  );
+  expect(fake.getWorkflow).toHaveBeenCalledTimes(2);
+  expect(fake.createRun).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Submit run' })).toBeNull();
+});

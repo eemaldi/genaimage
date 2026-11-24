@@ -12,10 +12,29 @@
   let { query }: { query: URLSearchParams } = $props();
   let id = $derived(query.get('workflow') ?? '');
   let picked = $state('');
+  let reload = $state.raw<{
+    queryKey: string;
+    query?: URLSearchParams;
+    problem: Problem;
+    attempt: number;
+  }>();
+  let queryKey = $derived(query.toString());
+  let replacement = $derived(
+    reload?.queryKey === queryKey ? reload : undefined,
+  );
+
+  function reloadWorkflow(problem: Problem, restored?: URLSearchParams) {
+    reload = {
+      queryKey,
+      query: restored,
+      problem,
+      attempt: (replacement?.attempt ?? 0) + 1,
+    };
+  }
   let request = $derived.by(() => {
     const controller = new AbortController();
     const promise = id
-      ? loadWorkflow(id, controller.signal)
+      ? loadWorkflow(id, controller.signal, replacement?.attempt)
       : loadCatalogue(controller.signal);
     return { controller, promise };
   });
@@ -25,9 +44,10 @@
     return () => controller.abort();
   });
 
-  async function loadWorkflow(id: string, signal: AbortSignal) {
+  async function loadWorkflow(id: string, signal: AbortSignal, attempt = 0) {
     return {
       workflow: await api.getWorkflow(id, { signal, exactBindings: true }),
+      attempt,
     } as const;
   }
   async function loadCatalogue(signal: AbortSignal) {
@@ -46,11 +66,16 @@
 </script>
 
 {#if id}<p><a href={workflowHref('')}>Choose another workflow</a></p>{/if}
+{#if replacement}<ProblemDetails problem={replacement.problem} />{/if}
 {#await request.promise}
   <p role="status">Loading {id ? 'workflow' : 'workflows'}…</p>
 {:then result}
   {#if 'workflow' in result}
-    {#key query.toString()}<Form workflow={result.workflow} {query} />{/key}
+    {#key `${queryKey}:${result.attempt}`}<Form
+        workflow={result.workflow}
+        query={replacement?.query ?? query}
+        {reloadWorkflow}
+      />{/key}
   {:else}
     {#if result.catalogue.workflows.length}
       <form
@@ -88,6 +113,10 @@
   {/if}
 {:catch error}
   <ProblemDetails problem={loadProblem(error)} />
+  {#if replacement}<Button
+      onclick={() => reloadWorkflow(replacement!.problem, replacement!.query)}
+      >Retry loading workflow</Button
+    >{/if}
 {/await}
 
 <style>

@@ -40,7 +40,7 @@
 
   type Run = components['schemas']['RunResponse'];
   type Snapshot = {
-    body: Readonly<SubmitRunRequest>;
+    body: Readonly<SubmitRunRequest & { workflow_revision: string }>;
     rows: ReadonlyArray<{
       name: string;
       value?: Review[string];
@@ -57,8 +57,15 @@
     modified: boolean;
     key: string;
   };
-  let { workflow, query }: { workflow: Workflow; query: URLSearchParams } =
-    $props();
+  let {
+    workflow,
+    query,
+    reloadWorkflow,
+  }: {
+    workflow: Workflow;
+    query: URLSearchParams;
+    reloadWorkflow: (problem: Problem, restored?: URLSearchParams) => void;
+  } = $props();
   const restored = untrack(() => restoreFormState(workflow, query));
   const uid = $props.id();
   const fieldId = (name: string) => `${uid}-${encodeURIComponent(name)}`;
@@ -179,7 +186,7 @@
     invalidateReview();
   }
 
-  async function copyShareLink() {
+  function shareHash() {
     const chosen = Object.fromEntries(chosenSeeds);
     for (const row of review?.rows ?? []) {
       if (row.random && row.value !== undefined)
@@ -188,16 +195,44 @@
           enumerable: true,
         });
     }
+    return encodeFormState({
+      workflow: workflow.id,
+      version: workflow.version,
+      revision: workflow.revision,
+      preset,
+      modified,
+      fields,
+      chosenSeeds: chosen,
+    });
+  }
+
+  function workflowChanged(failure: unknown): failure is ApiProblemError {
+    return (
+      failure instanceof ApiProblemError &&
+      failure.status === 409 &&
+      failure.type === 'urn:genaimage:problem:workflow-changed'
+    );
+  }
+
+  function reloadChangedWorkflow(conflict: Problem) {
+    let restored: URLSearchParams | undefined;
+    try {
+      restored = new URLSearchParams(shareHash().slice('#/generate?'.length));
+    } catch {
+      conflict = {
+        ...conflict,
+        detail:
+          `${conflict.detail ?? ''} The form was too large to restore; enter the values again after reloading.`.trim(),
+      };
+    }
+    invalidateReview();
+    reloadWorkflow(conflict, restored);
+  }
+
+  async function copyShareLink() {
     let hash: string;
     try {
-      hash = encodeFormState({
-        workflow: workflow.id,
-        version: workflow.version,
-        preset,
-        modified,
-        fields,
-        chosenSeeds: chosen,
-      });
+      hash = shareHash();
     } catch (failure) {
       shareFallback = '';
       shareMessage =
@@ -322,7 +357,16 @@
     }
     const parameters = Object.freeze(Object.fromEntries(values));
     // Do not ask the API to apply the preset again: it could supply unreviewed values.
-    const body = Object.freeze({ workflow: workflow.id, parameters });
+    const revision = workflow.revision;
+    if (!revision) {
+      validationProblem = {
+        title: 'The server did not provide a workflow revision',
+        recovery: 'Reload the workflow before reviewing it.',
+      };
+      return;
+    }
+    const bindings = { parameters, workflow_revision: revision };
+    const body = Object.freeze({ workflow: workflow.id, ...bindings });
     const rows = entries.map(([name, field]) => ({
       name,
       value: values.get(name),
@@ -338,12 +382,17 @@
     validation = controller;
     validating = true;
     try {
-      const result = await api.validateWorkflow(
-        workflow.id,
-        { parameters },
-        { signal: controller.signal },
-      );
+      const result = await api.validateWorkflow(workflow.id, bindings, {
+        signal: controller.signal,
+      });
       if (controller.signal.aborted) return;
+      if (result.revision !== revision) {
+        reloadChangedWorkflow({
+          title: 'The workflow changed during validation',
+          recovery: 'Review the reloaded workflow before submitting.',
+        });
+        return;
+      }
       const problems = new SvelteMap<string, string>();
       const otherErrors: { key: string; reason: string }[] = [];
       for (const { parameter, reason } of result.parameter_errors) {
@@ -385,7 +434,9 @@
       await tick();
       reviewHeading?.focus();
     } catch (failure) {
-      if (!controller.signal.aborted)
+      if (controller.signal.aborted) return;
+      if (workflowChanged(failure)) reloadChangedWorkflow(failure.problem);
+      else
         validationProblem = problem(failure, 'Could not validate the workflow');
     } finally {
       if (validation === controller) {
@@ -409,7 +460,7 @@
   async function submitReview() {
     if (submitting || accepted || recovered.problem) return;
     const snapshot = pending ?? review;
-    if (!snapshot) return;
+    if (!snapshot?.body.workflow_revision) return;
     submitting = true;
     submissionProblem = undefined;
     const controller = new AbortController();
@@ -456,7 +507,8 @@
         if (definitive) {
           clearPending(snapshot);
           pending = undefined;
-          review = undefined;
+          if (workflowChanged(failure)) reloadChangedWorkflow(failure.problem);
+          else review = undefined;
         } else if (failure instanceof ApiProblemError) {
           const { run_id: id, instance } = failure.problem;
           const runId =
@@ -496,6 +548,7 @@
 <h2>{workflow.title}</h2>
 {#if workflow.description}<p>{workflow.description}</p>{/if}
 {#if restored.versionNotice}<p role="status">{restored.versionNotice}</p>{/if}
+{#if restored.revisionNotice}<p role="status">{restored.revisionNotice}</p>{/if}
 {#if warnings.length}
   <ProblemDetails
     problem={{
@@ -630,6 +683,7 @@
       Review parameters
     </h3>
     <p>Workflow: <code>{review.workflow}</code> · Version: {review.version}</p>
+    <p>Workflow revision: <code>{review.body.workflow_revision}</code></p>
     <p>
       Preset: {review.preset || 'None'}{review.modified && review.preset
         ? ' (modified)'
@@ -680,6 +734,9 @@
     <p>
       Workflow: <code>{pending.body.workflow}</code> · Reviewed version: {pending.version}
     </p>
+    {#if pending.body.workflow_revision}<p>
+        Workflow revision: <code>{pending.body.workflow_revision}</code>
+      </p>{/if}
     {#if !review && Object.keys(pending.body.parameters ?? {}).length}
       <dl>
         {#each Object.entries(pending.body.parameters ?? {}) as [name, value] (name)}
@@ -695,10 +752,17 @@
             href={`#/runs/${encodeURIComponent(pending.runId)}`}
             >Check the run details</a
           > or
-        {/if}<a href="#/jobs">check status in Jobs</a>. Retrying here sends the
-        identical request with the same key.
+        {/if}<a href="#/jobs">check status in Jobs</a>.
       </p>
-      <Button onclick={submitReview}>Retry with the same key</Button>
+      {#if pending.body.workflow_revision}
+        <p>Retrying here sends the identical request with the same key.</p>
+        <Button onclick={submitReview}>Retry with the same key</Button>
+      {:else}
+        <p>
+          This older request has no pinned revision and cannot safely be
+          retried.
+        </p>
+      {/if}
     {/if}
   </section>
 {/if}

@@ -26,6 +26,7 @@ type Entry = [
 type FormState = {
   workflow: string;
   version?: string;
+  revision?: string;
   preset?: string;
   modified?: boolean;
   fields: Iterable<[string, FieldState]>;
@@ -62,6 +63,7 @@ function makeHash(query: URLSearchParams, entries: Entry[]): string {
 export function encodeFormState(state: FormState): string {
   const query = new URLSearchParams({ workflow: state.workflow, v: format });
   if (state.version !== undefined) query.set('wv', state.version);
+  if (state.revision !== undefined) query.set('wr', state.revision);
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
   const entries: Entry[] = [];
@@ -96,12 +98,14 @@ export function buildGenerateUrl(run: {
   workflow_id: string;
   workflow_version: string;
   parameters: unknown;
+  workflow_revision?: string | null;
 }): string {
   const query = new URLSearchParams({
     workflow: run.workflow_id,
     v: format,
     wv: run.workflow_version,
   });
+  if (run.workflow_revision != null) query.set('wr', run.workflow_revision);
   const entries =
     run.parameters &&
     typeof run.parameters === 'object' &&
@@ -169,8 +173,11 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     preset: '',
     modified: false,
     versionNotice: undefined as string | undefined,
+    revisionNotice: undefined as string | undefined,
   };
-  if (!['v', 'p', 'wv', 'preset', 'modified'].some((key) => query.has(key)))
+  if (
+    !['v', 'p', 'wv', 'wr', 'preset', 'modified'].some((key) => query.has(key))
+  )
     return state;
   if (query.toString().length + '#/generate?'.length > maxFragment) {
     warnings.push({ message: 'This share link is too long.' });
@@ -185,6 +192,10 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   const oldVersion = query.get('wv');
   if (oldVersion !== null && oldVersion !== workflow.version)
     state.versionNotice = `This link used workflow version ${oldVersion}; the current version is ${workflow.version}. Check the parameters before reviewing.`;
+  const oldRevision = query.get('wr');
+  if (oldRevision !== null && oldRevision !== workflow.revision)
+    state.revisionNotice =
+      'The workflow revision differs from the one in this link. Check the current workflow before reviewing.';
   const preset = query.get('preset') ?? '';
   state.preset = preset;
   state.modified = query.get('modified') === '1';
