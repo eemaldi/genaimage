@@ -28,6 +28,7 @@ impl From<Status> for ExitCode {
 pub(crate) enum Error {
     Api(client::Error),
     Input(String),
+    Browser(String),
     WaitTimeout(String),
     File(String),
     Submit(client::Error),
@@ -140,6 +141,7 @@ impl Error {
             Self::WaitTimeout(message) => (Status::WaitTimeout, ErrorReport::new("wait_timeout", message)),
             Self::File(message) => (Status::LocalFailure, ErrorReport::new("file_error", message)),
             Self::Input(message) => (Status::LocalFailure, ErrorReport::new("input_error", message)),
+            Self::Browser(message) => (Status::LocalFailure, ErrorReport::new("browser_error", message)),
             Self::Output(error) => (
                 Status::LocalFailure,
                 ErrorReport::new("output_error", error.to_string()),

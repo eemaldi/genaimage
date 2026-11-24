@@ -17,8 +17,11 @@ or replace ComfyUI, models, weights, or custom nodes.
 
 `genaimage` is the Rust command-line application for scripts and reproducible
 operation. `genaimage serve` starts the local HTTP server. Health, workflow,
-preset, settings, run and job commands use that server. See the
-[CLI reference](docs/cli.md) for server selection, image uploads and JSON.
+preset, settings, run, job and `open` commands use that server.
+`genaimage open --print` prints the server root URL; the embedded portal is
+planned. Shell completion scripts are local and do not need a running server.
+See the [CLI reference](docs/cli.md) for shell installation, server selection,
+image uploads and JSON.
 
 ## Current scope
 
@@ -91,6 +94,8 @@ cargo run -p genaimage -- jobs show <run-id>
 cargo run -p genaimage -- jobs reconcile
 cargo run -p genaimage -- jobs wait <run-id>
 cargo run -p genaimage -- jobs cancel <run-id>
+cargo run -p genaimage -- open --print
+cargo run -p genaimage -- completions bash
 ```
 
 Install the CLI binary:

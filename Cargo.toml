@@ -20,6 +20,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
 eventsource-stream = "0.2"
 fs2 = "0.4"
 futures-util = "0.3"

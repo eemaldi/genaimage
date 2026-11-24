@@ -1,5 +1,7 @@
 mod artefacts;
+mod completions;
 mod config_local;
+mod open;
 mod output;
 mod run_commands;
 mod serve;
@@ -38,6 +40,20 @@ struct Cli {
 enum Command {
     /// Start the loopback HTTP server.
     Serve,
+    /// Generate shell completions.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Open the server root in your default browser.
+    ///
+    /// The embedded portal is planned; this opens the server root for now.
+    Open {
+        /// Print the server root URL instead of launching a browser.
+        #[arg(long)]
+        print: bool,
+    },
     /// Check the server and its ComfyUI backend.
     Doctor,
     Config {
@@ -152,7 +168,11 @@ enum JobsCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Some(command) = server_commands::Command::from_cli(&cli.command) {
+    if let Command::Completions { shell } = &cli.command {
+        completions::generate(*shell);
+        return ExitCode::SUCCESS;
+    }
+    if let Some(command) = server_commands::Command::from_cli(&cli.command, &cli.server) {
         let output = output::Output::new(cli.json);
         return match execute_server(&cli, command, output).await {
             Ok(outcome) => outcome.into(),

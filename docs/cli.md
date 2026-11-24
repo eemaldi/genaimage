@@ -1,8 +1,8 @@
 # GenAImage CLI reference
 
 Start the loopback API with `genaimage serve` before using the server-backed
-commands below. ComfyUI is a separate process. Only `serve` and `config init`
-operate locally without making API requests.
+commands below. ComfyUI is a separate process. `serve`, `config init` and
+`completions` operate locally without making API requests.
 
 ## Global options
 
@@ -48,8 +48,9 @@ stderr, leaving stdout empty:
 ```
 
 The stable `kind` values are `server_not_running`, `server_problem`,
-`client_error`, `input_error`, `output_error`, `file_error`, `failed_submission`,
-`unknown_submission`, and `wait_timeout`. Server problem details, when available, are included in
+`client_error`, `input_error`, `output_error`, `file_error`, `browser_error`,
+`failed_submission`, `unknown_submission`, and `wait_timeout`. Server problem
+details, when available, are included in
 `problem` with `type`, `title`, `status`, `detail`, `recovery`, and optional
 `errors` (field-specific `{key, reason}` objects). Submission errors include
 `run` when the server returned a durable run record. Errors during observation
@@ -67,13 +68,57 @@ usage errors, help and version text normally, even with `--json`.
   or `./genaimage.toml`. Use `--force` only to replace an existing file.
   JSON is `{path, created}`, with `created: true` on success.
 
-Both local commands write `{status: "error", error: "<message>"}` to stderr
-for local failures in JSON mode.
+`serve` and `config init` write `{status: "error", error: "<message>"}` to
+stderr for local failures in JSON mode.
+
+### Shell completions
+
+`genaimage completions <shell>` prints a completion script without starting the
+server or reading configuration. Supported shell names are `bash`, `zsh`,
+`fish`, `powershell` and `elvish`. For example, install completions as follows:
+
+- **Bash** — append the script to `~/.bashrc` (or evaluate it for the current
+  session):
+  ```sh
+  genaimage completions bash >> ~/.bashrc
+  # Current session only: eval "$(genaimage completions bash)"
+  ```
+- **Zsh** — save the completion file and add its directory to `fpath` before
+  running `compinit` in `~/.zshrc`:
+  ```sh
+  mkdir -p ~/.zfunc
+  genaimage completions zsh > ~/.zfunc/_genaimage
+  ```
+  Add `fpath=(~/.zfunc $fpath)` and `autoload -Uz compinit && compinit` to
+  `~/.zshrc`.
+- **Fish** — save the script in Fish's completions directory:
+  ```fish
+  mkdir -p ~/.config/fish/completions
+  genaimage completions fish > ~/.config/fish/completions/genaimage.fish
+  ```
+- **PowerShell** — create the profile directory if needed, then append the
+  script to the profile:
+  ```powershell
+  New-Item -ItemType Directory -Force (Split-Path $PROFILE) | Out-Null
+  genaimage completions powershell >> $PROFILE
+  ```
+- **Elvish** — save the script in the library directory and add `use genaimage`
+  to `~/.config/elvish/rc.elv`:
+  ```sh
+  mkdir -p ~/.config/elvish/lib
+  genaimage completions elvish > ~/.config/elvish/lib/genaimage.elv
+  ```
 
 ## Server-backed commands
 
 JSON field definitions follow the [OpenAPI contract](api/openapi.json).
 
+- **`open [--print]`** checks the server health endpoint, then opens the configured
+  loopback server root in the default browser. The embedded portal is planned;
+  for now, the URL is the server root. `--print` writes only that URL instead of
+  opening a browser; with `--json`, either mode emits `{"url": "..."}`. The
+  server must be running (otherwise exit `3`); non-loopback URLs are rejected
+  (exit `5`).
 - **`doctor`** checks the server and ComfyUI. JSON is a `HealthResponse`:
   `{self, image_backend, llm}` plus `image_backend_reason` when present.
   Status strings are `ok`, `unavailable`, or `not_configured`; the optional
