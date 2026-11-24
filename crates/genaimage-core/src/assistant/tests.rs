@@ -24,6 +24,7 @@ enum Reply {
     Pending,
     ErrorAfter(String),
     StartupError,
+    StartupPanic,
     PanicAfterDelta,
 }
 
@@ -58,6 +59,7 @@ impl LlmProvider for FakeLlm {
                 Err(HarnessError::Configuration("provider stream failed".into())),
             ]))),
             Reply::StartupError => Err(HarnessError::Configuration("provider unavailable".into())),
+            Reply::StartupPanic => panic!("provider startup panicked"),
             Reply::PanicAfterDelta => {
                 if self.requests.lock().unwrap().len() == 1 {
                     Ok(Box::pin(PanicStream { emitted: false }))
@@ -388,6 +390,31 @@ async fn dropping_send_during_setup_releases_the_in_flight_lease() {
         .unwrap()
         .unwrap();
     service.delete_conversation(&conversation.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn provider_startup_panic_is_persisted_and_forwarded() {
+    let (_root, service, _provider) = fixture(Reply::StartupPanic).await;
+    let conversation = service
+        .create_conversation("Startup panic".into())
+        .await
+        .unwrap();
+    let mut response = service
+        .send_message(&conversation.id, user("panic"))
+        .await
+        .unwrap();
+    let error = response.next().await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("provider startup panicked"));
+    let detail = service
+        .get_conversation(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(detail.messages.len(), 2);
+    assert_eq!(detail.messages[1].status, AssistantMessageStatus::Failed);
+    assert!(detail.messages[1]
+        .error
+        .as_deref()
+        .is_some_and(|reason| reason.contains("provider startup panicked")));
 }
 
 #[tokio::test]

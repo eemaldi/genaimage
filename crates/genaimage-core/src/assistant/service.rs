@@ -325,18 +325,24 @@ async fn supervise_generation(
         let detail = match service.store.get(&conversation_id, Some(500)).await {
             Ok(detail) => detail,
             Err(error) => {
+                let reason = error.to_string();
                 persist_terminal(
                     &service.store,
                     &conversation_id,
                     &service.model,
                     String::new(),
                     Vec::new(),
-                    AssistantMessageStatus::Cancelled,
-                    None,
+                    AssistantMessageStatus::Failed,
+                    Some(reason.clone()),
                 )
                 .await?;
-                let message = error.to_string();
-                let _ = finished_tx.send(Some(Err(message)));
+                let _ = send_delta(
+                    &sender,
+                    &cancellation,
+                    Err(HarnessError::Database(reason.clone())),
+                )
+                .await;
+                let _ = finished_tx.send(Some(Err(reason)));
                 drop(lease);
                 if let Some(started) = started.take() {
                     let _ = started.send(Err(error));
@@ -365,11 +371,19 @@ async fn supervise_generation(
             service.model.clone(),
             &conversation_id,
             request,
-            cancellation,
-            sender,
+            cancellation.clone(),
+            sender.clone(),
         )
         .await;
         let completion = result.as_ref().map_err(ToString::to_string).map(|_| ());
+        if let Err(error) = &result {
+            let _ = send_delta(
+                &sender,
+                &cancellation,
+                Err(HarnessError::Database(error.to_string())),
+            )
+            .await;
+        }
         drop(lease);
         let _ = finished_tx.send(Some(completion));
         result
@@ -400,7 +414,13 @@ async fn run_generation(
             persist_terminal(&store, conversation_id, &model, String::new(), Vec::new(), AssistantMessageStatus::Cancelled, None).await?;
             return Ok(())
         }
-        result = provider.chat_stream(request) => result,
+        result = std::panic::AssertUnwindSafe(provider.chat_stream(request)).catch_unwind() => match result {
+            Ok(result) => result,
+            Err(_) => {
+                let error = HarnessError::Configuration("provider startup panicked".into());
+                Err(error)
+            }
+        },
     };
     let mut stream = match provider_stream {
         Ok(stream) => stream,
