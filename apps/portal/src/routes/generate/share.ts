@@ -2,6 +2,7 @@ import { BindingFloat } from '../../lib/api/client';
 import {
   bindingError,
   initialField,
+  presetField,
   sameValue,
   type FieldState,
   type Scalar,
@@ -40,6 +41,7 @@ type FormState = {
   fields: Iterable<[string, FieldState]>;
   inherited?: readonly SharedInherited[];
   unverifiedSource?: boolean;
+  suggested?: boolean;
   chosenSeeds?: Readonly<Record<string, Scalar>>;
 };
 
@@ -76,6 +78,7 @@ export function encodeFormState(state: FormState): string {
   if (state.version !== undefined) query.set('wv', state.version);
   if (state.revision !== undefined) query.set('wr', state.revision);
   if (state.unverifiedSource) query.set('unverified_source', '1');
+  if (state.suggested) query.set('assistant', 'suggest');
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
   if (state.inherited?.length) query.set('i', JSON.stringify(state.inherited));
@@ -189,6 +192,8 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     modified: false,
     versionNotice: undefined as string | undefined,
     revisionNotice: undefined as string | undefined,
+    suggested: query.get('assistant') === 'suggest',
+    suggestionNotice: undefined as string | undefined,
     unverifiedSource: query.get('unverified_source') === '1',
   };
   if (
@@ -201,6 +206,7 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
       'modified',
       'i',
       'unverified_source',
+      'assistant',
     ].some((key) => query.has(key))
   )
     return state;
@@ -237,6 +243,12 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   const preset = query.get('preset') ?? '';
   state.preset = preset;
   state.modified = query.get('modified') === '1';
+  if (state.suggested) {
+    state.suggestionNotice =
+      oldRevision && oldRevision !== workflow.revision
+        ? `These assistant-suggested values came from workflow revision ${oldRevision}, but the loaded revision is ${workflow.revision}. They are prefilled for editing, not submitted; check every value before review.`
+        : 'These assistant-suggested values are prefilled for editing and have not been submitted. Check every value before review.';
+  }
   if (preset && !Object.hasOwn(workflow.presets, preset))
     warnings.push({
       message: `Preset “${preset}” is not available in the current workflow.`,
@@ -359,6 +371,23 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   }
   for (const [name, parameter] of Object.entries(workflow.parameters)) {
     if (seen.has(name)) continue;
+    if (state.suggested) {
+      if (
+        preset &&
+        Object.hasOwn(workflow.presets, preset) &&
+        Object.hasOwn(workflow.presets[preset], name)
+      ) {
+        fields.set(
+          name,
+          presetField(
+            parameter,
+            initialField(parameter),
+            workflow.presets[preset][name],
+          ),
+        );
+      } else fields.set(name, initialField(parameter));
+      continue;
+    }
     const current = initialField(parameter);
     fields.set(name, { seedMode: current.seedMode });
     warnings.push({
@@ -375,4 +404,38 @@ function display(value: Scalar | undefined) {
     : typeof value === 'string'
       ? JSON.stringify(value)
       : String(value);
+}
+
+export type WorkflowSuggestion =
+  import('../../lib/api/schema').components['schemas']['WorkflowSuggestion'];
+
+export function suggestionFields(suggestion: WorkflowSuggestion) {
+  const fields = new Map<string, FieldState>();
+  for (const [name, value] of Object.entries(suggestion.parameters)) {
+    if (
+      typeof value !== 'string' &&
+      typeof value !== 'boolean' &&
+      typeof value !== 'number' &&
+      typeof value !== 'bigint' &&
+      !(value instanceof BindingFloat)
+    )
+      throw new Error(
+        `The suggestion for parameter “${name}” is not a scalar value.`,
+      );
+    fields.set(name, { value, source: 'user' });
+  }
+  return fields;
+}
+
+/** Prefill Generate without submitting; the server omits image inputs from suggestions. */
+export function buildSuggestionGenerateUrl(suggestion: WorkflowSuggestion) {
+  return encodeFormState({
+    workflow: suggestion.workflow_id,
+    revision: suggestion.workflow_revision,
+    preset: suggestion.preset ?? undefined,
+    modified:
+      !!suggestion.preset && Object.keys(suggestion.parameters).length > 0,
+    suggested: true,
+    fields: suggestionFields(suggestion),
+  });
 }

@@ -6,10 +6,13 @@
   import Input from '../../lib/ui/Input.svelte';
   import Select from '../../lib/ui/Select.svelte';
   import Slider from '../../lib/ui/Slider.svelte';
+  import PromptAssist from '../../lib/prompt-assist/PromptAssist.svelte';
   import ImageField from './ImageField.svelte';
   import {
     bindingError,
     numericDraft,
+    isNegativePromptParameter,
+    isPromptParameter,
     requirementLabel,
     sameValue,
     type FieldState,
@@ -29,6 +32,8 @@
     update,
     reset,
     uploadStatus,
+    workflowId,
+    positivePrompt,
   }: {
     id: string;
     sharedDefault: boolean;
@@ -41,6 +46,8 @@
     update: (next: FieldState) => void;
     reset: () => void;
     uploadStatus: (message?: string) => void;
+    workflowId: string;
+    positivePrompt?: string;
   } = $props();
 
   let preserveMultiline = $state(
@@ -53,6 +60,8 @@
       preserveMultiline = true;
   });
   let needed = $derived(parameter.required);
+  let promptAssist = $derived(isPromptParameter(name, parameter));
+  let negativePrompt = $derived(isNegativePromptParameter(name, parameter));
   let hint = $derived(
     [
       parameter.description,
@@ -308,6 +317,18 @@
         : 'From preset'}{#if field.value === ''}: (empty text){/if}
     </p>
   {/if}
+
+  {#if promptAssist}
+    <PromptAssist
+      {workflowId}
+      parameter={name}
+      value={typeof field.value === 'string' ? field.value : ''}
+      {positivePrompt}
+      negative={negativePrompt}
+      accept={(value) => edit(value)}
+    />
+  {/if}
+
   {#if (field.source && field.source !== 'default') || sharedDefault || field.seedMode === 'random' || (parameter.kind === 'image_upload' && !!error)}
     <Button onclick={reset} aria-label={`Reset ${name}`}>Reset</Button>
   {/if}

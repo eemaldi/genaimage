@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
-import { restoreFormState } from './share';
+import { BindingFloat } from '../../lib/api/client';
+import { buildSuggestionGenerateUrl, restoreFormState } from './share';
 import type { Workflow } from './model';
 
 const workflow: Workflow = {
@@ -62,4 +63,61 @@ test('a linked revision is informational and does not invalidate exact values', 
   expect(state.revisionNotice).toMatch(/revision differs/);
   expect(state.warnings).toEqual([]);
   expect(state.fields.get('seed')?.value).toBe(9007199254740993n);
+});
+
+test('suggestion links prefill exact scalars without marking unlisted parameters missing', () => {
+  const exactWorkflow: Workflow = {
+    ...workflow,
+    presets: { Studio: { strength: 0.25 } },
+    parameters: {
+      seed: workflow.parameters.seed,
+      strength: {
+        node: '2',
+        input: 'value',
+        kind: 'number',
+        required: true,
+        description: '',
+        default: 0,
+      },
+      offset: {
+        node: '3',
+        input: 'value',
+        kind: 'number',
+        required: true,
+        description: '',
+        default: 0,
+      },
+      image: {
+        node: '4',
+        input: 'image',
+        kind: 'image_upload',
+        required: false,
+        description: '',
+      },
+    },
+  };
+  const hash = buildSuggestionGenerateUrl({
+    workflow_id: exactWorkflow.id,
+    workflow_revision: 'suggested-revision',
+    rank: 1,
+    preset: 'Studio',
+    parameters: {
+      seed: 9007199254740993n,
+      offset: new BindingFloat(-0),
+    },
+    rationale: 'Exact values',
+  });
+  const query = new URLSearchParams(hash.split('?')[1]);
+  const restored = restoreFormState(exactWorkflow, query);
+  expect(query.get('assistant')).toBe('suggest');
+  expect(query.get('wr')).toBe('suggested-revision');
+  expect(restored.suggested).toBe(true);
+  expect(restored.warnings).toEqual([]);
+  expect(restored.revisionNotice).toMatch(/revision differs/);
+  expect(restored.suggestionNotice).toMatch(/not submitted/);
+  expect(restored.fields.get('seed')?.value).toBe(9007199254740993n);
+  expect(restored.fields.get('strength')?.value).toBe(0.25);
+  expect(restored.fields.get('strength')?.source).toBe('preset');
+  expect(restored.fields.get('offset')?.value).toEqual(new BindingFloat(-0));
+  expect(restored.fields.get('image')?.value).toBeUndefined();
 });

@@ -24,6 +24,8 @@
   import {
     bindingError,
     initialField,
+    isNegativePromptParameter,
+    isPromptParameter,
     parameterGroups,
     presetField,
     presenceLabel,
@@ -188,6 +190,7 @@
       version: workflow.version,
       revision: workflow.revision,
       unverifiedSource: restored.unverifiedSource,
+      suggested: restored.suggested,
       preset,
       modified,
       fields,
@@ -292,6 +295,21 @@
     if (message) uploadErrors.set(name, message);
     else uploadErrors.delete(name);
     invalidateReview();
+  }
+
+  function positivePromptFor(name: string) {
+    for (const [candidate, parameter] of Object.entries(workflow.parameters)) {
+      if (
+        candidate === name ||
+        !isPromptParameter(candidate, parameter) ||
+        isNegativePromptParameter(candidate, parameter)
+      )
+        continue;
+      const field = fields.get(candidate);
+      if (typeof field?.value === 'string') return field.value;
+    }
+    const own = fields.get(name);
+    return typeof own?.value === 'string' ? own.value : '';
   }
 
   function fieldError(name: string, field: FieldState) {
@@ -497,6 +515,9 @@
 <h2>{workflow.title}</h2>
 {#if workflow.description}<p>{workflow.description}</p>{/if}
 {#if restored.versionNotice}<p role="status">{restored.versionNotice}</p>{/if}
+{#if restored.suggestionNotice}<p role="status" class="source">
+    {restored.suggestionNotice}
+  </p>{/if}
 {#if restored.revisionNotice}<p role="status">{restored.revisionNotice}</p>{/if}
 {#if restored.unverifiedSource}<p role="status">
     Remix uses the current workflow; it cannot be verified against the source
@@ -592,6 +613,8 @@
                 edit(name, initialField(parameter));
               }}
               uploadStatus={(message) => uploadStatus(name, message)}
+              workflowId={workflow.id}
+              positivePrompt={positivePromptFor(name)}
             />
           {/each}
         </fieldset>
