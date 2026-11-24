@@ -698,3 +698,33 @@ These are target budgets to measure as the planned components are delivered:
 | Binary size | < 25 MB |
 | Portal initial JavaScript | < 150 KB gzip |
 | p95 non-ComfyUI API latency | < 20 ms |
+
+### Workflow catalogue timing
+
+The catalogue uses one list request, filters an in-memory search index, and
+loads only declared thumbnails lazily. `npm --prefix apps/portal test --
+--run src/routes/workflows/catalogue.test.ts` measures the time from resolving
+an in-memory fake list response to Svelte's completed DOM update for 100 cards
+in jsdom; it logs the elapsed time and enforces a 1,500 ms regression bound.
+A focused local run measured 88.3 ms (100 cards, no thumbnails, warm process).
+This deliberately loose bound accommodates shared CI machines and is not proof
+of the 100 ms local-server target: jsdom has no layout or image loading and the
+measurement excludes server discovery, network transfer and browser paint.
+For an end-to-end local measurement, a release `genaimage serve` served 100
+copies of the bundled text-to-image manifest and API workflow with unique IDs,
+without thumbnails. In the integrated Electron 43 / Chromium 150 browser,
+navigate from Dashboard to Workflows; record the workflow list resource's
+`startTime` and use a `MutationObserver` to detect 100 cards, then two
+`requestAnimationFrame` callbacks as a paint approximation. With the app and
+filesystem cache warm, after one warm-up navigation, five request-to-paint
+samples were 36.5, 35.2, 42.4, 37.7 and 30.0 ms (median 36.5 ms). This is a
+local observation, not a guarantee for other hardware, larger manifests,
+thumbnail decoding or cold caches.
+
+The detail API normalises omitted defaults and explicit null to the same value,
+and fills the default output kind. The portal therefore cannot distinguish
+those source-manifest cases. The JSON client cannot represent integers outside
+JavaScript’s safe range exactly; the detail page marks them as unavailable
+instead of presenting rounded values as exact. Validation checks defaults
+without overrides; it is not an approval or a guarantee that later
+user-supplied values are valid.
