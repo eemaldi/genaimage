@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Seek},
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -10,7 +10,6 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -19,7 +18,7 @@ use crate::{
     artifacts::{self, InputFileRecord},
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
-    image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse},
+    image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse, UploadResponse},
     media,
     persistence::{
         database_matches_settings, NewRun, OutputRecord, RunEvent, RunRecord, RunRepository,
@@ -85,15 +84,14 @@ struct RecordedInputs {
     source_inputs: Vec<InputFileRecord>,
 }
 
-struct ReferenceInput {
+struct VerifiedInput {
     record: InputFileRecord,
-    filename: String,
-    media_type: String,
+    snapshot: InputSnapshot,
 }
 
-struct VerifiedInput {
-    source: ReferenceInput,
-    snapshot: File,
+struct InputSnapshot {
+    _directory: tempfile::TempDir,
+    path: PathBuf,
 }
 
 const WORKFLOW_MISMATCH: HarnessError =
@@ -690,7 +688,7 @@ impl Harness {
         for (parameter, path) in &bound.image_uploads {
             let mut record = inputs.remove(parameter).ok_or(INPUT_MISMATCH)?;
             record.uploaded_name.clear();
-            let (source, upload_format) = if let Some(id) = &record.upload_id {
+            let (source, filename, media_type) = if let Some(id) = &record.upload_id {
                 if path.to_str() != Some(id.as_str()) {
                     return Err(INPUT_MISMATCH);
                 }
@@ -708,60 +706,37 @@ impl Harness {
                     .map_err(|_| INPUT_MISMATCH)?
                     .into_std()
                     .await;
-                let extension = metadata.extension().to_owned();
-                (file, Some((extension, metadata.media_type)))
+                let filename = format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension());
+                (file, filename, Some(metadata.media_type))
             } else {
                 let path = resolve_input_path(&self.config.workspace, path);
                 if path.to_str() != Some(record.source_path.as_str()) {
                     return Err(INPUT_MISMATCH);
                 }
-                (open_local_input(&path).map_err(|_| INPUT_MISMATCH)?, None)
+                let name = local_input_filename(&path).map_err(|_| INPUT_MISMATCH)?;
+                (
+                    open_local_input(&path).map_err(|_| INPUT_MISMATCH)?,
+                    name,
+                    None,
+                )
             };
             let data_dir = self.config.data_dir.clone();
             let expected_size = record.byte_size;
-            let check_media_type = upload_format.as_ref().map(|(_, kind)| kind.clone());
-            let snapshot = media::blocking(move || {
-                let mut snapshot = media::snapshot(source, &data_dir, Some(expected_size))?;
-                if let Some(media_type) = check_media_type {
-                    let mut header = Vec::new();
-                    (&mut snapshot.file).take(12).read_to_end(&mut header)?;
-                    if detected_type(&header) != Some(media_type.as_str()) {
-                        return Err(INPUT_MISMATCH);
-                    }
-                    snapshot.file.rewind()?;
-                }
-                Ok(snapshot)
+            let (snapshot, length, digest) = media::blocking(move || {
+                capture_input(
+                    &data_dir,
+                    source,
+                    &filename,
+                    expected_size,
+                    media_type.as_deref(),
+                )
             })
             .await
             .map_err(|_| INPUT_MISMATCH)?;
-            if record.sha256 != snapshot.sha256 || record.byte_size != snapshot.len {
+            if record.sha256 != digest || record.byte_size != length {
                 return Err(INPUT_MISMATCH);
             }
-            let path = Path::new(&record.source_path);
-            let (filename, media_type) = if let Some((extension, media_type)) = upload_format {
-                (
-                    format!("genaimage-{}.{extension}", Uuid::new_v4()),
-                    media_type,
-                )
-            } else {
-                let extension = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(|s| format!(".{s}"))
-                    .unwrap_or_default();
-                (
-                    format!("genaimage-{}{extension}", Uuid::new_v4()),
-                    local_media_type(path),
-                )
-            };
-            verified.push(VerifiedInput {
-                source: ReferenceInput {
-                    record,
-                    filename,
-                    media_type,
-                },
-                snapshot: snapshot.file,
-            });
+            verified.push(VerifiedInput { record, snapshot });
         }
         Ok(verified)
     }
@@ -777,46 +752,39 @@ impl Harness {
         let mut source_inputs = Vec::new();
         if let Some(snapshots) = snapshots {
             for input in snapshots {
-                let bytes = before_deadline(deadline, async {
-                    let mut bytes = Vec::new();
-                    tokio::fs::File::from_std(input.snapshot)
-                        .read_to_end(&mut bytes)
-                        .await?;
-                    Ok(bytes)
-                })
-                .await
-                .map_err(|error| upload_failure(&input.source.record.parameter, error))?;
-                source_inputs.push(self.upload_reference(input.source, bytes, deadline).await?);
+                source_inputs.push(self.upload_input_snapshot(input, deadline).await?);
             }
         } else if let Some(stored) = stored {
             let store = self.uploads();
             for (parameter, metadata) in stored {
-                let bytes = before_deadline(deadline, async {
-                    Ok(store.verified_bytes(&metadata).await?)
-                })
-                .await
-                .map_err(|error| upload_failure(&parameter, error))?;
                 let filename = format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension());
-                let source = ReferenceInput {
-                    filename,
-                    media_type: metadata.media_type,
-                    record: InputFileRecord {
-                        parameter,
-                        source_path: String::new(),
-                        upload_id: Some(metadata.upload_id),
-                        sha256: metadata.sha256,
-                        original_filename: Some(metadata.original_filename),
-                        byte_size: metadata.byte_size,
-                        uploaded_name: String::new(),
-                    },
+                let upload = before_deadline(deadline, async {
+                    let bytes = store.verified_bytes(&metadata).await?;
+                    self.backend
+                        .upload_image_bytes(bytes, &filename, &metadata.media_type)
+                        .await
+                })
+                .await;
+                let record = InputFileRecord {
+                    parameter,
+                    source_path: String::new(),
+                    upload_id: Some(metadata.upload_id),
+                    sha256: metadata.sha256,
+                    original_filename: Some(metadata.original_filename),
+                    byte_size: metadata.byte_size,
+                    uploaded_name: String::new(),
                 };
-                source_inputs.push(self.upload_reference(source, bytes, deadline).await?);
+                source_inputs.push(record_uploaded_input(record, upload)?);
             }
         } else {
             for (parameter, path) in &bound.image_uploads {
                 let path = resolve_input_path(&self.config.workspace, path);
-                let (source, bytes) = read_local_input(parameter, &path)?;
-                source_inputs.push(self.upload_reference(source, bytes, deadline).await?);
+                let parameter = parameter.clone();
+                let data_dir = self.config.data_dir.clone();
+                let input =
+                    media::blocking(move || capture_local_input(&data_dir, parameter, &path))
+                        .await?;
+                source_inputs.push(self.upload_input_snapshot(input, deadline).await?);
             }
         }
         let names = source_inputs
@@ -827,34 +795,14 @@ impl Harness {
         Ok(source_inputs)
     }
 
-    async fn upload_reference(
+    async fn upload_input_snapshot(
         &self,
-        input: ReferenceInput,
-        bytes: Vec<u8>,
+        input: VerifiedInput,
         deadline: &CancellationToken,
     ) -> Result<InputFileRecord> {
-        let ReferenceInput {
-            mut record,
-            filename,
-            media_type,
-        } = input;
-        let upload = before_deadline(
-            deadline,
-            self.backend
-                .upload_image_bytes(bytes, &filename, &media_type),
-        )
-        .await
-        .map_err(|error| upload_failure(&record.parameter, error))?;
-        if upload.kind != "input"
-            || !upload.subfolder.is_empty()
-            || !single_path_component(&upload.name)
-            || upload.name.contains([':', '[', ']'])
-            || upload.name.chars().any(char::is_control)
-        {
-            return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{}'; no prompt was submitted.", record.parameter)));
-        }
-        record.uploaded_name = upload.name;
-        Ok(record)
+        let upload =
+            before_deadline(deadline, self.backend.upload_image(&input.snapshot.path)).await;
+        record_uploaded_input(input.record, upload)
     }
 
     async fn submit_inner(
@@ -1829,44 +1777,93 @@ fn open_local_input(path: &Path) -> Result<File> {
         .ok_or(HarnessError::MediaIntegrity)
 }
 
-fn local_media_type(path: &Path) -> String {
-    mime_guess::from_path(path)
-        .first_raw()
-        .unwrap_or("application/octet-stream")
-        .into()
-}
-
-fn read_local_input(parameter: &str, path: &Path) -> Result<(ReferenceInput, Vec<u8>)> {
-    let mut file = open_local_input(path)?;
-    let size = file.metadata()?.len();
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(size.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != size {
-        return Err(HarnessError::MediaIntegrity);
-    }
-    let filename = path
-        .file_name()
+fn local_input_filename(path: &Path) -> Result<String> {
+    path.file_name()
         .and_then(|name| name.to_str())
+        .map(str::to_owned)
         .ok_or_else(|| HarnessError::InvalidPath {
             path: path.to_path_buf(),
             reason: "file name is not valid UTF-8".into(),
-        })?;
-    let source = ReferenceInput {
+        })
+}
+
+fn capture_input(
+    data: &Path,
+    source: File,
+    filename: &str,
+    size: u64,
+    media_type: Option<&str>,
+) -> Result<(InputSnapshot, u64, String)> {
+    fs::create_dir_all(data)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("input-snapshot-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let directory = builder.tempdir_in(data)?;
+    let path = directory.path().join(filename);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let mut copy = media::copy_snapshot(source, file, Some(size))?;
+    if copy.len != size {
+        return Err(HarnessError::MediaIntegrity);
+    }
+    if let Some(media_type) = media_type {
+        let mut header = Vec::new();
+        (&mut copy.file).take(12).read_to_end(&mut header)?;
+        if detected_type(&header) != Some(media_type) {
+            return Err(HarnessError::MediaIntegrity);
+        }
+    }
+    Ok((
+        InputSnapshot {
+            _directory: directory,
+            path,
+        },
+        copy.len,
+        copy.sha256,
+    ))
+}
+
+fn capture_local_input(data: &Path, parameter: String, path: &Path) -> Result<VerifiedInput> {
+    let filename = local_input_filename(path)?;
+    let source = open_local_input(path)?;
+    let size = source.metadata()?.len();
+    let (snapshot, byte_size, sha256) = capture_input(data, source, &filename, size, None)?;
+    Ok(VerifiedInput {
         record: InputFileRecord {
-            parameter: parameter.into(),
+            parameter,
             source_path: path.display().to_string(),
             upload_id: None,
             original_filename: None,
-            sha256: hex::encode(Sha256::digest(&bytes)),
-            byte_size: size,
+            sha256,
+            byte_size,
             uploaded_name: String::new(),
         },
-        filename: filename.into(),
-        media_type: local_media_type(path),
-    };
-    Ok((source, bytes))
+        snapshot,
+    })
+}
+
+fn record_uploaded_input(
+    mut record: InputFileRecord,
+    upload: Result<UploadResponse>,
+) -> Result<InputFileRecord> {
+    let upload = upload.map_err(|error| upload_failure(&record.parameter, error))?;
+    if upload.kind != "input"
+        || !upload.subfolder.is_empty()
+        || !single_path_component(&upload.name)
+        || upload.name.contains([':', '[', ']'])
+        || upload.name.chars().any(char::is_control)
+    {
+        return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{}'; no prompt was submitted.", record.parameter)));
+    }
+    record.uploaded_name = upload.name;
+    Ok(record)
 }
 
 fn verify_loader_bindings(loaded: &LoadedWorkflow, bound: &BoundWorkflow) -> Result<()> {

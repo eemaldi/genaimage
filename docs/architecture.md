@@ -344,7 +344,9 @@ completion status or a legacy outputs-only entry. `not_found` means absent from 
 and history after the settle window. ComfyUI cannot prove absence, so very late
 admission is still possible and a later reconcile can adopt the original run.
 Jobs requires explicit confirmation after `not_found` before calling the
-separate re-run endpoint. Neither reconcile endpoint resubmits a prompt.
+separate re-run endpoint. A definitive rejection requires fresh reconciliation
+and confirmation before another attempt. An ambiguous response does not reopen
+that action. Neither reconcile endpoint resubmits a prompt.
 
 Re-run takes no request body or `Content-Type` header. It shares the submission
 key namespace with `POST /runs`; the key identifies the operation and source
@@ -575,6 +577,8 @@ that path does not change the workflow hash. Bind supported image inputs as
 run. Re-run copies and verifies all recorded inputs into private temporary
 files before sending any, then uploads them one at a time from those same
 snapshots. Ordinary submissions verify and upload references one at a time.
+Local inputs retain their filenames in the private snapshots, so path-only
+image backends can upload the exact recorded bytes on both submit and re-run.
 The checks do not cover model weights or behaviour inside arbitrary custom
 nodes, so identical output is not guaranteed.
 

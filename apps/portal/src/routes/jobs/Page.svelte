@@ -151,6 +151,19 @@
     }
   }
 
+  function rerunWasRefused(error: unknown) {
+    // Only documented, definitive server rejections release the attempt. In
+    // particular a timeout or an unusable response may hide a created run.
+    if (!(error instanceof ApiProblemError)) return false;
+    if (error.type === 'urn:genaimage:problem:rerun-mismatch') {
+      return error.status === 409;
+    }
+    return (
+      error.type === 'about:blank' &&
+      [400, 403, 404, 409, 413, 421, 422].includes(error.status)
+    );
+  }
+
   async function perform() {
     if (!confirmation) return;
     const { run, rerun } = confirmation;
@@ -215,10 +228,17 @@
         list.update(result);
       }
     } catch (error) {
+      const refused = rerun && attempted.has(run.id) && rerunWasRefused(error);
+      if (refused) {
+        attempted.delete(run.id);
+        grants.delete(run.id);
+      }
       notice = {
-        message: rerun
-          ? 'A new run was not confirmed. Check Jobs before taking further action.'
-          : 'Cancellation could not be confirmed.',
+        message: refused
+          ? 'No new run was created. Reconcile the original run before trying again.'
+          : rerun
+            ? 'A new run was not confirmed. Check Jobs before taking further action.'
+            : 'Cancellation could not be confirmed.',
         problem: problem(
           error,
           rerun ? 'Could not submit a new run' : 'Could not cancel the run',

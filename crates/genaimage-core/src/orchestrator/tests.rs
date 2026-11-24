@@ -36,7 +36,8 @@ struct FakeState {
     downloads: usize,
     submit_gate: Option<Arc<Gate>>,
     object_info_gate: Option<Arc<Gate>>,
-    uploaded_inputs: Vec<Vec<u8>>,
+    uploaded_inputs: Vec<(PathBuf, Vec<u8>)>,
+    upload_gate: Option<Arc<Gate>>,
     queue_gate: Option<Arc<Gate>>,
     history_gate: Option<Arc<Gate>>,
     download_gate: Option<Arc<Gate>>,
@@ -217,19 +218,19 @@ impl ImageBackend for FakeImageBackend {
         Ok(Value::Null)
     }
 
-    async fn upload_image(&self, _path: &Path) -> Result<UploadResponse> {
-        panic!("the fixture has no image inputs to upload")
-    }
-
-    async fn upload_image_bytes(
-        &self,
-        bytes: Vec<u8>,
-        filename: &str,
-        _mime: &str,
-    ) -> Result<UploadResponse> {
-        self.state.lock().unwrap().uploaded_inputs.push(bytes);
+    async fn upload_image(&self, path: &Path) -> Result<UploadResponse> {
+        let gate = self.state.lock().unwrap().upload_gate.take();
+        if let Some(gate) = gate {
+            gate.wait().await;
+        }
+        let bytes = fs::read(path)?;
+        self.state
+            .lock()
+            .unwrap()
+            .uploaded_inputs
+            .push((path.to_owned(), bytes));
         Ok(UploadResponse {
-            name: filename.to_owned(),
+            name: path.file_name().unwrap().to_str().unwrap().to_owned(),
             subfolder: String::new(),
             kind: "input".into(),
         })
@@ -320,7 +321,7 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
 }
 
 #[tokio::test]
-async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_change() {
+async fn path_only_backend_uploads_verified_snapshots_for_submit_and_rerun() {
     let (workspace, harness, state, mut request) = setup(true);
     let root = &harness.config.workflows;
     let graph_path = root.join("workflow.api.json");
@@ -342,11 +343,30 @@ async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_c
     fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
     let original_manifest = serde_json::to_vec(&manifest).unwrap();
     fs::write(&manifest_path, &original_manifest).unwrap();
-    let source = harness.submit(request).await.unwrap();
+    let (gate, mut entered) = new_gate();
+    state.lock().unwrap().upload_gate = Some(gate.clone());
+    let submit = {
+        let harness = harness.clone();
+        tokio::spawn(async move { harness.submit(request).await.unwrap() })
+    };
+    timeout(Duration::from_secs(2), entered.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let first_reference = workspace.path().join("reference.png");
+    fs::write(&first_reference, b"modified").unwrap();
+    gate.release.add_permits(1);
+    let source = submit.await.unwrap();
+    fs::write(&first_reference, b"original").unwrap();
     assert_eq!(source.status, RunStatus::UnknownSubmission);
     let before = serde_json::to_value(harness.repository.get(&source.id).unwrap()).unwrap();
     let source_preflight = Path::new(&source.output_dir).join("preflight.json");
     let preflight_before = fs::read(&source_preflight).unwrap();
+    let preflight: Value = serde_json::from_slice(&preflight_before).unwrap();
+    assert_eq!(
+        preflight["source_inputs"][0]["sha256"],
+        hex::encode(Sha256::digest(b"original"))
+    );
 
     let (gate, mut entered) = new_gate();
     {
@@ -389,15 +409,20 @@ async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_c
     );
     {
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.uploaded_inputs,
-            [
-                b"original".to_vec(),
-                b"mask".to_vec(),
-                b"original".to_vec(),
-                b"mask".to_vec()
-            ]
-        );
+        let expected = references.iter().cycle().take(4);
+        assert_eq!(state.uploaded_inputs.len(), 4);
+        for ((path, actual), (parameter, _, _, bytes)) in state.uploaded_inputs.iter().zip(expected)
+        {
+            let filename = format!("{parameter}.png");
+            assert_eq!(path.file_name().unwrap(), filename.as_str());
+            assert_ne!(*path, workspace.path().join(filename));
+            assert_eq!(actual.as_slice(), *bytes);
+            assert!(
+                !path.exists(),
+                "snapshot should be removed: {}",
+                path.display()
+            );
+        }
         let prompt = &state.submission.as_ref().unwrap().0;
         assert_eq!(prompt["3"]["inputs"], json!({"seed": 123, "steps": 10}));
     }

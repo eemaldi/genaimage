@@ -182,9 +182,16 @@ fn verified_output(output: &OutputRecord, root: &Path, data: &Path) -> Result<Me
 
 // Snapshot the verified bytes into a private, unnamed file. An open source
 // descriptor alone would not protect streaming against later in-place edits.
-pub(crate) fn snapshot(mut source: File, data: &Path, limit: Option<u64>) -> Result<MediaFile> {
+fn snapshot(source: File, data: &Path, limit: Option<u64>) -> Result<MediaFile> {
     fs::create_dir_all(data)?;
-    let mut file = tempfile::tempfile_in(data)?;
+    copy_snapshot(source, tempfile::tempfile_in(data)?, limit)
+}
+
+pub(crate) fn copy_snapshot(
+    mut source: File,
+    mut file: File,
+    limit: Option<u64>,
+) -> Result<MediaFile> {
     let mut hash = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     let mut len = 0;
