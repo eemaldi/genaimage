@@ -24,7 +24,7 @@ enum Reply {
     Pending,
     ErrorAfter(String),
     StartupError,
-    PanicOnce,
+    PanicAfterDelta,
 }
 
 struct FakeLlm {
@@ -58,9 +58,9 @@ impl LlmProvider for FakeLlm {
                 Err(HarnessError::Configuration("provider stream failed".into())),
             ]))),
             Reply::StartupError => Err(HarnessError::Configuration("provider unavailable".into())),
-            Reply::PanicOnce => {
+            Reply::PanicAfterDelta => {
                 if self.requests.lock().unwrap().len() == 1 {
-                    Ok(Box::pin(PanicStream))
+                    Ok(Box::pin(PanicStream { emitted: false }))
                 } else {
                     Ok(Box::pin(stream::pending()))
                 }
@@ -77,15 +77,21 @@ impl LlmProvider for FakeLlm {
     }
 }
 
-struct PanicStream;
+struct PanicStream {
+    emitted: bool,
+}
 
 impl Stream for PanicStream {
     type Item = Result<ChatDelta>;
 
     fn poll_next(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _context: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        if !self.emitted {
+            self.emitted = true;
+            return Poll::Ready(Some(Ok(ChatDelta::Text("partial".into()))));
+        }
         panic!("provider stream panicked")
     }
 }
@@ -328,26 +334,50 @@ async fn dropping_send_during_setup_releases_the_in_flight_lease() {
 
     let mut writer = rusqlite::Connection::open(&database).unwrap();
     writer.busy_timeout(Duration::from_secs(10)).unwrap();
+    let (append_started, append_gate) = service.test_append_controls();
+    let append_permit = append_gate.acquire().await.unwrap();
+    let task_service = service.clone();
+    let id = conversation.id.clone();
+    let task = tokio::spawn(async move { task_service.send_message(&id, user("first")).await });
+    timeout(Duration::from_secs(1), append_started.notified())
+        .await
+        .unwrap();
     let transaction = writer.transaction().unwrap();
     transaction
         .execute_batch("UPDATE assistant_conversations SET title = title;")
         .unwrap();
+    drop(append_permit);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    task.abort();
+    let _ = task.await;
+    assert!(service.has_in_flight(&conversation.id));
+    let interleaved = service
+        .send_message(&conversation.id, user("interleaved"))
+        .await
+        .err();
+    assert!(
+        matches!(interleaved, Some(HarnessError::ConversationConflict(_))),
+        "unexpected interleaved outcome: {interleaved:?}"
+    );
 
-    let task_service = service.clone();
-    let id = conversation.id.clone();
-    let task = tokio::spawn(async move { task_service.send_message(&id, user("first")).await });
+    drop(transaction);
     timeout(Duration::from_secs(1), async {
-        while !service.has_in_flight(&conversation.id) {
+        while service.has_in_flight(&conversation.id) {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    task.abort();
-    let _ = task.await;
-    assert!(!service.has_in_flight(&conversation.id));
-    drop(transaction);
-    tokio::task::yield_now().await;
+    let detail = service
+        .get_conversation(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(detail.messages.len(), 2);
+    assert!(matches!(
+        detail.messages[0].content,
+        crate::ChatMessage::User(_)
+    ));
+    assert_eq!(detail.messages[1].status, AssistantMessageStatus::Cancelled);
 
     let _stream = service
         .send_message(&conversation.id, user("second"))
@@ -362,12 +392,16 @@ async fn dropping_send_during_setup_releases_the_in_flight_lease() {
 
 #[tokio::test]
 async fn provider_stream_panic_releases_the_in_flight_lease() {
-    let (_root, service, _provider) = fixture(Reply::PanicOnce).await;
+    let (_root, service, _provider) = fixture(Reply::PanicAfterDelta).await;
     let conversation = service.create_conversation("Panic".into()).await.unwrap();
     let mut response = service
         .send_message(&conversation.id, user("panic"))
         .await
         .unwrap();
+    assert!(matches!(
+        response.next().await.unwrap().unwrap(),
+        ChatDelta::Text(text) if text == "partial"
+    ));
     let error = timeout(Duration::from_secs(1), response.next())
         .await
         .unwrap()
@@ -375,6 +409,15 @@ async fn provider_stream_panic_releases_the_in_flight_lease() {
         .unwrap_err();
     assert!(error.to_string().contains("provider stream panicked"));
     assert!(!service.has_in_flight(&conversation.id));
+    let detail = service
+        .get_conversation(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(detail.messages[1].status, AssistantMessageStatus::Failed);
+    assert!(matches!(
+        &detail.messages[1].content,
+        crate::ChatMessage::Assistant { text, .. } if text == "partial"
+    ));
 
     let _retry = service
         .send_message(&conversation.id, user("retry"))

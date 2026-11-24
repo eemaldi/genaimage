@@ -6,7 +6,9 @@ use std::{
 };
 
 use futures_util::{FutureExt, StreamExt};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
+#[cfg(test)]
+use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -72,6 +74,10 @@ pub struct ConversationService {
     provider: Arc<dyn LlmProvider>,
     model: String,
     in_flight: Arc<Mutex<HashMap<String, InFlight>>>,
+    #[cfg(test)]
+    append_gate: Arc<Semaphore>,
+    #[cfg(test)]
+    append_started: Arc<Notify>,
 }
 
 impl ConversationService {
@@ -93,6 +99,10 @@ impl ConversationService {
             provider,
             model,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            append_gate: Arc::new(Semaphore::new(1)),
+            #[cfg(test)]
+            append_started: Arc::new(Notify::new()),
         })
     }
 
@@ -142,111 +152,19 @@ impl ConversationService {
                 "User message content must not be empty.".into(),
             ));
         }
-        let conversation = self.store.get(conversation_id, Some(1)).await?;
-        if conversation.conversation.model != self.model {
-            return Err(HarnessError::ConversationConflict(format!(
-                "conversation '{}' is pinned to model '{}', not configured model '{}'",
-                conversation_id, conversation.conversation.model, self.model
-            )));
-        }
 
-        let cancellation = CancellationToken::new();
-        let generation_id = Uuid::new_v4();
-        let (finished_tx, finished_rx) = watch::channel(None);
-        let lease = {
-            let mut active = self
-                .in_flight
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if active.contains_key(conversation_id) {
-                return Err(HarnessError::ConversationConflict(format!(
-                    "conversation '{conversation_id}' already has a generation in flight"
-                )));
-            }
-            active.insert(
-                conversation_id.to_owned(),
-                InFlight {
-                    id: generation_id,
-                    cancellation: cancellation.clone(),
-                    finished: finished_rx,
-                },
-            );
-            InFlightLease {
-                active: Arc::clone(&self.in_flight),
-                conversation_id: conversation_id.to_owned(),
-                generation_id,
-                cancellation: cancellation.clone(),
-            }
-        };
-
-        self.store
-            .append_message(conversation_id, NewAssistantMessage::user(content))
-            .await?;
-        let detail = match self.store.get(conversation_id, Some(500)).await {
-            Ok(detail) => detail,
-            Err(error) => return Err(error),
-        };
-        let mut messages = Vec::with_capacity(detail.messages.len() + 1);
-        messages.push(ChatMessage::System(detail.conversation.system_prompt));
-        messages.extend(detail.messages.into_iter().map(|message| message.content));
-        let request = ChatRequest {
-            model: self.model.clone(),
-            messages,
-            tools: Vec::new(),
-        };
-        let (sender, receiver) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-        let reporter = sender.clone();
-        let report_cancellation = cancellation.clone();
         let service = self.clone();
         let id = conversation_id.to_owned();
+        let (sender, receiver) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+        let (started_tx, started_rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _lease = lease;
-            let store = service.store.clone();
-            let model = service.model.clone();
-            let result = std::panic::AssertUnwindSafe(run_generation(
-                store.clone(),
-                Arc::clone(&service.provider),
-                model.clone(),
-                &id,
-                request,
-                cancellation.clone(),
-                sender,
-            ))
-            .catch_unwind()
-            .await;
-            let result = match result {
-                Ok(result) => result,
-                Err(_) => {
-                    let message = "provider stream panicked".to_owned();
-                    persist_terminal(
-                        &store,
-                        &id,
-                        &model,
-                        String::new(),
-                        Vec::new(),
-                        AssistantMessageStatus::Failed,
-                        Some(message.clone()),
-                    )
-                    .await
-                    .and_then(|()| Err(HarnessError::Configuration(message)))
-                }
-            };
-            let completion = match result {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    let message = error.to_string();
-                    tokio::select! {
-                        biased;
-                        () = report_cancellation.cancelled() => {}
-                        _ = reporter.closed() => {}
-                        _ = reporter.send(Err(error)) => {}
-                    }
-                    Err(message)
-                }
-            };
-            drop(_lease);
-            let _ = finished_tx.send(Some(completion));
+            supervise_generation(service, id, content, sender, started_tx).await;
         });
+        started_rx.await.map_err(|_| {
+            HarnessError::ConversationConflict(
+                "assistant generation supervisor stopped during setup".into(),
+            )
+        })??;
         Ok(AssistantStream { receiver })
     }
 
@@ -292,11 +210,174 @@ impl ConversationService {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_append_controls(&self) -> (Arc<Notify>, Arc<Semaphore>) {
+        (
+            Arc::clone(&self.append_started),
+            Arc::clone(&self.append_gate),
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_in_flight(&self, conversation_id: &str) -> bool {
         self.in_flight
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains_key(conversation_id)
+    }
+}
+
+async fn supervise_generation(
+    service: ConversationService,
+    conversation_id: String,
+    content: Vec<ChatContent>,
+    sender: mpsc::Sender<Result<ChatDelta>>,
+    started: oneshot::Sender<Result<()>>,
+) {
+    let mut started = Some(started);
+    let result = async {
+        let cancellation = CancellationToken::new();
+        let generation_id = Uuid::new_v4();
+        let (finished_tx, finished_rx) = watch::channel(None);
+        let lease = {
+            let mut active = service
+                .in_flight
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if active.contains_key(&conversation_id) {
+                return Err(HarnessError::ConversationConflict(format!(
+                    "conversation '{conversation_id}' already has a generation in flight"
+                )));
+            }
+            active.insert(
+                conversation_id.clone(),
+                InFlight {
+                    id: generation_id,
+                    cancellation: cancellation.clone(),
+                    finished: finished_rx,
+                },
+            );
+            InFlightLease {
+                active: Arc::clone(&service.in_flight),
+                conversation_id: conversation_id.clone(),
+                generation_id,
+                cancellation: cancellation.clone(),
+            }
+        };
+
+        let conversation = match service.store.get(&conversation_id, Some(1)).await {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = finished_tx.send(Some(Err(message)));
+                drop(lease);
+                if let Some(started) = started.take() {
+                    let _ = started.send(Err(error));
+                }
+                return Ok(());
+            }
+        };
+        if conversation.conversation.model != service.model {
+            let error = HarnessError::ConversationConflict(format!(
+                "conversation '{}' is pinned to model '{}', not configured model '{}'",
+                conversation_id, conversation.conversation.model, service.model
+            ));
+            let message = error.to_string();
+            let _ = finished_tx.send(Some(Err(message)));
+            drop(lease);
+            if let Some(started) = started.take() {
+                let _ = started.send(Err(error));
+            }
+            return Ok(());
+        }
+        if cancellation.is_cancelled() || sender.is_closed() {
+            let _ = finished_tx.send(Some(Ok(())));
+            drop(lease);
+            if let Some(started) = started.take() {
+                let _ = started.send(Ok(()));
+            }
+            return Ok(());
+        }
+
+        #[cfg(test)]
+        {
+            service.append_started.notify_one();
+            let _permit = service
+                .append_gate
+                .acquire()
+                .await
+                .expect("append gate is never closed");
+        }
+
+        let append = service
+            .store
+            .append_message(&conversation_id, NewAssistantMessage::user(content))
+            .await;
+        if let Err(error) = append {
+            let message = error.to_string();
+            let _ = finished_tx.send(Some(Err(message)));
+            drop(lease);
+            if let Some(started) = started.take() {
+                let _ = started.send(Err(error));
+            }
+            return Ok(());
+        }
+
+        let detail = match service.store.get(&conversation_id, Some(500)).await {
+            Ok(detail) => detail,
+            Err(error) => {
+                persist_terminal(
+                    &service.store,
+                    &conversation_id,
+                    &service.model,
+                    String::new(),
+                    Vec::new(),
+                    AssistantMessageStatus::Cancelled,
+                    None,
+                )
+                .await?;
+                let message = error.to_string();
+                let _ = finished_tx.send(Some(Err(message)));
+                drop(lease);
+                if let Some(started) = started.take() {
+                    let _ = started.send(Err(error));
+                }
+                return Ok(());
+            }
+        };
+        let mut messages = Vec::with_capacity(detail.messages.len() + 1);
+        messages.push(ChatMessage::System(detail.conversation.system_prompt));
+        messages.extend(detail.messages.into_iter().map(|message| message.content));
+        let request = ChatRequest {
+            model: service.model.clone(),
+            messages,
+            tools: Vec::new(),
+        };
+        if started
+            .take()
+            .is_some_and(|started| started.send(Ok(())).is_err())
+        {
+            cancellation.cancel();
+        }
+
+        let result = run_generation(
+            service.store.clone(),
+            Arc::clone(&service.provider),
+            service.model.clone(),
+            &conversation_id,
+            request,
+            cancellation,
+            sender,
+        )
+        .await;
+        let completion = result.as_ref().map_err(ToString::to_string).map(|_| ());
+        drop(lease);
+        let _ = finished_tx.send(Some(completion));
+        result
+    }
+    .await;
+
+    if let (Err(error), Some(started)) = (result, started) {
+        let _ = started.send(Err(error));
     }
 }
 
@@ -339,42 +420,38 @@ async fn run_generation(
             return Ok(());
         }
     };
-    let mut text = String::new();
-    let mut tool_calls = Vec::new();
+    let mut output = AssistantOutput::default();
     loop {
         tokio::select! {
             biased;
             () = cancellation.cancelled() => {
                 drop(stream);
-                persist_terminal(&store, conversation_id, &model, text, tool_calls, AssistantMessageStatus::Cancelled, None).await?;
+                persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await?;
                 return Ok(())
             }
             _ = sender.closed() => {
                 drop(stream);
-                persist_terminal(&store, conversation_id, &model, text, tool_calls, AssistantMessageStatus::Cancelled, None).await?;
+                persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await?;
                 return Ok(())
             }
-            item = stream.next() => match item {
-                Some(Ok(delta)) => {
-                    match &delta {
-                        ChatDelta::Text(value) => text.push_str(value),
-                        ChatDelta::ToolCall(call) => tool_calls.push(call.clone()),
-                    }
+            item = std::panic::AssertUnwindSafe(stream.next()).catch_unwind() => match item {
+                Ok(Some(Ok(delta))) => {
+                    output.record(&delta);
                     if !send_delta(&sender, &cancellation, Ok(delta)).await {
                         drop(stream);
-                        persist_terminal(&store, conversation_id, &model, text, tool_calls, AssistantMessageStatus::Cancelled, None).await?;
+                        persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Cancelled, None).await?;
                         return Ok(())
                     }
                 }
-                Some(Err(error)) => {
+                Ok(Some(Err(error))) => {
                     let reason = error.to_string();
                     drop(stream);
                     persist_terminal(
                         &store,
                         conversation_id,
                         &model,
-                        text,
-                        tool_calls,
+                        output.text,
+                        output.tool_calls,
                         AssistantMessageStatus::Failed,
                         Some(reason),
                     )
@@ -382,11 +459,47 @@ async fn run_generation(
                     let _ = send_delta(&sender, &cancellation, Err(error)).await;
                     return Ok(())
                 }
-                None => {
-                    persist_terminal(&store, conversation_id, &model, text, tool_calls, AssistantMessageStatus::Complete, None).await?;
+                Ok(None) => {
+                    persist_terminal(&store, conversation_id, &model, output.text, output.tool_calls, AssistantMessageStatus::Complete, None).await?;
+                    return Ok(())
+                }
+                Err(_) => {
+                    drop(stream);
+                    let reason = "provider stream panicked".to_owned();
+                    persist_terminal(
+                        &store,
+                        conversation_id,
+                        &model,
+                        output.text,
+                        output.tool_calls,
+                        AssistantMessageStatus::Failed,
+                        Some(reason.clone()),
+                    )
+                    .await?;
+                    let _ = send_delta(
+                        &sender,
+                        &cancellation,
+                        Err(HarnessError::Configuration(reason)),
+                    )
+                    .await;
                     return Ok(())
                 }
             }
+        }
+    }
+}
+
+#[derive(Default)]
+struct AssistantOutput {
+    text: String,
+    tool_calls: Vec<crate::ToolCall>,
+}
+
+impl AssistantOutput {
+    fn record(&mut self, delta: &ChatDelta) {
+        match delta {
+            ChatDelta::Text(value) => self.text.push_str(value),
+            ChatDelta::ToolCall(call) => self.tool_calls.push(call.clone()),
         }
     }
 }
