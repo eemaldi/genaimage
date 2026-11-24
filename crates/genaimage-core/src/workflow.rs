@@ -110,6 +110,7 @@ pub struct LoadedWorkflow {
     pub manifest_path: PathBuf,
     pub workflow_path: PathBuf,
     pub manifest: WorkflowManifest,
+    pub manifest_source: Value,
     pub workflow: Value,
     pub workflow_sha256: String,
     pub(crate) manifest_bytes: Vec<u8>,
@@ -119,10 +120,18 @@ pub struct LoadedWorkflow {
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
         let manifest_bytes = fs::read(manifest_path)?;
+        let manifest_source: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            HarnessError::Workflow(format!(
+                "cannot parse manifest '{}': {error}",
+                manifest_path.display()
+            ))
+        })?;
         // Inspect the version before strict deserialisation so legacy fields cannot hide
         // the actionable upgrade error.
-        if serde_json::from_slice::<Value>(&manifest_bytes)
-            .is_ok_and(|manifest| manifest.get("schema_version").and_then(Value::as_u64) == Some(1))
+        if manifest_source
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            == Some(1)
         {
             return Err(HarnessError::Workflow(format!(
                 "manifest '{}' uses schema version 1; upgrade to version 2: remove 'generation_mode' and 'required_gates', set 'schema_version' to 2, and validate against docs/schemas/workflow-manifest.v2.json",
@@ -169,6 +178,7 @@ impl LoadedWorkflow {
             manifest_path: manifest_path.to_path_buf(),
             workflow_path,
             manifest,
+            manifest_source,
             workflow_sha256: sha256_hex(&workflow_bytes),
             manifest_sha256: sha256_hex(&manifest_bytes),
             manifest_bytes,

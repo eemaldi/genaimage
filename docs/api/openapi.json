@@ -1338,6 +1338,13 @@
       "WorkflowOutput": {
         "description": "A declared workflow output.",
         "properties": {
+          "declared_kind": {
+            "description": "Value declared in the manifest, or null when the effective value was defaulted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "kind": {
             "type": "string"
           },
@@ -1364,6 +1371,13 @@
             "items": {},
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "declared_required": {
+            "description": "Value declared in the manifest, or null when the effective value was defaulted.",
+            "type": [
+              "boolean",
               "null"
             ]
           },

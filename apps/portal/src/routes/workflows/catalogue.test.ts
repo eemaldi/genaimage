@@ -56,6 +56,7 @@ const detail: Details = {
       input: 'text',
       kind: 'string',
       required: true,
+      declared_required: true,
       description: 'Approved prompt',
       default: null,
     },
@@ -64,6 +65,7 @@ const detail: Details = {
       input: 'seed',
       kind: 'seed',
       required: false,
+      declared_required: null,
       description: '',
       default: 0,
       widget: 'slider',
@@ -78,7 +80,10 @@ const detail: Details = {
     },
   },
   presets: { test: { seed: 0, prompt: 'hello', large: 9007199254740992 } },
-  outputs: [{ node: '3', kind: 'image' }],
+  outputs: [
+    { node: '3', kind: 'image', declared_kind: null },
+    { node: '4', kind: 'image', declared_kind: 'image' },
+  ],
 };
 const result = {
   valid: false,
@@ -141,6 +146,52 @@ it('filters from a shareable hash, searches descriptions and tags, and handles b
   expect((screen.getByLabelText('Tag') as HTMLSelectElement).value).toBe('');
 });
 
+it('searches fallback titles by ID', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [{ id: 'nameless-workflow', name: '', version: '1' }],
+    diagnostics: [],
+  });
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  expect(
+    await screen.findByRole('link', { name: 'nameless-workflow' }),
+  ).toBeTruthy();
+  await user.type(screen.getByLabelText('Search workflows'), 'nameless');
+  expect(screen.getByRole('link', { name: 'nameless-workflow' })).toBeTruthy();
+});
+
+it('restores edited and shared catalogue filters after viewing details', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: summaries,
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'getWorkflow').mockResolvedValue(detail);
+  vi.spyOn(api, 'validateWorkflow').mockResolvedValue(result);
+  window.location.hash = '#/workflows?tag=people&category=Image&other=a%2Bb';
+  const user = userEvent.setup();
+  render(App);
+  await screen.findByRole('link', { name: 'Portrait' });
+  await user.type(screen.getByLabelText('Search workflows'), 'human');
+  const expected = window.location.hash;
+  await user.click(screen.getByRole('link', { name: 'Portrait' }));
+  await screen.findByRole('button', { name: 'Use this workflow' });
+  const back = screen.getByRole('link', { name: 'Back to workflows' });
+  expect(back.getAttribute('href')).toBe(expected);
+  await user.click(back);
+  expect(await screen.findByRole('link', { name: 'Portrait' })).toBeTruthy();
+  expect(
+    (screen.getByLabelText('Search workflows') as HTMLInputElement).value,
+  ).toBe('human');
+  expect((screen.getByLabelText('Tag') as HTMLSelectElement).value).toBe(
+    'people',
+  );
+  expect((screen.getByLabelText('Category') as HTMLSelectElement).value).toBe(
+    'Image',
+  );
+  expect(window.location.hash).toBe(expected);
+});
+
 it('shows loading, empty catalogue, diagnostics and actionable errors', async () => {
   let resolve!: (value: {
     workflows: Summary[];
@@ -189,6 +240,12 @@ it('shows manifest values, validation and navigates to Generate with the exact I
   expect(within(seed).getByText('"slider"')).toBeTruthy();
   expect(within(seed).getAllByText('[0,2]')).toHaveLength(2);
   expect(screen.getByText('Not specified or null')).toBeTruthy();
+  expect(within(seed).getByText('No (default)')).toBeTruthy();
+  expect(
+    within(
+      screen.getByRole('heading', { name: 'Declared outputs' }).parentElement!,
+    ).getAllByText(/\(default\)/),
+  ).toHaveLength(1);
   expect(screen.getByRole('heading', { name: 'test' })).toBeTruthy();
   expect(screen.getByText('"hello"')).toBeTruthy();
   expect(screen.getByText('"[exact integer unavailable]"')).toBeTruthy();

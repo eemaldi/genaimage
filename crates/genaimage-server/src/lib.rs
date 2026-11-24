@@ -8,8 +8,9 @@ mod security;
 mod settings;
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     future::Future,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -39,8 +40,14 @@ const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 pub struct AppState {
     settings: Arc<settings::SettingsState>,
     portal_dev: Option<PortalDevProxy>,
+    workflow_index: Arc<Mutex<Option<WorkflowIndex>>>,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
+}
+
+struct WorkflowIndex {
+    harness: Arc<Harness>,
+    paths: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Default)]
@@ -70,6 +77,7 @@ impl AppState {
             settings: Arc::new(settings::SettingsState::new(harness)),
             lifecycle: Arc::default(),
             portal_dev: None,
+            workflow_index: Arc::default(),
         }
     }
 

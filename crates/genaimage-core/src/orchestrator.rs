@@ -151,6 +151,8 @@ fn transition_task_error(error: tokio::task::JoinError) -> HarnessError {
 #[derive(Debug, Default)]
 pub struct WorkflowDiscovery {
     pub manifests: Vec<WorkflowManifest>,
+    /// Paths of unique, valid IDs safe to resolve from this discovery snapshot.
+    pub indexable_manifest_paths: BTreeMap<String, PathBuf>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
@@ -300,13 +302,41 @@ impl Harness {
 
     pub fn discover_workflows(&self) -> Result<WorkflowDiscovery> {
         let mut discovery = WorkflowDiscovery::default();
+        let mut ambiguous = BTreeSet::new();
         visit_workflows(&self.config.workflows, |path, workflow| match workflow {
-            Ok(loaded) => discovery.manifests.push(loaded.manifest),
-            Err(error) => discovery.diagnostics.push(WorkflowDiagnostic {
-                path: path.to_path_buf(),
-                error,
-            }),
+            Ok(loaded) if matches!(loaded.manifest.id.as_str(), "." | "..") => {
+                discovery.diagnostics.push(WorkflowDiagnostic {
+                    path: path.to_path_buf(),
+                    error: HarnessError::Workflow(format!(
+                        "workflow id '{}' is a reserved URL path segment; choose a different ID",
+                        loaded.manifest.id
+                    )),
+                });
+            }
+            Ok(loaded) => {
+                let id = loaded.manifest.id.clone();
+                if discovery
+                    .indexable_manifest_paths
+                    .insert(id.clone(), path.to_path_buf())
+                    .is_some()
+                {
+                    ambiguous.insert(id);
+                }
+                discovery.manifests.push(loaded.manifest);
+            }
+            Err(error) => {
+                if let Some(id) = sidecar_id(path) {
+                    ambiguous.insert(id);
+                }
+                discovery.diagnostics.push(WorkflowDiagnostic {
+                    path: path.to_path_buf(),
+                    error,
+                });
+            }
         })?;
+        for id in ambiguous {
+            discovery.indexable_manifest_paths.remove(&id);
+        }
         discovery
             .manifests
             .sort_by(|left, right| left.id.cmp(&right.id));
@@ -1918,11 +1948,20 @@ fn read_manifest_path(output_dir: &Path) -> Result<PathBuf> {
         })
 }
 
-fn sidecar_declares_id(path: &Path, id: &str) -> bool {
+fn sidecar_id(path: &Path) -> Option<String> {
     fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|manifest| manifest.get("id").and_then(Value::as_str) == Some(id))
+        .and_then(|manifest| {
+            manifest
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+}
+
+fn sidecar_declares_id(path: &Path, id: &str) -> bool {
+    sidecar_id(path).as_deref() == Some(id)
 }
 
 fn visit_workflows(

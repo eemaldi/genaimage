@@ -7,7 +7,12 @@
   import type { RouteProps } from '../../router';
   import { workflowProblem } from './errors';
 
-  let { params }: RouteProps = $props();
+  let { params, query }: RouteProps = $props();
+  const backLink = $derived.by(() => {
+    const from = query.get('from');
+    const filters = from === null ? '' : new URLSearchParams(from).toString();
+    return `#/workflows${filters ? `?${filters}` : ''}`;
+  });
   const workflowId = $derived(params.id);
   type Details = components['schemas']['WorkflowDetails'];
   type Validation = components['schemas']['WorkflowValidationResponse'];
@@ -81,7 +86,7 @@
   }
 </script>
 
-<a href="#/workflows">Back to workflows</a>
+<a href={backLink}>Back to workflows</a>
 {#if loading}
   <h1>Workflow detail</h1>
   <p role="status">Loading workflow…</p>
@@ -150,7 +155,15 @@
                 <code>{parameter.input}</code>
               </dd>
               <dt>Required</dt>
-              <dd>{parameter.required ? 'Yes' : 'No'}</dd>
+              <dd>
+                {parameter.required
+                  ? 'Yes'
+                  : 'No'}{parameter.declared_required === null
+                  ? ' (default)'
+                  : parameter.declared_required === undefined
+                    ? ' (declaration unavailable)'
+                    : ''}
+              </dd>
               <dt>Default</dt>
               <dd>
                 {#if parameter.default != null}<code
@@ -196,7 +209,12 @@
     <h2>Declared outputs</h2>
     {#if workflow.outputs.length}<ul>
         {#each workflow.outputs as output, index (index)}<li>
-            Node <code>{output.node}</code> · Type <code>{output.kind}</code>
+            Node <code>{output.node}</code> · Type
+            <code>{output.kind}</code>{output.declared_kind === null
+              ? ' (default)'
+              : output.declared_kind === undefined
+                ? ' (declaration unavailable)'
+                : ''}
           </li>{/each}
       </ul>{:else}<p>No outputs declared.</p>{/if}
   </section>

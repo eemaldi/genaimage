@@ -440,6 +440,24 @@ async fn path_only_backend_uploads_verified_snapshots_for_submit_and_rerun() {
     assert_eq!(replay.run.id, run.id);
 }
 
+#[test]
+fn discovery_reports_reserved_dot_segment_ids() {
+    let (_workspace, harness, _, _) = setup(false);
+    let path = harness.config().workflows.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for id in [".", ".."] {
+        manifest["id"] = json!(id);
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let discovery = harness.discover_workflows().unwrap();
+        assert!(discovery.manifests.is_empty());
+        assert!(discovery.indexable_manifest_paths.is_empty());
+        assert_eq!(discovery.diagnostics.len(), 1);
+        let message = discovery.diagnostics[0].error.to_string();
+        assert!(message.contains("reserved URL path segment"));
+        assert!(message.contains("choose a different ID"));
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn runs_to_completion_with_progress_and_checksummed_output() {
     let (_workspace, harness, state, request) = setup(false);

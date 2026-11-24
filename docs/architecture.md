@@ -52,7 +52,8 @@ genaimage local config module -> genaimage-core (configuration only)
   handling, not automatic reconnection. Run submissions require a
   caller-supplied idempotency key and are never retried by the client.
   Workflow IDs `.` and `..` cannot be used in client URL paths because HTTP
-  URL parsers treat them as path navigation.
+  URL parsers treat them as path navigation; catalogue discovery reports them
+  as invalid and asks for a different ID.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows, runs, outputs, uploads, settings and live events. The
   Svelte portal shell is embedded when the default `portal` feature is enabled.
@@ -202,13 +203,14 @@ The workflows API is read-only apart from validation, which does not submit a ru
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
   tags, category and optional `thumbnail_url`) and non-fatal `diagnostics` for
-  manifests that cannot be loaded. For IDs `.` and `..`, `thumbnail_url` is
-  null because browsers normalise those URL path segments. The API does not
-  generate a detail URL for any ID; callers using dot-segment IDs need an HTTP
-  client that preserves the literal request path.
+  manifests that cannot be loaded, including IDs `.` and `..` which browsers
+  normalise as URL path segments. The API does not generate detail URLs.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
-  constraints and UI hints, presets and outputs. IDs are identifiers, not paths;
-  URL-encode them as path segments. An unknown ID returns 404 problem details.
+  constraints and UI hints, presets and outputs. The effective `required` and
+  output `kind` remain available; `declared_required` and `declared_kind` are
+  null when the manifest omitted those fields, otherwise they contain the
+  declared value. IDs are identifiers, not paths; URL-encode them as path
+  segments. An unknown ID returns 404 problem details.
   Duplicate IDs and invalid manifests claiming an ID must be fixed before that
   ID can be resolved.
 - `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
@@ -222,7 +224,12 @@ The workflows API is read-only apart from validation, which does not submit a ru
 - `GET /api/v1/workflows/{id}/thumbnail` serves a declared PNG, JPEG, GIF, WebP
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
-  paths return 404 problem details. On Unix, descriptor-relative no-follow
+  paths return 404 problem details. A discovery index is built on the first
+  thumbnail request and rebuilt on every catalogue list; indexed requests reload
+  the target workflow before serving. Changes to other catalogue members,
+  including newly added duplicates, take effect in the index on the next list.
+  Unknown or changed IDs fall back to a full discovery. A settings change
+  switches to the new harness's index. On Unix, descriptor-relative no-follow
   opens reject symlinks below the configured workflow root, whose own symlinks
   are trusted and resolved before it is pinned. Non-regular files are rejected
   without blocking on FIFOs. On other
@@ -721,10 +728,9 @@ samples were 36.5, 35.2, 42.4, 37.7 and 30.0 ms (median 36.5 ms). This is a
 local observation, not a guarantee for other hardware, larger manifests,
 thumbnail decoding or cold caches.
 
-The detail API normalises omitted defaults and explicit null to the same value,
-and fills the default output kind. The portal therefore cannot distinguish
-those source-manifest cases. The JSON client cannot represent integers outside
-JavaScript’s safe range exactly; the detail page marks them as unavailable
+The detail API normalises omitted parameter defaults and explicit null to the
+same value; the portal cannot distinguish those source-manifest cases. The JSON
+client cannot represent integers outside JavaScript’s safe range exactly; the detail page marks them as unavailable
 instead of presenting rounded values as exact. Validation checks defaults
 without overrides; it is not an approval or a guarantee that later
 user-supplied values are valid.

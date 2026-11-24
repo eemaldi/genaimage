@@ -19,12 +19,14 @@
   let search = $state('');
   let tag = $state('');
   let category = $state('');
+  let catalogueQuery = $state('');
   let brokenImages = $state.raw(new Set<string>());
 
   $effect(() => {
     search = query.get('q') ?? '';
     tag = query.get('tag') ?? '';
     category = query.get('category') ?? '';
+    catalogueQuery = query.toString();
   });
 
   $effect(() => {
@@ -54,12 +56,17 @@
     if (value) next.set(key, value);
     else next.delete(key);
     const suffix = next.toString();
+    catalogueQuery = suffix;
     history.replaceState(
       history.state,
       '',
       `#/workflows${suffix ? `?${suffix}` : ''}`,
     );
   }
+
+  const detailQuery = $derived(
+    catalogueQuery ? `?${new URLSearchParams({ from: catalogueQuery })}` : '',
+  );
 
   const tags = $derived(
     [
@@ -78,7 +85,7 @@
   const indexed = $derived(
     workflows.map((item) => ({
       item,
-      text: [item.name, item.description ?? '', ...(item.tags ?? [])]
+      text: [item.id, item.name, item.description ?? '', ...(item.tags ?? [])]
         .join('\n')
         .toLocaleLowerCase(),
     })),
@@ -169,7 +176,8 @@
             </div>
             <div class="card-body">
               <h2>
-                <a href={`#/workflows/${encodeURIComponent(item.id)}`}
+                <a
+                  href={`#/workflows/${encodeURIComponent(item.id)}${detailQuery}`}
                   >{item.name || item.id}</a
                 >
               </h2>

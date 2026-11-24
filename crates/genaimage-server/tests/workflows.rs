@@ -77,6 +77,43 @@ async fn catalogue_and_details_include_metadata_and_discovery_errors() {
 }
 
 #[tokio::test]
+async fn detail_reports_declared_and_effective_values_additively() {
+    let api = ApiHarness::start().await;
+    install(&api, None);
+    let path = api.core.config().workflows.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["parameters"]["seed"]
+        .as_object_mut()
+        .unwrap()
+        .remove("required");
+    manifest["parameters"]["steps"]["required"] = json!(false);
+    manifest["outputs"] = json!([{"node":"9"}, {"node":"9", "kind":"image"}]);
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let raw: Value = api.get_json("/api/v1/workflows/contract-workflow").await;
+    assert_eq!(raw["parameters"]["seed"]["required"], false);
+    assert_eq!(raw["parameters"]["seed"]["declared_required"], Value::Null);
+    assert_eq!(raw["parameters"]["steps"]["required"], false);
+    assert_eq!(raw["parameters"]["steps"]["declared_required"], false);
+    assert_eq!(raw["outputs"][0]["kind"], "image");
+    assert_eq!(raw["outputs"][0]["declared_kind"], Value::Null);
+    assert_eq!(raw["outputs"][1]["declared_kind"], "image");
+    let typed: WorkflowDetails = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(typed.parameters["steps"].declared_required, Some(false));
+    let mut old = raw;
+    for parameter in old["parameters"].as_object_mut().unwrap().values_mut() {
+        parameter
+            .as_object_mut()
+            .unwrap()
+            .remove("declared_required");
+    }
+    for output in old["outputs"].as_array_mut().unwrap() {
+        output.as_object_mut().unwrap().remove("declared_kind");
+    }
+    assert!(serde_json::from_value::<WorkflowDetails>(old).is_ok());
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn validates_parameters_presets_and_missing_nodes_without_submission() {
     let api = ApiHarness::start().await;
     install(&api, None);
@@ -357,12 +394,7 @@ async fn thumbnail_fifos_and_symlinked_directories_are_rejected_promptly() {
 }
 
 #[tokio::test]
-async fn dot_segment_ids_remain_accessible_without_catalogue_urls() {
-    use axum::{body::Body, http::Request};
-    use genaimage_server::{build_app, AppState};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
+async fn dot_segment_ids_are_discovery_diagnostics() {
     let api = ApiHarness::start().await;
     for id in [".", ".."] {
         install(&api, Some("image.png"));
@@ -370,36 +402,122 @@ async fn dot_segment_ids_remain_accessible_without_catalogue_urls() {
         let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         manifest["id"] = json!(id);
         std::fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        std::fs::write(api.core.config().workflows.join("image.png"), b"image").unwrap();
         let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
-        assert_eq!(list.workflows.len(), 1);
-        assert_eq!(list.workflows[0].id, id);
-        assert!(list.workflows[0].thumbnail_url.is_none());
-        assert!(list.diagnostics.is_empty());
-        let port = api.origin.rsplit(':').next().unwrap().parse().unwrap();
-        let app = build_app(AppState::new(api.core.clone()), port);
-        for suffix in ["", "/thumbnail"] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/api/v1/workflows/{id}{suffix}"))
-                        .header("host", api.origin.trim_start_matches("http://"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            if suffix.is_empty() {
-                let details: WorkflowDetails = serde_json::from_slice(&body).unwrap();
-                assert_eq!(details.id, id);
-            } else {
-                assert_eq!(body, &b"image"[..]);
-            }
-        }
+        assert!(list.workflows.is_empty());
+        assert_eq!(list.diagnostics.len(), 1);
+        assert!(list.diagnostics[0].error.contains("choose a different ID"));
     }
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn catalogue_indexes_thumbnails_and_refreshes_on_list() {
+    let api = ApiHarness::start().await;
+    install(&api, Some("image.png"));
+    let dir = &api.core.config().workflows;
+    let path = dir.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::copy(dir.join("workflow.api.json"), dir.join("sibling.api.json")).unwrap();
+    for i in 0..100 {
+        manifest["id"] = json!(format!("workflow-{i}"));
+        manifest["workflow"] = json!(if i == 99 {
+            "sibling.api.json"
+        } else {
+            "workflow.api.json"
+        });
+        std::fs::write(
+            dir.join(format!("workflow-{i}.genaimage.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("image.png"), b"first").unwrap();
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(list.workflows.len(), 100);
+    for item in &list.workflows {
+        let response = api
+            .request(Method::GET, item.thumbnail_url.as_deref().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap(), &b"first"[..]);
+    }
+    #[cfg(unix)]
+    {
+        use rustix::fs::{mkfifoat, Mode, CWD};
+        use std::time::Duration;
+
+        let sibling = dir.join("sibling.api.json");
+        std::fs::remove_file(&sibling).unwrap();
+        mkfifoat(CWD, &sibling, Mode::RUSR | Mode::WUSR).unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(3),
+            api.request(Method::GET, "/api/v1/workflows/workflow-0/thumbnail")
+                .send(),
+        )
+        .await;
+        if response.is_err() {
+            let unblock = sibling.clone();
+            tokio::task::spawn_blocking(move || std::fs::write(unblock, b"{}"));
+        }
+        assert_eq!(
+            response
+                .expect("indexed lookup scanned another workflow")
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        std::fs::remove_file(&sibling).unwrap();
+        std::fs::copy(dir.join("workflow.api.json"), sibling).unwrap();
+    }
+    let target = dir.join("workflow-0.genaimage.json");
+    manifest["workflow"] = json!("workflow.api.json");
+    manifest["id"] = json!("workflow-0");
+    manifest["thumbnail"] = json!("changed.png");
+    std::fs::write(&target, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(dir.join("changed.png"), b"changed").unwrap();
+    let url = "/api/v1/workflows/workflow-0/thumbnail";
+    assert_eq!(
+        api.request(Method::GET, url)
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+        &b"changed"[..]
+    );
+    std::fs::write(
+        dir.join("duplicate.genaimage.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    let response = api.request(Method::GET, url).send().await.unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    assert!(problem.detail.contains("ambiguous"));
+    let mut invalid = manifest.clone();
+    invalid["schema_version"] = json!(1);
+    std::fs::write(
+        dir.join("duplicate.genaimage.json"),
+        serde_json::to_vec(&invalid).unwrap(),
+    )
+    .unwrap();
+    let list: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    assert_eq!(list.diagnostics.len(), 1);
+    let response = api.request(Method::GET, url).send().await.unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    assert!(problem.detail.contains("invalid manifest"));
+    std::fs::remove_file(dir.join("duplicate.genaimage.json")).unwrap();
+    std::fs::remove_file(&target).unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
+    ApiHarness::assert_problem(
+        api.request(Method::GET, url).send().await.unwrap(),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
     api.shutdown().await;
 }
 

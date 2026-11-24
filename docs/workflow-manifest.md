@@ -59,9 +59,10 @@ rejected with a request to export API format.
 The published [JSON Schema](schemas/workflow-manifest.v2.json) defines the
 structural format. Unknown fields are rejected, including the retired
 `generation_mode` and `required_gates` fields. `id`, `version`, `workflow` and
-`schema_version` are required; `id` and `version` must not be blank. `title`
-defaults to an empty string. Optional `description`, `tags` (a list of
-strings), `category` and `thumbnail` (a string reference) are descriptive
+`schema_version` are required; `id` and `version` must not be blank. Catalogue
+discovery excludes the IDs `.` and `..` with a diagnostic because browsers treat
+them as URL path segments; choose a different ID. `title` defaults to an empty
+string. Optional `description`, `tags` (a list of strings), `category` and `thumbnail` (a string reference) are descriptive
 metadata; they do not affect generation. The workflows API serves a declared
 thumbnail only when it is a supported image within the manifest directory; see
 [the API description](architecture.md#local-http-server) for restrictions.

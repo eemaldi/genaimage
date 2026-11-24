@@ -112,6 +112,9 @@ pub struct WorkflowParameter {
     pub input: String,
     pub kind: String,
     pub required: bool,
+    /// Value declared in the manifest, or null when the effective value was defaulted.
+    #[serde(default)]
+    pub declared_required: Option<bool>,
     pub description: String,
     pub default: Option<serde_json::Value>,
     pub allowed_values: Option<Vec<serde_json::Value>>,
@@ -130,6 +133,9 @@ pub struct WorkflowParameter {
 pub struct WorkflowOutput {
     pub node: String,
     pub kind: String,
+    /// Value declared in the manifest, or null when the effective value was defaulted.
+    #[serde(default)]
+    pub declared_kind: Option<String>,
 }
 
 /// Parameter overrides and an optional manifest preset to validate.

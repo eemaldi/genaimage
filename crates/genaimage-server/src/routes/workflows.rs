@@ -22,7 +22,7 @@ use genaimage_api::{
 use genaimage_core::{Harness, HarnessError, LoadedWorkflow};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
-use crate::{AppState, Problem};
+use crate::{AppState, Problem, WorkflowIndex};
 
 const NODE_CHECK_DEADLINE: Duration = Duration::from_secs(2);
 const MAX_THUMBNAIL_BYTES: u64 = 10 * 1024 * 1024;
@@ -81,10 +81,20 @@ pub(super) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<WorkflowListResponse>, Problem> {
     let harness = state.harness();
-    let discovery = tokio::task::spawn_blocking(move || harness.discover_workflows())
-        .await
-        .map_err(internal_error)?
-        .map_err(internal_error)?;
+    let index = state.workflow_index.clone();
+    let discovery = tokio::task::spawn_blocking(move || {
+        let mut index = index.lock().expect("workflow index lock poisoned");
+        *index = None;
+        let discovery = harness.discover_workflows()?;
+        *index = Some(WorkflowIndex {
+            harness,
+            paths: discovery.indexable_manifest_paths.clone(),
+        });
+        Ok::<_, HarnessError>(discovery)
+    })
+    .await
+    .map_err(internal_error)?
+    .map_err(internal_error)?;
     Ok(Json(WorkflowListResponse {
         workflows: discovery
             .manifests
@@ -147,7 +157,17 @@ pub(super) async fn details(
     let id = parse_id(id)?;
     let workflow = load(state.harness(), id).await?;
     let value = serde_json::to_value(workflow.manifest).map_err(internal_error)?;
-    Ok(Json(serde_json::from_value(value).map_err(internal_error)?))
+    let mut details: WorkflowDetails = serde_json::from_value(value).map_err(internal_error)?;
+    for (name, parameter) in &mut details.parameters {
+        parameter.declared_required =
+            workflow.manifest_source["parameters"][name]["required"].as_bool();
+    }
+    for (index, output) in details.outputs.iter_mut().enumerate() {
+        output.declared_kind = workflow.manifest_source["outputs"][index]["kind"]
+            .as_str()
+            .map(str::to_owned);
+    }
+    Ok(Json(details))
 }
 
 #[utoipa::path(
@@ -268,8 +288,42 @@ pub(super) async fn thumbnail(
     id: Result<AxumPath<String>, PathRejection>,
 ) -> Result<impl IntoResponse, Problem> {
     let id = parse_id(id)?;
-    let workflow = load(state.harness(), id.clone()).await?;
-    let root = state.harness().config().workflows.clone();
+    let harness = state.harness();
+    let index = state.workflow_index.clone();
+    let search_id = id.clone();
+    let lookup_harness = harness.clone();
+    let workflow = tokio::task::spawn_blocking(move || {
+        let path = {
+            let mut index = index.lock().expect("workflow index lock poisoned");
+            if !index
+                .as_ref()
+                .is_some_and(|cached| std::sync::Arc::ptr_eq(&cached.harness, &lookup_harness))
+            {
+                *index = None;
+                let discovery = lookup_harness.discover_workflows()?;
+                *index = Some(WorkflowIndex {
+                    harness: lookup_harness.clone(),
+                    paths: discovery.indexable_manifest_paths,
+                });
+            }
+            index
+                .as_ref()
+                .and_then(|cached| cached.paths.get(&search_id).cloned())
+        };
+        if let Some(path) = path {
+            if let Ok(workflow) = LoadedWorkflow::load(&path) {
+                if workflow.manifest.id == search_id {
+                    return Ok(Some(workflow));
+                }
+            }
+        }
+        lookup_harness.load_workflow_by_id(&search_id)
+    })
+    .await
+    .map_err(internal_error)?
+    .map_err(internal_error)?
+    .ok_or_else(|| not_found(&id))?;
+    let root = harness.config().workflows.clone();
     let image = tokio::task::spawn_blocking(move || read_thumbnail(&workflow, &root))
         .await
         .map_err(internal_error)?;

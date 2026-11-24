@@ -774,6 +774,8 @@ export interface components {
         WorkflowNodeCheckStatus: "available" | "missing" | "unavailable";
         /** @description A declared workflow output. */
         WorkflowOutput: {
+            /** @description Value declared in the manifest, or null when the effective value was defaulted. */
+            declared_kind?: string | null;
             kind: string;
             node: string;
         };
@@ -781,6 +783,8 @@ export interface components {
         WorkflowParameter: {
             advanced?: boolean | null;
             allowed_values?: unknown[] | null;
+            /** @description Value declared in the manifest, or null when the effective value was defaulted. */
+            declared_required?: boolean | null;
             default?: unknown;
             description: string;
             group?: string | null;
