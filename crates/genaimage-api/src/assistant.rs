@@ -27,6 +27,93 @@ pub struct AssistantConversationDetailQuery {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SuggestWorkflowRequest {
+    /// At most 4,000 Unicode characters and 16 KiB of UTF-8.
+    #[schema(max_length = 4000)]
+    pub intent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 5)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct SuggestWorkflowResponse {
+    pub model: String,
+    pub template: AssistantPromptTemplate,
+    #[schema(max_items = 5)]
+    pub suggestions: Vec<WorkflowSuggestion>,
+    pub dropped: Vec<DroppedWorkflowSuggestion>,
+    pub truncated: bool,
+    /// Always false. This endpoint proposes values and never submits a run.
+    pub applied: AppliedFalse,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AppliedFalse;
+
+impl Serialize for AppliedFalse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bool(false)
+    }
+}
+
+impl<'de> Deserialize<'de> for AppliedFalse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = bool::deserialize(deserializer)?;
+        if value {
+            Err(serde::de::Error::custom("applied must be false"))
+        } else {
+            Ok(Self)
+        }
+    }
+}
+
+impl utoipa::PartialSchema for AppliedFalse {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Boolean)
+            .enum_values(Some([false]))
+            .into()
+    }
+}
+
+impl ToSchema for AppliedFalse {}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantPromptTemplate {
+    pub name: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct WorkflowSuggestion {
+    pub workflow_id: String,
+    /// Opaque revision of the workflow snapshot used for validation.
+    pub workflow_revision: String,
+    #[schema(minimum = 1, maximum = 5)]
+    pub rank: usize,
+    pub preset: Option<String>,
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    pub rationale: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameter_notes: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct DroppedWorkflowSuggestion {
+    pub workflow_id: String,
+    pub field: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct AssistantConversationResponse {
     pub id: String,
     pub title: String,

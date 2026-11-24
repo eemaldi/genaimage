@@ -10,7 +10,8 @@ use crate::{
     AssistantConversationListQuery, AssistantConversationListResponse,
     AssistantConversationResponse, AssistantDeltaEvent, AssistantMessageStartedEvent,
     AssistantTerminalEvent, AssistantToolCallEvent, CreateAssistantConversationRequest,
-    PromptAssistRequest, PromptAssistResponse, SendAssistantMessageRequest,
+    PromptAssistRequest, PromptAssistResponse, SendAssistantMessageRequest, SuggestWorkflowRequest,
+    SuggestWorkflowResponse,
 };
 
 pub enum AssistantStreamEvent {
@@ -25,6 +26,17 @@ pub type AssistantEventStream =
     Pin<Box<dyn Stream<Item = Result<AssistantStreamEvent, Error>> + Send>>;
 
 impl Client {
+    pub async fn suggest_workflows(
+        &self,
+        body: &SuggestWorkflowRequest,
+    ) -> Result<SuggestWorkflowResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["assistant", "suggest"])?
+                .json(body),
+        )
+        .await
+    }
+
     /// Requests editable prompt proposals. The response never applies a value.
     pub async fn prompt_assist(
         &self,
