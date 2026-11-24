@@ -13,8 +13,10 @@
     type Problem,
   } from '../../lib/ui/ProblemDetails.svelte';
   import {
+    displayScalar,
     encodeFormState,
     restoreFormState,
+    type PendingSuggestion,
     type SharedInherited,
   } from './share';
   import type { PendingSubmission } from './pending';
@@ -92,6 +94,11 @@
   );
   const fields = new SvelteMap(restored.fields);
   const chosenSeeds = new SvelteMap(restored.chosenSeeds);
+  let pendingSuggestion = $state.raw<PendingSuggestion | undefined>(
+    restored.pendingSuggestion,
+  );
+  let suggestionErrors = $state.raw<string[]>([]);
+  let suggestionStatus = $state('');
   let warnings = $state.raw(restored.warnings);
   let differences = $state.raw(restored.differences);
   let shareMessage = $state('');
@@ -161,6 +168,91 @@
           title,
           detail: failure instanceof Error ? failure.message : undefined,
         };
+  }
+
+  function pendingValue(field: FieldState) {
+    return field.draft !== undefined ? field.draft : displayScalar(field.value);
+  }
+
+  function pendingDisplayRows(pending: PendingSuggestion) {
+    const rows: { name: string; value: string }[] = [];
+    const presetValues = workflow.presets[pending.preset];
+    for (const [name, raw] of Object.entries(presetValues ?? {})) {
+      rows.push({
+        name: `${name} (preset)`,
+        value: displayScalar(raw as FieldState['value']),
+      });
+    }
+    for (const [name, field] of pending.fields)
+      rows.push({ name, value: pendingValue(field) });
+    return rows;
+  }
+
+  function applySuggestion() {
+    const pending = pendingSuggestion;
+    if (!pending || editingLocked) return;
+    const errors = [...pending.issues];
+    const presetValues = pending.preset
+      ? workflow.presets[pending.preset]
+      : undefined;
+    if (pending.preset && !presetValues)
+      errors.push(
+        `Preset “${pending.preset}” is not available in revision ${workflow.revision}.`,
+      );
+    const prepared = new SvelteMap<string, FieldState>();
+    for (const [name, raw] of Object.entries(presetValues ?? {})) {
+      const parameter = workflow.parameters[name];
+      if (!parameter) {
+        errors.push(
+          `Preset “${pending.preset}” refers to unknown parameter “${name}”.`,
+        );
+        continue;
+      }
+      const field = presetField(parameter, initialField(parameter), raw);
+      const error = bindingError(parameter, field);
+      if (error) errors.push(`Parameter “${name}” in the preset: ${error}`);
+      prepared.set(name, field);
+    }
+    for (const [name, field] of pending.fields) {
+      const parameter = workflow.parameters[name];
+      if (!parameter) {
+        errors.push(
+          `Parameter “${name}” is not available in revision ${workflow.revision}.`,
+        );
+        continue;
+      }
+      const error = bindingError(parameter, field);
+      if (error)
+        errors.push(
+          `Parameter “${name}” with suggested value ${pendingValue(field)}: ${error}`,
+        );
+      else prepared.set(name, field);
+    }
+    if (errors.length) {
+      suggestionErrors = errors;
+      return;
+    }
+    preset = pending.preset;
+    modified = pending.modified;
+    for (const [name, field] of prepared) {
+      fields.set(name, field);
+      chosenSeeds.delete(name);
+      resetUpload(name);
+      if (workflow.parameters[name].advanced) advancedOpen = true;
+    }
+    pendingSuggestion = undefined;
+    suggestionErrors = [];
+    suggestionStatus = `Applied the assistant suggestion to loaded revision ${workflow.revision}. Review every value before submitting.`;
+    invalidateReview();
+  }
+
+  function discardSuggestion() {
+    if (editingLocked) return;
+    pendingSuggestion = undefined;
+    suggestionErrors = [];
+    suggestionStatus =
+      'The assistant suggestion was discarded. The current form values were kept.';
+    invalidateReview();
   }
 
   function discardWarnings() {
@@ -327,7 +419,8 @@
 
   async function requestReview(event: SubmitEvent) {
     event.preventDefault();
-    if (editingLocked || validating || warnings.length) return;
+    if (editingLocked || validating || pendingSuggestion || warnings.length)
+      return;
     showErrors = true;
     invalidateReview();
     const entries = [...fields];
@@ -504,7 +597,7 @@
   }
 
   function submitReview() {
-    if (!review || editingLocked || accepted) return;
+    if (!review || pendingSuggestion || editingLocked || accepted) return;
     submit(review, (conflict) => {
       if (conflict) reloadChangedWorkflow(conflict);
       else review = undefined;
@@ -514,8 +607,70 @@
 
 <h2>{workflow.title}</h2>
 {#if workflow.description}<p>{workflow.description}</p>{/if}
+{#if pendingSuggestion}
+  <section
+    class="suggestion-mismatch"
+    role="alert"
+    aria-labelledby={`${uid}-suggestion-mismatch`}
+  >
+    <h3 id={`${uid}-suggestion-mismatch`}>Assistant suggestion needs review</h3>
+    <p>
+      The suggestion was created for revision
+      <code>{pendingSuggestion.suggestedRevision}</code>, but this page loaded
+      revision <code>{pendingSuggestion.loadedRevision}</code>. No suggested
+      value has been applied. Review and submit are blocked until you choose an
+      action.
+    </p>
+    <h4>Pending values</h4>
+    <dl>
+      {#if pendingSuggestion.preset}
+        <dt>Preset</dt>
+        <dd><code>{JSON.stringify(pendingSuggestion.preset)}</code></dd>
+      {/if}
+      {#each pendingDisplayRows(pendingSuggestion) as row (`${row.name}:${row.value}`)}
+        <dt>{row.name}</dt>
+        <dd><code>{row.value}</code></dd>
+      {/each}
+    </dl>
+    {#if pendingSuggestion.issues.length}<ProblemDetails
+        problem={{
+          title: 'The suggestion cannot be restored exactly',
+          recovery: 'Discard it or request a new suggestion for this revision.',
+          errors: pendingSuggestion.issues.map((reason) => ({
+            key: 'Suggestion',
+            reason,
+          })),
+        }}
+      />{/if}
+    {#if suggestionErrors.length}<ProblemDetails
+        problem={{
+          title: 'The suggestion is invalid for the loaded revision',
+          recovery:
+            'Correct the source suggestion or discard these pending values.',
+          errors: suggestionErrors.map((reason) => ({
+            key: 'Suggestion',
+            reason,
+          })),
+        }}
+      />{/if}
+    <div class="suggestion-actions">
+      <Button
+        variant="primary"
+        onclick={applySuggestion}
+        disabled={editingLocked}>Apply to current revision</Button
+      >
+      <Button onclick={discardSuggestion} disabled={editingLocked}
+        >Discard</Button
+      >
+    </div>
+  </section>
+{/if}
+{#if suggestionStatus}<p role="status">{suggestionStatus}</p>{/if}
 {#if restored.versionNotice}<p role="status">{restored.versionNotice}</p>{/if}
-{#if restored.suggestionNotice}<p role="status" class="source">
+{#if restored.suggestionNotice && !pendingSuggestion && !suggestionStatus}<p
+    role="status"
+    class="source"
+  >
     {restored.suggestionNotice}
   </p>{/if}
 {#if restored.revisionNotice}<p role="status">{restored.revisionNotice}</p>{/if}
@@ -635,12 +790,15 @@
     <Button
       type="submit"
       variant="primary"
-      disabled={validating || warnings.length > 0}>Review parameters</Button
+      disabled={validating || !!pendingSuggestion || warnings.length > 0}
+      >Review parameters</Button
     >
   </fieldset>
 </form>
 <div class="share">
-  <Button onclick={copyShareLink} disabled={warnings.length > 0}
+  <Button
+    onclick={copyShareLink}
+    disabled={!!pendingSuggestion || warnings.length > 0}
     >Copy share link</Button
   >
   {#if shareMessage}<p role="status">{shareMessage}</p>{/if}
@@ -755,6 +913,23 @@
   }
   .source {
     color: var(--muted);
+  }
+  .suggestion-mismatch {
+    border: 0.15rem solid var(--danger);
+    border-radius: var(--radius-panel);
+    padding: var(--space-3);
+    margin-block: var(--space-3);
+    max-width: 50rem;
+  }
+  .suggestion-mismatch dl {
+    display: grid;
+    grid-template-columns: minmax(7rem, max-content) 1fr;
+    gap: var(--space-1) var(--space-3);
+  }
+  .suggestion-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
   dt {
     font-weight: 600;

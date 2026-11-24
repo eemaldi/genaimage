@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import App from '../../App.svelte';
@@ -45,6 +51,76 @@ const response: SuggestionResponse = {
   ],
 };
 
+const currentWorkflow: components['schemas']['WorkflowDetails'] = {
+  id: 'portrait',
+  title: 'Portrait',
+  version: '2',
+  revision: 'current-revision',
+  schema_version: 2,
+  workflow: 'portrait.json',
+  outputs: [],
+  presets: { Studio: {} },
+  parameters: {
+    Prompt: {
+      node: '1',
+      input: 'text',
+      kind: 'string',
+      required: true,
+      description: 'Positive prompt',
+    },
+    Seed: {
+      node: '2',
+      input: 'seed',
+      kind: 'seed',
+      required: true,
+      description: '',
+    },
+    Strength: {
+      node: '3',
+      input: 'strength',
+      kind: 'number',
+      required: true,
+      description: '',
+    },
+    Offset: {
+      node: '4',
+      input: 'offset',
+      kind: 'number',
+      required: true,
+      description: '',
+    },
+    Reference: {
+      node: '5',
+      input: 'image',
+      kind: 'image_upload',
+      required: false,
+      description: 'User-selected image',
+    },
+  },
+};
+
+function mockGenerateApis() {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [
+      {
+        id: 'portrait',
+        name: 'Portrait',
+        version: '2',
+        revision: 'current-revision',
+      },
+    ],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'getWorkflow').mockResolvedValue(currentWorkflow);
+  vi.spyOn(api, 'getSettings').mockResolvedValue({
+    config_file: '',
+    api_key_set: false,
+    api_key_read_only: false,
+    restart_required: [],
+    settings: {},
+  });
+}
+
 function available() {
   vi.spyOn(api, 'health').mockResolvedValue({
     self: 'ok',
@@ -80,72 +156,8 @@ it('shows ranked suggestions, notes and dropped or truncated results', async () 
 it('Use this suggestion opens Generate prefilled, pinned and unsubmitted with exact numbers', async () => {
   available();
   vi.spyOn(api, 'suggestWorkflow').mockResolvedValue(response);
-  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
-    workflows: [
-      {
-        id: 'portrait',
-        name: 'Portrait',
-        version: '2',
-        revision: 'current-revision',
-      },
-    ],
-    diagnostics: [],
-  });
-  vi.spyOn(api, 'getWorkflow').mockResolvedValue({
-    id: 'portrait',
-    title: 'Portrait',
-    version: '2',
-    revision: 'current-revision',
-    schema_version: 2,
-    workflow: 'portrait.json',
-    outputs: [],
-    presets: { Studio: {} },
-    parameters: {
-      Prompt: {
-        node: '1',
-        input: 'text',
-        kind: 'string',
-        required: true,
-        description: 'Positive prompt',
-      },
-      Seed: {
-        node: '2',
-        input: 'seed',
-        kind: 'seed',
-        required: true,
-        description: '',
-      },
-      Strength: {
-        node: '3',
-        input: 'strength',
-        kind: 'number',
-        required: true,
-        description: '',
-      },
-      Offset: {
-        node: '4',
-        input: 'offset',
-        kind: 'number',
-        required: true,
-        description: '',
-      },
-      Reference: {
-        node: '5',
-        input: 'image',
-        kind: 'image_upload',
-        required: false,
-        description: 'User-selected image',
-      },
-    },
-  });
+  mockGenerateApis();
   const createRun = vi.spyOn(api, 'createRun');
-  vi.spyOn(api, 'getSettings').mockResolvedValue({
-    config_file: '',
-    api_key_set: false,
-    api_key_read_only: false,
-    restart_required: [],
-    settings: {},
-  });
   window.location.hash = '#/workflows';
   const user = userEvent.setup();
   render(App);
@@ -160,22 +172,141 @@ it('Use this suggestion opens Generate prefilled, pinned and unsubmitted with ex
     'suggest',
   );
   await user.click(use);
+  const warningHeading = await screen.findByRole('heading', {
+    name: 'Assistant suggestion needs review',
+  });
+  const warning = warningHeading.closest('section')!;
+  expect(within(warning).getByText('suggested-revision')).toBeTruthy();
+  expect(within(warning).getByText('current-revision')).toBeTruthy();
+  expect(within(warning).getByText('9007199254740993')).toBeTruthy();
+  expect(within(warning).getByText('2.0')).toBeTruthy();
+  expect(within(warning).getByText('-0.0')).toBeTruthy();
+  expect(screen.getByLabelText<HTMLInputElement>('Prompt').value).toBe('');
+  expect(screen.getByLabelText<HTMLInputElement>('Seed').value).toBe('');
+  expect(screen.getByLabelText<HTMLSelectElement>('Preset').value).toBe('');
   expect(
-    await screen.findByLabelText<HTMLInputElement>('Prompt'),
-  ).toHaveProperty('value', 'A lighthouse');
+    (
+      screen.getByRole('button', {
+        name: 'Review parameters',
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Submit run' })).toBeNull();
+  await user.click(
+    screen.getByRole('button', { name: 'Apply to current revision' }),
+  );
+  expect(screen.getByLabelText<HTMLInputElement>('Prompt').value).toBe(
+    'A lighthouse',
+  );
   expect(screen.getByLabelText<HTMLInputElement>('Seed').value).toBe(
     '9007199254740993',
   );
   expect(screen.getByLabelText<HTMLInputElement>('Strength').value).toBe('2.0');
   expect(screen.getByLabelText<HTMLInputElement>('Offset').value).toBe('-0.0');
+  expect(screen.getByLabelText<HTMLSelectElement>('Preset').value).toBe(
+    'Studio',
+  );
   expect(
-    screen.getByText(/values came from workflow revision suggested-revision/),
-  ).toBeTruthy();
-  expect(screen.queryByText(/not submitted/)).not.toBeNull();
+    screen.queryByRole('button', { name: 'Apply to current revision' }),
+  ).toBeNull();
   expect(
     (screen.getByLabelText('Reference') as HTMLInputElement).files,
   ).toHaveLength(0);
   expect(createRun).not.toHaveBeenCalled();
+});
+
+it('discards a mismatched suggestion without changing current form values', async () => {
+  available();
+  vi.spyOn(api, 'suggestWorkflow').mockResolvedValue(response);
+  mockGenerateApis();
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  await screen.findByRole('link', { name: 'Portrait' });
+  await openSuggestions(user);
+  await user.click(
+    await screen.findByRole('link', { name: 'Use this suggestion' }),
+  );
+  expect((await screen.findByLabelText<HTMLInputElement>('Prompt')).value).toBe(
+    '',
+  );
+  const discard = screen.getByRole('button', { name: 'Discard' });
+  await user.click(discard);
+  expect(screen.getByText(/suggestion was discarded/)).toBeTruthy();
+  expect(screen.getByLabelText<HTMLInputElement>('Prompt').value).toBe('');
+  expect(screen.getByLabelText<HTMLInputElement>('Seed').value).toBe('');
+  expect(screen.getByLabelText<HTMLSelectElement>('Preset').value).toBe('');
+  expect(
+    (
+      screen.getByRole('button', {
+        name: 'Review parameters',
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+});
+
+it('reports invalid suggested values without coercing or applying them', async () => {
+  available();
+  vi.spyOn(api, 'suggestWorkflow').mockResolvedValue({
+    ...response,
+    suggestions: [
+      {
+        ...response.suggestions[0],
+        parameters: { Seed: '9007199254740993.5' },
+      },
+    ],
+  });
+  mockGenerateApis();
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  await screen.findByRole('link', { name: 'Portrait' });
+  await openSuggestions(user);
+  await user.click(
+    await screen.findByRole('link', { name: 'Use this suggestion' }),
+  );
+  await user.click(
+    await screen.findByRole('button', { name: 'Apply to current revision' }),
+  );
+  expect(await screen.findByText(/Enter a whole number/)).toBeTruthy();
+  expect(screen.getByLabelText<HTMLInputElement>('Seed').value).toBe('');
+  expect(
+    (
+      screen.getByRole('button', {
+        name: 'Review parameters',
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
+it('keeps an oversized suggestion and disables its Generate link safely', async () => {
+  available();
+  vi.spyOn(api, 'suggestWorkflow').mockResolvedValue({
+    ...response,
+    suggestions: [
+      {
+        ...response.suggestions[0],
+        parameters: { Prompt: 'x'.repeat(33_000) },
+      },
+    ],
+  });
+  const user = userEvent.setup();
+  render(WorkflowSuggest);
+  await openSuggestions(user);
+  expect(
+    await screen.findByRole('heading', { name: '#1 portrait' }),
+  ).toBeTruthy();
+  expect(
+    (
+      screen.getByRole('button', {
+        name: 'Use this suggestion',
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  expect(screen.getByText(/The share link is too long/)).toBeTruthy();
+  expect(
+    screen.queryByRole('link', { name: 'Use this suggestion' }),
+  ).toBeNull();
 });
 
 it('shows a 503 disabled reason and Settings pointer', async () => {

@@ -30,6 +30,21 @@
   let healthController: AbortController | undefined;
   const stale = $derived(!!result && requestIntent !== intent);
   const busy = $derived(availability === 'checking' || pending);
+  const preparedSuggestions = $derived.by(() =>
+    (result?.suggestions ?? []).map((suggestion) => {
+      try {
+        return { suggestion, href: buildSuggestionGenerateUrl(suggestion) };
+      } catch (error) {
+        return {
+          suggestion,
+          error:
+            error instanceof Error
+              ? error.message
+              : 'The Generate link could not be created.',
+        };
+      }
+    }),
+  );
 
   onDestroy(() => {
     controller?.abort();
@@ -187,7 +202,8 @@
             No workflows matched this intent.
           </p>{/if}
         <ol class="suggestions">
-          {#each result.suggestions as suggestion (suggestion.workflow_id)}
+          {#each preparedSuggestions as prepared (prepared.suggestion.workflow_id)}
+            {@const suggestion = prepared.suggestion}
             <li>
               <div>
                 <h3>#{suggestion.rank} {suggestion.workflow_id}</h3>
@@ -212,14 +228,21 @@
                   </ul>
                 </div>
               {/if}
-              <a
-                class="ui-button primary"
-                href={buildSuggestionGenerateUrl(suggestion)}
-                aria-disabled={stale}
-                onclick={(event) => {
-                  if (stale) event.preventDefault();
-                }}>Use this suggestion</a
-              >
+              {#if prepared.href}
+                <a
+                  class="ui-button primary"
+                  href={prepared.href}
+                  aria-disabled={stale}
+                  onclick={(event) => {
+                    if (stale) event.preventDefault();
+                  }}>Use this suggestion</a
+                >
+              {:else}
+                <Button variant="primary" disabled>Use this suggestion</Button>
+                <p class="disabled-reason" role="status">
+                  This suggestion cannot be opened in Generate: {prepared.error}
+                </p>
+              {/if}
             </li>
           {/each}
         </ol>
