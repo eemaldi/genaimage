@@ -2,6 +2,7 @@ import { BindingFloat } from '../../lib/api/client';
 import {
   bindingError,
   initialField,
+  presetField,
   sameValue,
   type FieldState,
   type Scalar,
@@ -40,6 +41,7 @@ type FormState = {
   fields: Iterable<[string, FieldState]>;
   inherited?: readonly SharedInherited[];
   unverifiedSource?: boolean;
+  suggested?: boolean;
   chosenSeeds?: Readonly<Record<string, Scalar>>;
 };
 
@@ -76,6 +78,7 @@ export function encodeFormState(state: FormState): string {
   if (state.version !== undefined) query.set('wv', state.version);
   if (state.revision !== undefined) query.set('wr', state.revision);
   if (state.unverifiedSource) query.set('unverified_source', '1');
+  if (state.suggested) query.set('assistant', 'suggest');
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
   if (state.inherited?.length) query.set('i', JSON.stringify(state.inherited));
@@ -169,6 +172,15 @@ function decodeValue(value: unknown): Pick<FieldState, 'draft' | 'value'> {
 
 type Difference = { name: string; message: string };
 
+export type PendingSuggestion = {
+  suggestedRevision: string;
+  loadedRevision: string;
+  preset: string;
+  modified: boolean;
+  fields: Map<string, FieldState>;
+  issues: string[];
+};
+
 export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   const fields = new Map(
     Object.entries(workflow.parameters).map(([name, parameter]) => [
@@ -189,6 +201,9 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     modified: false,
     versionNotice: undefined as string | undefined,
     revisionNotice: undefined as string | undefined,
+    suggested: query.get('assistant') === 'suggest',
+    suggestionNotice: undefined as string | undefined,
+    pendingSuggestion: undefined as PendingSuggestion | undefined,
     unverifiedSource: query.get('unverified_source') === '1',
   };
   if (
@@ -201,6 +216,7 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
       'modified',
       'i',
       'unverified_source',
+      'assistant',
     ].some((key) => query.has(key))
   )
     return state;
@@ -234,10 +250,29 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   if (oldRevision !== null && oldRevision !== workflow.revision)
     state.revisionNotice =
       'The workflow revision differs from the one in this link. Check the current workflow before reviewing.';
-  const preset = query.get('preset') ?? '';
-  state.preset = preset;
-  state.modified = query.get('modified') === '1';
-  if (preset && !Object.hasOwn(workflow.presets, preset))
+  const suggestedPreset = query.get('preset') ?? '';
+  const suggestionMismatch =
+    state.suggested && oldRevision !== workflow.revision;
+  if (suggestionMismatch) {
+    state.pendingSuggestion = {
+      suggestedRevision: oldRevision ?? '(missing)',
+      loadedRevision: workflow.revision,
+      preset: suggestedPreset,
+      modified: query.get('modified') === '1',
+      fields: new Map(),
+      issues: [],
+    };
+  } else {
+    state.preset = suggestedPreset;
+    state.modified = query.get('modified') === '1';
+  }
+  const preset = state.preset;
+  if (state.suggested) {
+    state.suggestionNotice = suggestionMismatch
+      ? `Assistant-suggested values from revision ${oldRevision ?? '(missing)'} need explicit approval before they can be applied to loaded revision ${workflow.revision}.`
+      : 'These assistant-suggested values are prefilled for editing and have not been submitted. Check every value before review.';
+  }
+  if (!suggestionMismatch && preset && !Object.hasOwn(workflow.presets, preset))
     warnings.push({
       message: `Preset “${preset}” is not available in the current workflow.`,
     });
@@ -276,12 +311,21 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     }
     seen.add(name);
     if (!Object.hasOwn(workflow.parameters, name)) {
-      warnings.push({
-        message: `Unknown parameter “${name}”: ${JSON.stringify(encoded) ?? '(missing)'}.`,
-      });
+      const message = `Unknown parameter “${name}”: ${JSON.stringify(encoded) ?? '(missing)'}.`;
+      if (state.pendingSuggestion) state.pendingSuggestion.issues.push(message);
+      else warnings.push({ message });
       continue;
     }
     const parameter = workflow.parameters[name];
+    if (
+      state.suggested &&
+      parameter.kind === 'image_upload' &&
+      !state.pendingSuggestion
+    ) {
+      const message = `Suggested image input “${name}” was not applied; choose the image yourself. Image upload values cannot come from an assistant suggestion.`;
+      warnings.push({ name, message });
+      continue;
+    }
     const currentDefault = fields.get(name)?.value;
     const seedMode =
       parameter.kind === 'seed'
@@ -326,32 +370,48 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
           chosenSeeds.set(name, decoded.value);
       }
       if (encoded === null && currentDefault !== undefined)
-        error ??= `The link explicitly left this unset, but the current manifest defaults to ${display(currentDefault)}. Set a value or accept the current default.`;
-      else if (source === 'd' && !sameValue(field.value, currentDefault))
+        error ??= `The link explicitly left this unset, but the current manifest defaults to ${displayScalar(currentDefault)}. Set a value or accept the current default.`;
+      else if (
+        !state.pendingSuggestion &&
+        source === 'd' &&
+        !sameValue(field.value, currentDefault)
+      )
         differences.push({
           name,
-          message: `Shared default: ${display(field.value)}. Current manifest default: ${display(currentDefault)}. The shared value was kept.`,
+          message: `Shared default: ${displayScalar(field.value)}. Current manifest default: ${displayScalar(currentDefault)}. The shared value was kept.`,
         });
       else if (
+        !state.pendingSuggestion &&
         currentDefault !== undefined &&
         field.value !== undefined &&
         !sameValue(field.value, currentDefault)
       )
         differences.push({
           name,
-          message: `Shared value: ${display(field.value)}. Current manifest default: ${display(currentDefault)}. The shared value was kept.`,
+          message: `Shared value: ${displayScalar(field.value)}. Current manifest default: ${displayScalar(currentDefault)}. The shared value was kept.`,
         });
       if (
-        field.value !== undefined ||
-        field.draft !== undefined ||
-        seedMode !== 'random'
+        !state.pendingSuggestion &&
+        (field.value !== undefined ||
+          field.draft !== undefined ||
+          seedMode !== 'random')
       )
         error ??= bindingError(parameter, field);
     } catch {
       error = 'The encoded value is not supported.';
     }
-    fields.set(name, field);
-    if (error)
+    if (state.pendingSuggestion) {
+      state.pendingSuggestion.fields.set(name, field);
+      if (parameter.kind === 'image_upload')
+        state.pendingSuggestion.issues.push(
+          `Suggested image input “${name}” will not be applied; choose the image yourself.`,
+        );
+    } else fields.set(name, field);
+    if (error && state.pendingSuggestion)
+      state.pendingSuggestion.issues.push(
+        `Parameter “${name}”: ${error} Shared value: ${JSON.stringify(encoded) ?? '(missing)'}.`,
+      );
+    else if (error)
       warnings.push({
         name,
         message: `Parameter “${name}”: ${error} Shared value: ${JSON.stringify(encoded) ?? '(missing)'}.`,
@@ -359,20 +419,80 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
   }
   for (const [name, parameter] of Object.entries(workflow.parameters)) {
     if (seen.has(name)) continue;
+    if (state.suggested) {
+      if (state.pendingSuggestion) continue;
+      if (
+        preset &&
+        Object.hasOwn(workflow.presets, preset) &&
+        Object.hasOwn(workflow.presets[preset], name)
+      ) {
+        if (parameter.kind === 'image_upload') {
+          warnings.push({
+            name,
+            message: `Preset “${preset}” sets image input “${name}”; choose the image yourself.`,
+          });
+          fields.set(name, initialField(parameter));
+          continue;
+        }
+        fields.set(
+          name,
+          presetField(
+            parameter,
+            initialField(parameter),
+            workflow.presets[preset][name],
+          ),
+        );
+      } else fields.set(name, initialField(parameter));
+      continue;
+    }
     const current = initialField(parameter);
     fields.set(name, { seedMode: current.seedMode });
     warnings.push({
       name,
-      message: `Parameter “${name}” is missing from the link.${current.value === undefined ? '' : ` The current manifest defaults to ${display(current.value)}.`} Set a value or accept the current form setting.`,
+      message: `Parameter “${name}” is missing from the link.${current.value === undefined ? '' : ` The current manifest defaults to ${displayScalar(current.value)}.`} Set a value or accept the current form setting.`,
     });
   }
   return state;
 }
 
-function display(value: Scalar | undefined) {
+export function displayScalar(value: Scalar | undefined) {
   return value === undefined
     ? '(not set)'
     : typeof value === 'string'
       ? JSON.stringify(value)
       : String(value);
+}
+
+export type WorkflowSuggestion =
+  import('../../lib/api/schema').components['schemas']['WorkflowSuggestion'];
+
+export function suggestionFields(suggestion: WorkflowSuggestion) {
+  const fields = new Map<string, FieldState>();
+  for (const [name, value] of Object.entries(suggestion.parameters)) {
+    if (
+      typeof value !== 'string' &&
+      typeof value !== 'boolean' &&
+      typeof value !== 'number' &&
+      typeof value !== 'bigint' &&
+      !(value instanceof BindingFloat)
+    )
+      throw new Error(
+        `The suggestion for parameter “${name}” is not a scalar value.`,
+      );
+    fields.set(name, { value, source: 'user' });
+  }
+  return fields;
+}
+
+/** Prefill Generate without submitting; the server omits image inputs from suggestions. */
+export function buildSuggestionGenerateUrl(suggestion: WorkflowSuggestion) {
+  return encodeFormState({
+    workflow: suggestion.workflow_id,
+    revision: suggestion.workflow_revision,
+    preset: suggestion.preset ?? undefined,
+    modified:
+      !!suggestion.preset && Object.keys(suggestion.parameters).length > 0,
+    suggested: true,
+    fields: suggestionFields(suggestion),
+  });
 }

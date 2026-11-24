@@ -32,9 +32,15 @@ import {
   type Workflow,
 } from './model';
 import { savePending } from './pending';
+import { mockNativeDialog } from '../../test/dialog';
+
+mockNativeDialog();
 
 const fake = vi.hoisted(() => ({
   listWorkflows: vi.fn<typeof api.listWorkflows>(),
+  health: vi.fn<typeof api.health>(),
+  promptAssist: vi.fn<typeof api.promptAssist>(),
+  suggestWorkflow: vi.fn<typeof api.suggestWorkflow>(),
   getWorkflow: vi.fn<typeof api.getWorkflow>(),
   getSettings: vi.fn<typeof api.getSettings>(),
   upload: vi.fn<typeof api.upload>(),
@@ -188,6 +194,12 @@ beforeEach(() => {
   history.replaceState(null, '', '/');
   sessionStorage.clear();
   fake.getWorkflow.mockResolvedValue(workflow);
+  fake.health.mockResolvedValue({
+    self: 'ok',
+    image_backend: 'ok',
+    llm: 'ok',
+    llm_text: { status: 'ok', model: 'local-text' },
+  });
   fake.validateWorkflow.mockResolvedValue({
     valid: true,
     revision: workflow.revision,
@@ -314,6 +326,43 @@ test('renders the manifest widgets and groups without inventing missing defaults
       /Inherited from workflow: connected to node 4 output 0/,
     ),
   ).toBeTruthy();
+});
+
+test('applies and undoes prompt assistance on only its target field', async () => {
+  fake.promptAssist.mockResolvedValue({
+    applied: false,
+    mode: 'expand',
+    model: 'local-text',
+    proposal_count: 1,
+    proposals: [
+      {
+        text: 'A lighthouse at blue hour',
+        diff: [
+          { op: 'equal', text: 'A lighthouse' },
+          { op: 'insert', text: ' at blue hour' },
+        ],
+      },
+    ],
+    template: { name: 'expand', sha256: 'hash' },
+  });
+  const user = await load();
+  await user.type(control('Prompt'), 'A lighthouse');
+  await user.type(control('Notes'), 'Keep these notes');
+  await user.click(screen.getByRole('button', { name: 'Expand' }));
+  await user.click(await screen.findByRole('button', { name: 'Accept' }));
+  expect(control('Prompt').value).toBe('A lighthouse at blue hour');
+  expect(control('Notes').value).toBe('Keep these notes');
+  await user.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(control('Prompt').value).toBe('A lighthouse');
+  expect(control('Notes').value).toBe('Keep these notes');
+  expect(fake.promptAssist).toHaveBeenCalledWith(
+    expect.objectContaining({
+      workflow_id: 'portrait',
+      parameter: 'Prompt',
+      prompt: 'A lighthouse',
+    }),
+    expect.anything(),
+  );
 });
 
 test('attaches numeric and enum errors, accepts off-step values, and keeps cleared defaults explicit', async () => {

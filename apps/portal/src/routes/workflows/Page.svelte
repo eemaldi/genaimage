@@ -5,6 +5,7 @@
   import Input from '../../lib/ui/Input.svelte';
   import Select from '../../lib/ui/Select.svelte';
   import ProblemDetails from '../../lib/ui/ProblemDetails.svelte';
+  import WorkflowSuggest from '../../lib/workflow-suggest/WorkflowSuggest.svelte';
   import type { Problem } from '../../lib/ui/ProblemDetails.svelte';
   import type { RouteProps } from '../../router';
   import { workflowProblem } from './errors';
@@ -102,6 +103,7 @@
 </script>
 
 <h1>Workflows</h1>
+<WorkflowSuggest />
 {#if loading}
   <p role="status">Loading workflows…</p>
 {:else if problem}

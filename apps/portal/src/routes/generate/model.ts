@@ -233,3 +233,17 @@ export function parameterGroups(workflow: Workflow, advanced: boolean) {
   }
   return [...groups];
 }
+
+export function isNegativePromptParameter(name: string, parameter: Parameter) {
+  return (
+    parameter.kind === 'string' &&
+    /(negative|exclusion)/i.test(`${name} ${parameter.description ?? ''}`)
+  );
+}
+
+export function isPromptParameter(name: string, parameter: Parameter) {
+  return (
+    parameter.kind === 'string' &&
+    /(prompt|caption)/i.test(`${name} ${parameter.description ?? ''}`)
+  );
+}

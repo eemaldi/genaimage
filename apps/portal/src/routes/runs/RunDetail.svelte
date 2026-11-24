@@ -13,6 +13,7 @@
   import { describeStatus, type Run } from '../jobs/run-model';
   import { formatRecordedValue } from '../gallery/parameter-diff';
   import Thumbnail from '../gallery/Thumbnail.svelte';
+  import OutputReviewPanel from '../../lib/output-review/OutputReviewPanel.svelte';
   import { buildGenerateUrl, remixAvailable } from './remix';
 
   let { id }: { id: string } = $props();
@@ -667,6 +668,11 @@
             >{output.source_filename}</a
           >
           <p>SHA-256: {output.sha256}</p>
+          <OutputReviewPanel
+            outputId={output.id}
+            contentType={output.content_type}
+            byteSize={output.byte_size}
+          />
         </li>{/each}
     </ul>{:else}<p>No indexed outputs are available.</p>{/if}
   {#if outputCursor}<Button onclick={moreOutputPage} disabled={loadingOutputs}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, ApiProblemError } from '../../lib/api/client';
   import Button from '../../lib/ui/Button.svelte';
+  import WorkflowSuggest from '../../lib/workflow-suggest/WorkflowSuggest.svelte';
   import Select from '../../lib/ui/Select.svelte';
   import ProblemDetails, {
     type Problem,
@@ -66,6 +67,7 @@
   }
 </script>
 
+<WorkflowSuggest />
 {#if id}<p><a href={workflowHref('')}>Choose another workflow</a></p>{/if}
 {#if replacement}<ProblemDetails problem={replacement.problem} />{/if}
 {#snippet workflowContent(controls?: SubmissionControls)}

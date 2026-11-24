@@ -29,6 +29,9 @@ const fake = vi.hoisted(() => ({
     getRunManifestText: vi.fn(),
     listRunEvents: vi.fn(),
     listOutputs: vi.fn(),
+    getOutputAnnotations: vi.fn(),
+    health: vi.fn(),
+    reviewOutput: vi.fn(),
     listRuns: vi.fn(),
     rerunRun: vi.fn(),
   },
@@ -138,6 +141,26 @@ beforeEach(() => {
   });
   fake.client.listRunEvents.mockResolvedValue({ events: [event] });
   fake.client.listOutputs.mockResolvedValue({ outputs: [output] });
+  fake.client.getOutputAnnotations.mockResolvedValue({ annotations: [] });
+  fake.client.health.mockResolvedValue({
+    self: 'ok',
+    image_backend: 'ok',
+    llm: 'ok',
+    llm_vision: { status: 'ok', model: 'vision-local-v1' },
+  });
+  fake.client.reviewOutput.mockImplementation(async (outputId: string) => ({
+    id: 1,
+    output_id: outputId,
+    run_id: 'one',
+    kind: 'vision_review',
+    model: 'vision-local-v1',
+    created_at: '2026-03-01T10:15:00Z',
+    caption: 'A reviewed run output.',
+    adherence_critique: 'The result follows the prompt.',
+    tags: ['checked'],
+    prompt: 'Review the output.',
+    raw_response: '{"caption":"A reviewed run output."}',
+  }));
   fake.client.listRuns.mockResolvedValue({
     runs: [{ ...run, id: 'child', rerun_of: 'one' }],
   });
@@ -197,6 +220,36 @@ test('renders recorded provenance, outputs, relationships and lazy workflow JSON
     screen.getByText(/ComfyUI history graph.*verified manifest/),
   ).toBeTruthy();
   expect(fake.client.getResolvedWorkflow).not.toHaveBeenCalled();
+});
+
+test('offers lazy output review without adding annotations to run provenance', async () => {
+  await start();
+  expect(fake.client.getOutputAnnotations).not.toHaveBeenCalled();
+
+  const review = [...document.querySelectorAll('details')].find((item) =>
+    item.querySelector('summary')?.textContent?.includes('Model opinions'),
+  );
+  expect(review).toBeTruthy();
+  await userEvent.click(review!.querySelector('summary')!);
+  expect(
+    await screen.findByText(
+      'No model opinions have been recorded for this output.',
+    ),
+  ).toBeTruthy();
+  expect(fake.client.getOutputAnnotations).toHaveBeenCalledWith(
+    output.id,
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
+
+  await userEvent.click(screen.getByRole('button', { name: 'Review' }));
+  expect(
+    await screen.findByRole('article', {
+      name: 'Model opinion by vision-local-v1',
+    }),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/Model opinions/, { selector: 'summary' }).textContent,
+  ).toContain('(not part of the run record)');
 });
 
 test('refreshes live status and timeline on events and resync', async () => {

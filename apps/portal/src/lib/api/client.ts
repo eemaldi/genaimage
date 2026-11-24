@@ -139,6 +139,12 @@ export type WorkflowValidationRequest = JsonBody<
   Operation<'/api/v1/workflows/{id}/validate', 'post'>
 >;
 export type SettingsPatch = JsonBody<Operation<'/api/v1/settings', 'put'>>;
+export type PromptAssistRequest = JsonBody<
+  Operation<'/api/v1/assistant/prompt', 'post'>
+>;
+export type SuggestWorkflowRequest = JsonBody<
+  Operation<'/api/v1/assistant/suggest', 'post'>
+>;
 
 export const outputMediaUrl = (id: string) =>
   apiUrl('/api/v1/outputs/{id}', { id });
@@ -333,6 +339,15 @@ export function createApiClient(
   return {
     health: (options: RequestOptions = {}) =>
       json('get', '/api/v1/health', options),
+    promptAssist: (body: PromptAssistRequest, options?: RequestOptions) =>
+      json('post', '/api/v1/assistant/prompt', { ...options, body }),
+    suggestWorkflow: (body: SuggestWorkflowRequest, options?: RequestOptions) =>
+      json(
+        'post',
+        '/api/v1/assistant/suggest',
+        { ...options, body },
+        (response) => readExactIntegers(response, true),
+      ),
     listWorkflows: (options: RequestOptions = {}) =>
       json('get', '/api/v1/workflows', options),
     getWorkflow: (
@@ -432,6 +447,16 @@ export function createApiClient(
       json('get', '/api/v1/outputs', { ...options, query }),
     getOutputMetadata: (id: string, options?: RequestOptions) =>
       json('get', '/api/v1/outputs/{id}/metadata', {
+        ...options,
+        path: { id },
+      }),
+    getOutputAnnotations: (id: string, options?: RequestOptions) =>
+      json('get', '/api/v1/outputs/{id}/annotations', {
+        ...options,
+        path: { id },
+      }),
+    reviewOutput: (id: string, options?: RequestOptions) =>
+      json('post', '/api/v1/outputs/{id}/review', {
         ...options,
         path: { id },
       }),

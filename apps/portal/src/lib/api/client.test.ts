@@ -158,6 +158,45 @@ describe('portal API client', () => {
     },
   );
 
+  it('loads output annotations and sends one bodyless review request', async () => {
+    const annotation = {
+      id: 1,
+      output_id: 'output/#?',
+      run_id: 'run-1',
+      kind: 'vision_review',
+      model: 'vision-local-v1',
+      created_at: '2026-03-01T10:15:00Z',
+      caption: 'A quiet coast.',
+      adherence_critique: 'The horizon is slightly high.',
+      tags: ['coast'],
+      prompt: 'Review the output.',
+      raw_response: '{"caption":"A quiet coast."}',
+    };
+    const fetcher = mockFetch()
+      .mockResolvedValueOnce(Response.json({ annotations: [annotation] }))
+      .mockResolvedValueOnce(Response.json(annotation));
+    const signal = new AbortController().signal;
+    const client = createApiClient(fetcher);
+
+    await expect(
+      client.getOutputAnnotations('output/#?', { signal }),
+    ).resolves.toEqual({ annotations: [annotation] });
+    await expect(client.reviewOutput('output/#?', { signal })).resolves.toEqual(
+      annotation,
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]).toMatchObject([
+      '/api/v1/outputs/output%2F%23%3F/annotations',
+      { method: 'GET', signal },
+    ]);
+    const [url, init] = fetcher.mock.calls[1];
+    expect(url).toBe('/api/v1/outputs/output%2F%23%3F/review');
+    expect(init).toMatchObject({ method: 'POST', signal });
+    expect(init?.body).toBeUndefined();
+    expect(new Headers(init?.headers).has('Content-Type')).toBe(false);
+  });
+
   it.each([200, 201])(
     'sends one bodyless keyed re-run (HTTP %s)',
     async (status) => {
