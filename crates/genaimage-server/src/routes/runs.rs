@@ -8,7 +8,10 @@ use axum::{
     Json,
 };
 use genaimage_api as api;
-use genaimage_core::{HarnessError, RunRecord, RunRequest, RunStatus};
+use genaimage_core::{
+    orchestrator::{ReconcileOutcome, ReconcileResult},
+    HarnessError, RunRecord, RunRequest, RunStatus,
+};
 
 use crate::{AppState, Problem};
 
@@ -64,24 +67,26 @@ pub(super) async fn submit(
     let harness = state.harness();
     let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        let result = harness.submit_keyed_until(key, RunRequest {
-            workflow: body.workflow,
-            preset: body.preset,
-            parameters: body.parameters,
-            version: body.version,
-        }, &task_state.lifecycle.deadline).await?;
-        if !result.replayed && matches!(result.run.status, RunStatus::Queued | RunStatus::Cancelling) {
-            let id = result.run.id.clone();
-            let monitor_state = task_state.clone();
-            task_state.spawn_run_task(async move {
-                let lifecycle = &monitor_state.lifecycle;
-                if let Err(error) = harness.monitor_run(&id, &lifecycle.shutdown, &lifecycle.deadline).await {
-                    tracing::warn!(run_id = id, %error, "Run monitoring stopped; reconcile to refresh the state");
-                }
-            });
+        let result = harness
+            .submit_keyed_until(
+                key,
+                RunRequest {
+                    workflow: body.workflow,
+                    preset: body.preset,
+                    parameters: body.parameters,
+                    version: body.version,
+                },
+                &task_state.lifecycle.deadline,
+            )
+            .await?;
+        if !result.replayed
+            && matches!(result.run.status, RunStatus::Queued | RunStatus::Cancelling)
+        {
+            task_state.ensure_run_monitor(harness, result.run.id.clone());
         }
         Ok::<_, HarnessError>(result)
-    }).await?;
+    })
+    .await?;
     let status = if result.replayed {
         StatusCode::OK
     } else {
@@ -256,7 +261,7 @@ pub(super) async fn cancel(
     description = "Reconcile a run against ComfyUI.",
     params(("id" = String, Path, description = "Run ID")),
     responses(
-        (status = 200, body = api::RunResponse),
+        (status = 200, body = api::ReconcileRunResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -272,15 +277,19 @@ pub(super) async fn cancel(
 pub(super) async fn reconcile(
     State(state): State<AppState>,
     id: Result<Path<String>, PathRejection>,
-) -> Result<Json<api::RunResponse>, Problem> {
+) -> Result<Json<api::ReconcileRunResponse>, Problem> {
     let id = parse_id(id)?;
     let harness = state.harness();
-    let deadline = state.lifecycle.deadline.clone();
+    let task_state = state.clone();
     let result = run_mutation(&state, async move {
-        harness.reconcile_until(&id, &deadline).await
+        harness
+            .reconcile_until_with_active(&id, &task_state.lifecycle.deadline, &|run| {
+                task_state.ensure_run_monitor(harness.clone(), run.id.clone());
+            })
+            .await
     })
     .await?;
-    Ok(Json(run_response(result.run)))
+    Ok(Json(reconcile_response(result)))
 }
 
 #[utoipa::path(
@@ -289,7 +298,7 @@ pub(super) async fn reconcile(
     tag = "runs",
     description = "Reconcile runs against ComfyUI.",
     responses(
-        (status = 200, body = api::ReconcileRunsResponse),
+        (status = 200, body = api::ReconcileRunsWithOutcomesResponse),
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -302,19 +311,34 @@ pub(super) async fn reconcile(
 )]
 pub(super) async fn reconcile_all(
     State(state): State<AppState>,
-) -> Result<Json<api::ReconcileRunsResponse>, Problem> {
+) -> Result<Json<api::ReconcileRunsWithOutcomesResponse>, Problem> {
     let harness = state.harness();
-    let deadline = state.lifecycle.deadline.clone();
+    let task_state = state.clone();
     let results = run_mutation(&state, async move {
-        harness.reconcile_all_until(&deadline).await
+        harness
+            .reconcile_all_until_with_active(&task_state.lifecycle.deadline, &|run| {
+                task_state.ensure_run_monitor(harness.clone(), run.id.clone());
+            })
+            .await
     })
     .await?;
-    Ok(Json(api::ReconcileRunsResponse {
-        runs: results
-            .into_iter()
-            .map(|result| run_response(result.run))
-            .collect(),
+    Ok(Json(api::ReconcileRunsWithOutcomesResponse {
+        runs: results.into_iter().map(reconcile_response).collect(),
     }))
+}
+
+fn reconcile_response(result: ReconcileResult) -> api::ReconcileRunResponse {
+    api::ReconcileRunResponse {
+        run: run_response(result.run),
+        settles_at: result.settles_at,
+        outcome: match result.outcome {
+            ReconcileOutcome::Terminal => api::ReconcileOutcome::Terminal,
+            ReconcileOutcome::Active => api::ReconcileOutcome::Active,
+            ReconcileOutcome::InProgressElsewhere => api::ReconcileOutcome::InProgressElsewhere,
+            ReconcileOutcome::NotFound => api::ReconcileOutcome::NotFound,
+            ReconcileOutcome::StillAmbiguous => api::ReconcileOutcome::StillAmbiguous,
+        },
+    }
 }
 
 async fn run_mutation<T: Send + 'static>(

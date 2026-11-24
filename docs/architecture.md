@@ -269,8 +269,8 @@ and a recovery hint.
 | `GET /runs/{id}` | Return the current persisted run snapshot. |
 | `GET /runs/{id}/events` | Return the latest persisted events in ascending event ID order. `limit` defaults to 50 and accepts 1–200. |
 | `POST /runs/{id}/cancel` | Request pending deletion or running interruption through core; return the current snapshot. |
-| `POST /runs/{id}/reconcile` | Inspect ComfyUI queue and history for this run; return the refreshed snapshot. |
-| `POST /runs/reconcile` | Reconcile non-terminal runs, including unknown submissions, and return `{ "runs": [...] }`. |
+| `POST /runs/{id}/reconcile` | Inspect ComfyUI queue and history for this run; return the refreshed snapshot with its `outcome`. |
+| `POST /runs/reconcile` | Reconcile non-terminal runs, including unknown submissions, and return `{ "runs": [...] }`, each with its own `outcome`. |
 
 A submission body is `application/json`, for example
 `{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
@@ -316,6 +316,35 @@ accepted queued runs, the server observes progress via the core event bus and
 persists backend progress and lifecycle events. Monitoring stops on shutdown;
 use reconciliation to refresh old runs. A cancellation request can leave the
 run in `cancelling` until ComfyUI provides evidence for the target prompt.
+
+Reconciliation reports an `outcome` separately from the durable run `status`:
+
+| Outcome | Meaning |
+| --- | --- |
+| `terminal` | The run was already terminal or has now reached a terminal state. Check `status` for the result. |
+| `active` | ComfyUI reports the prompt pending or running; the original run is tracked under its existing ID. |
+| `in_progress_elsewhere` | A live submission owner still holds the run. |
+| `not_found` | The run is still `unknown_submission` and its prompt was absent from both queue and history in a check started after the settle window. |
+| `still_ambiguous` | The evidence did not settle the run's state, for example because history has an incomplete entry and the prompt is not in the queue. |
+
+Explicit reconciliation records a `run_reconciled` event with the outcome;
+background polling does not write these audit events. The server starts a
+monitor as soon as queue evidence is reflected in an active run record, even
+if reading history or reconciling another run later fails. The settle window starts
+at the persisted submission attempt and lasts for its configured ComfyUI
+request timeout plus 10 seconds (70 seconds with default settings). For
+older records without a recorded attempt, absence alone remains inconclusive.
+An absent prompt within the window returns
+`still_ambiguous` with `settles_at`, the earliest time to check again.
+
+ComfyUI denotes absent history with an empty object; unexpected envelopes
+are inconclusive. Success requires valid output references and either positive
+completion status or a legacy outputs-only entry. `not_found` means absent from queue
+and history after the settle window. ComfyUI cannot prove absence, so very late
+admission is still possible and a later reconcile can adopt the original run.
+Jobs requires explicit confirmation after `not_found` and only offers the
+separate run when server-side rerun support is available. Neither reconcile
+endpoint resubmits a prompt.
 
 List responses contain `runs` and `next_cursor` (null at the end). Pass `cursor`
 back unchanged with the same filters. Ordering is descending by creation time,

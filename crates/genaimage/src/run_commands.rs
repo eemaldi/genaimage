@@ -8,8 +8,8 @@ use std::{
 use futures_util::StreamExt;
 use genaimage_api::{
     client::{Client, EventsQuery, StreamEvent},
-    BackendEvent, Event, OutputListQuery, OutputResponse, RunEventResponse, RunEventsQuery,
-    RunListQuery, RunResponse, RunStatus, SubmitRunRequest,
+    BackendEvent, Event, OutputListQuery, OutputResponse, ReconcileOutcome, ReconcileRunResponse,
+    RunEventResponse, RunEventsQuery, RunListQuery, RunResponse, RunStatus, SubmitRunRequest,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -245,10 +245,21 @@ pub(crate) async fn jobs(
         JobsCommand::Cancel { run_id } => write_run(output, &client.cancel_run(run_id).await?)?,
         JobsCommand::Reconcile {
             run_id: Some(run_id),
-        } => write_run(output, &client.reconcile_run(run_id).await?)?,
+        } => {
+            let result = client.reconcile_run_with_outcome(run_id).await?;
+            output.write(&result, |out| write_reconciled_run(out, &result))?;
+        }
         JobsCommand::Reconcile { run_id: None } => {
-            let result = client.reconcile_runs().await?;
-            output.write(&result, |out| write_runs(out, &result.runs))?;
+            let result = client.reconcile_runs_with_outcomes().await?;
+            output.write(&result, |out| {
+                if result.runs.is_empty() {
+                    writeln!(out, "No runs found.")?;
+                }
+                for run in &result.runs {
+                    write_reconciled_run(out, run)?;
+                }
+                Ok(())
+            })?;
         }
     }
     Ok(Status::Success)
@@ -385,6 +396,26 @@ fn write_runs(out: &mut dyn Write, runs: &[RunResponse]) -> io::Result<()> {
     }
     for run in runs {
         write_summary(out, run)?;
+    }
+    Ok(())
+}
+
+fn write_reconciled_run(out: &mut dyn Write, result: &ReconcileRunResponse) -> io::Result<()> {
+    write_summary(out, &result.run)?;
+    let outcome = match result.outcome {
+        ReconcileOutcome::Terminal => "Run is terminal",
+        ReconcileOutcome::Active => "Prompt found in the queue",
+        ReconcileOutcome::InProgressElsewhere => "Submission is still in progress elsewhere",
+        ReconcileOutcome::NotFound => "Prompt not found in queue or history",
+        ReconcileOutcome::StillAmbiguous => "Run state is still ambiguous",
+    };
+    writeln!(out, "  Reconciliation: {outcome}")?;
+    if let Some(instant) = result.settles_at {
+        writeln!(
+            out,
+            "  Reconcile again at or after {}",
+            instant.to_rfc3339()
+        )?;
     }
     Ok(())
 }

@@ -547,6 +547,17 @@ impl RunRepository {
         })
     }
 
+    fn submission_attempt(&self, run_id: &str) -> Result<Option<(DateTime<Utc>, u64)>> {
+        self.guarded_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT created_at, json_extract(payload_json, '$.timeout_seconds') FROM run_events
+                 WHERE run_id = ?1 AND event_type = 'submission_attempted' ORDER BY id DESC LIMIT 1",
+                [run_id],
+                |row| Ok((parse_sqlite_time(row, 0)?, row.get(1)?)),
+            ).optional()?)
+        })
+    }
+
     pub fn events(&self, run_id: &str, limit: usize) -> Result<Vec<RunEvent>> {
         self.guarded_read(|connection| {
             let mut statement = connection.prepare(
@@ -1087,6 +1098,15 @@ impl AsyncRunRepository {
 
     pub async fn list_page(&self, query: RunListQuery) -> Result<RunPage> {
         self.call(move |repo| repo.list_page(query)).await
+    }
+
+    pub(crate) async fn submission_attempt(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<(DateTime<Utc>, u64)>> {
+        let run_id = run_id.to_owned();
+        self.call(move |repo| repo.submission_attempt(&run_id))
+            .await
     }
 
     pub async fn recent_events(

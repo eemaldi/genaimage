@@ -526,9 +526,23 @@ export interface components {
             title: string;
             type: string;
         };
-        /** @description Current snapshots of the runs examined during bulk reconciliation. */
-        ReconcileRunsResponse: {
-            runs: components["schemas"]["RunResponse"][];
+        /**
+         * @description What reconciliation established, independently of the run status.
+         * @enum {string}
+         */
+        ReconcileOutcome: "terminal" | "active" | "in_progress_elsewhere" | "not_found" | "still_ambiguous";
+        /** @description A refreshed run snapshot with the outcome of this reconciliation. */
+        ReconcileRunResponse: components["schemas"]["RunResponse"] & {
+            outcome?: components["schemas"]["ReconcileOutcome"];
+            /**
+             * Format: date-time
+             * @description Earliest time to check again when an absent submission is still settling.
+             */
+            settles_at?: string | null;
+        };
+        /** @description Current snapshots and outcomes of the runs examined during bulk reconciliation. */
+        ReconcileRunsWithOutcomesResponse: {
+            runs: components["schemas"]["ReconcileRunResponse"][];
         };
         ResyncEvent: {
             /** Format: int64 */
@@ -2211,7 +2225,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReconcileRunsResponse"];
+                    "application/json": components["schemas"]["ReconcileRunsWithOutcomesResponse"];
                 };
             };
             /** @description Problem details */
@@ -2975,7 +2989,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunResponse"];
+                    "application/json": components["schemas"]["ReconcileRunResponse"];
                 };
             };
             /** @description Problem details */

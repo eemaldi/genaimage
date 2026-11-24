@@ -41,6 +41,7 @@ pub struct FakeComfyState {
     pub cancelled: Arc<AtomicBool>,
     pub running: Arc<AtomicBool>,
     pub fail_submit_response: Arc<AtomicBool>,
+    pub defer_prompt_admission: Arc<AtomicBool>,
     pub hang_submit_response: Arc<AtomicBool>,
     pub redirect_submit_response: Arc<AtomicBool>,
     pub prompt_calls: Arc<AtomicUsize>,
@@ -66,6 +67,7 @@ pub struct FakeComfyState {
     pub object_info_hangs: Arc<AtomicBool>,
     pub object_info_override: Arc<Mutex<Option<Value>>>,
     pub queue_override: Arc<Mutex<Option<Value>>>,
+    pub fail_next_history: Arc<AtomicBool>,
     pub history_overrides: Arc<Mutex<BTreeMap<String, Value>>>,
     pub progress: broadcast::Sender<Value>,
     connected: Arc<Notify>,
@@ -81,6 +83,7 @@ impl Default for FakeComfyState {
             cancelled: Default::default(),
             running: Default::default(),
             fail_submit_response: Default::default(),
+            defer_prompt_admission: Default::default(),
             hang_submit_response: Default::default(),
             redirect_submit_response: Default::default(),
             prompt_calls: Default::default(),
@@ -106,6 +109,7 @@ impl Default for FakeComfyState {
             object_info_hangs: Default::default(),
             object_info_override: Default::default(),
             queue_override: Default::default(),
+            fail_next_history: Default::default(),
             history_overrides: Default::default(),
             progress: broadcast::channel(32).0,
             connected: Arc::new(Notify::new()),
@@ -241,7 +245,9 @@ async fn fake_upload(State(state): State<FakeComfyState>, mut multipart: Multipa
 async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {
     state.prompt_calls.fetch_add(1, Ordering::SeqCst);
     let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
-    *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    if !state.defer_prompt_admission.load(Ordering::SeqCst) {
+        *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    }
     if state.hang_submit_response.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -345,6 +351,9 @@ async fn fake_history(
     State(state): State<FakeComfyState>,
     AxumPath(prompt_id): AxumPath<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    if state.fail_next_history.swap(false, Ordering::SeqCst) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if let Some(history) = state
         .history_overrides
         .lock()

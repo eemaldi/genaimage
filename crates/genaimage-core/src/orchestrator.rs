@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -44,7 +45,24 @@ pub struct RunRequest {
 pub struct ReconcileResult {
     pub run: RunRecord,
     pub outputs: Vec<OutputRecord>,
+    pub outcome: ReconcileOutcome,
+    pub settles_at: Option<DateTime<Utc>>,
 }
+
+/// What this check established, independently of the durable run status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileOutcome {
+    Terminal,
+    Active,
+    InProgressElsewhere,
+    /// The prompt was absent from queue and history after the settle window.
+    /// ComfyUI cannot prove absence; very late admission is still possible.
+    NotFound,
+    StillAmbiguous,
+}
+
+const ADMISSION_GRACE_SECONDS: u64 = 10;
 
 /// Result of a durable submission and whether its key was already reserved.
 pub struct KeyedSubmission {
@@ -760,6 +778,14 @@ impl Harness {
             )
             .await?;
 
+        repository
+            .record_event(
+                &run.id,
+                "submission_attempted",
+                None,
+                &json!({"timeout_seconds": self.config.comfyui.request_timeout_seconds}),
+            )
+            .await?;
         let response = tokio::select! {
             biased;
             _ = deadline.cancelled() => Err(HarnessError::ShuttingDown),
@@ -897,11 +923,15 @@ impl Harness {
     }
 
     pub async fn reconcile(&self, run_id: &str) -> Result<ReconcileResult> {
+        self.reconcile_in_task(run_id, true).await
+    }
+
+    async fn reconcile_in_task(&self, run_id: &str, audit: bool) -> Result<ReconcileResult> {
         let harness = self.clone();
         let run_id = run_id.to_owned();
         tokio::spawn(async move {
             harness
-                .reconcile_until(&run_id, &CancellationToken::new())
+                .reconcile_with_audit(&run_id, &CancellationToken::new(), audit, &|_| {})
                 .await
         })
         .await
@@ -914,31 +944,84 @@ impl Harness {
         run_id: &str,
         deadline: &CancellationToken,
     ) -> Result<ReconcileResult> {
+        self.reconcile_until_with_active(run_id, deadline, &|_| {})
+            .await
+    }
+
+    /// Notify the caller once queue evidence is reflected in an active run record,
+    /// before any later history or audit error can prevent observation.
+    pub async fn reconcile_until_with_active(
+        &self,
+        run_id: &str,
+        deadline: &CancellationToken,
+        on_active: &(dyn Fn(&RunRecord) + Sync),
+    ) -> Result<ReconcileResult> {
+        self.reconcile_with_audit(run_id, deadline, true, on_active)
+            .await
+    }
+
+    async fn reconcile_with_audit(
+        &self,
+        run_id: &str,
+        deadline: &CancellationToken,
+        audit: bool,
+        on_active: &(dyn Fn(&RunRecord) + Sync),
+    ) -> Result<ReconcileResult> {
         let lock = self
             .events
             .run_lock(&self.database_identity, run_id, RunLockKind::Reconcile);
         let _guard = before_deadline(deadline, async { Ok(lock.lock().await) }).await?;
+        let (run, outcome, settles_at) = self.inspect_run(run_id, deadline, on_active).await?;
+        let repository = self.repository.as_async();
+        let outputs = repository.outputs(run_id).await?;
+        // Polling uses the same inspection without writing an event every second.
+        if audit {
+            repository
+                .record_event(
+                    run_id,
+                    "run_reconciled",
+                    None,
+                    &json!({ "outcome": outcome }),
+                )
+                .await?;
+        }
+        Ok(ReconcileResult {
+            run,
+            outputs,
+            outcome,
+            settles_at,
+        })
+    }
+
+    async fn inspect_run(
+        &self,
+        run_id: &str,
+        deadline: &CancellationToken,
+        on_active: &(dyn Fn(&RunRecord) + Sync),
+    ) -> Result<(RunRecord, ReconcileOutcome, Option<DateTime<Utc>>)> {
         let repository = self.repository.as_async();
         let (mut run, live_owner) = self
             .recover_submission(repository.get(run_id).await?)
             .await?;
-        if run.status.is_terminal() || live_owner {
-            return Ok(ReconcileResult {
-                outputs: repository.outputs(run_id).await?,
-                run,
-            });
+        if run.status.is_terminal() {
+            return Ok((run, ReconcileOutcome::Terminal, None));
         }
+        if live_owner {
+            return Ok((run, ReconcileOutcome::InProgressElsewhere, None));
+        }
+        let prompt_id = run.prompt_id.clone();
+        let observed_at = Utc::now();
         let queue = before_deadline(deadline, self.backend.queue()).await?;
-        let transition_status = if queue.is_running(&run.prompt_id) {
+        let queued = queue.contains(&prompt_id);
+        let transition_status = if queue.is_running(&prompt_id) {
             (!matches!(run.status, RunStatus::Running | RunStatus::Cancelling))
                 .then_some(RunStatus::Running)
-        } else if queue.contains(&run.prompt_id)
-            && !matches!(run.status, RunStatus::Queued | RunStatus::Cancelling)
-        {
+        } else if queued && !matches!(run.status, RunStatus::Queued | RunStatus::Cancelling) {
             Some(RunStatus::Queued)
         } else {
             None
         };
+        let mut notified = false;
         if let Some(status) = transition_status {
             let transition = TransitionGuard::new(&self.events);
             if let Some(updated) = repository
@@ -946,6 +1029,8 @@ impl Harness {
                 .await?
             {
                 run = updated;
+                on_active(&run);
+                notified = true;
                 if status == RunStatus::Running {
                     repository
                         .record_event(
@@ -977,12 +1062,20 @@ impl Harness {
                 transition.disarm();
                 run = repository.get(run_id).await?;
                 if run.status.is_terminal() {
-                    return Ok(ReconcileResult {
-                        outputs: repository.outputs(run_id).await?,
-                        run,
-                    });
+                    return Ok((run, ReconcileOutcome::Terminal, None));
                 }
             }
+        }
+
+        if !notified
+            && queued
+            && run.prompt_id == prompt_id
+            && matches!(
+                run.status,
+                RunStatus::Queued | RunStatus::Running | RunStatus::Cancelling
+            )
+        {
+            on_active(&run);
         }
 
         let history = before_deadline(deadline, self.backend.history(&run.prompt_id)).await?;
@@ -993,7 +1086,8 @@ impl Harness {
             )));
         }
         match history.outcome {
-            HistoryOutcome::Unresolved => {}
+            HistoryOutcome::NotFound | HistoryOutcome::Unresolved => {}
+            HistoryOutcome::Completed if history.outputs.is_empty() => {}
             HistoryOutcome::Cancelled => {
                 let message = format!(
                     "{} confirmed cancellation of the prompt",
@@ -1061,10 +1155,42 @@ impl Harness {
                 }
             }
         }
-        Ok(ReconcileResult {
-            outputs: repository.outputs(run_id).await?,
-            run: repository.get(run_id).await?,
-        })
+        let run = repository.get(run_id).await?;
+        let mut settles_at = None;
+        let outcome = if run.status.is_terminal() {
+            ReconcileOutcome::Terminal
+        } else if prompt_id != run.prompt_id {
+            ReconcileOutcome::StillAmbiguous
+        } else if queued
+            && matches!(
+                run.status,
+                RunStatus::Queued | RunStatus::Running | RunStatus::Cancelling
+            )
+        {
+            ReconcileOutcome::Active
+        } else if !queued
+            && run.status == RunStatus::UnknownSubmission
+            && history.outcome == HistoryOutcome::NotFound
+        {
+            let eligible_at = repository.submission_attempt(run_id).await?.and_then(
+                |(attempted_at, timeout_seconds)| {
+                    timeout_seconds
+                        .checked_add(ADMISSION_GRACE_SECONDS)
+                        .and_then(|seconds| i64::try_from(seconds).ok())
+                        .and_then(TimeDelta::try_seconds)
+                        .and_then(|delta| attempted_at.checked_add_signed(delta))
+                },
+            );
+            if eligible_at.is_some_and(|instant| instant <= observed_at) {
+                ReconcileOutcome::NotFound
+            } else {
+                settles_at = eligible_at;
+                ReconcileOutcome::StillAmbiguous
+            }
+        } else {
+            ReconcileOutcome::StillAmbiguous
+        };
+        Ok((run, outcome, settles_at))
     }
 
     async fn transition_to_terminal(
@@ -1105,9 +1231,22 @@ impl Harness {
         &self,
         deadline: &CancellationToken,
     ) -> Result<Vec<ReconcileResult>> {
+        self.reconcile_all_until_with_active(deadline, &|_| {})
+            .await
+    }
+
+    /// Notify per run, including when another run later fails reconciliation.
+    pub async fn reconcile_all_until_with_active(
+        &self,
+        deadline: &CancellationToken,
+        on_active: &(dyn Fn(&RunRecord) + Sync),
+    ) -> Result<Vec<ReconcileResult>> {
         let mut results = Vec::new();
         for run in self.repository.as_async().active().await? {
-            results.push(self.reconcile_until(&run.id, deadline).await?);
+            results.push(
+                self.reconcile_until_with_active(&run.id, deadline, on_active)
+                    .await?,
+            );
         }
         Ok(results)
     }
@@ -1177,9 +1316,9 @@ impl Harness {
                 }
                 _ = poll.tick() => {
                     let result = if let Some((_, deadline)) = stop {
-                        self.reconcile_until(run_id, deadline).await?
+                        self.reconcile_with_audit(run_id, deadline, false, &|_| {}).await?
                     } else {
-                        self.reconcile(run_id).await?
+                        self.reconcile_in_task(run_id, false).await?
                     };
                     self.events.publish(Event::RunProgress { run: result.run.clone(), backend_event: None });
                     if result.run.status.is_terminal() {

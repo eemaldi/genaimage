@@ -103,8 +103,47 @@ pub struct RunEventsResponse {
     pub events: Vec<RunEventResponse>,
 }
 
+/// What reconciliation established, independently of the run status.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileOutcome {
+    /// The run was already terminal or reached a terminal state.
+    Terminal,
+    /// The prompt was found pending or running in the backend queue.
+    Active,
+    /// A live submission owner still holds the run.
+    InProgressElsewhere,
+    /// The prompt was absent from queue and history after the settle window.
+    /// ComfyUI cannot prove absence; very late admission is still possible.
+    NotFound,
+    /// The backend evidence did not settle the run's state.
+    StillAmbiguous,
+}
+
+/// A refreshed run snapshot with the outcome of this reconciliation.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReconcileRunResponse {
+    #[serde(flatten)]
+    pub run: RunResponse,
+    #[serde(default = "inconclusive_outcome")]
+    pub outcome: ReconcileOutcome,
+    /// Earliest time to check again when an absent submission is still settling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settles_at: Option<DateTime<Utc>>,
+}
+
+fn inconclusive_outcome() -> ReconcileOutcome {
+    ReconcileOutcome::StillAmbiguous
+}
+
 /// Current snapshots of the runs examined during bulk reconciliation.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ReconcileRunsResponse {
     pub runs: Vec<RunResponse>,
+}
+
+/// Current snapshots and outcomes of the runs examined during bulk reconciliation.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReconcileRunsWithOutcomesResponse {
+    pub runs: Vec<ReconcileRunResponse>,
 }

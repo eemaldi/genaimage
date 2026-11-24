@@ -367,7 +367,7 @@ async fn fake_queue_and_history_are_prompt_specific_and_overridable() {
     assert!(backend.queue().await.unwrap().is_running("other"));
     api.fake.history_overrides.lock().unwrap().insert(
         "other".into(),
-        json!({"other": {"status": {"status_str": "success", "completed": true, "messages": []}}}),
+        json!({"other": {"status": {"status_str": "success", "completed": true, "messages": []}, "outputs": {"9": {"images": [{"filename": "test.png"}]}}}}),
     );
     assert_eq!(
         backend.history("other").await.unwrap().outcome,

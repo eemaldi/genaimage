@@ -514,7 +514,7 @@ async fn queue_and_history_gap_after_cancel_leaves_run_open_for_later_success() 
 }
 
 #[tokio::test]
-async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
+async fn settled_not_found_still_allows_late_adoption_from_queue_or_history() {
     for seen_in_queue in [false, true] {
         let (_workspace, harness, state, request) = setup(true);
         let run = harness.submit(request).await.unwrap();
@@ -523,18 +523,36 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         assert!(
             matches!(replay.recv().await.unwrap().event, Event::RunUnknownSubmission { run } if run.status == RunStatus::UnknownSubmission)
         );
-        for _ in 0..2 {
-            assert_eq!(
-                harness.reconcile(&run.id).await.unwrap().run.status,
-                RunStatus::UnknownSubmission
-            );
+        state.lock().unwrap().history_outcome = HistoryOutcome::NotFound;
+        let settling = harness.reconcile(&run.id).await.unwrap();
+        assert_eq!(settling.outcome, ReconcileOutcome::StillAmbiguous);
+        assert!(settling.settles_at.unwrap() > Utc::now());
+        let db = rusqlite::Connection::open(&harness.config().state_database).unwrap();
+        db.execute("UPDATE run_events SET created_at = '2000-01-01T00:00:00Z' WHERE run_id = ?1 AND event_type = 'submission_attempted'", [&run.id]).unwrap();
+        for (history, expected) in [
+            (HistoryOutcome::Unresolved, ReconcileOutcome::StillAmbiguous),
+            (HistoryOutcome::NotFound, ReconcileOutcome::NotFound),
+        ] {
+            state.lock().unwrap().history_outcome = history;
+            let result = harness.reconcile(&run.id).await.unwrap();
+            assert_eq!(result.run.status, RunStatus::UnknownSubmission);
+            assert_eq!(result.run.updated_at, run.updated_at);
+            assert_eq!(result.outcome, expected);
+            let events = harness.run_events(&run.id, 10).unwrap();
+            assert_eq!(events.last().unwrap().event_type, "run_reconciled");
+            assert_eq!(events.last().unwrap().payload, json!({"outcome": expected}));
         }
+        // Admission can still happen after the window and a not-found result.
         if seen_in_queue {
             state.lock().unwrap().queue_position = Some(QueuePosition::Pending);
-            assert_eq!(
-                harness.reconcile(&run.id).await.unwrap().run.status,
-                RunStatus::Queued
-            );
+            let result = harness.reconcile(&run.id).await.unwrap();
+            assert_eq!(result.run.status, RunStatus::Queued);
+            assert_eq!(result.outcome, ReconcileOutcome::Active);
+            assert_eq!(result.run.prompt_id, run.prompt_id);
+            state.lock().unwrap().queue_position = None;
+            let result = harness.reconcile(&run.id).await.unwrap();
+            assert_eq!(result.run.status, RunStatus::Queued);
+            assert_eq!(result.outcome, ReconcileOutcome::StillAmbiguous);
         }
         {
             let mut state = state.lock().unwrap();
@@ -543,6 +561,7 @@ async fn lost_submit_response_stays_unknown_until_queue_or_history_matches() {
         }
         let result = harness.reconcile(&run.id).await.unwrap();
         assert_eq!(result.run.status, RunStatus::Completed);
+        assert_eq!(result.outcome, ReconcileOutcome::Terminal);
         assert_eq!(result.run.prompt_id, run.prompt_id);
         assert_eq!(result.outputs.len(), 1);
     }
@@ -1251,6 +1270,9 @@ async fn abandoned_reservation_is_recovered_without_resending() {
             .await
             .unwrap();
         assert_eq!(replay.run.status, RunStatus::Submitting);
+        let result = observer.reconcile(&run.id).await.unwrap();
+        assert_eq!(result.outcome, ReconcileOutcome::InProgressElsewhere);
+        assert_eq!(result.run.status, RunStatus::Submitting);
         drop(observer);
         live.abort();
         assert!(matches!(live.await, Err(error) if error.is_cancelled()));

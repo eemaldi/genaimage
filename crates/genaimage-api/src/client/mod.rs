@@ -15,10 +15,11 @@ use thiserror::Error;
 use url::{Host, Url};
 
 use crate::{
-    HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunsResponse,
-    RunEventsQuery, RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus,
-    SettingsPatch, SettingsResponse, SettingsTestResponse, SubmitRunRequest, UploadResponse,
-    WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest, WorkflowValidationResponse,
+    HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
+    ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse,
+    RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse,
+    SettingsTestResponse, SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
+    WorkflowValidationRequest, WorkflowValidationResponse,
 };
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:3000";
@@ -199,6 +200,21 @@ impl Client {
     }
 
     pub async fn reconcile_runs(&self) -> Result<ReconcileRunsResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", "reconcile"])?)
+            .await
+    }
+
+    pub async fn reconcile_run_with_outcome(
+        &self,
+        id: &str,
+    ) -> Result<ReconcileRunResponse, Error> {
+        self.json(self.request(Method::POST, &["runs", id, "reconcile"])?)
+            .await
+    }
+
+    pub async fn reconcile_runs_with_outcomes(
+        &self,
+    ) -> Result<ReconcileRunsWithOutcomesResponse, Error> {
         self.json(self.request(Method::POST, &["runs", "reconcile"])?)
             .await
     }
