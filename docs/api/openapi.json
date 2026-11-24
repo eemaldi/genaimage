@@ -7,6 +7,37 @@
         ],
         "type": "boolean"
       },
+      "AssistantAwaitingConfirmationEvent": {
+        "properties": {
+          "confirmation_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssistantMessageStatus"
+          },
+          "user_message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmation_id",
+          "conversation_id",
+          "user_message_id",
+          "message_id",
+          "model",
+          "status"
+        ],
+        "type": "object"
+      },
       "AssistantChatContent": {
         "oneOf": [
           {
@@ -159,6 +190,9 @@
             "type": "string"
           },
           "json_schema": {},
+          "status": {
+            "$ref": "#/components/schemas/AssistantToolConfirmationStatus"
+          },
           "tool": {
             "type": "string"
           },
@@ -168,6 +202,7 @@
         },
         "required": [
           "confirmation_id",
+          "status",
           "conversation_id",
           "tool_call_id",
           "tool",
@@ -455,6 +490,12 @@
               "null"
             ]
           },
+          "confirmation_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "conversation_id": {
             "type": "string"
           },
@@ -581,6 +622,18 @@
           "tool_call"
         ],
         "type": "object"
+      },
+      "AssistantToolConfirmationStatus": {
+        "enum": [
+          "pending",
+          "invoking",
+          "succeeded",
+          "failed",
+          "rejected",
+          "outcome_unknown",
+          "expired"
+        ],
+        "type": "string"
       },
       "AssistantToolResultEvent": {
         "properties": {
@@ -3528,7 +3581,7 @@
     },
     "/api/v1/assistant/conversations/{id}/messages": {
       "post": {
-        "description": "Append a user message and stream the assistant turn over SSE. A pending tool confirmation returns 409 until it is confirmed, edited or rejected. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, tool_result, confirmation_required, done, error. Non-confirmation tools run after schema validation; confirmation tools pause without invocation. The terminal event contains the exact status and persisted assistant message ID when persistence succeeded; awaiting_confirmation is not success.",
+        "description": "Append a user message and stream the assistant turn over SSE. A pending tool confirmation returns 409 until it is confirmed, edited or rejected. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, tool_result, confirmation_required, awaiting_confirmation, done, error. Non-confirmation tools run after schema validation; confirmation tools pause without invocation. The terminal event contains the exact status and persisted assistant message ID when persistence succeeded; awaiting_confirmation is not success.",
         "operationId": "assistant_conversations_send_message",
         "parameters": [
           {

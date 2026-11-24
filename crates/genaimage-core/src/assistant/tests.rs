@@ -1087,3 +1087,256 @@ async fn a_model_without_tool_support_fails_without_dropping_the_tool_list() {
     assert!(error.to_string().contains("tools"));
     assert!(calls.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_model_that_loses_tool_support_cannot_claim_confirmation() {
+    use crate::{config::LlmConfig, LlmRoles};
+
+    let (tool, calls) = fake_tool("requires_tools", true);
+    let (_root, service, provider) = runtime_fixture(
+        vec![vec![tool_call(
+            "confirm-lost-tools",
+            "requires_tools",
+            serde_json::json!({"value":7}),
+        )]],
+        vec![tool],
+    )
+    .await;
+    let conversation = service
+        .create_conversation("Lost tools".into())
+        .await
+        .unwrap();
+    let events = collect(
+        service
+            .send_message(&conversation.id, user("submit"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let confirmation_id = events
+        .iter()
+        .find_map(|event| match event {
+            ChatDelta::ConfirmationRequired {
+                confirmation_id, ..
+            } => Some(confirmation_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+
+    struct NoTools(Arc<ScriptedLlm>);
+    #[async_trait]
+    impl LlmProvider for NoTools {
+        async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream> {
+            self.0.chat_stream(request).await
+        }
+        async fn list_models(&self) -> Result<Vec<LlmModel>> {
+            Ok(vec![LlmModel {
+                id: "text-model".into(),
+                supports_tools: false,
+                supports_vision: false,
+            }])
+        }
+    }
+    let no_tools: Arc<dyn LlmProvider> = Arc::new(NoTools(provider));
+    let config = LlmConfig {
+        base_url: "http://127.0.0.1:1".into(),
+        text_model: "text-model".into(),
+        ..LlmConfig::default()
+    };
+    let binding = LlmRoles::new(&config, Some(no_tools)).text().await.unwrap();
+    let error = service
+        .decide_confirmation_with_binding(
+            &conversation.id,
+            &confirmation_id,
+            crate::assistant::AssistantConfirmationDecision::Confirm,
+            binding,
+        )
+        .await
+        .err()
+        .expect("unsupported model must fail before claiming");
+    assert!(error.to_string().contains("text-model"));
+    assert!(error.to_string().contains("tools"));
+    assert!(calls.lock().unwrap().is_empty());
+    let pending = service
+        .pending_confirmation(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.id, confirmation_id);
+    assert_eq!(
+        pending.status,
+        crate::assistant::AssistantToolConfirmationStatus::Pending
+    );
+}
+
+#[tokio::test]
+async fn a_crash_after_claim_recovers_as_outcome_unknown_without_reinvocation() {
+    let (tool, calls) = fake_tool("durable", true);
+    let (_root, service, _) = runtime_fixture(
+        vec![vec![tool_call(
+            "crash",
+            "durable",
+            serde_json::json!({"value":1}),
+        )]],
+        vec![tool],
+    )
+    .await;
+    let conversation = service
+        .create_conversation("Crash recovery".into())
+        .await
+        .unwrap();
+    let events = collect(
+        service
+            .send_message(&conversation.id, user("submit"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let confirmation_id = events
+        .iter()
+        .find_map(|event| match event {
+            ChatDelta::ConfirmationRequired {
+                confirmation_id, ..
+            } => Some(confirmation_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let claimed = service
+        .test_claim_confirmation(&conversation.id, &confirmation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        claimed.status,
+        crate::assistant::AssistantToolConfirmationStatus::Invoking
+    );
+
+    let detail = service
+        .get_conversation(&conversation.id, None)
+        .await
+        .unwrap();
+    let tool_message = detail.messages.last().unwrap();
+    assert!(matches!(
+        &tool_message.content,
+        crate::ChatMessage::Tool { result, .. }
+            if result["ok"] == false && result["error"].as_str().unwrap().contains("Outcome unknown")
+    ));
+    assert!(calls.lock().unwrap().is_empty());
+    let audit = service
+        .list_tool_audit(&conversation.id, None)
+        .await
+        .unwrap();
+    assert!(audit.iter().any(|row| {
+        row.decision == "outcome_unknown"
+            && row.confirmation_status.as_deref() == Some("outcome_unknown")
+    }));
+    let retry = service
+        .decide_confirmation(
+            &conversation.id,
+            &confirmation_id,
+            crate::assistant::AssistantConfirmationDecision::Confirm,
+        )
+        .await
+        .err()
+        .expect("outcome-unknown confirmations must not be replayed");
+    assert!(matches!(retry, HarnessError::ToolConfirmationConflict(_)));
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cancellation_during_confirmed_invocation_still_records_the_outcome() {
+    struct CompletingTool {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl crate::AssistantTool for CompletingTool {
+        fn name(&self) -> &str {
+            "complete_after_cancel"
+        }
+        fn description(&self) -> &str {
+            "completes after cancellation"
+        }
+        fn json_schema(&self) -> serde_json::Value {
+            object_schema()
+        }
+        fn requires_confirmation(&self) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            _context: crate::ToolContext,
+            _arguments: serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(serde_json::json!({"completed":true}))
+        }
+    }
+    let tool = Arc::new(CompletingTool {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let (_root, service, _) = runtime_fixture(
+        vec![vec![tool_call(
+            "cancel-confirmed",
+            "complete_after_cancel",
+            serde_json::json!({"value":1}),
+        )]],
+        vec![tool.clone()],
+    )
+    .await;
+    let conversation = service
+        .create_conversation("Cancel confirmed".into())
+        .await
+        .unwrap();
+    let events = collect(
+        service
+            .send_message(&conversation.id, user("submit"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let confirmation_id = events
+        .iter()
+        .find_map(|event| match event {
+            ChatDelta::ConfirmationRequired {
+                confirmation_id, ..
+            } => Some(confirmation_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let _stream = service
+        .decide_confirmation(
+            &conversation.id,
+            &confirmation_id,
+            crate::assistant::AssistantConfirmationDecision::Confirm,
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), tool.started.notified())
+        .await
+        .unwrap();
+    let cancel_service = service.clone();
+    let cancel_id = conversation.id.clone();
+    let cancel = tokio::spawn(async move { cancel_service.cancel(&cancel_id).await });
+    tokio::task::yield_now().await;
+    tool.release.notify_one();
+    timeout(Duration::from_secs(1), cancel)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(tool.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let audit = service
+        .list_tool_audit(&conversation.id, None)
+        .await
+        .unwrap();
+    assert!(audit.iter().any(|row| {
+        row.decision == "invocation_succeeded"
+            && row.confirmation_status.as_deref() == Some("succeeded")
+            && row.invocation_result == Some(serde_json::json!({"completed":true}))
+    }));
+}

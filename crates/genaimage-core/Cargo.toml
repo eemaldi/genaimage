@@ -18,7 +18,6 @@ image.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["arbitrary_precision"] }
-jsonschema = { version = "0.18", default-features = false }
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -37,6 +36,7 @@ rustix = { version = "1", features = ["fs"] }
 tokio = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true, features = ["arbitrary_precision"] }
 criterion = "0.5"
+jsonschema = { version = "0.18", default-features = false }
 
 [[bench]]
 name = "performance"

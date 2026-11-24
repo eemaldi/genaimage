@@ -685,3 +685,97 @@ async fn dropping_the_sse_client_persists_a_cancelled_partial_message() {
             if text == "disconnect partial"
     ));
 }
+
+struct ConfirmationOnlyTool;
+
+#[genaimage_core::async_trait]
+impl genaimage_core::AssistantTool for ConfirmationOnlyTool {
+    fn name(&self) -> &str {
+        "confirm_me"
+    }
+    fn description(&self) -> &str {
+        "requires confirmation"
+    }
+    fn json_schema(&self) -> serde_json::Value {
+        json!({
+            "type":"object",
+            "properties":{"value":{"type":"integer"}},
+            "required":["value"],
+            "additionalProperties":false
+        })
+    }
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+    async fn invoke(
+        &self,
+        _context: genaimage_core::ToolContext,
+        _arguments: serde_json::Value,
+    ) -> genaimage_core::Result<serde_json::Value> {
+        panic!("confirmation-only test tool must not run")
+    }
+}
+
+#[tokio::test]
+async fn awaiting_confirmation_is_a_distinct_terminal_sse_event() {
+    let llm = FakeLlmServer::start(
+        FakeLlmScript::default()
+            .with_events([
+                FakeLlmEvent::tool_calls([FakeToolCallDelta::new(0)
+                    .id("confirm-1")
+                    .name("confirm_me")
+                    .arguments("{\"value\":7}")]),
+                FakeLlmEvent::finish("tool_calls"),
+                FakeLlmEvent::Done,
+            ])
+            .with_models_response(json!({
+                "object": "list",
+                "data": [{
+                    "id": "assistant",
+                    "supports_tools": true,
+                    "supports_vision": false
+                }]
+            })),
+    )
+    .await;
+    let base_url = llm.base_url();
+    let api = ApiHarness::start_with_assistant_tools(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", &base_url),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "assistant"),
+        ],
+        vec![std::sync::Arc::new(ConfirmationOnlyTool)],
+    )
+    .await;
+    let client = client(&api);
+    let conversation = create(&client, "Confirmation SSE").await;
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &text_request("confirm"))
+        .await
+        .unwrap();
+    next_started(&mut stream).await;
+    assert!(matches!(
+        stream.next().await.unwrap().unwrap(),
+        AssistantStreamEvent::ToolCall(_)
+    ));
+    let required = match stream.next().await.unwrap().unwrap() {
+        AssistantStreamEvent::ConfirmationRequired(event) => event,
+        _ => panic!("expected confirmation_required"),
+    };
+    assert_eq!(
+        required.status,
+        genaimage_api::AssistantToolConfirmationStatus::Pending
+    );
+    let terminal = match stream.next().await.unwrap().unwrap() {
+        AssistantStreamEvent::AwaitingConfirmation(event) => event,
+        AssistantStreamEvent::Done(_) => panic!("awaiting confirmation must not be done"),
+        _ => panic!("expected awaiting_confirmation"),
+    };
+    assert_eq!(terminal.confirmation_id, required.confirmation_id);
+    assert_eq!(
+        terminal.status,
+        AssistantMessageStatus::AwaitingConfirmation
+    );
+    assert!(stream.next().await.is_none());
+}

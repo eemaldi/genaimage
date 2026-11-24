@@ -110,29 +110,23 @@ pub struct AssistantConversationDetail {
 #[serde(rename_all = "snake_case")]
 pub enum AssistantToolConfirmationStatus {
     Pending,
-    Confirmed,
-    Edited,
+    Invoking,
+    Succeeded,
+    Failed,
     Rejected,
+    OutcomeUnknown,
     Expired,
 }
 
 impl AssistantToolConfirmationStatus {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Confirmed => "confirmed",
-            Self::Edited => "edited",
-            Self::Rejected => "rejected",
-            Self::Expired => "expired",
-        }
-    }
-
     fn parse(value: &str) -> Result<Self> {
         match value {
             "pending" => Ok(Self::Pending),
-            "confirmed" => Ok(Self::Confirmed),
-            "edited" => Ok(Self::Edited),
+            "invoking" => Ok(Self::Invoking),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
             "rejected" => Ok(Self::Rejected),
+            "outcome_unknown" => Ok(Self::OutcomeUnknown),
             "expired" => Ok(Self::Expired),
             _ => Err(HarnessError::Database(format!(
                 "unknown assistant tool confirmation status '{value}'"
@@ -153,6 +147,7 @@ pub struct AssistantToolConfirmation {
     pub user_message_id: String,
     pub model_step: u32,
     pub status: AssistantToolConfirmationStatus,
+    pub decision: Option<String>,
     pub effective_arguments: Option<serde_json::Value>,
     pub decision_reason: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -190,11 +185,19 @@ pub struct NewAssistantToolAudit {
     pub invoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct NewAssistantToolSettlement {
+    pub ok: Option<bool>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AssistantToolAuditRecord {
     pub id: i64,
     pub conversation_id: String,
     pub confirmation_id: Option<String>,
+    pub confirmation_status: Option<String>,
     pub tool_call_id: String,
     pub tool: String,
     pub proposed_arguments: serde_json::Value,
@@ -412,23 +415,44 @@ impl ConversationStore {
         &self,
         conversation_id: &str,
         confirmation_id: &str,
-        status: AssistantToolConfirmationStatus,
+        decision: &str,
         effective_arguments: Option<serde_json::Value>,
         reason: Option<String>,
     ) -> Result<AssistantToolConfirmation> {
         let conversation_id = conversation_id.to_owned();
         let confirmation_id = confirmation_id.to_owned();
+        let decision = decision.to_owned();
         self.call(move |repository| {
             claim_confirmation(
                 &repository,
                 &conversation_id,
                 &confirmation_id,
-                status,
+                &decision,
                 effective_arguments,
                 reason,
             )
         })
         .await
+    }
+
+    pub(crate) async fn settle_confirmation(
+        &self,
+        conversation_id: &str,
+        confirmation_id: &str,
+        settlement: NewAssistantToolSettlement,
+    ) -> Result<AssistantMessage> {
+        let conversation_id = conversation_id.to_owned();
+        let confirmation_id = confirmation_id.to_owned();
+        self.call(move |repository| {
+            settle_confirmation(&repository, &conversation_id, &confirmation_id, settlement)
+        })
+        .await
+    }
+
+    pub async fn recover_invoking_confirmations(&self, conversation_id: &str) -> Result<usize> {
+        let conversation_id = conversation_id.to_owned();
+        self.call(move |repository| recover_invoking_confirmations(&repository, &conversation_id))
+            .await
     }
 
     pub async fn append_tool_audit(&self, audit: NewAssistantToolAudit) -> Result<()> {
@@ -508,7 +532,7 @@ fn pending_confirmation(
         connection
             .query_row(
                 "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json,
-                        json_schema, source_message_id, user_message_id, model_step, status,
+                        json_schema, source_message_id, user_message_id, model_step, status, decision,
                         effective_arguments_json, decision_reason, created_at, decided_at
                  FROM assistant_tool_confirmations
                  WHERE conversation_id = ?1 AND status = 'pending'
@@ -595,53 +619,231 @@ fn claim_confirmation(
     repository: &RunRepository,
     conversation_id: &str,
     confirmation_id: &str,
-    status: AssistantToolConfirmationStatus,
+    decision: &str,
     effective_arguments: Option<serde_json::Value>,
     reason: Option<String>,
 ) -> Result<AssistantToolConfirmation> {
-    if status == AssistantToolConfirmationStatus::Pending
-        || status == AssistantToolConfirmationStatus::Expired
-    {
+    if !matches!(decision, "confirm" | "edit" | "reject") {
         return Err(HarnessError::InvalidConversationRequest(
-            "A confirmation decision must be confirmed, edited or rejected.".into(),
+            "A confirmation decision must be confirm, edit or reject.".into(),
         ));
     }
-    let now = timestamp();
     repository.guarded(|connection| {
         let current = load_confirmation(connection, conversation_id, confirmation_id)?;
+        let status = if decision == "reject" {
+            "rejected"
+        } else {
+            "invoking"
+        };
         let changed = connection.execute(
             "UPDATE assistant_tool_confirmations
-             SET status = ?3, effective_arguments_json = ?4, decision_reason = ?5, decided_at = ?6
+             SET status = ?3, decision = ?4, effective_arguments_json = ?5,
+                 decision_reason = ?6, decided_at = ?7
              WHERE id = ?1 AND conversation_id = ?2 AND status = 'pending'",
             params![
                 confirmation_id,
                 conversation_id,
-                status.as_str(),
+                status,
+                decision,
                 effective_arguments
                     .as_ref()
                     .map(serde_json::to_string)
                     .transpose()?,
                 reason,
-                now,
+                timestamp(),
             ],
         )?;
         if changed != 1 {
             return Err(HarnessError::ToolConfirmationConflict(format!(
-                "confirmation '{}' was already decided as {:?}",
+                "confirmation '{}' is already in state {:?}",
                 current.id, current.status
             )));
         }
-        let resumed = connection.execute(
-            "DELETE FROM assistant_message_terminal_states WHERE message_id = ?1",
-            params![current.source_message_id],
+        insert_tool_audit(
+            connection,
+            NewAssistantToolAudit {
+                conversation_id: current.conversation_id.clone(),
+                confirmation_id: Some(current.id.clone()),
+                tool_call_id: current.tool_call_id.clone(),
+                tool: current.tool.clone(),
+                proposed_arguments: current.proposed_arguments.clone(),
+                validation_outcome: "valid".into(),
+                validation_error: None,
+                decision: if decision == "reject" {
+                    "rejected".into()
+                } else {
+                    "invocation_started".into()
+                },
+                effective_arguments: effective_arguments.clone(),
+                decided_by: Some("user".into()),
+                invocation_ok: None,
+                invocation_result: None,
+                invocation_error: None,
+                decided_at: Some(Utc::now()),
+                invoked_at: (decision != "reject").then(Utc::now),
+            },
         )?;
-        if resumed != 1 {
-            return Err(HarnessError::ToolConfirmationConflict(
-                "The assistant proposal changed while the confirmation was being decided.".into(),
-            ));
+        if decision == "reject" {
+            clear_awaiting_state(connection, &current.source_message_id)?;
+            let rejection = format!(
+                "The user rejected tool '{}'.{}",
+                current.tool,
+                reason
+                    .as_deref()
+                    .map(|value| format!(" Reason: {value}"))
+                    .unwrap_or_default()
+            );
+            append_tool_message_in_connection(
+                connection,
+                &current.conversation_id,
+                &current.tool_call_id,
+                serde_json::json!({"ok": false, "error": rejection}),
+            )?;
         }
         load_confirmation(connection, conversation_id, confirmation_id)
     })
+}
+
+fn settle_confirmation(
+    repository: &RunRepository,
+    conversation_id: &str,
+    confirmation_id: &str,
+    settlement: NewAssistantToolSettlement,
+) -> Result<AssistantMessage> {
+    repository.guarded(|connection| {
+        let current = load_confirmation(connection, conversation_id, confirmation_id)?;
+        settle_confirmation_in_connection(connection, current, settlement)
+    })
+}
+
+fn settle_confirmation_in_connection(
+    connection: &rusqlite::Connection,
+    current: AssistantToolConfirmation,
+    settlement: NewAssistantToolSettlement,
+) -> Result<AssistantMessage> {
+    if current.status != AssistantToolConfirmationStatus::Invoking {
+        return Err(HarnessError::ToolConfirmationConflict(format!(
+            "confirmation '{}' is not invoking (current state {:?})",
+            current.id, current.status
+        )));
+    }
+    let (status, decision) = match settlement.ok {
+        Some(true) => ("succeeded", "invocation_succeeded"),
+        Some(false) => ("failed", "invocation_failed"),
+        None => ("outcome_unknown", "outcome_unknown"),
+    };
+    let changed = connection.execute(
+        "UPDATE assistant_tool_confirmations SET status = ?2 WHERE id = ?1 AND status = 'invoking'",
+        params![current.id, status],
+    )?;
+    if changed != 1 {
+        return Err(HarnessError::ToolConfirmationConflict(format!(
+            "confirmation '{}' changed before its outcome was recorded",
+            current.id
+        )));
+    }
+    insert_tool_audit(
+        connection,
+        NewAssistantToolAudit {
+            conversation_id: current.conversation_id.clone(),
+            confirmation_id: Some(current.id.clone()),
+            tool_call_id: current.tool_call_id.clone(),
+            tool: current.tool.clone(),
+            proposed_arguments: current.proposed_arguments.clone(),
+            validation_outcome: "valid".into(),
+            validation_error: None,
+            decision: decision.into(),
+            effective_arguments: current.effective_arguments.clone(),
+            decided_by: Some("runtime".into()),
+            invocation_ok: settlement.ok,
+            invocation_result: settlement.result.clone(),
+            invocation_error: settlement.error.clone(),
+            decided_at: current.decided_at,
+            invoked_at: Some(Utc::now()),
+        },
+    )?;
+    clear_awaiting_state(connection, &current.source_message_id)?;
+    let result = match settlement.ok {
+        Some(true) => serde_json::json!({"ok": true, "result": settlement.result}),
+        _ => serde_json::json!({"ok": false, "error": settlement.error}),
+    };
+    append_tool_message_in_connection(
+        connection,
+        &current.conversation_id,
+        &current.tool_call_id,
+        result,
+    )
+}
+
+fn recover_invoking_confirmations(
+    repository: &RunRepository,
+    conversation_id: &str,
+) -> Result<usize> {
+    repository.guarded(|connection| {
+        load_conversation(connection, conversation_id)?;
+        let ids: Vec<String> = {
+            let mut statement = connection.prepare(
+                "SELECT id FROM assistant_tool_confirmations
+                 WHERE conversation_id = ?1 AND status = 'invoking'
+                 ORDER BY created_at ASC LIMIT 100",
+            )?;
+            let rows = statement.query_map([conversation_id], |row| row.get(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            rows
+        };
+        for id in &ids {
+            let current = load_confirmation(connection, conversation_id, id)?;
+            settle_confirmation_in_connection(connection, current, NewAssistantToolSettlement {
+                ok: None,
+                result: None,
+                error: Some("Outcome unknown. The process stopped after invocation started; check the external operation before continuing and never blindly retry it.".into()),
+            })?;
+        }
+        Ok(ids.len())
+    })
+}
+
+fn clear_awaiting_state(connection: &rusqlite::Connection, message_id: &str) -> Result<()> {
+    let removed = connection.execute(
+        "DELETE FROM assistant_message_terminal_states WHERE message_id = ?1",
+        params![message_id],
+    )?;
+    if removed != 1 {
+        return Err(HarnessError::ToolConfirmationConflict(
+            "The assistant proposal changed while its confirmation was settled.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn append_tool_message_in_connection(
+    connection: &rusqlite::Connection,
+    conversation_id: &str,
+    tool_call_id: &str,
+    result: serde_json::Value,
+) -> Result<AssistantMessage> {
+    let id = Uuid::new_v4().to_string();
+    let now = timestamp();
+    let content = serde_json::to_string(&ChatMessage::Tool {
+        call_id: tool_call_id.to_owned(),
+        result,
+    })?;
+    let seq: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM assistant_messages WHERE conversation_id = ?1",
+        [conversation_id],
+        |row| row.get(0),
+    )?;
+    connection.execute(
+        "INSERT INTO assistant_messages (
+            id, conversation_id, seq, role, content_json, model, status, error, tool_call_id, created_at
+         ) VALUES (?1, ?2, ?3, 'tool', ?4, NULL, 'complete', NULL, ?5, ?6)",
+        params![id, conversation_id, seq, content, tool_call_id, now],
+    )?;
+    connection.execute(
+        "UPDATE assistant_conversations SET updated_at = ?2 WHERE id = ?1",
+        params![conversation_id, now],
+    )?;
+    load_message(connection, &id)
 }
 
 fn append_tool_audit(repository: &RunRepository, audit: NewAssistantToolAudit) -> Result<()> {
@@ -684,6 +886,8 @@ fn list_tool_audit(
         let mut statement = connection.prepare(
             "SELECT id, conversation_id, confirmation_id, tool_call_id, tool_name,
                     proposed_arguments_json, validation_outcome, validation_error, decision,
+                    (SELECT status FROM assistant_tool_confirmations c
+                     WHERE c.id = assistant_tool_call_audit.confirmation_id) AS confirmation_status,
                     effective_arguments_json, decided_by, invocation_ok, invocation_result_json,
                     invocation_error, created_at, decided_at, invoked_at
              FROM assistant_tool_call_audit WHERE conversation_id = ?1
@@ -710,7 +914,7 @@ fn load_confirmation(
     connection
         .query_row(
             "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json,
-                json_schema, source_message_id, user_message_id, model_step, status,
+                json_schema, source_message_id, user_message_id, model_step, status, decision,
                 effective_arguments_json, decision_reason, created_at, decided_at
          FROM assistant_tool_confirmations WHERE id = ?1 AND conversation_id = ?2",
             params![confirmation_id, conversation_id],
@@ -737,10 +941,11 @@ fn map_confirmation(row: &Row<'_>) -> rusqlite::Result<AssistantToolConfirmation
         user_message_id: row.get(7)?,
         model_step: row.get(8)?,
         status,
-        effective_arguments: parse_json_optional(row, 10)?,
-        decision_reason: row.get(11)?,
-        created_at: parse_time(row, 12)?,
-        decided_at: parse_time_optional(row, 13)?,
+        decision: row.get(10)?,
+        effective_arguments: parse_json_optional(row, 11)?,
+        decision_reason: row.get(12)?,
+        created_at: parse_time(row, 13)?,
+        decided_at: parse_time_optional(row, 14)?,
     })
 }
 
@@ -749,20 +954,21 @@ fn map_tool_audit(row: &Row<'_>) -> rusqlite::Result<AssistantToolAuditRecord> {
         id: row.get(0)?,
         conversation_id: row.get(1)?,
         confirmation_id: row.get(2)?,
+        confirmation_status: row.get(9)?,
         tool_call_id: row.get(3)?,
         tool: row.get(4)?,
         proposed_arguments: parse_json(row, 5)?,
         validation_outcome: row.get(6)?,
         validation_error: row.get(7)?,
         decision: row.get(8)?,
-        effective_arguments: parse_json_optional(row, 9)?,
-        decided_by: row.get(10)?,
-        invocation_ok: row.get(11)?,
-        invocation_result: parse_json_optional(row, 12)?,
-        invocation_error: row.get(13)?,
-        created_at: parse_time(row, 14)?,
-        decided_at: parse_time_optional(row, 15)?,
-        invoked_at: parse_time_optional(row, 16)?,
+        effective_arguments: parse_json_optional(row, 10)?,
+        decided_by: row.get(11)?,
+        invocation_ok: row.get(12)?,
+        invocation_result: parse_json_optional(row, 13)?,
+        invocation_error: row.get(14)?,
+        created_at: parse_time(row, 15)?,
+        decided_at: parse_time_optional(row, 16)?,
+        invoked_at: parse_time_optional(row, 17)?,
     })
 }
 

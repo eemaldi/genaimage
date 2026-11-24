@@ -227,6 +227,18 @@ pub enum AssistantConfirmationDecisionKind {
     Reject,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolConfirmationStatus {
+    Pending,
+    Invoking,
+    Succeeded,
+    Failed,
+    Rejected,
+    OutcomeUnknown,
+    Expired,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantConfirmationRequest {
@@ -243,6 +255,8 @@ pub struct AssistantToolAuditRecord {
     pub conversation_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_status: Option<String>,
     pub tool_call_id: String,
     pub tool: String,
     pub proposed_arguments: serde_json::Value,
@@ -317,11 +331,22 @@ pub struct AssistantToolResultEvent {
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct AssistantConfirmationRequiredEvent {
     pub confirmation_id: String,
+    pub status: AssistantToolConfirmationStatus,
     pub conversation_id: String,
     pub tool_call_id: String,
     pub tool: String,
     pub arguments: serde_json::Value,
     pub json_schema: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct AssistantAwaitingConfirmationEvent {
+    pub confirmation_id: String,
+    pub conversation_id: String,
+    pub user_message_id: String,
+    pub message_id: String,
+    pub model: String,
+    pub status: AssistantMessageStatus,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

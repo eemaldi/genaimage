@@ -147,7 +147,7 @@ pub(super) async fn get(
     post, path = "/assistant/conversations/{id}/messages",
     operation_id = "assistant_conversations_send_message",
     tag = "assistant",
-    description = "Append a user message and stream the assistant turn over SSE. A pending tool confirmation returns 409 until it is confirmed, edited or rejected. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, tool_result, confirmation_required, done, error. Non-confirmation tools run after schema validation; confirmation tools pause without invocation. The terminal event contains the exact status and persisted assistant message ID when persistence succeeded; awaiting_confirmation is not success.",
+    description = "Append a user message and stream the assistant turn over SSE. A pending tool confirmation returns 409 until it is confirmed, edited or rejected. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, tool_result, confirmation_required, awaiting_confirmation, done, error. Non-confirmation tools run after schema validation; confirmation tools pause without invocation. The terminal event contains the exact status and persisted assistant message ID when persistence succeeded; awaiting_confirmation is not success.",
     params(("id" = String, Path, description = "Conversation ID")),
     request_body = api::SendAssistantMessageRequest,
     responses(
@@ -357,6 +357,7 @@ fn sse_response(
     let shutdown_conversation_id = conversation_id.clone();
     let shutdown_user_message_id = user_message_id.clone();
     let shutdown_model = model.clone();
+    let terminal_service = state.conversation_service();
     let events = stream::once(async move {
         Ok::<_, Infallible>(
             Event::default()
@@ -369,6 +370,7 @@ fn sse_response(
         let conversation_id = conversation_id.clone();
         let user_message_id = user_message_id.clone();
         let model = model.clone();
+        let terminal_service = terminal_service.clone();
         async move {
             let mut assistant = next?;
             match assistant.next().await {
@@ -427,6 +429,7 @@ fn sse_response(
                         .event("confirmation_required")
                         .json_data(api::AssistantConfirmationRequiredEvent {
                             confirmation_id,
+                            status: api::AssistantToolConfirmationStatus::Pending,
                             conversation_id: event_conversation_id,
                             tool_call_id,
                             tool,
@@ -461,16 +464,38 @@ fn sse_response(
                             return Some((Ok::<_, Infallible>(event), None));
                         }
                     };
-                    let kind = if terminal.status == AssistantMessageStatus::Complete
-                        || terminal.status == AssistantMessageStatus::AwaitingConfirmation
-                    {
+                    if terminal.status == AssistantMessageStatus::AwaitingConfirmation {
+                        let pending = terminal_service
+                            .pending_confirmation(&conversation_id)
+                            .await;
+                        let event = match pending {
+                            Ok(Some(confirmation)) => Event::default()
+                                .event("awaiting_confirmation")
+                                .json_data(api::AssistantAwaitingConfirmationEvent {
+                                    confirmation_id: confirmation.id,
+                                    conversation_id,
+                                    user_message_id,
+                                    message_id: terminal.id,
+                                    model: terminal.model.unwrap_or(model),
+                                    status: api::AssistantMessageStatus::AwaitingConfirmation,
+                                })
+                                .expect("serialisable assistant SSE event"),
+                            _ => terminal_or_fallback_error_event(
+                                conversation_id,
+                                user_message_id,
+                                model,
+                                Some(terminal),
+                            ),
+                        };
+                        return Some((Ok::<_, Infallible>(event), None));
+                    }
+                    let kind = if terminal.status == AssistantMessageStatus::Complete {
                         "done"
                     } else {
                         "error"
                     };
                     let status = status_response(terminal.status);
-                    let error = (terminal.status != AssistantMessageStatus::Complete
-                        && terminal.status != AssistantMessageStatus::AwaitingConfirmation)
+                    let error = (terminal.status != AssistantMessageStatus::Complete)
                         .then(|| safe_terminal_error(terminal.status).to_owned());
                     let event = Event::default()
                         .event(kind)
@@ -789,6 +814,7 @@ fn tool_audit_response(
         id: value.id,
         conversation_id: value.conversation_id,
         confirmation_id: value.confirmation_id,
+        confirmation_status: value.confirmation_status,
         tool_call_id: value.tool_call_id,
         tool: value.tool,
         proposed_arguments: value.proposed_arguments,
@@ -803,5 +829,24 @@ fn tool_audit_response(
         created_at: value.created_at,
         decided_at: value.decided_at,
         invoked_at: value.invoked_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::response::IntoResponse;
+
+    use super::problem;
+
+    #[test]
+    fn unsupported_tools_confirmation_is_unprocessable_without_changing_state() {
+        let response = problem(genaimage_core::HarnessError::Configuration(
+            "model 'text-model' lacks the required tools capability".into(),
+        ))
+        .into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 }

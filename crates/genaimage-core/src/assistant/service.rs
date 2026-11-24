@@ -7,13 +7,14 @@ use std::{
 
 use chrono::Utc;
 use futures_util::{FutureExt, StreamExt};
-use jsonschema::JSONSchema;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 #[cfg(test)]
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+use super::store::NewAssistantToolSettlement;
 
 use crate::{
     AssistantTool, ChatContent, ChatDelta, ChatMessage, ChatRequest, HarnessError, LlmProvider,
@@ -176,6 +177,12 @@ impl ConversationService {
         let mut registered = BTreeMap::new();
         for tool in tools {
             let name = tool.name().to_owned();
+            let schema = tool.json_schema();
+            crate::tool_schema::validate_schema(&schema).map_err(|error| {
+                HarnessError::Configuration(format!(
+                    "assistant tool '{name}' has an unsupported JSON schema: {error}"
+                ))
+            })?;
             if name.trim().is_empty() {
                 return Err(HarnessError::Configuration(
                     "assistant tool name must not be empty".into(),
@@ -237,6 +244,16 @@ impl ConversationService {
         conversation_id: &str,
         message_limit: Option<usize>,
     ) -> Result<AssistantConversationDetail> {
+        if !self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(conversation_id)
+        {
+            self.store
+                .recover_invoking_confirmations(conversation_id)
+                .await?;
+        }
         self.store.get(conversation_id, message_limit).await
     }
 
@@ -246,6 +263,13 @@ impl ConversationService {
         message: NewAssistantMessage,
     ) -> Result<AssistantMessage> {
         self.store.append_message(conversation_id, message).await
+    }
+
+    pub async fn pending_confirmation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<AssistantToolConfirmation>> {
+        self.store.pending_confirmation(conversation_id).await
     }
 
     pub async fn list_tool_audit(
@@ -467,6 +491,27 @@ impl ConversationService {
     }
 
     #[cfg(test)]
+    pub(crate) async fn test_claim_confirmation(
+        &self,
+        conversation_id: &str,
+        confirmation_id: &str,
+    ) -> Result<AssistantToolConfirmation> {
+        let confirmation = self
+            .store
+            .get_confirmation(conversation_id, confirmation_id)
+            .await?;
+        self.store
+            .claim_confirmation(
+                conversation_id,
+                confirmation_id,
+                "confirm",
+                Some(confirmation.proposed_arguments),
+                None,
+            )
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_in_flight(&self, conversation_id: &str) -> bool {
         self.in_flight
             .lock()
@@ -527,6 +572,15 @@ async fn supervise_generation(
     };
     let cancellation = lease.cancellation.clone();
 
+    if let Err(error) = service
+        .store
+        .recover_invoking_confirmations(&conversation_id)
+        .await
+    {
+        fail_setup(&finished_tx, &mut started, error);
+        drop(lease);
+        return;
+    }
     let conversation = match service.store.get(&conversation_id, Some(500)).await {
         Ok(conversation) => conversation,
         Err(error) => {
@@ -642,6 +696,15 @@ async fn supervise_confirmation(
         }
     };
     let cancellation = lease.cancellation.clone();
+    if let Err(error) = service
+        .store
+        .recover_invoking_confirmations(&conversation_id)
+        .await
+    {
+        fail_setup(&_finished_placeholder, &mut started, error);
+        drop(lease);
+        return;
+    }
     let confirmation = match service
         .store
         .get_confirmation(&conversation_id, &confirmation_id)
@@ -666,12 +729,27 @@ async fn supervise_confirmation(
         drop(lease);
         return;
     }
-    let (new_status, effective, reason) = match decision {
-        AssistantConfirmationDecision::Confirm => (
-            AssistantToolConfirmationStatus::Confirmed,
-            confirmation.proposed_arguments.clone(),
-            None,
-        ),
+    let detail = match service.store.get(&conversation_id, Some(500)).await {
+        Ok(detail) => detail,
+        Err(error) => {
+            fail_setup(&_finished_placeholder, &mut started, error);
+            drop(lease);
+            return;
+        }
+    };
+    let continuation_request = request_from_conversation(&service, detail, &binding.model);
+    if let Some(role) = &binding.role {
+        if let Err(error) = role.check_request(&continuation_request) {
+            fail_setup(&_finished_placeholder, &mut started, error);
+            drop(lease);
+            return;
+        }
+    }
+
+    let (decision_name, effective, reason) = match decision {
+        AssistantConfirmationDecision::Confirm => {
+            ("confirm", confirmation.proposed_arguments.clone(), None)
+        }
         AssistantConfirmationDecision::Edit(arguments) => {
             if let Err(error) = validate_arguments(&confirmation.json_schema, &arguments) {
                 let _ = service
@@ -702,25 +780,17 @@ async fn supervise_confirmation(
                 drop(lease);
                 return;
             }
-            (AssistantToolConfirmationStatus::Edited, arguments, None)
+            ("edit", arguments, None)
         }
-        AssistantConfirmationDecision::Reject(reason) => (
-            AssistantToolConfirmationStatus::Rejected,
-            Value::Null,
-            reason,
-        ),
+        AssistantConfirmationDecision::Reject(reason) => ("reject", Value::Null, reason),
     };
     let claimed = match service
         .store
         .claim_confirmation(
             &conversation_id,
             &confirmation_id,
-            new_status,
-            if new_status == AssistantToolConfirmationStatus::Rejected {
-                None
-            } else {
-                Some(effective.clone())
-            },
+            decision_name,
+            (decision_name != "reject").then(|| effective.clone()),
             reason,
         )
         .await
@@ -736,8 +806,8 @@ async fn supervise_confirmation(
         .take()
         .map(|started| started.send(Ok(confirmation.user_message_id.clone())));
 
-    let result_event = match claimed.status {
-        AssistantToolConfirmationStatus::Rejected => ToolOutcome::error(format!(
+    let result_event = if claimed.status == AssistantToolConfirmationStatus::Rejected {
+        ToolOutcome::error(format!(
             "The user rejected tool '{}'.{}",
             confirmation.tool,
             claimed
@@ -745,107 +815,95 @@ async fn supervise_confirmation(
                 .as_deref()
                 .map(|value| format!(" Reason: {value}"))
                 .unwrap_or_default()
-        )),
-        AssistantToolConfirmationStatus::Confirmed | AssistantToolConfirmationStatus::Edited => {
-            if let Some(tool) = service.tools.get(&confirmation.tool) {
-                let arguments = claimed.effective_arguments.clone().unwrap_or(effective);
-                invoke_tool(
-                    &service,
-                    Arc::clone(tool),
-                    &confirmation,
-                    arguments,
-                    cancellation.clone(),
-                    sender.clone(),
-                )
-                .await
-            } else {
-                ToolOutcome::Err(format!(
-                    "Assistant tool '{}' is no longer registered.",
-                    confirmation.tool
-                ))
-            }
-        }
-        _ => ToolOutcome::error("The confirmation did not authorise tool invocation.".into()),
+        ))
+    } else if let Some(tool) = service.tools.get(&confirmation.tool) {
+        let arguments = claimed.effective_arguments.clone().unwrap_or(effective);
+        invoke_tool_uninterrupted(Arc::clone(tool), &confirmation, arguments).await
+    } else {
+        ToolOutcome::Err(format!(
+            "Assistant tool '{}' is no longer registered.",
+            confirmation.tool
+        ))
     };
-    let source = service
-        .store
-        .get_message(&confirmation.source_message_id)
-        .await;
-    let mut result = source;
-    if result.is_ok() {
-        let audit_decision = claimed.status.as_str().to_owned();
-        let invocation_ok = match &result_event {
-            ToolOutcome::Ok(_) => Some(true),
-            ToolOutcome::Err(_) if claimed.status == AssistantToolConfirmationStatus::Rejected => {
-                None
-            }
-            ToolOutcome::Err(_) => Some(false),
-        };
-        if let Err(error) = service
-            .store
-            .append_tool_audit(NewAssistantToolAudit {
-                conversation_id: conversation_id.clone(),
-                confirmation_id: Some(confirmation.id.clone()),
+
+    let mut result = if claimed.status == AssistantToolConfirmationStatus::Rejected {
+        let _ = send_delta(
+            &sender,
+            &cancellation,
+            Ok(ChatDelta::ToolResult {
                 tool_call_id: confirmation.tool_call_id.clone(),
                 tool: confirmation.tool.clone(),
-                proposed_arguments: confirmation.proposed_arguments.clone(),
-                validation_outcome: "valid".into(),
-                validation_error: None,
-                decision: audit_decision,
-                effective_arguments: (claimed.status != AssistantToolConfirmationStatus::Rejected)
-                    .then(|| {
-                        claimed
-                            .effective_arguments
-                            .clone()
-                            .unwrap_or(confirmation.proposed_arguments.clone())
-                    }),
-                decided_by: Some("user".into()),
-                invocation_ok,
-                invocation_result: match &result_event {
+                ok: false,
+                result: None,
+                error: match &result_event {
+                    ToolOutcome::Err(error) => Some(error.clone()),
+                    ToolOutcome::Ok(_) => None,
+                },
+            }),
+        )
+        .await;
+        service
+            .store
+            .get_message(&confirmation.source_message_id)
+            .await
+    } else {
+        let settlement = match &result_event {
+            ToolOutcome::Ok(value) => NewAssistantToolSettlement {
+                ok: Some(true),
+                result: Some(value.clone()),
+                error: None,
+            },
+            ToolOutcome::Err(error) => NewAssistantToolSettlement {
+                ok: Some(false),
+                result: None,
+                error: Some(error.clone()),
+            },
+        };
+        let settled = service
+            .store
+            .settle_confirmation(&conversation_id, &confirmation_id, settlement)
+            .await;
+        let _ = send_delta(
+            &sender,
+            &cancellation,
+            Ok(ChatDelta::ToolResult {
+                tool_call_id: confirmation.tool_call_id.clone(),
+                tool: confirmation.tool.clone(),
+                ok: matches!(result_event, ToolOutcome::Ok(_)),
+                result: match &result_event {
                     ToolOutcome::Ok(value) => Some(value.clone()),
                     ToolOutcome::Err(_) => None,
                 },
-                invocation_error: match &result_event {
+                error: match &result_event {
                     ToolOutcome::Ok(_) => None,
                     ToolOutcome::Err(error) => Some(error.clone()),
                 },
-                decided_at: claimed.decided_at,
-                invoked_at: (claimed.status != AssistantToolConfirmationStatus::Rejected)
-                    .then(Utc::now),
-            })
-            .await
-        {
-            result = Err(error);
-        }
-    }
-    if let Ok(source) = result.as_ref() {
-        let outcome_result = append_tool_outcome(
-            &service,
-            &sender,
-            &cancellation,
-            &conversation_id,
-            &confirmation.tool_call_id,
-            &confirmation.tool,
-            &result_event,
+            }),
         )
         .await;
-        if let Err(error) = outcome_result {
-            result = Err(error);
-        } else {
-            let continuation = continue_after_tool_calls(
-                &service,
-                binding,
-                &conversation_id,
-                &confirmation.user_message_id,
-                source,
-                &confirmation.tool_call_id,
-                confirmation.model_step,
-                cancellation.clone(),
-                sender.clone(),
-            )
-            .await;
-            result = continuation;
+        match settled {
+            Ok(_) => {
+                service
+                    .store
+                    .get_message(&confirmation.source_message_id)
+                    .await
+            }
+            Err(error) => Err(error),
         }
+    };
+    if let Ok(source) = result.as_ref() {
+        result = continue_after_tool_calls(
+            &service,
+            binding,
+            &conversation_id,
+            &confirmation.user_message_id,
+            source,
+            &confirmation.tool_call_id,
+            confirmation.model_step,
+            cancellation.clone(),
+            sender.clone(),
+        )
+        .await;
     }
     if let Err(error) = &result {
         let _ = send_delta(
@@ -1310,10 +1368,31 @@ fn confirmation_context(
         user_message_id: String::new(),
         model_step: 0,
         status: AssistantToolConfirmationStatus::Pending,
+        decision: None,
         effective_arguments: None,
         decision_reason: None,
         created_at: now,
         decided_at: None,
+    }
+}
+
+async fn invoke_tool_uninterrupted(
+    tool: Arc<dyn AssistantTool>,
+    confirmation: &AssistantToolConfirmation,
+    arguments: Value,
+) -> ToolOutcome {
+    let context = ToolContext {
+        conversation_id: confirmation.conversation_id.clone(),
+        tool_call_id: confirmation.tool_call_id.clone(),
+        confirmation_id: Some(confirmation.id.clone()),
+    };
+    match std::panic::AssertUnwindSafe(tool.invoke(context, arguments))
+        .catch_unwind()
+        .await
+    {
+        Ok(Ok(value)) => ToolOutcome::Ok(value),
+        Ok(Err(error)) => ToolOutcome::Err(error.to_string()),
+        Err(_) => ToolOutcome::Err("Tool invocation panicked.".into()),
     }
 }
 
@@ -1343,15 +1422,7 @@ async fn invoke_tool(
 }
 
 fn validate_arguments(schema: &Value, arguments: &Value) -> std::result::Result<(), String> {
-    let compiled = JSONSchema::compile(schema)
-        .map_err(|error| format!("Tool JSON schema is invalid: {error}"))?;
-    compiled.validate(arguments).map_err(|errors| {
-        let details = errors
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        format!("Tool arguments do not match the JSON schema: {details}")
-    })
+    crate::tool_schema::validate_instance(schema, arguments)
 }
 
 async fn append_tool_outcome(

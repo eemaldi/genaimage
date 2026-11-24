@@ -59,6 +59,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Atomically confirm, edit or reject one pending tool call, then continue its turn over SSE. A decision is single-use. */
+        post: operations["assistant_confirmations_decide"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistant/conversations/{id}/messages": {
         parameters: {
             query?: never;
@@ -68,11 +85,29 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Append a user message and stream the assistant turn over SSE. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, done, error. Tool calls are proposals and are never executed by this endpoint. The terminal event contains status and the persisted assistant message ID when persistence succeeded; error events may omit message_id. */
+        /** @description Append a user message and stream the assistant turn over SSE. A pending tool confirmation returns 409 until it is confirmed, edited or rejected. Image content is standard base64 PNG, JPEG or WebP with a 20 MiB decoded limit. Event names: message_started, delta, tool_call, tool_result, confirmation_required, awaiting_confirmation, done, error. Non-confirmation tools run after schema validation; confirmation tools pause without invocation. The terminal event contains the exact status and persisted assistant message ID when persistence succeeded; awaiting_confirmation is not success. */
         post: operations["assistant_conversations_send_message"];
         delete?: never;
         options?: never;
         head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/conversations/{id}/tool-calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read the bounded, append-only audit trail for tool proposals and invocations. */
+        get: operations["assistant_tool_calls_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Read the bounded, append-only audit trail for tool proposals and invocations. */
+        head: operations["assistant_tool_calls_list_head"];
         patch?: never;
         trace?: never;
     };
@@ -576,6 +611,14 @@ export interface components {
     schemas: {
         /** @enum {boolean} */
         AppliedFalse: false;
+        AssistantAwaitingConfirmationEvent: {
+            confirmation_id: string;
+            conversation_id: string;
+            message_id: string;
+            model: string;
+            status: components["schemas"]["AssistantMessageStatus"];
+            user_message_id: string;
+        };
         AssistantChatContent: {
             text: string;
         } | {
@@ -599,6 +642,22 @@ export interface components {
                 call_id: string;
                 result: unknown;
             };
+        };
+        /** @enum {string} */
+        AssistantConfirmationDecisionKind: "confirm" | "edit" | "reject";
+        AssistantConfirmationRequest: {
+            arguments?: unknown;
+            decision: components["schemas"]["AssistantConfirmationDecisionKind"];
+            reason?: string | null;
+        };
+        AssistantConfirmationRequiredEvent: {
+            arguments: unknown;
+            confirmation_id: string;
+            conversation_id: string;
+            json_schema: unknown;
+            status: components["schemas"]["AssistantToolConfirmationStatus"];
+            tool: string;
+            tool_call_id: string;
         };
         AssistantConversationDetailResponse: {
             /** Format: date-time */
@@ -657,7 +716,7 @@ export interface components {
             user_message_id: string;
         };
         /** @enum {string} */
-        AssistantMessageStatus: "complete" | "cancelled" | "failed";
+        AssistantMessageStatus: "complete" | "cancelled" | "failed" | "awaiting_confirmation";
         AssistantPromptTemplate: {
             name: string;
             sha256: string;
@@ -671,6 +730,33 @@ export interface components {
             status: components["schemas"]["AssistantMessageStatus"];
             user_message_id: string;
         };
+        AssistantToolAuditRecord: {
+            confirmation_id?: string | null;
+            confirmation_status?: string | null;
+            conversation_id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            decided_at?: string | null;
+            decided_by?: string | null;
+            decision: string;
+            effective_arguments?: unknown;
+            /** Format: int64 */
+            id: number;
+            invocation_error?: string | null;
+            invocation_ok?: boolean | null;
+            invocation_result?: unknown;
+            /** Format: date-time */
+            invoked_at?: string | null;
+            proposed_arguments: unknown;
+            tool: string;
+            tool_call_id: string;
+            validation_error?: string | null;
+            validation_outcome: string;
+        };
+        AssistantToolAuditResponse: {
+            tool_calls: components["schemas"]["AssistantToolAuditRecord"][];
+        };
         AssistantToolCall: {
             arguments: unknown;
             id: string;
@@ -679,6 +765,17 @@ export interface components {
         AssistantToolCallEvent: {
             conversation_id: string;
             tool_call: components["schemas"]["AssistantToolCall"];
+            user_message_id: string;
+        };
+        /** @enum {string} */
+        AssistantToolConfirmationStatus: "pending" | "invoking" | "succeeded" | "failed" | "rejected" | "outcome_unknown" | "expired";
+        AssistantToolResultEvent: {
+            conversation_id: string;
+            error?: string | null;
+            ok: boolean;
+            result?: unknown;
+            tool: string;
+            tool_call_id: string;
             user_message_id: string;
         };
         BackendEvent: {
@@ -1855,6 +1952,80 @@ export interface operations {
             };
         };
     };
+    assistant_confirmations_decide: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+                /** @description Confirmation ID */
+                confirmation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantConfirmationRequest"];
+            };
+        };
+        responses: {
+            /** @description SSE stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Invalid decision */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Confirmation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Already decided or generation in flight */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Edited arguments are invalid or model capability is unsupported */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Text role unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     assistant_conversations_send_message: {
         parameters: {
             query?: never;
@@ -1978,6 +2149,86 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
+            };
+        };
+    };
+    assistant_tool_calls_list: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tool audit records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantToolAuditResponse"];
+                };
+            };
+            /** @description Invalid query */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    assistant_tool_calls_list_head: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Conversation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tool audit records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid query */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

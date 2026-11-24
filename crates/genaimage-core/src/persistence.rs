@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1014,6 +1014,47 @@ const MIGRATION_13: &str = r#"
         BEFORE DELETE ON assistant_tool_call_audit
         BEGIN SELECT RAISE(ABORT, 'assistant tool audit records are append-only'); END;
 "#;
+const MIGRATION_14: &str = r#"
+    ALTER TABLE assistant_tool_confirmations RENAME TO assistant_tool_confirmations_v13;
+    CREATE TABLE assistant_tool_confirmations (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+        tool_call_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        proposed_arguments_json TEXT NOT NULL,
+        json_schema TEXT NOT NULL,
+        source_message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        user_message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        model_step INTEGER NOT NULL CHECK (model_step > 0),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'invoking', 'succeeded', 'failed', 'rejected', 'outcome_unknown', 'expired')),
+        decision TEXT CHECK (decision IN ('confirm', 'edit', 'reject')),
+        effective_arguments_json TEXT,
+        decision_reason TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        UNIQUE(conversation_id, tool_call_id)
+    );
+    INSERT INTO assistant_tool_confirmations (
+        id, conversation_id, tool_call_id, tool_name, proposed_arguments_json, json_schema,
+        source_message_id, user_message_id, model_step, status, decision,
+        effective_arguments_json, decision_reason, created_at, decided_at
+    )
+    SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json, json_schema,
+           source_message_id, user_message_id, model_step,
+           CASE status WHEN 'confirmed' THEN 'outcome_unknown'
+                       WHEN 'edited' THEN 'outcome_unknown'
+                       ELSE status END,
+           CASE status WHEN 'confirmed' THEN 'confirm'
+                       WHEN 'edited' THEN 'edit'
+                       WHEN 'rejected' THEN 'reject'
+                       ELSE NULL END,
+           effective_arguments_json, decision_reason, created_at, decided_at
+    FROM assistant_tool_confirmations_v13;
+    DROP TABLE assistant_tool_confirmations_v13;
+    CREATE INDEX assistant_tool_confirmations_pending_idx
+        ON assistant_tool_confirmations(conversation_id, created_at)
+        WHERE status IN ('pending', 'invoking');
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -1028,6 +1069,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_11,
     MIGRATION_12,
     MIGRATION_13,
+    MIGRATION_14,
 ];
 
 // The first version that must already contain each table before migration.
@@ -1150,7 +1192,7 @@ fn inspect_settings_database_rejects_an_unrelated_sqlite_schema() {
 
 #[cfg(test)]
 #[test]
-fn migrates_version_twelve_without_losing_existing_state() {
+fn migrates_version_thirteen_without_losing_existing_state() {
     let root = tempfile::Builder::new()
         .prefix(".migration-test-")
         .tempdir_in(std::env::current_dir().unwrap())
@@ -1181,7 +1223,7 @@ fn migrates_version_twelve_without_losing_existing_state() {
             assert_eq!(version, SCHEMA_VERSION);
             connection.prepare("SELECT id, model FROM assistant_conversations LIMIT 0")?;
             connection.prepare("SELECT conversation_id, content_json, tool_call_id FROM assistant_messages LIMIT 0")?;
-            connection.prepare("SELECT id, tool_call_id, status FROM assistant_tool_confirmations LIMIT 0")?;
+            connection.prepare("SELECT id, tool_call_id, status, decision FROM assistant_tool_confirmations LIMIT 0")?;
             connection.prepare("SELECT id, tool_call_id, validation_outcome, decision FROM assistant_tool_call_audit LIMIT 0")?;
             connection.prepare("SELECT id, output_id FROM output_annotations LIMIT 0")?;
             Ok(())

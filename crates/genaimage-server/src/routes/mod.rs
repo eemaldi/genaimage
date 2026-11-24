@@ -35,6 +35,7 @@ struct UploadBody {
 
 #[derive(OpenApi)]
 #[openapi(components(schemas(
+    genaimage_api::AssistantAwaitingConfirmationEvent,
     genaimage_api::AssistantDeltaEvent,
     genaimage_api::AssistantMessageStartedEvent,
     genaimage_api::AssistantTerminalEvent,

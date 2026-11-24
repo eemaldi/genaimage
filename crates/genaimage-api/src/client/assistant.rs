@@ -6,14 +6,14 @@ use reqwest::{header, Method};
 
 use super::{events::with_safe_preamble, has_content_type, Client, Error};
 use crate::{
-    AssistantConfirmationRequest, AssistantConfirmationRequiredEvent,
-    AssistantConversationDetailQuery, AssistantConversationDetailResponse,
-    AssistantConversationListQuery, AssistantConversationListResponse,
-    AssistantConversationResponse, AssistantDeltaEvent, AssistantMessageStartedEvent,
-    AssistantTerminalEvent, AssistantToolAuditQuery, AssistantToolAuditResponse,
-    AssistantToolCallEvent, AssistantToolResultEvent, CreateAssistantConversationRequest,
-    PromptAssistRequest, PromptAssistResponse, SendAssistantMessageRequest,
-    SuggestWorkflowRequest, SuggestWorkflowResponse,
+    AssistantAwaitingConfirmationEvent, AssistantConfirmationRequest,
+    AssistantConfirmationRequiredEvent, AssistantConversationDetailQuery,
+    AssistantConversationDetailResponse, AssistantConversationListQuery,
+    AssistantConversationListResponse, AssistantConversationResponse, AssistantDeltaEvent,
+    AssistantMessageStartedEvent, AssistantTerminalEvent, AssistantToolAuditQuery,
+    AssistantToolAuditResponse, AssistantToolCallEvent, AssistantToolResultEvent,
+    CreateAssistantConversationRequest, PromptAssistRequest, PromptAssistResponse,
+    SendAssistantMessageRequest, SuggestWorkflowRequest, SuggestWorkflowResponse,
 };
 
 pub enum AssistantStreamEvent {
@@ -22,6 +22,7 @@ pub enum AssistantStreamEvent {
     ToolCall(AssistantToolCallEvent),
     ToolResult(AssistantToolResultEvent),
     ConfirmationRequired(AssistantConfirmationRequiredEvent),
+    AwaitingConfirmation(AssistantAwaitingConfirmationEvent),
     Done(AssistantTerminalEvent),
     Error(AssistantTerminalEvent),
 }
@@ -54,6 +55,9 @@ async fn parse_assistant_stream(
                         &frame.data,
                     )?)),
                     "confirmation_required" => Ok(AssistantStreamEvent::ConfirmationRequired(
+                        serde_json::from_str(&frame.data)?,
+                    )),
+                    "awaiting_confirmation" => Ok(AssistantStreamEvent::AwaitingConfirmation(
                         serde_json::from_str(&frame.data)?,
                     )),
                     "done" => Ok(AssistantStreamEvent::Done(serde_json::from_str(

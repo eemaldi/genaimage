@@ -189,6 +189,12 @@ impl ExtensionRegistry {
 
     pub fn register_assistant_tool(&mut self, tool: Arc<dyn AssistantTool>) -> Result<()> {
         let name = tool.name().to_owned();
+        let schema = tool.json_schema();
+        crate::tool_schema::validate_schema(&schema).map_err(|error| {
+            HarnessError::Configuration(format!(
+                "assistant tool '{name}' has an unsupported JSON schema: {error}"
+            ))
+        })?;
         register(&mut self.assistant_tools, "assistant tool", &name, tool)
     }
 
