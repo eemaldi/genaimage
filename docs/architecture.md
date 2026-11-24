@@ -502,11 +502,30 @@ drain; dropping the fixture signals shutdown and applies a best-effort deadline.
 
 ## Providers, extensions and deployment
 
-`genaimage-llm` provides the OpenAI-compatible provider, with an explicitly
-configured endpoint and model. Ollama, llama.cpp and LM Studio are intended
-local options when their compatible APIs are enabled. The assistant runtime
-remains planned, so the application does not yet register this provider or
-invoke it from the portal or CLI.
+`genaimage-llm` provides the OpenAI-compatible provider, with explicitly
+configured endpoint and role models. Ollama, llama.cpp and LM Studio are
+intended local options when their compatible APIs are enabled. The assistant
+runtime remains planned; the registered provider is currently used for explicit
+operator-requested output reviews and settings capability probes.
+
+Core vision review sends the verified output bytes and recorded run parameters
+through the exact configured vision role model on each request. It never falls
+back to the text model. The `POST /api/v1/outputs/{id}/review` operator endpoint
+stores and returns a model-opinion annotation, while
+`GET /api/v1/outputs/{id}/annotations` returns at most the newest 100 annotations,
+newest first. Annotations contain the chosen model and creation time and are
+append-only in the state database; they do not modify run records or provenance.
+The loopback HTTP response deliberately includes the complete sent `prompt` and
+`raw_response` for inspection, editing and debugging. They are audit material for
+a model opinion, not provenance, and callers must not present them as verified
+facts about the output.
+
+PNG, JPEG and WebP inputs are accepted up to 20 MiB and are never silently
+downscaled or re-encoded. The editable prompt is written once, and only when
+missing, to `assistant/prompts/vision_review.md` beneath the configured
+workspace data directory. Existing operator edits are never overwritten. A
+missing, unavailable or non-vision role produces reasoned 503 problem details
+before a chat request is sent.
 
 The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 `AssistantTool` and `EventSink` contracts. The CLI serve module builds an `ExtensionRegistry`

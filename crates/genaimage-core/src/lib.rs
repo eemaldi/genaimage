@@ -14,6 +14,7 @@ pub mod safe_file;
 pub mod uploads;
 pub mod workflow;
 
+pub use assistant::{OutputAnnotation, VisionReviewService};
 pub use async_trait::async_trait;
 pub use config::{HarnessConfig, ResolvedConfig};
 pub use error::{HarnessError, Result};

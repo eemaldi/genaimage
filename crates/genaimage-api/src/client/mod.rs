@@ -17,10 +17,11 @@ use thiserror::Error;
 use url::{Host, Url};
 
 use crate::{
-    HealthResponse, OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
-    ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse,
-    RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse,
-    SettingsTestResponse, SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
+    HealthResponse, OutputAnnotationListResponse, OutputAnnotationResponse, OutputListQuery,
+    OutputListResponse, ProblemDetails, ReconcileRunResponse, ReconcileRunsResponse,
+    ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse, RunListQuery,
+    RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse, SettingsTestResponse,
+    SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
     WorkflowValidationRequest, WorkflowValidationResponse,
 };
 
@@ -240,6 +241,20 @@ impl Client {
 
     pub async fn outputs(&self, query: &OutputListQuery) -> Result<OutputListResponse, Error> {
         self.json(self.get(&["outputs"])?.query(query)).await
+    }
+
+    /// Reviews one output with the server's pinned vision role and stores a model-opinion annotation.
+    pub async fn review_output(&self, id: &str) -> Result<OutputAnnotationResponse, Error> {
+        self.json(self.request(Method::POST, &["outputs", id, "review"])?)
+            .await
+    }
+
+    /// Lists the newest 100 model-opinion annotations for an output.
+    pub async fn output_annotations(
+        &self,
+        id: &str,
+    ) -> Result<OutputAnnotationListResponse, Error> {
+        self.json(self.get(&["outputs", id, "annotations"])?).await
     }
 
     /// Sends the image bytes as the server's `file` multipart field.

@@ -111,6 +111,8 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(outputs::resolved_workflow))
         .routes(routes!(outputs::list))
         .routes(routes!(outputs::metadata))
+        .routes(routes!(outputs::review))
+        .routes(routes!(outputs::annotations))
         .routes(routes!(outputs::original))
         .routes(routes!(outputs::thumbnail))
         .routes(routes!(uploads::upload))

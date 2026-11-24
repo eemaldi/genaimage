@@ -39,6 +39,32 @@ pub struct OutputListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// One append-only annotation from the configured vision model.
+///
+/// This is model opinion for operator review, not provenance or a verified
+/// description of the output.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+pub struct OutputAnnotationResponse {
+    pub id: i64,
+    pub output_id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub model: String,
+    pub created_at: DateTime<Utc>,
+    pub caption: String,
+    pub adherence_critique: String,
+    pub tags: Vec<String>,
+    /// The complete prompt sent to the loopback model provider.
+    pub prompt: String,
+    /// The exact concatenated model response used to parse this annotation.
+    pub raw_response: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct OutputAnnotationListResponse {
+    pub annotations: Vec<OutputAnnotationResponse>,
+}
+
 /// Longest thumbnail edge in pixels: 128, 256, 512 or 1024.
 #[derive(Debug, Deserialize, Serialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]

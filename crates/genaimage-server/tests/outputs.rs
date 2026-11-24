@@ -1,14 +1,57 @@
 mod common;
 
-use std::{io::Cursor, path::PathBuf, sync::atomic::Ordering};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+};
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use common::{install_workflow, ApiHarness};
-use genaimage_api::{OutputListResponse, OutputResponse};
+use genaimage_api::{
+    client::Client, OutputAnnotationListResponse, OutputAnnotationResponse, OutputListResponse,
+    OutputResponse,
+};
 use genaimage_core::{RunRecord, RunRequest, RunStatus};
+use genaimage_test_support::{FakeLlmScript, FakeLlmServer};
 use reqwest::{header, Method, StatusCode};
 use serde_json::{json, Value};
 
 const OUTPUTS: &str = "/api/v1/outputs";
+
+const VISION_MODEL: &str = "vision-model";
+const REVIEW_RESPONSE: &str = r#"{"caption":"A lighthouse above the sea","adherence_critique":"The image follows the lighthouse brief.","tags":["coast","lighthouse"]}"#;
+
+fn review_script(response: &str) -> FakeLlmScript {
+    FakeLlmScript::text_chunks([response]).with_models_response(json!({
+        "object": "list",
+        "data": [
+            { "id": "text-model", "supports_tools": true, "supports_vision": false },
+            { "id": VISION_MODEL, "supports_tools": false, "supports_vision": true }
+        ]
+    }))
+}
+
+fn file_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(current).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
 
 async fn completed(api: &ApiHarness, tag: &str) -> RunRecord {
     let path = api.core.config().workflows.join("contract.genaimage.json");
@@ -30,6 +73,242 @@ async fn completed(api: &ApiHarness, tag: &str) -> RunRecord {
     let run = api.core.reconcile(&run.id).await.unwrap().run;
     assert_eq!(run.status, RunStatus::Completed);
     run
+}
+
+async fn completed_review_output(api: &ApiHarness) -> (RunRecord, OutputResponse, Vec<u8>) {
+    install_workflow(api);
+    let manifest_path = api.core.config().workflows.join("contract.genaimage.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["parameters"]["prompt"] = json!({
+        "node": "3", "input": "prompt", "kind": "string", "required": true
+    });
+    manifest["presets"]["fast"]["prompt"] = json!("A lighthouse above the sea at dawn");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let workflow_path = api.core.config().workflows.join("workflow.api.json");
+    let mut workflow: Value = serde_json::from_slice(&fs::read(&workflow_path).unwrap()).unwrap();
+    workflow["3"]["inputs"]["prompt"] = json!("A lighthouse above the sea at dawn");
+    fs::write(
+        &workflow_path,
+        serde_json::to_vec_pretty(&workflow).unwrap(),
+    )
+    .unwrap();
+    let mut png = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(4, 3)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let png = png.into_inner();
+    *api.fake.output_bytes.lock().unwrap() = Some(png.clone());
+    let run = completed(api, "review").await;
+    let outputs: OutputListResponse = api.get_json(OUTPUTS).await;
+    (run, outputs.outputs.into_iter().next().unwrap(), png)
+}
+
+#[tokio::test]
+async fn reviews_with_the_pinned_vision_model_and_preserves_provenance() {
+    let llm = FakeLlmServer::start(review_script(REVIEW_RESPONSE)).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+            ("GENAIMAGE_LLM_VISION_MODEL", VISION_MODEL),
+        ],
+    )
+    .await;
+    let (run, output, png) = completed_review_output(&api).await;
+    let run_dir = PathBuf::from(&run.output_dir);
+    let run_before = serde_json::to_vec(&api.core.get_run(&run.id).unwrap()).unwrap();
+    let files_before = file_tree(&run_dir);
+    let review_path = format!("{OUTPUTS}/{}/review", output.id);
+
+    let refused = api
+        .request_with_origin(Method::POST, &review_path, Some("http://evil.example"))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(refused, StatusCode::FORBIDDEN).await;
+    assert_eq!(llm.chat_request_count(), 0);
+
+    let first = api
+        .request(Method::POST, &review_path)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: OutputAnnotationResponse = first.json().await.unwrap();
+    assert_eq!(first.output_id, output.id);
+    assert_eq!(first.run_id, run.id);
+    assert_eq!(first.kind, "vision_review");
+    assert_eq!(first.model, VISION_MODEL);
+    assert_eq!(first.caption, "A lighthouse above the sea");
+    assert_eq!(
+        first.adherence_critique,
+        "The image follows the lighthouse brief."
+    );
+    assert_eq!(first.tags, ["coast", "lighthouse"]);
+    assert_eq!(first.raw_response, REVIEW_RESPONSE);
+    assert!(first.prompt.contains("A lighthouse above the sea at dawn"));
+
+    let requests = llm.recorded_requests();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request["model"], VISION_MODEL);
+    assert_ne!(request["model"], "text-model");
+    let contents = request["messages"][0]["content"].as_array().unwrap();
+    let text = contents
+        .iter()
+        .find(|part| part["type"] == "text")
+        .expect("review text part")["text"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("A lighthouse above the sea at dawn"));
+    let image_url = contents
+        .iter()
+        .find(|part| part["type"] == "image_url")
+        .expect("review image data URL")["image_url"]["url"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        image_url,
+        format!("data:image/png;base64,{}", STANDARD.encode(&png))
+    );
+
+    let client = Client::with_base_url(&api.origin).unwrap();
+    let second = client.review_output(&output.id).await.unwrap();
+    let annotations = client.output_annotations(&output.id).await.unwrap();
+    assert_eq!(annotations.annotations.len(), 2);
+    assert_eq!(annotations.annotations[0].id, second.id);
+    assert_eq!(annotations.annotations[1].id, first.id);
+    assert_eq!(
+        serde_json::to_vec(&api.core.get_run(&run.id).unwrap()).unwrap(),
+        run_before
+    );
+    assert_eq!(file_tree(&run_dir), files_before);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_without_a_vision_model_returns_a_reasoned_503() {
+    let llm = FakeLlmServer::start(review_script(REVIEW_RESPONSE)).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+        ],
+    )
+    .await;
+    let (_, output, _) = completed_review_output(&api).await;
+
+    let response = api
+        .request(Method::POST, &format!("{OUTPUTS}/{}/review", output.id))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "urn:genaimage:problem:assistant-unavailable",
+    )
+    .await;
+    assert!(problem.detail.contains("llm.vision_model is empty"));
+    assert_eq!(llm.models_request_count(), 0);
+    assert_eq!(llm.chat_request_count(), 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_rejects_a_vision_capability_override_before_the_provider_call() {
+    let llm = FakeLlmServer::start(review_script(REVIEW_RESPONSE)).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_extra_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+            ("GENAIMAGE_LLM_VISION_MODEL", VISION_MODEL),
+        ],
+        "[llm.capabilities.vision-model]\nvision = false\n",
+    )
+    .await;
+    let (_, output, _) = completed_review_output(&api).await;
+
+    let response = api
+        .request(Method::POST, &format!("{OUTPUTS}/{}/review", output.id))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "urn:genaimage:problem:assistant-unavailable",
+    )
+    .await;
+    assert!(problem
+        .detail
+        .contains("lacks the required Vision capability"));
+    assert_eq!(llm.chat_request_count(), 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn malformed_review_json_returns_502_without_storing_an_annotation() {
+    let llm = FakeLlmServer::start(review_script("not review JSON")).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+            ("GENAIMAGE_LLM_VISION_MODEL", VISION_MODEL),
+        ],
+    )
+    .await;
+    let (_, output, _) = completed_review_output(&api).await;
+
+    let response = api
+        .request(Method::POST, &format!("{OUTPUTS}/{}/review", output.id))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(response, StatusCode::BAD_GATEWAY).await;
+    let annotations: OutputAnnotationListResponse = api
+        .get_json(&format!("{OUTPUTS}/{}/annotations", output.id))
+        .await;
+    assert!(annotations.annotations.is_empty());
+    assert_eq!(llm.chat_request_count(), 1);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_of_an_unknown_output_returns_404() {
+    let llm = FakeLlmServer::start(review_script(REVIEW_RESPONSE)).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+            ("GENAIMAGE_LLM_VISION_MODEL", VISION_MODEL),
+        ],
+    )
+    .await;
+
+    let response = api
+        .request(Method::POST, &format!("{OUTPUTS}/missing:1/review"))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    assert_eq!(llm.models_request_count(), 0);
+    assert_eq!(llm.chat_request_count(), 0);
+    api.shutdown().await;
 }
 
 #[tokio::test]

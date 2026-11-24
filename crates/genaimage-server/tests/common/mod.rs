@@ -44,14 +44,23 @@ impl ApiHarness {
     }
 
     pub async fn start_with_config(seconds: u64, env: &[(&str, &str)]) -> Self {
-        Self::start_configured(seconds, env, Duration::from_secs(2)).await
+        Self::start_configured(seconds, env, Duration::from_secs(2), "").await
+    }
+
+    pub async fn start_with_extra_config(seconds: u64, env: &[(&str, &str)], extra: &str) -> Self {
+        Self::start_configured(seconds, env, Duration::from_secs(2), extra).await
     }
 
     pub async fn start_with_deadlines(seconds: u64, drain: Duration) -> Self {
-        Self::start_configured(seconds, &[], drain).await
+        Self::start_configured(seconds, &[], drain, "").await
     }
 
-    async fn start_configured(seconds: u64, env: &[(&str, &str)], drain: Duration) -> Self {
+    async fn start_configured(
+        seconds: u64,
+        env: &[(&str, &str)],
+        drain: Duration,
+        extra: &str,
+    ) -> Self {
         let max_upload_bytes = genaimage_core::config::ServerConfig::default().max_upload_bytes;
         let ApiFixture {
             workspace,
@@ -61,6 +70,12 @@ impl ApiHarness {
             config_path,
             origin,
         } = ApiFixture::start(seconds, max_upload_bytes).await;
+        if !extra.is_empty() {
+            let mut config = std::fs::read_to_string(&config_path).unwrap();
+            config.push('\n');
+            config.push_str(extra);
+            std::fs::write(&config_path, config).unwrap();
+        }
         let root = workspace.path().to_str().unwrap().to_owned();
         let config = HarnessConfig::load_with(
             workspace.path(),

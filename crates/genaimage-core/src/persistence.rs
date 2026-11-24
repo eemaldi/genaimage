@@ -1,3 +1,4 @@
+mod annotations;
 mod media;
 
 use std::{
@@ -12,7 +13,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -926,6 +927,39 @@ const MIGRATION_11: &str = r#"
     CREATE INDEX IF NOT EXISTS assistant_messages_conversation_seq_idx
         ON assistant_messages(conversation_id, seq);
 "#;
+const MIGRATION_12: &str = r#"
+    CREATE TABLE IF NOT EXISTS output_annotations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        output_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'vision_review' CHECK (kind = 'vision_review'),
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        caption TEXT NOT NULL,
+        critique TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        raw_response TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS output_annotations_output_created_idx
+        ON output_annotations(output_id, created_at DESC, id DESC);
+    CREATE TRIGGER IF NOT EXISTS output_annotations_no_replace
+        BEFORE INSERT ON output_annotations
+        WHEN EXISTS (SELECT 1 FROM output_annotations WHERE id = NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
+    CREATE TRIGGER IF NOT EXISTS output_annotations_no_update
+        BEFORE UPDATE ON output_annotations
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
+    CREATE TRIGGER IF NOT EXISTS output_annotations_no_delete
+        BEFORE DELETE ON output_annotations
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -938,10 +972,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_9,
     MIGRATION_10,
     MIGRATION_11,
+    MIGRATION_12,
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 8] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 9] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
@@ -950,6 +985,7 @@ const EXPECTED_TABLES: [(&str, i64, &str); 8] = [
     ("run_submission_keys", 4, "SELECT key, fingerprint, run_id FROM run_submission_keys LIMIT 0"),
     ("assistant_conversations", 11, "SELECT id, title, created_at, updated_at, model, system_prompt_template, system_prompt_sha256, system_prompt FROM assistant_conversations LIMIT 0"),
     ("assistant_messages", 11, "SELECT id, conversation_id, seq, role, content_json, model, status, error, tool_call_id, created_at FROM assistant_messages LIMIT 0"),
+    ("output_annotations", 12, "SELECT id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response FROM output_annotations LIMIT 0"),
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
@@ -1473,6 +1509,57 @@ fn parse_generation_mode(value: &str) -> std::result::Result<GenerationMode, Har
 #[cfg(test)]
 mod submission_tests {
     use super::*;
+
+    #[test]
+    fn migration_from_version_11_adds_output_annotations() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        for migration in MIGRATIONS.iter().take(11) {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", 11_i64)
+            .unwrap();
+        drop(connection);
+
+        RunRepository::open(&path).unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 12);
+        connection
+            .prepare("SELECT id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response FROM output_annotations LIMIT 0")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO output_annotations (output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response) VALUES ('out', 'run', 'vision_review', 'model', '2026-01-01T00:00:00Z', 'caption', 'critique', '[]', 'prompt', '{}')",
+                [],
+            )
+            .unwrap();
+        assert!(connection
+            .execute("UPDATE output_annotations SET caption = 'changed'", [])
+            .is_err());
+        assert!(connection
+            .execute("DELETE FROM output_annotations", [])
+            .is_err());
+        assert!(connection
+            .execute(
+                "INSERT OR REPLACE INTO output_annotations (id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response) VALUES (1, 'other', 'other', 'vision_review', 'other', '2026-01-01T00:00:01Z', 'replaced', 'replaced', '[]', 'replaced', '{}')",
+                [],
+            )
+            .is_err());
+        let stored: (String, String) = connection
+            .query_row(
+                "SELECT output_id, caption FROM output_annotations WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("out".to_owned(), "caption".to_owned()));
+    }
 
     #[test]
     fn competing_connections_reserve_one_run_and_reopening_preserves_the_key() {
