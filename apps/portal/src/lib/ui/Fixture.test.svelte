@@ -9,14 +9,21 @@
     checkedRadio,
     editorTabIndex,
   }: {
-    kind: 'dialog' | 'radio' | 'editor' | 'tabs' | 'tooltip' | 'tooltip-edges';
+    kind:
+      | 'dialog'
+      | 'radio'
+      | 'editor'
+      | 'media'
+      | 'tabs'
+      | 'tooltip'
+      | 'tooltip-edges';
     checkedRadio?: boolean;
     editorTabIndex?: number;
   } = $props();
   let open = $state(false);
 </script>
 
-{#if kind === 'dialog' || kind === 'radio' || kind === 'editor'}
+{#if kind === 'dialog' || kind === 'radio' || kind === 'editor' || kind === 'media'}
   <Button onclick={() => (open = true)}>Open example</Button>
   <Dialog bind:open title="Example" description="An example dialog">
     <Button disabled>Disabled</Button>
@@ -34,6 +41,10 @@
       >
         <span contenteditable="true">Edit the prompt</span>
       </div>
+    {:else if kind === 'media'}
+      <video controls aria-label="Example video"></video>
+      <audio controls aria-label="Example audio"></audio>
+      <Button>After media</Button>
     {:else}
       <Button>Last action</Button>
     {/if}

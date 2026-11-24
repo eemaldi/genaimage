@@ -147,6 +147,25 @@ export const outputThumbnailUrl = (id: string, size: ThumbnailSize) =>
 export const workflowThumbnailUrl = (id: string) =>
   apiUrl('/api/v1/workflows/{id}/thumbnail', { id });
 
+// Read the original token before JSON number rounding can change a seed.
+async function readRecordedRun(response: Response) {
+  return JSON.parse(
+    await response.text(),
+    (_key, value: unknown, context?: { source?: string }) => {
+      if (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        !Number.isSafeInteger(value) &&
+        context?.source &&
+        /^-?\d+$/.test(context.source)
+      ) {
+        return BigInt(context.source);
+      }
+      return value;
+    },
+  );
+}
+
 /** Pages share `api`; inject fetch via this factory in tests. No request is retried. */
 export function createApiClient(
   fetcher: typeof fetch = (input, init) => fetch(input, init),
@@ -200,6 +219,7 @@ export function createApiClient(
     options: RequestOptions &
       Params<NoInfer<P>, NoInfer<M>> &
       BodyOptions<Operation<NoInfer<P>, NoInfer<M>>>,
+    read = (response: Response) => response.json(),
   ): Promise<SuccessJson<Operation<P, M>['responses']>> {
     const headers = new Headers({
       Accept: 'application/json, application/problem+json',
@@ -225,7 +245,7 @@ export function createApiClient(
         body,
         signal: options.signal,
       },
-      (response) => response.json(),
+      read,
     );
   }
 
@@ -250,6 +270,13 @@ export function createApiClient(
       json('get', '/api/v1/runs', { ...options, query }),
     getRun: (id: string, options?: RequestOptions) =>
       json('get', '/api/v1/runs/{id}', { ...options, path: { id } }),
+    getRecordedRun: (id: string, options?: RequestOptions) =>
+      json(
+        'get',
+        '/api/v1/runs/{id}',
+        { ...options, path: { id } },
+        readRecordedRun,
+      ),
     createRun: (
       body: SubmitRunRequest,
       idempotencyKey: string,
@@ -286,7 +313,12 @@ export function createApiClient(
       }),
     listOutputs: (query?: OutputQuery, options?: RequestOptions) =>
       json('get', '/api/v1/outputs', { ...options, query }),
-    // The API exposes metadata in listOutputs; the single-output endpoint serves media bytes.
+    getOutputMetadata: (id: string, options?: RequestOptions) =>
+      json('get', '/api/v1/outputs/{id}/metadata', {
+        ...options,
+        path: { id },
+      }),
+    // Preserve the original bytes API for callers that need a Blob.
     getOutput: (id: string, options?: RequestOptions) =>
       request(outputMediaUrl(id), options ?? {}, (response) => response.blob()),
     upload: (file: File, options?: RequestOptions) =>

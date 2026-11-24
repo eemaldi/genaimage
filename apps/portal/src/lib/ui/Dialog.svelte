@@ -50,10 +50,13 @@
   const editable =
     '[contenteditable=""], [contenteditable="true" i], [contenteditable="plaintext-only" i]';
 
+  const nativeMedia = 'video[controls], audio[controls]';
+
   function isTabStop(element: HTMLElement) {
     if (element.tabIndex >= 0) return true;
-    if (element.hasAttribute('tabindex') || !element.matches(editable))
-      return false;
+    if (element.hasAttribute('tabindex')) return false;
+    if (element.matches(nativeMedia)) return true;
+    if (!element.matches(editable)) return false;
     // Implicit editing hosts are in the native order even when tabIndex is -1.
     const ancestor = element.parentElement?.closest(
       `${editable}, [contenteditable="false" i]`,
@@ -71,9 +74,12 @@
 
   function handleKey(event: KeyboardEvent) {
     if (event.defaultPrevented || event.key !== 'Tab') return;
+    // Native controls live in a user-agent shadow tree. The host is reported
+    // as active even as focus moves among several internal controls.
+    if (document.activeElement?.matches(nativeMedia)) return;
     const candidates = Array.from(
       dialog.querySelectorAll<HTMLElement>(
-        'button, a[href], input, select, textarea, summary, [tabindex], [contenteditable]',
+        `button, a[href], input, select, textarea, summary, [tabindex], [contenteditable], ${nativeMedia}`,
       ),
     ).filter((el) => isTabStop(el) && isAvailable(el));
     const radios = candidates.filter(groupedRadio);

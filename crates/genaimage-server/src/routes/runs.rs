@@ -520,7 +520,7 @@ macro_rules! status_conversions {
             match status { $(RunStatus::$status => api::RunStatus::$status),+ }
         }
 
-        fn core_status(status: api::RunStatus) -> RunStatus {
+        pub(super) fn core_status(status: api::RunStatus) -> RunStatus {
             match status { $(api::RunStatus::$status => RunStatus::$status),+ }
         }
     };

@@ -382,7 +382,8 @@ and accepts 1–200. Errors use `application/problem+json` with a `recovery` hin
 
 | Method and path (under `/api/v1`) | Behaviour |
 | --- | --- |
-| `GET /outputs` | List completed outputs and their provenance metadata without exposing server-local file paths. |
+| `GET /outputs` | List indexed outputs from completed runs by default, without exposing server-local file paths. |
+| `GET /outputs/{id}/metadata` | Fetch the same metadata for one output, without transferring media bytes. |
 | `GET /outputs/{id}` | Stream the original file with a strong SHA-256 ETag, `Accept-Ranges: bytes` and `Cache-Control: public, max-age=31536000, immutable`. |
 | `GET /outputs/{id}/thumbnail?size=128` | Return a cached WebP thumbnail with a strong ETag. |
 | `GET /runs/{id}/manifest` | Stream the exact stored `run-manifest.json`, including its output and workflow checksums. Never reconstruct it on read. |
@@ -392,7 +393,10 @@ opaque cursor back unchanged with the same filters. Outputs are sorted newest
 first, with the database output ID breaking timestamp ties. `limit` defaults
 to 50 and accepts 1–200. Filter by `run` (run ID), `workflow` (workflow ID),
 `created_from` and `created_to` (inclusive RFC 3339 output creation times), or
-`tag`. Tags are exact and case-sensitive; they are copied from the workflow
+`tag`. `status` selects an exact run status and defaults to `completed`. Only
+terminal runs can expose indexed outputs: `failed` and `cancelled` return
+only artefacts already indexed for such runs, and other statuses return an
+empty page. Tags are exact and case-sensitive; they are copied from the workflow
 manifest archived for the run, not from the current workflow catalogue. Runs
 completed before media indexing remain available but have no indexed tags.
 
@@ -636,6 +640,16 @@ Import Svelte files from `apps/portal/src/lib/ui/`:
 `createShortcutHandler({ navigate, help }, now?)` with `handle(event)` and
 `reset()`. The shell handles enablement and suspends shortcuts in modals;
 editable controls suppress shortcuts. Two-key shortcuts expire after 1.2 seconds.
+
+Gallery lightbox navigation follows the filtered results and fetches the next
+cursor page at the end of a loaded page. Next retains keyboard focus while
+loading so arrow-key navigation can continue. Direct links can show an output before
+its position is known; neighbour navigation remains disabled until it is in the
+loaded results. The gallery reads recorded run parameters with the typed client's
+`getRecordedRun`, preserving large JSON integers as `bigint` where the browser
+supplies the original token. Values that cannot be read exactly are shown
+separately from identical fields and differences. Dialogs leave focus traversal
+inside native audio and video controls to the browser.
 
 ### Accessibility checks
 

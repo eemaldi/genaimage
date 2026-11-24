@@ -54,3 +54,25 @@ table in stdout and the GitHub Actions job summary.
 `cargo test --workspace --all-targets` intentionally compiles and smoke-runs the
 Criterion harness as regression coverage. The separate quick performance job is
 still non-blocking, and budget enforcement belongs in #77.
+
+## Gallery scroll regression
+
+```sh
+(cd apps/portal && npm test -- src/routes/gallery/Gallery.test.ts)
+```
+
+The Testing Library regression mounts the production grid in jsdom with 5,000
+synthetic outputs and a fixed 900 × 540 px viewport. It scrolls from the first
+row through the middle and final rows, then back, checking that the expected
+output is present and that no sample renders more than 35 tiles (five columns,
+three visible rows and two overscan rows on either side). A separate test
+exercises cursor pagination. Explicit tile geometry reserves space for the
+thumbnail before it loads. This check measures DOM size, not browser frame rate
+or layout shift; profile a production browser with representative local media
+for those measurements. The gallery chunk is loaded only on the gallery route.
+
+A production-build browser smoke check served 50 fixture pages of 100 GIF
+metadata records over loopback. Repeatedly scrolling to the end of the loaded
+list reached item 5,000 and sampled at most 18 tiles in a 519 × 301 CSS px grid
+viewport. GIFs exercise the placeholder path, so this does not measure image
+decoding cost or establish a frame-rate target.

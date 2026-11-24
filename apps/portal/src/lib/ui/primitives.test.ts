@@ -131,6 +131,47 @@ it('traps focus in a named modal, handles native Escape cancellation and restore
   expect(document.activeElement).toBe(opener);
 });
 
+it('leaves native video and audio control traversal to the browser', async () => {
+  const user = userEvent.setup();
+  render(Fixture, { kind: 'media' });
+  await user.click(screen.getByRole('button', { name: 'Open example' }));
+  const dialog = screen.getByRole('dialog');
+  const close = within(dialog).getByRole('button', { name: 'Close' });
+  const video = dialog.querySelector('video')!;
+  const audio = dialog.querySelector('audio')!;
+  // jsdom has no user-agent controls or focusable media hosts. Simulate the
+  // browser's retargeted keydown at each host and assert it is not cancelled.
+  for (const media of [video, audio]) {
+    media.tabIndex = 0;
+    media.focus();
+    expect(document.activeElement).toBe(media);
+    for (const shiftKey of [false, true]) {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      await fireEvent(media, event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(media);
+    }
+  }
+  close.focus();
+  await user.tab({ shift: true });
+  expect(document.activeElement).toBe(
+    within(dialog).getByRole('button', { name: 'After media' }),
+  );
+  close.focus();
+  const forward = new KeyboardEvent('keydown', {
+    key: 'Tab',
+    bubbles: true,
+    cancelable: true,
+  });
+  await fireEvent(close, forward);
+  expect(forward.defaultPrevented).toBe(false);
+});
+
 it.each([true, false])(
   'wraps Tab at a final radio group (checked: %s)',
   async (checkedRadio) => {
