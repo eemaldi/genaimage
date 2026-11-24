@@ -199,3 +199,81 @@ mod tests {
         );
     }
 }
+
+/// One prompt-assistance operation. Every result remains an unapplied proposal.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptAssistMode {
+    Expand,
+    Refine,
+    Negative,
+    Variations,
+}
+
+/// Request prompt assistance without changing a workflow or generation value.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptAssistRequest {
+    pub mode: PromptAssistMode,
+    /// The positive prompt, at most 16,384 Unicode characters.
+    #[schema(max_length = 16384)]
+    pub prompt: String,
+    /// Required and non-blank for `refine`; at most 8,192 Unicode characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 8192)]
+    pub instruction: Option<String>,
+    /// Number of variations to request, from 1 through 8. Defaults to 4 and is invalid for other modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 8)]
+    pub n: Option<usize>,
+    /// Existing negative prompt used only by `negative` mode as the diff baseline; at most 16,384 Unicode characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(max_length = 16384)]
+    pub original: Option<String>,
+    /// Exact workflow ID whose description, tags and selected parameter hints are sent to the LLM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    /// Target parameter name within `workflow_id`, enabling its manifest hints in the LLM request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter: Option<String>,
+}
+
+/// Prompt proposal response. `applied` is always false.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct PromptAssistResponse {
+    pub proposals: Vec<PromptProposal>,
+    /// Exact number of retained proposals after empty and duplicate values are removed.
+    pub proposal_count: usize,
+    pub model: String,
+    pub mode: PromptAssistMode,
+    pub template: PromptTemplateReference,
+    /// Always `false`; accepting and applying a proposal is a separate client action.
+    #[schema(example = false)]
+    pub applied: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct PromptProposal {
+    pub text: String,
+    pub diff: Vec<PromptDiff>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct PromptDiff {
+    pub op: PromptDiffOperation,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDiffOperation {
+    Equal,
+    Insert,
+    Delete,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct PromptTemplateReference {
+    pub name: String,
+    pub sha256: String,
+}

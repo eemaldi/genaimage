@@ -1,3 +1,4 @@
+pub mod prompt_assist;
 mod prompts;
 mod service;
 mod store;

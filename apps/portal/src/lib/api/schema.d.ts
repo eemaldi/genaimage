@@ -76,6 +76,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Create prompt proposals using the configured text model. The selected workflow is loaded by its exact ID and its description, tags and targeted parameter hints are included. Results are never applied: the client must separately present and explicitly accept a proposal. For negative mode, `original` is the existing negative prompt and the diff baseline; for every other mode the request `prompt` is the diff baseline. */
+        post: operations["assistant_prompt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -834,6 +851,55 @@ export interface components {
             status: number;
             title: string;
             type: string;
+        };
+        /**
+         * @description One prompt-assistance operation. Every result remains an unapplied proposal.
+         * @enum {string}
+         */
+        PromptAssistMode: "expand" | "refine" | "negative" | "variations";
+        /** @description Request prompt assistance without changing a workflow or generation value. */
+        PromptAssistRequest: {
+            /** @description Required and non-blank for `refine`; at most 8,192 Unicode characters. */
+            instruction?: string | null;
+            mode: components["schemas"]["PromptAssistMode"];
+            /** @description Number of variations to request, from 1 through 8. Defaults to 4 and is invalid for other modes. */
+            n?: number | null;
+            /** @description Existing negative prompt used only by `negative` mode as the diff baseline; at most 16,384 Unicode characters. */
+            original?: string | null;
+            /** @description Target parameter name within `workflow_id`, enabling its manifest hints in the LLM request. */
+            parameter?: string | null;
+            /** @description The positive prompt, at most 16,384 Unicode characters. */
+            prompt: string;
+            /** @description Exact workflow ID whose description, tags and selected parameter hints are sent to the LLM. */
+            workflow_id?: string | null;
+        };
+        /** @description Prompt proposal response. `applied` is always false. */
+        PromptAssistResponse: {
+            /**
+             * @description Always `false`; accepting and applying a proposal is a separate client action.
+             * @example false
+             */
+            applied: boolean;
+            mode: components["schemas"]["PromptAssistMode"];
+            model: string;
+            /** @description Exact number of retained proposals after empty and duplicate values are removed. */
+            proposal_count: number;
+            proposals: components["schemas"]["PromptProposal"][];
+            template: components["schemas"]["PromptTemplateReference"];
+        };
+        PromptDiff: {
+            op: components["schemas"]["PromptDiffOperation"];
+            text: string;
+        };
+        /** @enum {string} */
+        PromptDiffOperation: "equal" | "insert" | "delete";
+        PromptProposal: {
+            diff: components["schemas"]["PromptDiff"][];
+            text: string;
+        };
+        PromptTemplateReference: {
+            name: string;
+            sha256: string;
         };
         /**
          * @description What reconciliation established, independently of the run status.
@@ -1849,6 +1915,129 @@ export interface operations {
                 };
             };
             /** @description Text role unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    assistant_prompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptAssistRequest"];
+            };
+        };
+        responses: {
+            /** @description Unapplied prompt proposals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptAssistResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Workflow not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Invalid prompt-assist request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Malformed or failed LLM response */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Assistant unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;
