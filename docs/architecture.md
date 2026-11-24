@@ -343,9 +343,8 @@ are inconclusive. Success requires valid output references and either positive
 completion status or a legacy outputs-only entry. `not_found` means absent from queue
 and history after the settle window. ComfyUI cannot prove absence, so very late
 admission is still possible and a later reconcile can adopt the original run.
-Jobs requires explicit confirmation after `not_found` and only offers the
-separate run when server-side rerun support is available. Neither reconcile
-endpoint resubmits a prompt.
+Jobs requires explicit confirmation after `not_found` before calling the
+separate re-run endpoint. Neither reconcile endpoint resubmits a prompt.
 
 Re-run takes no request body or `Content-Type` header. It shares the submission
 key namespace with `POST /runs`; the key identifies the operation and source

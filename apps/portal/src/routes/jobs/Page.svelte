@@ -59,10 +59,6 @@
   const revision = (run: Run) => `${run.prompt_id}/${run.updated_at}`;
 
   type Confirmation = { run: Run; rerun: boolean };
-  // The server-side rerun endpoint owns binding and fingerprint verification.
-  const rerunClient = api as typeof api & {
-    rerunRun?: (id: string, key: string) => Promise<Run>;
-  };
   const grants = new SvelteMap<string, string>();
   let reconcileEpoch = 0;
   onDestroy(
@@ -164,8 +160,7 @@
     if (
       !latest ||
       (rerun
-        ? !rerunClient.rerunRun ||
-          latest.status !== 'unknown_submission' ||
+        ? latest.status !== 'unknown_submission' ||
           grants.get(run.id) !== revision(latest) ||
           revision(latest) !== revision(run) ||
           attempted.has(run.id)
@@ -179,7 +174,7 @@
     }
     busy.add(run.id);
     try {
-      if (rerun && rerunClient.rerunRun) {
+      if (rerun) {
         const current = await api.getRun(run.id);
         if (
           current.status !== 'unknown_submission' ||
@@ -201,7 +196,7 @@
         }
         const key = crypto.randomUUID();
         attempted.add(run.id);
-        const result = await rerunClient.rerunRun(run.id, key);
+        const result = await api.rerunRun(run.id, key);
         notice = {
           message: 'New run recorded. The original run was not changed.',
           newId: result.id,
@@ -334,17 +329,10 @@
               ComfyUI could still accept the original prompt very late.
               Submitting again could duplicate it.
             </p>
-            {#if rerunClient.rerunRun}
-              <Button
-                onclick={() => confirm(run, true)}
-                disabled={busy.has(run.id)}>Submit as new run</Button
-              >
-            {:else}
-              <p>
-                Submitting as a new run is unavailable until the server can
-                verify the original workflow and inputs.
-              </p>
-            {/if}
+            <Button
+              onclick={() => confirm(run, true)}
+              disabled={busy.has(run.id)}>Submit as new run</Button
+            >
           {/if}
         {/if}
       </li>
