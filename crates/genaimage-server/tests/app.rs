@@ -29,6 +29,15 @@ fn run_request() -> RunRequest {
     }
 }
 
+#[test]
+fn health_response_decodes_without_hints_from_older_servers() {
+    let health: HealthResponse = serde_json::from_value(json!({
+        "self": "ok", "image_backend": "ok", "llm": "not_configured"
+    }))
+    .unwrap();
+    assert!(health.hints.is_none());
+}
+
 #[tokio::test]
 async fn health_reports_a_reachable_fake_and_emits_an_event() {
     let api = ApiHarness::start().await;
@@ -47,6 +56,10 @@ async fn health_reports_a_reachable_fake_and_emits_an_event() {
     assert_eq!(health.image_backend, HealthStatus::Ok);
     assert_eq!(health.llm, HealthStatus::NotConfigured);
     assert_eq!(health.image_backend_reason, None);
+    let hints = health.hints.unwrap();
+    assert!(hints.server.contains("GenAImage"));
+    assert!(hints.image_backend.contains("comfyui.base_url"));
+    assert!(hints.llm.contains("LLM integration is planned"));
     ApiHarness::await_event(&mut events, Duration::from_secs(2), |e| {
         matches!(e.event, Event::BackendHealthChanged { .. })
     })
@@ -67,6 +80,12 @@ async fn health_reports_an_unavailable_backend_and_generates_request_ids() {
         ids.push(response.headers()["x-request-id"].clone());
         let health: HealthResponse = response.json().await.unwrap();
         assert_eq!(health.image_backend, HealthStatus::Unavailable);
+        assert!(health
+            .hints
+            .as_ref()
+            .unwrap()
+            .image_backend
+            .contains("Start ComfyUI"));
         assert_eq!(
             health.image_backend_reason,
             Some(ImageBackendHealthReason::ProbeFailed)

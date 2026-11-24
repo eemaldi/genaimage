@@ -1,5 +1,6 @@
 import {
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -51,6 +52,11 @@ const healthy = {
   image_backend: 'ok',
   llm: 'not_configured',
   image_backend_reason: null,
+  hints: {
+    self: 'Start GenAImage.',
+    image_backend: 'Start ComfyUI and check Settings.',
+    llm: 'LLM integration is planned.',
+  },
 };
 const makeRun = (
   id: string,
@@ -98,11 +104,15 @@ describe('dashboard', () => {
     expect(within(cards[0]).getByText('OK')).toBeTruthy();
     expect(within(cards[1]).getByText('OK')).toBeTruthy();
     expect(within(cards[2]).getByText('Not configured')).toBeTruthy();
+    expect(
+      within(cards[2]).getByText('LLM integration is planned.'),
+    ).toBeTruthy();
     status.set('open');
     await waitFor(() => expect(fake.health).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(screen.getByText('Live updates connected')).toBeTruthy(),
     );
+    vi.useFakeTimers();
     fake.health.mockResolvedValue({
       ...healthy,
       image_backend: 'unavailable',
@@ -113,10 +123,16 @@ describe('dashboard', () => {
       health: null,
       error: 'Timed out',
     });
-    await screen.findByText('The health probe timed out.');
+    await vi.advanceTimersByTimeAsync(5_001);
+    expect(screen.getByText('The health probe timed out.')).toBeTruthy();
+    expect(
+      within(cards[1]).getByText('Start ComfyUI and check Settings.'),
+    ).toBeTruthy();
     expect(within(cards[1]).getByText('Unavailable')).toBeTruthy();
     status.set('reconnecting');
-    expect(await screen.findByText(/Live updates offline/)).toBeTruthy();
+    await vi.waitFor(() =>
+      expect(screen.getByText(/Live updates offline/)).toBeTruthy(),
+    );
   });
 });
 
@@ -135,6 +151,11 @@ it('merges live runs into the snapshot and links unknown submissions to reconcil
     run: makeRun('a', 'unknown_submission', '2026-01-01T10:01:00Z'),
   });
   await screen.findByText(/Unknown submissions need reconciliation/);
+  expect(
+    screen
+      .getByText('Run a needs reconciliation. Go to Jobs.')
+      .getAttribute('aria-live'),
+  ).toBe('polite');
   expect(
     screen.getByText('Needs reconciliation', { selector: 'strong' }),
   ).toBeTruthy();
@@ -183,13 +204,9 @@ it('shows empty states and problem details with the API recovery hint', async ()
   expect(screen.queryByText(/No runs yet/)).toBeNull();
 });
 
-it('buffers live runs during paginated snapshots and resynchronises all sections', async () => {
+it('buffers live runs during snapshots and resynchronises all sections', async () => {
   let resolvePage!: (value: unknown) => void;
   fake.listRuns
-    .mockResolvedValueOnce({
-      runs: [makeRun('a', 'queued')],
-      next_cursor: 'next',
-    })
     .mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -203,15 +220,15 @@ it('buffers live runs during paginated snapshots and resynchronises all sections
     run: makeRun('a', 'running', '2026-01-01T10:00:00.000000001Z'),
   });
   emit('run_failed', { run: makeRun('b', 'failed', '2026-01-01T09:59:00Z') });
-  resolvePage({ runs: [makeRun('b', 'completed')], next_cursor: null });
+  resolvePage({
+    runs: [makeRun('a', 'queued'), makeRun('b', 'completed')],
+    next_cursor: null,
+  });
   expect(
     await screen.findByText('Running', { selector: 'strong' }),
   ).toBeTruthy();
   expect(screen.getByText('Completed', { selector: 'strong' })).toBeTruthy();
-  expect(fake.listRuns.mock.calls[1][0]).toEqual({
-    limit: 200,
-    cursor: 'next',
-  });
+  expect(fake.listRuns.mock.calls[0][0]).toEqual({ limit: 50 });
   const calls = [
     fake.health.mock.calls.length,
     fake.listRuns.mock.calls.length,
@@ -229,19 +246,59 @@ it('buffers live runs during paginated snapshots and resynchronises all sections
   );
 });
 
-it('shows recent output thumbnails using API URLs', async () => {
+it('caps snapshots and live state and labels partial counts as lower bounds', async () => {
+  fake.listRuns.mockResolvedValue({
+    runs: Array.from({ length: 50 }, (_, i) =>
+      makeRun(String(i).padStart(2, '0'), 'queued'),
+    ),
+    next_cursor: 'older',
+  });
+  mount();
+  await screen.findByText('50+');
+  expect(fake.listRuns).toHaveBeenCalledTimes(1);
+  expect(fake.listRuns.mock.calls[0][0]).toEqual({ limit: 50 });
+  for (let i = 0; i < 10; i++)
+    emit('run_started', { run: makeRun(`z${i}`, 'running') });
+  await waitFor(() => expect(screen.getByText('40+')).toBeTruthy());
+  expect(screen.getByText('10+')).toBeTruthy();
+  expect(screen.getAllByRole('link', { name: /workflow-/ })).toHaveLength(6);
+});
+
+it('links each output and falls back for unsupported or broken thumbnails', async () => {
   fake.listOutputs.mockResolvedValue({
-    outputs: [{ id: 'output/1', source_filename: 'image.png' }],
+    outputs: [
+      {
+        id: 'output/1',
+        source_filename: 'image.png',
+        content_type: 'image/png',
+      },
+      {
+        id: 'output 2',
+        source_filename: 'film.mp4',
+        content_type: 'video/mp4',
+      },
+    ],
     next_cursor: null,
   });
   mount();
-  const link = await screen.findByRole('link', {
+  const image = await screen.findByRole('link', {
     name: 'View image.png in Gallery',
   });
-  expect(link.getAttribute('href')).toBe('#/gallery');
-  expect(within(link).getByRole('presentation').getAttribute('src')).toBe(
+  const video = screen.getByRole('link', { name: 'View film.mp4 in Gallery' });
+  expect(image.getAttribute('href')).toBe('#/gallery?output=output%2F1');
+  expect(video.getAttribute('href')).toBe('#/gallery?output=output%202');
+  expect(
+    within(video).getByText('Thumbnail unavailable (video/mp4)'),
+  ).toBeTruthy();
+  expect(within(video).queryByRole('presentation')).toBeNull();
+  const thumbnail = within(image).getByRole('presentation');
+  expect(thumbnail.getAttribute('src')).toBe(
     '/api/v1/outputs/output%2F1/thumbnail?size=256',
   );
+  await fireEvent.error(thumbnail);
+  expect(
+    within(image).getByText('Thumbnail unavailable (image/png)'),
+  ).toBeTruthy();
 });
 
 it('polls health only while visible and cleans up subscriptions', async () => {
@@ -293,4 +350,54 @@ it('does not start another probe from its own in-flight health event, but resync
   finish({ ...healthy, image_backend: 'unavailable' });
   await Promise.resolve();
   expect(screen.queryByText('Unavailable')).toBeNull();
+});
+
+it('coalesces a health event during a probe and reconciles a newer observation', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: unknown) => void;
+  fake.health
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue({
+      ...healthy,
+      image_backend: 'unavailable',
+      image_backend_reason: 'probe_failed',
+    });
+  mount();
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  emit('backend_health_changed', {
+    backend: 'ComfyUI',
+    health: null,
+    error: 'Unavailable',
+  });
+  emit('backend_health_changed', {
+    backend: 'ComfyUI',
+    health: null,
+    error: 'Unavailable',
+  });
+  finish(healthy);
+  await vi.advanceTimersByTimeAsync(4_000);
+  expect(fake.health).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(fake.health).toHaveBeenCalledTimes(2);
+  await vi.waitFor(() => expect(screen.getByText('Unavailable')).toBeTruthy());
+});
+
+it('does not re-probe for the health event delivered after its matching response', async () => {
+  vi.useFakeTimers();
+  mount();
+  await vi.waitFor(() =>
+    expect(screen.getByText('Not configured')).toBeTruthy(),
+  );
+  emit('backend_health_changed', {
+    backend: 'ComfyUI',
+    health: { system: {} },
+    error: null,
+  });
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(fake.health).toHaveBeenCalledTimes(1);
 });

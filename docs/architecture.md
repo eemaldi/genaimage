@@ -84,7 +84,8 @@ callers must provide the intended port.
   set to `ok`, `image_backend` set to `ok` or `unavailable`, and `llm` set to
   `not_configured`. It checks the image backend through `Harness::health` on
   each request with a two-second deadline. If unavailable, `image_backend_reason`
-  is `timeout` or `probe_failed`; neither prevents server startup.
+  is `timeout` or `probe_failed`; neither prevents server startup. Optional
+  `hints` provide recovery guidance for each service.
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`

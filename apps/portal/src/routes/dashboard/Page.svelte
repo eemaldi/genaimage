@@ -19,6 +19,9 @@
   type Run = components['schemas']['RunResponse'];
   type Output = components['schemas']['OutputResponse'];
   type Status = components['schemas']['RunStatus'];
+  type HealthObservation = 'ok' | 'unavailable' | 'unknown';
+  const runLimit = 50;
+  const healthEventInterval = 5_000;
   const statuses: { value: Status; label: string }[] = [
     { value: 'created', label: 'Created' },
     { value: 'submitting', label: 'Submitting' },
@@ -42,6 +45,9 @@
   let runsError = $state<Problem | null>(null);
   let outputsError = $state<Problem | null>(null);
   let connection = $state<ConnectionStatus>('connecting');
+  let runsTruncated = $state(false);
+  let brokenThumbnails = $state<string[]>([]);
+  let announcement = $state('');
   let counts = $derived(
     statuses.map((status) => ({
       ...status,
@@ -79,6 +85,20 @@
       Number((value.match(/\.(\d+)/)?.[1] ?? '').padEnd(9, '0').slice(3, 9));
     return submillis(a) - submillis(b);
   }
+  function newestRuns(list: Run[]): Run[] {
+    return list
+      .slice()
+      .sort(
+        (a, b) =>
+          compareInstant(b.created_at, a.created_at) ||
+          b.id.localeCompare(a.id),
+      )
+      .slice(0, runLimit);
+  }
+  function announceRun(run: Run, previous?: Run) {
+    if (run.status === 'unknown_submission' && previous?.status !== run.status)
+      announcement = `Run ${run.id} needs reconciliation. Go to Jobs.`;
+  }
   function mergeRun(list: Run[], run: Run, allowEqual = false): Run[] {
     const existing = list.find((item) => item.id === run.id);
     if (existing) {
@@ -94,24 +114,63 @@
   let outputController: AbortController | undefined;
   let runBuffer: Map<string, Run> | null = null;
   let outputDirty = false;
+  let bufferOverflow = false;
+  let pendingHealth: HealthObservation | null = null;
+  let healthTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastProbeStart = -Infinity;
+
+  function matchesHealth(observation: HealthObservation): boolean {
+    if (!health || healthError || observation === 'unknown') return false;
+    if (observation === 'ok') return health.image_backend === 'ok';
+    return (
+      health.image_backend === 'unavailable' &&
+      health.image_backend_reason === 'probe_failed'
+    );
+  }
+  function scheduleHealthRefresh() {
+    if (!active || !pendingHealth || healthController || healthTimer) return;
+    healthTimer = setTimeout(
+      () => {
+        healthTimer = undefined;
+        pendingHealth = null;
+        void loadHealth();
+      },
+      Math.max(0, healthEventInterval - (Date.now() - lastProbeStart)),
+    );
+  }
+  function healthChanged(observation: HealthObservation) {
+    if (!healthController && matchesHealth(observation)) {
+      pendingHealth = null;
+      clearTimeout(healthTimer);
+      healthTimer = undefined;
+      return;
+    }
+    pendingHealth = observation;
+    scheduleHealthRefresh();
+  }
 
   async function loadHealth(force = false) {
     if (!active) return;
     if (healthController && !force) return;
     healthController?.abort();
+    clearTimeout(healthTimer);
+    healthTimer = undefined;
     const controller = new AbortController();
     healthController = controller;
+    lastProbeStart = Date.now();
     try {
       const result = await api.health({ signal: controller.signal });
       if (!active || controller.signal.aborted) return;
       health = result;
       healthError = null;
+      if (pendingHealth && matchesHealth(pendingHealth)) pendingHealth = null;
     } catch (error) {
       if (!active || controller.signal.aborted) return;
       healthError = problem(error);
     } finally {
       if (healthController === controller) {
         healthController = undefined;
+        scheduleHealthRefresh();
       }
     }
   }
@@ -122,21 +181,27 @@
     runController = controller;
     const buffered = new SvelteMap<string, Run>();
     runBuffer = buffered;
+    bufferOverflow = false;
     try {
-      let cursor: string | undefined;
-      let list: Run[] = [];
-      do {
-        const page = await api.listRuns(
-          { limit: 200, cursor },
-          { signal: controller.signal },
-        );
-        if (controller.signal.aborted) return;
-        list.push(...page.runs);
-        cursor = page.next_cursor ?? undefined;
-      } while (cursor);
-      for (const run of buffered.values()) list = mergeRun(list, run);
+      const page = await api.listRuns(
+        { limit: runLimit },
+        { signal: controller.signal },
+      );
       if (!active || controller.signal.aborted) return;
-      runs = list;
+      let list = page.runs;
+      for (const run of buffered.values()) {
+        const previous = list.find((item) => item.id === run.id);
+        const merged = mergeRun(list, run);
+        if (
+          merged !== list &&
+          newestRuns(merged).some((item) => item.id === run.id)
+        )
+          announceRun(run, previous);
+        list = merged;
+      }
+      runsTruncated =
+        Boolean(page.next_cursor) || bufferOverflow || list.length > runLimit;
+      runs = newestRuns(list);
       runsError = null;
     } catch (error) {
       if (!active || controller.signal.aborted) return;
@@ -165,6 +230,9 @@
       );
       if (!active || controller.signal.aborted) return;
       outputs = result.outputs;
+      brokenThumbnails = brokenThumbnails.filter((id) =>
+        result.outputs.some((output) => output.id === id),
+      );
       outputsError = null;
     } catch (error) {
       if (!active || controller.signal.aborted) return;
@@ -203,15 +271,42 @@
           if (
             !previous ||
             compareInstant(previous.updated_at, event.run.updated_at) <= 0
-          )
+          ) {
             runBuffer.set(event.run.id, event.run);
-        } else if (runs) runs = mergeRun(runs, event.run, true);
+            if (runBuffer.size > runLimit) {
+              const retained = newestRuns([...runBuffer.values()]);
+              const ids = new Set(retained.map((run) => run.id));
+              for (const id of runBuffer.keys())
+                if (!ids.has(id)) runBuffer.delete(id);
+              bufferOverflow = true;
+            }
+          }
+        } else if (runs) {
+          const previous = runs.find((run) => run.id === event.run.id);
+          const merged = mergeRun(runs, event.run, true);
+          if (merged !== runs) {
+            if (merged.length > runLimit) runsTruncated = true;
+            runs = newestRuns(merged);
+            if (runs.some((run) => run.id === event.run.id))
+              announceRun(event.run, previous);
+          }
+        }
         if (event.type === 'run_completed') void loadOutputs();
       }),
     );
     stops.push(events.on('run_output', () => void loadOutputs()));
     // Health events are published by probes, not a background monitor. Poll while visible as well.
-    stops.push(events.on('backend_health_changed', () => void loadHealth()));
+    stops.push(
+      events.on('backend_health_changed', (event) => {
+        healthChanged(
+          event.health && !event.error
+            ? 'ok'
+            : !event.health && event.error
+              ? 'unavailable'
+              : 'unknown',
+        );
+      }),
+    );
     let opened = false;
     stops.push(
       events.status.subscribe((status) => {
@@ -245,6 +340,7 @@
       runController?.abort();
       outputController?.abort();
       window.clearInterval(timer);
+      clearTimeout(healthTimer);
       document.removeEventListener('visibilitychange', visible);
       stops.forEach((stop) => stop());
     };
@@ -253,6 +349,9 @@
 
 <h1>Dashboard</h1>
 <p class="intro">Service health and recent activity at a glance.</p>
+<p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+  {announcement}
+</p>
 <p class="connection" role="status">
   {#if connection === 'open'}Live updates connected
   {:else if connection === 'connecting'}Connecting to live updates…
@@ -269,12 +368,15 @@
   {:else if !health}<p role="status">Checking services…</p>
   {:else}
     <div class="health-grid">
-      {#each [{ name: 'GenAImage', status: health.self }, { name: 'ComfyUI', status: health.image_backend }, { name: 'LLM', status: health.llm }] as service (service.name)}
+      {#each [{ name: 'GenAImage', status: health.self, hint: health.hints?.self }, { name: 'ComfyUI', status: health.image_backend, hint: health.hints?.image_backend }, { name: 'LLM', status: health.llm, hint: health.hints?.llm }] as service (service.name)}
         <article class="card">
           <h3>{service.name}</h3>
           <p class="health-status">
             {healthLabels[service.status] ?? service.status}
           </p>
+          {#if service.status !== 'ok' && service.hint}<p>
+              {service.hint}
+            </p>{/if}
           {#if service.name === 'ComfyUI' && health.image_backend_reason === 'timeout'}<p
             >
               The health probe timed out.
@@ -302,11 +404,15 @@
       No runs yet. <a href="#/generate">Go to Generate</a> to get started.
     </p>
   {:else}
-    <p class="muted">Counts include all recorded runs.</p>
+    <p class="muted">
+      Counts cover the latest {runLimit} recorded runs{runsTruncated
+        ? '; + indicates a lower bound'
+        : ''}.
+    </p>
     <dl class="counts">
       {#each counts as item (item.value)}<div>
           <dt>{item.label}</dt>
-          <dd>{item.count}</dd>
+          <dd>{item.count}{runsTruncated ? '+' : ''}</dd>
         </div>{/each}
     </dl>
     {#if counts.find((item) => item.value === 'unknown_submission')?.count}<p
@@ -344,14 +450,25 @@
   {:else}<ul class="outputs">
       {#each outputs as output (output.id)}<li>
           <a
-            href="#/gallery"
+            href={`#/gallery?output=${encodeURIComponent(output.id)}`}
             aria-label={`View ${output.source_filename} in Gallery`}
-            ><img
-              src={outputThumbnailUrl(output.id, 256)}
-              alt=""
-              loading="lazy"
-            /><span>{output.source_filename}</span></a
           >
+            {#if ['image/png', 'image/jpeg', 'image/webp'].includes(output.content_type) && !brokenThumbnails.includes(output.id)}
+              <img
+                src={outputThumbnailUrl(output.id, 256)}
+                alt=""
+                loading="lazy"
+                onerror={() => {
+                  brokenThumbnails = [...brokenThumbnails, output.id];
+                }}
+              />
+            {:else}
+              <span class="media-fallback"
+                >Thumbnail unavailable ({output.content_type})</span
+              >
+            {/if}
+            <span>{output.source_filename}</span>
+          </a>
         </li>{/each}
     </ul>{/if}
 </section>
@@ -433,13 +550,21 @@
     border-block-start: 1px solid var(--border);
     padding-block: var(--space-3);
   }
-  .outputs img {
+  .outputs img,
+  .media-fallback {
     display: block;
     width: 100%;
     aspect-ratio: 1;
     object-fit: contain;
     background: var(--subtle);
     border-radius: var(--radius-control);
+  }
+  .media-fallback {
+    display: grid;
+    place-items: center;
+    padding: var(--space-3);
+    color: var(--ink);
+    text-align: center;
   }
   .outputs a {
     display: block;

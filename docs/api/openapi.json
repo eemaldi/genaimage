@@ -438,8 +438,38 @@
         ],
         "type": "string"
       },
+      "HealthHints": {
+        "properties": {
+          "image_backend": {
+            "type": "string"
+          },
+          "llm": {
+            "type": "string"
+          },
+          "self": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "self",
+          "image_backend",
+          "llm"
+        ],
+        "type": "object"
+      },
       "HealthResponse": {
         "properties": {
+          "hints": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HealthHints",
+                "description": "Recovery guidance for services; absent on older servers."
+              }
+            ]
+          },
           "image_backend": {
             "$ref": "#/components/schemas/HealthStatus"
           },

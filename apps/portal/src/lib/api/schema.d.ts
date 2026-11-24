@@ -502,7 +502,13 @@ export interface components {
         };
         /** @enum {string} */
         GenerationMode: "generic" | "initial_concept" | "correction" | "refinement" | "multi_view" | "delivery";
+        HealthHints: {
+            image_backend: string;
+            llm: string;
+            self: string;
+        };
         HealthResponse: {
+            hints?: null | components["schemas"]["HealthHints"];
             image_backend: components["schemas"]["HealthStatus"];
             image_backend_reason?: null | components["schemas"]["ImageBackendHealthReason"];
             llm: components["schemas"]["HealthStatus"];

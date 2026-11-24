@@ -20,6 +20,17 @@ pub struct HealthResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_backend_reason: Option<ImageBackendHealthReason>,
     pub llm: HealthStatus,
+    /// Recovery guidance for services; absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hints: Option<HealthHints>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct HealthHints {
+    #[serde(rename = "self")]
+    pub server: String,
+    pub image_backend: String,
+    pub llm: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]

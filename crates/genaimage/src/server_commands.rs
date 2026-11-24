@@ -39,7 +39,9 @@ impl<'a> Command<'a> {
             Self::Run(command) => return crate::run_commands::run(client, output, command).await,
             Self::Jobs(command) => return crate::run_commands::jobs(client, output, command).await,
             Self::Doctor => {
-                let health = client.health().await?;
+                let mut health = client.health().await?;
+                // Preserve the established doctor JSON shape as the API evolves.
+                health.hints = None;
                 output.write(&health, |out| {
                     writeln!(out, "GenAImage server: {}", health_label(health.server))?;
                     writeln!(out, "ComfyUI: {}", health_label(health.image_backend))?;
