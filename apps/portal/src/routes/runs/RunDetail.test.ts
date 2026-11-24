@@ -75,6 +75,7 @@ const run: Run = {
   workflow_id: 'landscape',
   workflow_version: 'v1',
   workflow_sha256: 'graphhash',
+  workflow_revision: 'source-revision',
   status: 'completed',
   parameters: { seed: 18446744073709551615n, prompt: 'Coast' },
   created_at: '2026-01-01T00:00:00Z',
@@ -270,10 +271,14 @@ test('offers Remix after a provenance mismatch', async () => {
   await user.click(screen.getByRole('button', { name: 'Re-run' }));
   await user.click(screen.getByRole('button', { name: 'Confirm re-run' }));
   expect(await screen.findByText('Restore the original files.')).toBeTruthy();
+  const primary = screen
+    .getByRole('link', { name: 'Remix in Generate' })
+    .getAttribute('href')!;
   expect(screen.getByRole('link', { name: 'Remix' }).getAttribute('href')).toBe(
-    screen
-      .getByRole('link', { name: 'Remix in Generate' })
-      .getAttribute('href'),
+    primary,
+  );
+  expect(new URLSearchParams(primary.split('?')[1]).get('wr')).toBe(
+    'source-revision',
   );
 });
 
@@ -349,6 +354,9 @@ test('remixes exact recorded bindings through the Generate decoder', async () =>
   };
   const restored = restoreFormState(workflow, query);
   expect(query.get('workflow')).toBe('landscape');
+  expect(query.get('wr')).toBe('source-revision');
+  expect(query.get('unverified_source')).toBeNull();
+  expect(restored.revisionNotice).toMatch(/revision differs/);
   expect(restored.warnings).toEqual([]);
   expect(restored.fields.get('seed')?.value).toBe(18446744073709551615n);
   expect(restored.fields.get('seed')?.seedMode).toBe('locked');
@@ -360,6 +368,40 @@ test('remixes exact recorded bindings through the Generate decoder', async () =>
   );
   expect(fake.client.rerunRun).not.toHaveBeenCalled();
   expect(fake.navigate).not.toHaveBeenCalled();
+});
+
+test('warns on both Remix links when the source revision is unknown', async () => {
+  fake.client.getRecordedRun.mockResolvedValue({
+    ...run,
+    workflow_revision: undefined,
+  });
+  fake.client.rerunRun.mockRejectedValue(
+    new ApiProblemError({
+      type: 'urn:genaimage:problem:rerun-mismatch',
+      status: 409,
+      title: 'Mismatch',
+      detail: 'Changed',
+      recovery: 'Restore the original files.',
+    }),
+  );
+  await start();
+  const link = screen
+    .getByRole('link', { name: 'Remix in Generate' })
+    .getAttribute('href')!;
+  const query = new URLSearchParams(link.split('?')[1]);
+  expect(query.get('wr')).toBeNull();
+  expect(query.get('unverified_source')).toBe('1');
+  const warning =
+    'Remix uses the current workflow; it cannot be verified against the source run.';
+  expect(screen.getByText(warning)).toBeTruthy();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Re-run' }));
+  await user.click(screen.getByRole('button', { name: 'Confirm re-run' }));
+  await screen.findByText('Restore the original files.');
+  expect(screen.getByRole('link', { name: 'Remix' }).getAttribute('href')).toBe(
+    link,
+  );
+  expect(screen.getAllByText(warning)).toHaveLength(2);
 });
 
 test('does not offer Remix when exact binding reads fail', async () => {

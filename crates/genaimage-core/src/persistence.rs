@@ -102,6 +102,26 @@ pub struct RunRecord {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+impl RunRecord {
+    /// Revision of the workflow snapshot recorded for this run, if known.
+    pub fn workflow_revision(&self) -> Option<String> {
+        let manifest = self.workflow_manifest_sha256.as_deref()?;
+        let valid = |hash: &str| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        if !valid(&self.workflow_sha256) || !valid(manifest) {
+            return None;
+        }
+        Some(crate::workflow::workflow_revision(
+            &self.workflow_sha256,
+            manifest,
+        ))
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct RunEvent {
     pub id: i64,

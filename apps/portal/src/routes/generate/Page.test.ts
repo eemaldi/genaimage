@@ -735,6 +735,57 @@ test('Remix locks recorded seeds and flags stale versions and unknown parameters
   expect(fake.validateWorkflow.mock.calls[0][1].parameters?.Seed).toBe(seed);
 });
 
+test('Remix warns when the revision changed without a version change', async () => {
+  const hash = buildGenerateUrl({
+    ...run,
+    workflow_revision: 'source-revision',
+    parameters: { Seed: seed, Prompt: 'Recorded' },
+  });
+  const query = new URLSearchParams(hash.split('?')[1]);
+  expect(query.get('wv')).toBe(workflow.version);
+  expect(query.get('wr')).toBe('source-revision');
+  expect(query.get('unverified_source')).toBeNull();
+  const restored = restoreFormState(workflow, query);
+  expect(restored.fields.get('Seed')?.value).toBe(seed);
+  expect(restored.revisionNotice).toMatch(/revision differs/);
+  mount(query.toString());
+  expect(await screen.findByText(/workflow revision differs/)).toBeTruthy();
+  expect(control('Prompt').value).toBe('Recorded');
+  expect(fake.validateWorkflow).not.toHaveBeenCalled();
+  expect(fake.createRun).not.toHaveBeenCalled();
+});
+
+test('legacy Remix warns that the source workflow cannot be verified', async () => {
+  const hash = buildGenerateUrl({
+    ...run,
+    parameters: { Seed: seed, Prompt: 'Recorded' },
+  });
+  const query = new URLSearchParams(hash.split('?')[1]);
+  expect(query.get('wr')).toBeNull();
+  expect(query.get('unverified_source')).toBe('1');
+  const restored = restoreFormState(workflow, query);
+  expect(restored.unverifiedSource).toBe(true);
+  const reshared = encodeFormState({
+    workflow: workflow.id,
+    version: workflow.version,
+    revision: workflow.revision,
+    fields: restored.fields,
+    unverifiedSource: restored.unverifiedSource,
+  });
+  expect(
+    restoreFormState(workflow, new URLSearchParams(reshared.split('?')[1]))
+      .unverifiedSource,
+  ).toBe(true);
+  mount(query.toString());
+  expect(
+    await screen.findByText(
+      'Remix uses the current workflow; it cannot be verified against the source run.',
+    ),
+  ).toBeTruthy();
+  expect(control('Prompt').value).toBe('Recorded');
+  expect(fake.createRun).not.toHaveBeenCalled();
+});
+
 test('the run-detail Remix adapter restores recorded fields without submitting', async () => {
   const hash = buildGenerateUrl({
     ...run,

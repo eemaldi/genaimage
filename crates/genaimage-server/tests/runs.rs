@@ -54,6 +54,53 @@ async fn assert_workflow_changed(response: Response) {
 }
 
 #[tokio::test]
+async fn run_revision_uses_recorded_fingerprints_not_current_files() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let original: WorkflowDetails = api.get_json(WORKFLOW).await;
+    let mut body = request();
+    body["workflow_revision"] = json!(original.revision);
+    let submitted = run(
+        submit(&api, "recorded-revision", &body).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    assert_eq!(submitted.workflow_revision, original.revision);
+
+    let path = api.core.config().workflows.join("workflow.api.json");
+    let mut graph: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    graph["9"]["inputs"]["filename_prefix"] = json!("changed");
+    std::fs::write(&path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let current: WorkflowDetails = api.get_json(WORKFLOW).await;
+    assert_eq!(current.version, original.version);
+    assert_ne!(current.revision, original.revision);
+    let saved: RunResponse = api.get_json(&format!("{RUNS}/{}", submitted.id)).await;
+    assert_eq!(saved.workflow_revision, original.revision);
+    let listed: RunListResponse = api.get_json(RUNS).await;
+    assert_eq!(listed.runs[0].workflow_revision, original.revision);
+
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "UPDATE runs SET workflow_manifest_sha256 = NULL WHERE id = ?1",
+        [&submitted.id],
+    )
+    .unwrap();
+    drop(db);
+    let legacy: Value = api.get_json(&format!("{RUNS}/{}", submitted.id)).await;
+    assert!(legacy.get("workflow_revision").is_none());
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "UPDATE runs SET workflow_manifest_sha256 = 'invalid' WHERE id = ?1",
+        [&submitted.id],
+    )
+    .unwrap();
+    drop(db);
+    let invalid: Value = api.get_json(&format!("{RUNS}/{}", submitted.id)).await;
+    assert!(invalid.get("workflow_revision").is_none());
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn graph_replacement_blocks_pinned_submit_and_validate_before_backend_io() {
     let api = ApiHarness::start().await;
     install_workflow(&api);

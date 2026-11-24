@@ -894,6 +894,13 @@
           "workflow_id": {
             "type": "string"
           },
+          "workflow_revision": {
+            "description": "Revision derived from the run's recorded graph and manifest fingerprints, when available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "workflow_sha256": {
             "type": "string"
           },

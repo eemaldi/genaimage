@@ -51,6 +51,7 @@
   let timer: ReturnType<typeof setTimeout> | undefined;
   let rerunUrl = $state<string>();
   let remixUnavailable = $state(false);
+  let remixUnverified = $state(false);
   let parameters = $derived(
     manifest && Object.hasOwn(manifest, 'parameters')
       ? manifest.parameters
@@ -221,9 +222,11 @@
         )
           throw new Error('The recorded run could not be read exactly.');
         rerunUrl = buildGenerateUrl(remixResult.value);
+        remixUnverified = !remixResult.value.workflow_revision;
         remixUnavailable = false;
       } catch {
         rerunUrl = undefined;
+        remixUnverified = false;
         remixUnavailable = true;
       }
       if (eventResult.status === 'fulfilled') {
@@ -342,6 +345,7 @@
     manifest = undefined;
     manifestText = undefined;
     rerunUrl = undefined;
+    remixUnverified = false;
     remixUnavailable = false;
     manifestVerified = false;
     actionError = undefined;
@@ -703,6 +707,10 @@
   {:else}<Button onclick={() => (open = true)} disabled={busy}>Re-run</Button
     >{/if}
   {#if remixAvailable && rerunUrl}<a href={rerunUrl}>Remix in Generate</a>
+    {#if remixUnverified}<p>
+        Remix uses the current workflow; it cannot be verified against the
+        source run.
+      </p>{/if}
   {:else if remixAvailable && remixUnavailable}<p>
       Remix is unavailable because the recorded parameters could not be
       represented exactly.
@@ -714,7 +722,12 @@
   {#if actionError}<ProblemDetails problem={actionError} />{/if}
   {#if mismatch && remixAvailable && rerunUrl}<p>
       Use <a href={rerunUrl}>Remix</a> to review the current workflow instead.
-    </p>{/if}
+    </p>
+    {#if remixUnverified}<p>
+        Remix uses the current workflow; it cannot be verified against the
+        source run.
+      </p>{/if}
+  {/if}
   <Dialog bind:open title="Confirm re-run" returnFocus={() => heading.focus()}>
     <p>
       A new run will reuse the recorded workflow, version, preset, parameters,

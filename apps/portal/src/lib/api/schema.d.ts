@@ -666,6 +666,8 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             workflow_id: string;
+            /** @description Revision derived from the run's recorded graph and manifest fingerprints, when available. */
+            workflow_revision?: string | null;
             workflow_sha256: string;
             workflow_version: string;
         };

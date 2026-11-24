@@ -187,6 +187,7 @@
       workflow: workflow.id,
       version: workflow.version,
       revision: workflow.revision,
+      unverifiedSource: restored.unverifiedSource,
       preset,
       modified,
       fields,
@@ -497,6 +498,10 @@
 {#if workflow.description}<p>{workflow.description}</p>{/if}
 {#if restored.versionNotice}<p role="status">{restored.versionNotice}</p>{/if}
 {#if restored.revisionNotice}<p role="status">{restored.revisionNotice}</p>{/if}
+{#if restored.unverifiedSource}<p role="status">
+    Remix uses the current workflow; it cannot be verified against the source
+    run.
+  </p>{/if}
 {#if warnings.length}
   <ProblemDetails
     problem={{
