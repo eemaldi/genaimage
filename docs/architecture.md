@@ -35,8 +35,19 @@ genaimage (CLI) -> genaimage-server -> genaimage-api
   adapter factory to the extension registry and passes the selected backend to
   the core harness. `genaimage serve` passes this harness to `genaimage-server`;
   the other commands continue to call the core directly.
-- `genaimage-api` holds shared API wire types and OpenAPI schemas. The API
-  client is planned.
+- `genaimage-api` holds shared API wire types and OpenAPI schemas. It also
+  exposes an async `genaimage_api::client::Client` with the opt-in
+  `client` feature (reqwest with rustls). The server uses the wire types
+  without enabling the client in production. The client defaults to
+  `http://127.0.0.1:3000`; `Client::with_base_url` accepts a custom loopback
+  origin. A confirmed connection refusal suggests starting `genaimage serve`;
+  other connection failures are reported separately. The client returns typed
+  problem details and streams media responses without buffering.
+  Live events are a typed SSE stream with explicit cursor replay and resync
+  handling, not automatic reconnection. Run submissions require a
+  caller-supplied idempotency key and are never retried by the client.
+  Workflow IDs `.` and `..` cannot be used in client URL paths because HTTP
+  URL parsers treat them as path navigation.
 - `genaimage-server` is a thin loopback-only Axum adapter. It currently serves
   health, workflows, runs, outputs, uploads, settings and live events. The
   embedded Svelte portal is planned.

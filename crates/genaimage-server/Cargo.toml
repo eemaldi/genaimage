@@ -32,6 +32,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true
+genaimage-api = { path = "../genaimage-api", features = ["client"] }
 genaimage-test-support = { path = "../genaimage-test-support" }
 image.workspace = true
 rusqlite.workspace = true

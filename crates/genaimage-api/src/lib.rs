@@ -1,5 +1,8 @@
 //! Shared wire types for the local API.
 
+#[cfg(feature = "client")]
+pub mod client;
+
 mod events;
 pub use events::*;
 
