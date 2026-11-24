@@ -28,9 +28,11 @@ const routes: Route[] = [
   { pattern: '/runs/:id', component: RunDetail },
 ];
 
-export function matchHash(
-  hash: string,
-): RouteProps & { component: Component<RouteProps> } {
+export function matchHash(hash: string): RouteProps & {
+  component: Component<RouteProps>;
+  path: string;
+  pattern?: string;
+} {
   const [path = '/', ...queryParts] = (hash.replace(/^#/, '') || '/').split(
     '?',
   );
@@ -56,7 +58,14 @@ export function matchHash(
         break;
       }
     }
-    if (matches) return { component: route.component, params, query };
+    if (matches)
+      return {
+        component: route.component,
+        params,
+        query,
+        path,
+        pattern: route.pattern,
+      };
   }
-  return { component: NotFound, params: {}, query };
+  return { component: NotFound, params: {}, query, path };
 }

@@ -519,6 +519,83 @@ runs or recover in-flight queue state. Newer schema versions require a
 compatible GenAImage version, rather than a downgrade. Once started, a
 blocking-pool write may finish even if its async caller is cancelled.
 
+## Portal UI
+
+**Direction:** Make the active workspace obvious at a glance: a quiet, flat
+canvas frames the page, and accents only signal interaction or status. The
+#41 shell uses no external visual references, imagery or downloaded fonts.
+A rail would trade useful width for persistent navigation; an overlay would
+require additional focus management. The selected layout keeps the navigation
+in document flow and folds it into a disclosure at 48rem.
+
+Use the semantic CSS properties in `apps/portal/src/styles/tokens.css`:
+`canvas` and `surface` separate page from workspace, `subtle` highlights active
+or hovered controls, `ink` and `muted` carry text, `border` defines control edges,
+`accent` pairs with `on-accent` for primary actions, and `danger` pairs with
+`danger-surface` for failures. Keep underlines or labels for state, not colour
+alone. The system font stack, rem spacing, control/panel radii and minimum
+control size stay consistent across workspaces. Use the shared focus ring and
+reserve the 120ms transition for feedback; reduced motion uses 0ms. The portal
+uses flat sRGB colours with no external assets, media treatments, camera or
+lighting rules. Content should reflow rather than shrink or crop on narrow screens.
+
+### Components
+
+Import Svelte files from `apps/portal/src/lib/ui/`:
+
+| Component | Public interface |
+| --- | --- |
+| `Button.svelte` | Native button props and child content, plus `variant="primary"` or `"secondary"` (default). Defaults to `type="button"`. |
+| `Input.svelte` | `label`, optional `id`, `hint`, `error`, `name`, `required`, `disabled`; `bind:value` (string), `multiline`, `rows`, `placeholder`, `maxlength`, `autocomplete`, `readonly`. |
+| `Select.svelte` | Same common field props as Input; `bind:value` (string), `options` (`{ value, label, disabled? }[]`, unique values). |
+| `Slider.svelte` | `label`, optional `id`, `hint`, `error`, `name`, `disabled`; `bind:value` (number), `min`, `max`, `step`. |
+| `Dialog.svelte` | `bind:open`, `title`, optional `description`, `returnFocus` callback and child content. Escape and Close restore focus to the opener or call the fallback (the shell focuses the current `main`). |
+| `Tabs.svelte` | `label`, `tabs` (`{ id, label }[]`, unique IDs), optional `bind:value` (active ID; falls back to first tab), `children(tab)` snippet. Panels remain mounted. |
+| `Tooltip.svelte` | `text` and a `children(attrs)` snippet that spreads `attrs` on one focusable trigger. Put essential instructions in visible text instead. |
+| `ToastRegion.svelte` | Mounted by the shell; optional `returnFocus` callback for the last dismissal. Use `pushToast({ message, kind?: 'info' \| 'error' })` (returns ID), `dismissToast(id)` or the readable `toasts` store from `toasts.ts`. Notifications persist until dismissed. |
+| `ProblemDetails.svelte` | `problem: Problem`, a structural RFC 9457 object (`type`, `title`, `status`, `detail`, `instance`, all optional), with `recovery` and optional `errors: { key, reason }[]`. Displays actionable errors inline; no dependency on the API client. |
+
+`apps/portal/src/shortcuts.ts` exports `sections`, `shortcuts`, and
+`createShortcutHandler({ navigate, help }, now?)` with `handle(event)` and
+`reset()`. The shell handles enablement and suspends shortcuts in modals;
+editable controls suppress shortcuts. Two-key shortcuts expire after 1.2 seconds.
+
+### Accessibility checks
+
+Use a desktop-width route and a narrow screen with both menu states as review
+cases. Verify Tab reaches the skip link, selection is visible without colour,
+Escape closes the menu or help and returns focus, and no horizontal scrolling
+is needed at 320 CSS pixels. Repeat in both themes and with reduced motion.
+Target WCAG AA: 4.5:1 for normal text and 3:1 for control edges and focus rings.
+Vitest runs axe on the shell and help, and checks the flat palette pairs
+separately. jsdom does not measure rendered colour contrast or implement native
+modal behaviour; verify those and assistive-technology announcements in a
+browser. The modal uses a heading without introducing a second banner landmark.
+
+For a manual browser regression check at 320 CSS pixels, navigate from Dashboard
+to Jobs, open Menu, focus a navigation link, press `?`, go Back, then press
+Escape. Focus should land on Dashboard’s `main`. In the UI test fixture at
+`apps/portal/src/lib/ui/Fixture.test.svelte`, render `kind="radio"` with and
+without `checkedRadio`; Tab must wrap after the final group and Shift+Tab from
+Close must reach the checked or first radio. Render `kind="tooltip-edges"` and
+Tab to both triggers; each bubble must stay within the viewport. With
+`kind="editor"`, Tab from Close must reach the editor and the following Tab
+must wrap to Close. With `editorTabIndex: -1`, Tab must skip the editor.
+To mount either fixture without adding browser tooling, open the Vite dev
+portal and run this in its DevTools console. Reload before changing fixtures.
+
+```js
+const kind = 'radio'; // Or 'editor' or 'tooltip-edges'.
+const checkedRadio = true; // Also try false for the radio fixture.
+const svelte = performance.getEntriesByType('resource').find(({ name }) =>
+  new URL(name).pathname.endsWith('/deps/svelte.js'));
+const { mount } = await import(svelte.name);
+const editorTabIndex = undefined; // Also try -1 for the editor fixture.
+const { default: Fixture } = await import('/src/lib/ui/Fixture.test.svelte');
+document.querySelector('#app').hidden = true;
+mount(Fixture, { target: document.body, props: { kind, checkedRadio, editorTabIndex } });
+```
+
 ## Performance budgets
 
 These are target budgets to measure as the planned components are delivered:
