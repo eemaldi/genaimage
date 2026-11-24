@@ -153,6 +153,10 @@ pub struct WorkflowDiscovery {
     pub manifests: Vec<WorkflowManifest>,
     /// Paths of unique, valid IDs safe to resolve from this discovery snapshot.
     pub indexable_manifest_paths: BTreeMap<String, PathBuf>,
+    /// IDs blocked by duplicates or invalid manifests in this snapshot.
+    pub unresolvable_ids: BTreeSet<String>,
+    /// API workflow files referenced by valid and invalid sidecars.
+    pub referenced_workflow_paths: BTreeSet<PathBuf>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
@@ -314,6 +318,9 @@ impl Harness {
                 });
             }
             Ok(loaded) => {
+                discovery
+                    .referenced_workflow_paths
+                    .insert(loaded.workflow_path.clone());
                 let id = loaded.manifest.id.clone();
                 if discovery
                     .indexable_manifest_paths
@@ -329,6 +336,13 @@ impl Harness {
                     if let Some(id) = source.get("id").and_then(Value::as_str) {
                         ambiguous.insert(id.to_owned());
                     }
+                    if let Some(workflow) = source.get("workflow").and_then(Value::as_str) {
+                        discovery.referenced_workflow_paths.insert(
+                            path.parent()
+                                .unwrap_or_else(|| Path::new("."))
+                                .join(workflow),
+                        );
+                    }
                 }
                 discovery.diagnostics.push(WorkflowDiagnostic {
                     path: path.to_path_buf(),
@@ -336,9 +350,10 @@ impl Harness {
                 });
             }
         })?;
-        for id in ambiguous {
-            discovery.indexable_manifest_paths.remove(&id);
+        for id in &ambiguous {
+            discovery.indexable_manifest_paths.remove(id);
         }
+        discovery.unresolvable_ids = ambiguous;
         discovery
             .manifests
             .sort_by(|left, right| left.id.cmp(&right.id));

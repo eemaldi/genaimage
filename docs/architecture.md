@@ -226,13 +226,15 @@ The workflows API is read-only apart from validation, which does not submit a ru
   or AVIF from the manifest directory (including subdirectories), up to 10 MiB.
   Missing, unsupported, oversized, absolute, traversal or escaping symlink
   paths return 404 problem details. A discovery index is built on the first
-  thumbnail request and rebuilt on every catalogue list. Before and after each
-  indexed lookup, the server fingerprints directory and manifest metadata; a
-  change rebuilds the index, including when a duplicate ID is added or an ID
-  changes. Indexed requests also reload the target workflow, while unknown or
-  ambiguous IDs fall back to a full discovery. Repeated changes during discovery
-  or lookup fail rather than serving an unverified result. A settings change
-  switches to the new harness's index. On Unix, descriptor-relative no-follow
+  thumbnail request and checked at most once per second by a shared revalidation
+  of directory, manifest and referenced workflow metadata; each catalogue list
+  forces an immediate rebuild. A cache hit checks its own
+  manifest metadata and reads the current thumbnail safely; an edited manifest
+  is reloaded. Workflow-set changes, such as a newly added duplicate ID, can be
+  stale for up to one second plus the revalidation time. The detail endpoint
+  remains authoritative. Repeated changes during discovery fail rather than
+  publishing an inconsistent index. A settings change switches to the new
+  harness's index. On Unix, descriptor-relative no-follow
   opens reject symlinks below the configured workflow root, whose own symlinks
   are trusted and resolved before it is pinned. Non-regular files are rejected
   without blocking on FIFOs. On other

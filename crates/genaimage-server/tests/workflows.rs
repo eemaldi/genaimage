@@ -460,6 +460,13 @@ async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.bytes().await.unwrap(), &b"first"[..]);
     }
+    std::fs::write(dir.join("image.png"), b"updated").unwrap();
+    let changed = api
+        .request(Method::GET, "/api/v1/workflows/workflow-0/thumbnail")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(changed.bytes().await.unwrap(), &b"updated"[..]);
     #[cfg(unix)]
     {
         use rustix::fs::{mkfifoat, Mode, CWD};
@@ -510,6 +517,14 @@ async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();
+    let response = api
+        .request(Method::GET, "/api/v1/workflows/workflow-0")
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    assert!(problem.detail.contains("ambiguous"));
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let response = api.request(Method::GET, url).send().await.unwrap();
     let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
     assert!(problem.detail.contains("ambiguous"));
@@ -520,10 +535,12 @@ async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
         serde_json::to_vec(&invalid).unwrap(),
     )
     .unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let response = api.request(Method::GET, url).send().await.unwrap();
     let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
     assert!(problem.detail.contains("invalid manifest"));
     std::fs::remove_file(dir.join("duplicate.genaimage.json")).unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     assert_eq!(
         api.request(Method::GET, url).send().await.unwrap().status(),
         StatusCode::OK
@@ -531,10 +548,12 @@ async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
     let sibling = dir.join("workflow-1.genaimage.json");
     let original = std::fs::read(&sibling).unwrap();
     std::fs::write(&sibling, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let response = api.request(Method::GET, url).send().await.unwrap();
     let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
     assert!(problem.detail.contains("ambiguous"));
     std::fs::write(&sibling, original).unwrap();
+    let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     assert_eq!(
         api.request(Method::GET, url).send().await.unwrap().status(),
         StatusCode::OK

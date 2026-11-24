@@ -22,7 +22,7 @@ use genaimage_api::{
 use genaimage_core::{Harness, HarnessError, LoadedWorkflow};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
-use crate::{AppState, Problem, WorkflowIndex};
+use crate::{workflow_index::ThumbnailSource, AppState, Problem};
 
 const NODE_CHECK_DEADLINE: Duration = Duration::from_secs(2);
 const MAX_THUMBNAIL_BYTES: u64 = 10 * 1024 * 1024;
@@ -80,18 +80,11 @@ async fn load(harness: std::sync::Arc<Harness>, id: String) -> Result<LoadedWork
 pub(super) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<WorkflowListResponse>, Problem> {
-    let harness = state.harness();
-    let index = state.workflow_index.clone();
-    let discovery = tokio::task::spawn_blocking(move || {
-        let mut index = index.lock().expect("workflow index lock poisoned");
-        *index = None;
-        let (new_index, discovery) = WorkflowIndex::rebuild(harness)?;
-        *index = Some(new_index);
-        Ok::<_, HarnessError>(discovery)
-    })
-    .await
-    .map_err(internal_error)?
-    .map_err(internal_error)?;
+    let discovery = state
+        .workflow_index
+        .list(state.harness())
+        .await
+        .map_err(internal_error)?;
     Ok(Json(WorkflowListResponse {
         workflows: discovery
             .manifests
@@ -288,21 +281,21 @@ pub(super) async fn thumbnail(
 ) -> Result<impl IntoResponse, Problem> {
     let id = parse_id(id)?;
     let harness = state.harness();
-    let index = state.workflow_index.clone();
+    let index = state
+        .workflow_index
+        .get(harness.clone())
+        .await
+        .map_err(internal_error)?;
+    let root = harness.config().workflows.clone();
     let search_id = id.clone();
-    let lookup_harness = harness.clone();
-    let workflow = tokio::task::spawn_blocking(move || {
-        let mut index = index.lock().expect("workflow index lock poisoned");
-        WorkflowIndex::load(&mut index, lookup_harness, &search_id)
+    let image = tokio::task::spawn_blocking(move || {
+        let source = index.source(&search_id)?;
+        Ok::<_, HarnessError>(source.map(|source| read_thumbnail(&source, &root)))
     })
     .await
     .map_err(internal_error)?
     .map_err(internal_error)?
     .ok_or_else(|| not_found(&id))?;
-    let root = harness.config().workflows.clone();
-    let image = tokio::task::spawn_blocking(move || read_thumbnail(&workflow, &root))
-        .await
-        .map_err(internal_error)?;
     let (content_type, bytes) = image.ok_or_else(|| {
         Problem::new(
             StatusCode::NOT_FOUND,
@@ -313,8 +306,8 @@ pub(super) async fn thumbnail(
     Ok(([(header::CONTENT_TYPE, content_type)], bytes))
 }
 
-fn read_thumbnail(workflow: &LoadedWorkflow, root: &Path) -> Option<(&'static str, Vec<u8>)> {
-    let relative = Path::new(workflow.manifest.thumbnail.as_deref()?);
+fn read_thumbnail(workflow: &ThumbnailSource, root: &Path) -> Option<(&'static str, Vec<u8>)> {
+    let relative = Path::new(workflow.thumbnail.as_deref()?);
     if relative.as_os_str().is_empty()
         || !relative
             .components()
@@ -345,7 +338,7 @@ fn read_thumbnail(workflow: &LoadedWorkflow, root: &Path) -> Option<(&'static st
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::read_thumbnail;
+    use super::{read_thumbnail, ThumbnailSource};
 
     #[test]
     fn thumbnail_accepts_symlinked_root_with_parent_components() {
@@ -366,7 +359,11 @@ mod tests {
         let loaded =
             genaimage_core::LoadedWorkflow::load(&root.join("nested/workflow.genaimage.json"))
                 .unwrap();
-        let (mime, bytes) = read_thumbnail(&loaded, &root).unwrap();
+        let source = ThumbnailSource {
+            manifest_path: loaded.manifest_path.clone(),
+            thumbnail: loaded.manifest.thumbnail.clone(),
+        };
+        let (mime, bytes) = read_thumbnail(&source, &root).unwrap();
         assert_eq!(mime, "image/png");
         assert_eq!(bytes, b"inside");
     }
@@ -391,6 +388,10 @@ mod tests {
                 .unwrap();
         std::fs::rename(&workflow, root.join("moved")).unwrap();
         std::os::unix::fs::symlink(&outside, &workflow).unwrap();
-        assert!(read_thumbnail(&loaded, &root).is_none());
+        let source = ThumbnailSource {
+            manifest_path: loaded.manifest_path.clone(),
+            thumbnail: loaded.manifest.thumbnail.clone(),
+        };
+        assert!(read_thumbnail(&source, &root).is_none());
     }
 }
