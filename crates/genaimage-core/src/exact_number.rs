@@ -1,30 +1,40 @@
 use serde_json::{Number, Value};
 
-pub(crate) fn is_integer(number: &Number) -> bool {
-    Decimal::parse(number).is_integer()
+pub(crate) fn is_integer(number: &Number) -> Option<bool> {
+    Decimal::try_parse(number).map(|value| value.is_integer())
 }
 
-pub(crate) fn json_values_equal(left: &Value, right: &Value) -> bool {
+pub(crate) fn json_values_equal(left: &Value, right: &Value) -> Result<bool, ()> {
     match (left, right) {
         (Value::Number(left), Value::Number(right)) => {
-            compare_numbers(left, right) == Ordering::Equal
+            Ok(compare_numbers(left, right)? == Ordering::Equal)
         }
         (Value::Array(left), Value::Array(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| json_values_equal(left, right))
+            if left.len() != right.len() {
+                return Ok(false);
+            }
+            for (left, right) in left.iter().zip(right) {
+                if !json_values_equal(left, right)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
         (Value::Object(left), Value::Object(right)) => {
-            left.len() == right.len()
-                && left.iter().all(|(key, left)| {
-                    right
-                        .get(key)
-                        .is_some_and(|right| json_values_equal(left, right))
-                })
+            if left.len() != right.len() {
+                return Ok(false);
+            }
+            for (key, left) in left {
+                let Some(right) = right.get(key) else {
+                    return Ok(false);
+                };
+                if !json_values_equal(left, right)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
-        _ => left == right,
+        _ => Ok(left == right),
     }
 }
 
@@ -53,8 +63,10 @@ impl Ordering {
     }
 }
 
-pub(crate) fn compare_numbers(left: &Number, right: &Number) -> Ordering {
-    Decimal::parse(left).compare(&Decimal::parse(right))
+pub(crate) fn compare_numbers(left: &Number, right: &Number) -> Result<Ordering, ()> {
+    let left = Decimal::try_parse(left).ok_or(())?;
+    let right = Decimal::try_parse(right).ok_or(())?;
+    left.compare(&right)
 }
 
 #[derive(Debug)]
@@ -66,10 +78,6 @@ pub(crate) struct Decimal {
 }
 
 impl Decimal {
-    fn parse(number: &Number) -> Self {
-        Self::try_parse(number).expect("numeric representation was checked")
-    }
-
     pub(crate) fn try_parse(number: &Number) -> Option<Self> {
         let source = number.to_string();
         let (negative, unsigned) = source
@@ -119,66 +127,77 @@ impl Decimal {
         self.zero || self.exponent >= 0
     }
 
-    fn compare(&self, other: &Self) -> Ordering {
+    fn compare(&self, other: &Self) -> Result<Ordering, ()> {
         match (self.zero, other.zero) {
-            (true, true) => return Ordering::Equal,
+            (true, true) => return Ok(Ordering::Equal),
             (true, false) => {
-                return if other.negative {
+                return Ok(if other.negative {
                     Ordering::Greater
                 } else {
                     Ordering::Less
-                }
+                })
             }
             (false, true) => {
-                return if self.negative {
+                return Ok(if self.negative {
                     Ordering::Less
                 } else {
                     Ordering::Greater
-                }
+                })
             }
             (false, false) => {}
         }
         if self.negative != other.negative {
-            return if self.negative {
+            return Ok(if self.negative {
                 Ordering::Less
             } else {
                 Ordering::Greater
-            };
+            });
         }
-        let magnitude = self.compare_magnitude(other);
-        if self.negative {
+        let magnitude = self.compare_magnitude(other)?;
+        Ok(if self.negative {
             magnitude.reverse()
         } else {
             magnitude
-        }
+        })
     }
 
-    fn compare_magnitude(&self, other: &Self) -> Ordering {
-        let left_position = self
-            .exponent
-            .saturating_add(i64::try_from(self.digits.len()).expect("JSON number length fits i64"));
-        let right_position = other.exponent.saturating_add(
-            i64::try_from(other.digits.len()).expect("JSON number length fits i64"),
-        );
+    fn compare_magnitude(&self, other: &Self) -> Result<Ordering, ()> {
+        let self_digits = i64::try_from(self.digits.len()).map_err(|_| ())?;
+        let other_digits = i64::try_from(other.digits.len()).map_err(|_| ())?;
+        let left_position = self.exponent.checked_add(self_digits).ok_or(())?;
+        let right_position = other.exponent.checked_add(other_digits).ok_or(())?;
         if left_position != right_position {
-            return if left_position < right_position {
+            return Ok(if left_position < right_position {
                 Ordering::Less
             } else {
                 Ordering::Greater
-            };
+            });
         }
         let width = self.digits.len().max(other.digits.len());
         for index in 0..width {
             let left = self.digits.as_bytes().get(index).copied().unwrap_or(b'0');
             let right = other.digits.as_bytes().get(index).copied().unwrap_or(b'0');
             if left != right {
-                return if left < right {
+                return Ok(if left < right {
                     Ordering::Less
                 } else {
                     Ordering::Greater
-                };
+                });
             }
         }
-        Ordering::Equal
+        Ok(Ordering::Equal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extreme_exponents_fail_without_panicking() {
+        let supported: Number = "1e999999999999999999".parse().unwrap();
+        let unsupported: Number = "1e9999999999999999999".parse().unwrap();
+        assert!(compare_numbers(&supported, &supported).is_ok());
+        assert!(compare_numbers(&unsupported, &supported).is_err());
     }
 }

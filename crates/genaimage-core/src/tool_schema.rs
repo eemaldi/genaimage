@@ -128,11 +128,15 @@ fn validate_schema_at(schema: &Value, path: &str) -> Result<(), String> {
     }
     if matches!(kind, "integer" | "number") {
         if let (Some(minimum), Some(maximum)) = (object.get("minimum"), object.get("maximum")) {
-            if compare_numbers(
-                minimum.as_number().expect("minimum validated"),
-                maximum.as_number().expect("maximum validated"),
-            )
-            .is_gt()
+            let minimum = minimum
+                .as_number()
+                .ok_or_else(|| format!("{path}: minimum is not a number"))?;
+            let maximum = maximum
+                .as_number()
+                .ok_or_else(|| format!("{path}: maximum is not a number"))?;
+            if compare_numbers(minimum, maximum)
+                .map_err(|_| format!("{path}: minimum or maximum is not a supported number"))?
+                .is_gt()
             {
                 return Err(format!("{path}: minimum must not be greater than maximum"));
             }
@@ -211,10 +215,16 @@ fn validate_instance_at(schema: &Value, value: &Value, path: &str) -> Result<(),
         _ => unreachable!("schema type was validated"),
     }
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
-        if !allowed
-            .iter()
-            .any(|candidate| json_values_equal(candidate, value))
-        {
+        let mut matched = false;
+        for candidate in allowed {
+            if json_values_equal(candidate, value)
+                .map_err(|_| format!("{path}: enum contains an unsupported number"))?
+            {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
             return Err(format!(
                 "{path}: value is not one of the allowed enum values"
             ));
@@ -287,16 +297,22 @@ fn validate_number(
             if integer { "integer" } else { "number" }
         )
     })?;
-    if integer && !is_integer(number) {
+    if integer && is_integer(number) != Some(true) {
         return Err(format!("{path}: expected integer"));
     }
     if let Some(minimum) = schema.get("minimum").and_then(Value::as_number) {
-        if compare_numbers(number, minimum).is_lt() {
+        if compare_numbers(number, minimum)
+            .map_err(|_| format!("{path}: minimum is not a supported number"))?
+            .is_lt()
+        {
             return Err(format!("{path}: number is below minimum {minimum}"));
         }
     }
     if let Some(maximum) = schema.get("maximum").and_then(Value::as_number) {
-        if compare_numbers(number, maximum).is_gt() {
+        if compare_numbers(number, maximum)
+            .map_err(|_| format!("{path}: maximum is not a supported number"))?
+            .is_gt()
+        {
             return Err(format!("{path}: number exceeds maximum {maximum}"));
         }
     }
