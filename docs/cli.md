@@ -1,8 +1,8 @@
 # GenAImage CLI reference
 
 Start the loopback API with `genaimage serve` before using the server-backed
-commands below. ComfyUI is a separate process. Only `serve` and `config init`
-operate locally without making API requests.
+commands below. ComfyUI is a separate process. `serve`, `config init` and
+`completions` operate locally without making API requests.
 
 ## Global options
 
@@ -48,8 +48,9 @@ stderr, leaving stdout empty:
 ```
 
 The stable `kind` values are `server_not_running`, `server_problem`,
-`client_error`, `input_error`, `output_error`, `file_error`, `failed_submission`,
-`unknown_submission`, and `wait_timeout`. Server problem details, when available, are included in
+`client_error`, `input_error`, `output_error`, `file_error`, `browser_error`,
+`failed_submission`, `unknown_submission`, and `wait_timeout`. Server problem
+details, when available, are included in
 `problem` with `type`, `title`, `status`, `detail`, `recovery`, and optional
 `errors` (field-specific `{key, reason}` objects). Submission errors include
 `run` when the server returned a durable run record. Errors during observation
@@ -67,13 +68,78 @@ usage errors, help and version text normally, even with `--json`.
   or `./genaimage.toml`. Use `--force` only to replace an existing file.
   JSON is `{path, created}`, with `created: true` on success.
 
-Both local commands write `{status: "error", error: "<message>"}` to stderr
-for local failures in JSON mode.
+`serve` and `config init` write `{status: "error", error: "<message>"}` to
+stderr for local failures in JSON mode.
+
+### Shell completions
+
+`genaimage completions <shell>` prints a completion script without starting the
+server or reading configuration. Supported shell names are `bash`, `zsh`,
+`fish`, `powershell` and `elvish`. The commands below overwrite the same
+completion file on repeat runs; profile setup lines are guarded or added once.
+
+- **Bash** — save the completion file and add one guarded source line to
+  `~/.bashrc`:
+  ```sh
+  mkdir -p "$HOME/.bash_completion.d"
+  genaimage completions bash > "$HOME/.bash_completion.d/genaimage"
+  touch "$HOME/.bashrc"
+  source_line='[ -r "$HOME/.bash_completion.d/genaimage" ] && . "$HOME/.bash_completion.d/genaimage"'
+  grep -qxF "$source_line" "$HOME/.bashrc" || printf '%s\n' "$source_line" >> "$HOME/.bashrc"
+  ```
+  For the current session only: `eval "$(genaimage completions bash)"`.
+- **Zsh** — save the completion file:
+  ```sh
+  mkdir -p "$HOME/.zfunc"
+  genaimage completions zsh > "$HOME/.zfunc/_genaimage"
+  ```
+  In `~/.zshrc`, ensure `fpath=("$HOME/.zfunc" $fpath)` appears once before
+  your existing `compinit` initialisation. Add `autoload -Uz compinit && compinit`
+  once if you do not already initialise Zsh completions.
+- **Fish** — save the script in Fish's automatically loaded completions directory:
+  ```fish
+  mkdir -p "$HOME/.config/fish/completions"
+  genaimage completions fish > "$HOME/.config/fish/completions/genaimage.fish"
+  ```
+- **PowerShell** — keep the generated script separate from `$PROFILE` (it starts
+  with `using namespace`), then dot-source it from the profile only once:
+  ```powershell
+  New-Item -ItemType Directory -Force (Split-Path $PROFILE) | Out-Null
+  $completionFile = Join-Path $HOME 'genaimage-completions.ps1'
+  genaimage completions powershell > $completionFile
+  if (-not (Test-Path -LiteralPath $PROFILE)) {
+      New-Item -ItemType File -Path $PROFILE | Out-Null
+  }
+  $sourceLine = '. "$HOME\genaimage-completions.ps1"'
+  if (-not (Select-String -Path $PROFILE -SimpleMatch $sourceLine -Quiet)) {
+      Add-Content -Path $PROFILE -Value $sourceLine
+  }
+  ```
+- **Elvish** — save the script in the library directory and add `use genaimage`
+  to `~/.config/elvish/rc.elv` once:
+  ```sh
+  mkdir -p "$HOME/.config/elvish/lib"
+  genaimage completions elvish > "$HOME/.config/elvish/lib/genaimage.elv"
+  touch "$HOME/.config/elvish/rc.elv"
+  grep -qxF 'use genaimage' "$HOME/.config/elvish/rc.elv" || printf '%s\n' 'use genaimage' >> "$HOME/.config/elvish/rc.elv"
+  ```
 
 ## Server-backed commands
 
 JSON field definitions follow the [OpenAPI contract](api/openapi.json).
 
+- **`open [--print]`** checks the server health endpoint, then opens the configured
+  loopback server root in the default browser. The embedded portal is planned;
+  for now, the URL is the server root. `--print` writes only that URL instead of
+  opening a browser; with `--json`, either mode emits `{"url": "..."}`. Launchers
+  receive the validated URL as one argument, without a shell, and their stdin,
+  stdout and stderr are redirected. On Linux and other Unix systems GenAImage
+  invokes `xdg-open` and leaves standard `BROWSER` handling (including command
+  lists and `%s` templates) to it; macOS uses `open`, and Windows uses
+  `rundll32`. GenAImage waits up to 500 ms for the launcher; a non-zero exit is
+  a local `browser_error` (exit `1`) with a `--print` hint, while a launcher still
+  running after that is assumed to have opened the URL. The server must be
+  running (otherwise exit `3`); non-loopback URLs are rejected (exit `5`).
 - **`doctor`** checks the server and ComfyUI. JSON is a `HealthResponse`:
   `{self, image_backend, llm}` plus `image_backend_reason` when present.
   Status strings are `ok`, `unavailable`, or `not_configured`; the optional

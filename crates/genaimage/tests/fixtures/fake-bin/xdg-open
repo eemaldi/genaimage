@@ -1,0 +1,17 @@
+#!/bin/sh
+printf 'unexpected launcher output\n'
+printf 'unexpected launcher error\n' >&2
+[ "$#" -eq 1 ] || exit 1
+case "$1" in
+    http://127.0.0.1:*/) ;;
+    *) exit 1 ;;
+esac
+case "$1" in
+    *'&calc&x'*|*'..'*) exit 1 ;;
+esac
+case "${GENAIMAGE_FAKE_XDG_OPEN_MODE:-success}" in
+    success) exit 0 ;;
+    fail) exit 7 ;;
+    slow) sleep 3; exit 0 ;;
+    *) exit 1 ;;
+esac

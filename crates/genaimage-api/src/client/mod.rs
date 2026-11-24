@@ -77,6 +77,11 @@ impl Client {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
+    /// Returns the validated loopback server origin used by this client.
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
     /// Constructs a client for a custom loopback origin, for example a different port.
     pub fn with_base_url(base_url: &str) -> Result<Self, Error> {
         let invalid = || Error::InvalidBaseUrl(base_url.into());

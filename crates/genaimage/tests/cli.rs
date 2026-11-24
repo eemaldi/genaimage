@@ -32,6 +32,18 @@ fn cli() -> Command {
     command
 }
 
+#[cfg(target_os = "linux")]
+fn use_fake_xdg_open(command: &mut Command, mode: &str) {
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-bin");
+    let mut path_entries = vec![fixture_dir];
+    if let Some(path) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&path));
+    }
+    command
+        .env("PATH", std::env::join_paths(path_entries).unwrap())
+        .env("GENAIMAGE_FAKE_XDG_OPEN_MODE", mode);
+}
+
 struct Server {
     origin: String,
     workflows: PathBuf,
@@ -328,6 +340,129 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
         .unwrap()
         .contains("ComfyUI: unavailable"));
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn shell_completions_are_generated_without_server_or_configuration() {
+    let directory = TempDir::new().unwrap();
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let mut command = cli();
+        command
+            .current_dir(directory.path())
+            .env("GENAIMAGE_SERVER", "not-a-loopback-url")
+            .env("GENAIMAGE_CONFIG", directory.path().join("missing.toml"))
+            .args(["--config", "missing-config.toml", "completions", shell]);
+        let output = cli_output(command).await;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert!(
+            !String::from_utf8(output.stdout).unwrap().trim().is_empty(),
+            "empty {shell} completion script"
+        );
+    }
+}
+
+#[tokio::test]
+async fn open_prints_the_server_root_after_a_health_check() {
+    let server = Server::start().await;
+    let expected = format!("{}/", server.origin.trim_end_matches('/'));
+
+    let output = server.cli(&["open", "--print"]).await;
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{expected}\n")
+    );
+
+    assert_eq!(
+        report(server.cli(&["--json", "open", "--print"]).await, 0),
+        json!({"url": expected})
+    );
+    server.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn open_delegates_browser_specs_and_silences_launcher_output() {
+    let server = Server::start().await;
+    let expected = format!("{}/", server.origin.trim_end_matches('/'));
+    let unnormalised = format!("{}/&calc&x/../", server.origin);
+    for browser in ["false:echo", "echo %s"] {
+        let mut command = cli();
+        command.env("BROWSER", browser);
+        use_fake_xdg_open(&mut command, "success");
+        command.args(["--server", &unnormalised, "--json", "open"]);
+
+        let result = report(cli_output(command).await, 0);
+        assert_eq!(result, json!({"url": expected}));
+    }
+    server.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn open_reports_a_failed_launcher_with_a_print_hint() {
+    let server = Server::start().await;
+    let mut command = cli();
+    use_fake_xdg_open(&mut command, "fail");
+    command.args(["--server", &server.origin, "--json", "open"]);
+
+    let result = error(cli_output(command).await, 1);
+    assert_eq!(result["kind"], "browser_error");
+    assert!(result["message"].as_str().unwrap().contains("--print"));
+    server.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn open_does_not_wait_for_a_slow_launcher() {
+    let server = Server::start().await;
+    let mut command = cli();
+    use_fake_xdg_open(&mut command, "slow");
+    command.args(["--server", &server.origin, "--json", "open"]);
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        report(cli_output(command).await, 0)["url"],
+        format!("{}/", server.origin.trim_end_matches('/'))
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn open_rejects_non_loopback_servers() {
+    let mut command = cli();
+    command.args([
+        "--server",
+        "http://example.com:3000",
+        "--json",
+        "open",
+        "--print",
+    ]);
+    let result = error(cli_output(command).await, 5);
+    assert_eq!(result["kind"], "client_error");
+    assert!(result["message"].as_str().unwrap().contains("loopback"));
+}
+
+#[tokio::test]
+async fn open_reports_the_existing_server_not_running_error() {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let origin = format!("http://{}", socket.local_addr().unwrap());
+    let mut command = cli();
+    command.args(["--server", &origin, "--json", "open", "--print"]);
+    let result = error(cli_output(command).await, 3);
+    assert_eq!(result["kind"], "server_not_running");
+    for hint in [&origin, "genaimage serve", "--server", "GENAIMAGE_SERVER"] {
+        assert!(result["message"].as_str().unwrap().contains(hint));
+    }
 }
 
 #[tokio::test]
