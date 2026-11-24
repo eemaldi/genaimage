@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use axum::{extract::State, Json};
-use genaimage_api::{HealthResponse, HealthStatus, ImageBackendHealthReason};
+use genaimage_api::{HealthHints, HealthResponse, HealthStatus, ImageBackendHealthReason};
 use tokio::time::timeout;
 
 use crate::AppState;
@@ -39,5 +39,12 @@ pub(super) async fn health(State(state): State<AppState>) -> Json<HealthResponse
         },
         image_backend_reason,
         llm: HealthStatus::NotConfigured,
+        hints: Some(HealthHints {
+            server: "Start the local GenAImage server and check its configuration.".into(),
+            image_backend: "Start ComfyUI and check `comfyui.base_url` in Settings or configuration; restart GenAImage after changing the endpoint.".into(),
+            llm:
+                "LLM integration is planned. Configure an LLM endpoint in Settings when available."
+                    .into(),
+        }),
     })
 }
