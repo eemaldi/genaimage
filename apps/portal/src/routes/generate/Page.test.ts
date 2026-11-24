@@ -7,7 +7,7 @@ import {
   within,
 } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import {
   ApiProblemError,
   BindingFloat,
@@ -93,6 +93,11 @@ const workflow: Workflow = {
     Sketch: { Prompt: 'Trees', Strength: 0.25, Style: 'pencil', Seed: 42 },
   },
 };
+
+// Keep the first DOM assertion independent of Vite's cold module transform.
+beforeAll(async () => {
+  await import('./Generate.svelte');
+});
 
 beforeEach(() => {
   vi.resetAllMocks();
