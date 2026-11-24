@@ -33,6 +33,134 @@ async fn run(response: Response, expected: StatusCode) -> RunResponse {
 }
 
 #[tokio::test]
+async fn rerun_rejects_override_body_without_consuming_key_and_accepts_loader_free_workflow() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let source = run(
+        submit(&api, "original", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let endpoint = format!("{RUNS}/{}/rerun", source.id);
+    let response = api
+        .request(Method::POST, &endpoint)
+        .header("Idempotency-Key", "rerun")
+        .json(&json!({"parameters": {"seed": 12345}}))
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_problem(response, StatusCode::BAD_REQUEST).await;
+    assert!(problem.detail.contains("does not accept a request body"));
+    let runs: RunListResponse = api.get_json(RUNS).await;
+    assert_eq!(runs.runs.len(), 1);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    let response = api
+        .request(Method::POST, &endpoint)
+        .header("Idempotency-Key", "rerun")
+        .send()
+        .await
+        .unwrap();
+    let created = run(response, StatusCode::CREATED).await;
+    assert_eq!(created.parameters, source.parameters);
+    assert_ne!(created.id, source.id);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn rerun_refuses_a_replaced_comfyui_side_file_without_a_binding() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let graph_path = api.core.config().workflows.join("workflow.api.json");
+    let input = api.workspace().join("comfyui-input");
+    std::fs::create_dir(&input).unwrap();
+    let image = input.join("literal.png");
+    std::fs::write(&image, b"original image").unwrap();
+    let mut graph: Value = serde_json::from_slice(&std::fs::read(&graph_path).unwrap()).unwrap();
+    graph["12"] = json!({"class_type": "LoadImage", "inputs": {"image": "literal.png"}});
+    std::fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let source = run(
+        submit(&api, "original", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    // Replace only the backend-side file; leave the submitted workflow and manifest unchanged.
+    std::fs::write(image, b"replacement image").unwrap();
+    let response = api
+        .request(Method::POST, &format!("{RUNS}/{}/rerun", source.id))
+        .header("Idempotency-Key", "rerun")
+        .send()
+        .await
+        .unwrap();
+    let problem = rerun_mismatch(response).await;
+    assert!(problem.detail.contains("ComfyUI-side file"));
+    assert!(problem.recovery.contains("image upload parameter"));
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn rerun_refuses_migrated_completed_run_even_with_indexed_manifest() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    api.fake.complete.store(true, Ordering::SeqCst);
+    let source = run(
+        submit(&api, "original", &request()).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let endpoint = format!("{RUNS}/{}", source.id);
+    let completed: RunResponse = api
+        .post_json(&format!("{endpoint}/reconcile"), &Value::Null)
+        .await;
+    assert_eq!(completed.status, RunStatus::Completed);
+    let path = &api.core.config().state_database;
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.execute_batch(
+        "ALTER TABLE runs DROP COLUMN rerun_of;
+        ALTER TABLE runs DROP COLUMN workflow_manifest_sha256;
+        ALTER TABLE runs DROP COLUMN preflight_sha256;
+        PRAGMA user_version = 7;",
+    )
+    .unwrap();
+    drop(db);
+    drop(genaimage_core::persistence::RunRepository::open(path).unwrap());
+    assert!(
+        api.core
+            .open_run_manifest(&source.id)
+            .await
+            .unwrap()
+            .integrity_verified
+    );
+    let response = api
+        .request(Method::POST, &format!("{endpoint}/rerun"))
+        .header("Idempotency-Key", "rerun")
+        .send()
+        .await
+        .unwrap();
+    let problem = rerun_mismatch(response).await;
+    assert!(problem
+        .detail
+        .contains("submission-time workflow manifest fingerprint"));
+    assert!(problem
+        .recovery
+        .contains("review the saved parameters and submit a new run"));
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 1);
+    api.shutdown().await;
+}
+
+async fn rerun_mismatch(response: Response) -> genaimage_api::ProblemDetails {
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let problem: genaimage_api::ProblemDetails = response.json().await.unwrap();
+    assert_eq!(problem.problem_type, "urn:genaimage:problem:rerun-mismatch");
+    problem
+}
+
+#[tokio::test]
 async fn submits_once_concurrently_reports_progress_and_replays_current_run() {
     let api = ApiHarness::start().await;
     install_workflow(&api);

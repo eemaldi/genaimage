@@ -76,17 +76,16 @@ pub(super) async fn submit(
     post, path = "/runs/{id}/rerun",
     operation_id = "runs_rerun",
     tag = "runs",
-    description = "Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed.",
+    description = "Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. Send an empty request body.",
     params(("id" = String, Path, description = "Source run ID"), ("Idempotency-Key" = String, Header, description = "Required unique key, 1–128 visible ASCII characters excluding commas")),
     responses(
         (status = 201, description = "New run created", body = api::RunResponse, headers(("Location" = String, description = "New run URL"))),
         (status = 200, description = "Idempotent replay (current state of the new run)", body = api::RunResponse, headers(("Location" = String, description = "New run URL"))),
-        (status = 400, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 400, description = "Non-empty request body, invalid key or invalid path", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Source run not found", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 409, description = "Fingerprint mismatch or idempotency key conflict", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 422, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
@@ -450,6 +449,15 @@ fn problem(error: HarnessError) -> Problem {
             StatusCode::CONFLICT,
             "Use the original request with this key, or a fresh key for a distinct run.",
         ),
+        HarnessError::RerunUnverifiedMedia { .. } | HarnessError::RerunMissingManifest => {
+            let recovery = if matches!(error, HarnessError::RerunMissingManifest) {
+                "Use Remix to review the saved parameters and submit a new run."
+            } else {
+                "Bind the ComfyUI-side file as an image upload parameter where supported, or use Remix to review the workflow and submit a new run."
+            };
+            return Problem::new(StatusCode::CONFLICT, error.to_string(), recovery)
+                .with_type("urn:genaimage:problem:rerun-mismatch");
+        }
         HarnessError::RerunMismatch(_) => return Problem::new(
             StatusCode::CONFLICT,
             error.to_string(),

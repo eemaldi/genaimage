@@ -104,13 +104,20 @@ impl UploadStore {
         directory.metadata(id, hash).await
     }
 
+    pub(crate) async fn open_image(
+        &self,
+        metadata: &UploadMetadata,
+    ) -> Result<fs::File, UploadError> {
+        let directory = DigestDirectory::open(&self.root.join(&metadata.sha256)).await?;
+        directory.open_image(metadata.byte_size).await
+    }
+
     /// Return the exact bytes that were verified, not a path to reopen later.
     pub(crate) async fn verified_bytes(
         &self,
         metadata: &UploadMetadata,
     ) -> Result<Vec<u8>, UploadError> {
-        let directory = DigestDirectory::open(&self.root.join(&metadata.sha256)).await?;
-        let file = directory.open_image(metadata.byte_size).await?;
+        let file = self.open_image(metadata).await?;
         let mut bytes = Vec::new();
         file.take(metadata.byte_size.saturating_add(1))
             .read_to_end(&mut bytes)
@@ -376,7 +383,7 @@ impl StagedUpload {
     }
 }
 
-fn detected_type(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn detected_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if bytes.starts_with(b"\xff\xd8\xff") {

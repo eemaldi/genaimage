@@ -243,7 +243,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. */
+        /** @description Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. Send an empty request body. */
         post: operations["runs_rerun"];
         delete?: never;
         options?: never;
@@ -3140,7 +3140,7 @@ export interface operations {
                     "application/json": components["schemas"]["RunResponse"];
                 };
             };
-            /** @description Problem details */
+            /** @description Non-empty request body, invalid key or invalid path */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3178,15 +3178,6 @@ export interface operations {
             };
             /** @description Fingerprint mismatch or idempotency key conflict */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            413: {
                 headers: {
                     [name: string]: unknown;
                 };

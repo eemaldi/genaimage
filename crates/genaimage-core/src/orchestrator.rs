@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{Read, Seek},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -10,6 +10,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -19,11 +20,12 @@ use crate::{
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse},
+    media,
     persistence::{
         database_matches_settings, NewRun, OutputRecord, RunEvent, RunRecord, RunRepository,
         RunStatus, SubmissionReservation,
     },
-    uploads::{UploadMetadata, UploadStore},
+    uploads::{detected_type, UploadMetadata, UploadStore},
     workflow::{
         BoundWorkflow, GenerationMode, LoadedWorkflow, ParameterError, ParameterKind,
         WorkflowManifest,
@@ -83,11 +85,15 @@ struct RecordedInputs {
     source_inputs: Vec<InputFileRecord>,
 }
 
-struct VerifiedInput {
+struct ReferenceInput {
     record: InputFileRecord,
-    bytes: Vec<u8>,
     filename: String,
     media_type: String,
+}
+
+struct VerifiedInput {
+    source: ReferenceInput,
+    snapshot: File,
 }
 
 const WORKFLOW_MISMATCH: HarnessError =
@@ -647,82 +653,23 @@ impl Harness {
         Ok((errors, uploads))
     }
 
-    async fn rerun_provenance(&self, run: &RunRecord) -> Result<(String, RecordedInputs)> {
-        if let Some(hash) = &run.workflow_manifest_sha256 {
-            let expected = run.preflight_sha256.as_ref().ok_or(MISSING_PROVENANCE)?;
-            let path = Path::new(&run.output_dir).join("preflight.json");
-            let mut file = crate::media::open_stored(&self.config.runs, &path)
-                .map_err(|_| MISSING_PROVENANCE)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)
-                .map_err(|_| MISSING_PROVENANCE)?;
-            if hex::encode(Sha256::digest(&bytes)) != *expected {
-                return Err(MISSING_PROVENANCE);
-            }
-            let inputs = serde_json::from_slice(&bytes).map_err(|_| MISSING_PROVENANCE)?;
-            return Ok((hash.clone(), inputs));
-        }
-        // A legacy run needs indexed completion provenance. The sidecar used
-        // to be reread after binding, so also check the archived bound graph.
-        let mut stored = self
-            .open_run_manifest(&run.id)
-            .await
-            .map_err(|error| match error {
-                HarnessError::ManifestNotFound | HarnessError::MediaIntegrity => MISSING_PROVENANCE,
-                other => other,
-            })?;
-        if !stored.integrity_verified {
+    fn rerun_provenance(&self, run: &RunRecord) -> Result<(String, RecordedInputs)> {
+        let hash = run
+            .workflow_manifest_sha256
+            .clone()
+            .ok_or(HarnessError::RerunMissingManifest)?;
+        let expected = run.preflight_sha256.as_ref().ok_or(MISSING_PROVENANCE)?;
+        let path = Path::new(&run.output_dir).join("preflight.json");
+        let mut file =
+            media::open_stored(&self.config.runs, &path).map_err(|_| MISSING_PROVENANCE)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|_| MISSING_PROVENANCE)?;
+        if hex::encode(Sha256::digest(&bytes)) != *expected {
             return Err(MISSING_PROVENANCE);
         }
-        let manifest: artifacts::RunManifest =
-            serde_json::from_reader(&mut stored.media.file).map_err(|_| MISSING_PROVENANCE)?;
-        if manifest.run_id != run.id
-            || manifest.workflow.id != run.workflow_id
-            || manifest.workflow.version != run.workflow_version
-            || manifest.workflow.sha256 != run.workflow_sha256
-            // Legacy path uploads hashed the file separately after upload.
-            || manifest.source_inputs.iter().any(|input| input.upload_id.is_none())
-        {
-            return Err(MISSING_PROVENANCE);
-        }
-        Ok((
-            manifest.workflow.manifest_sha256,
-            RecordedInputs {
-                preset: manifest.preset,
-                parameters: manifest.parameters,
-                source_inputs: manifest.source_inputs,
-            },
-        ))
-    }
-
-    fn verify_legacy_bindings(
-        &self,
-        run: &RunRecord,
-        loaded: &LoadedWorkflow,
-        bound: &BoundWorkflow,
-        inputs: &[InputFileRecord],
-    ) -> Result<()> {
-        let path = Path::new(&run.output_dir).join("resolved-workflow.json");
-        let file =
-            crate::media::open_stored(&self.config.runs, &path).map_err(|_| MISSING_PROVENANCE)?;
-        let archived: Value = serde_json::from_reader(std::io::BufReader::new(file))
-            .map_err(|_| MISSING_PROVENANCE)?;
-        let names = inputs
-            .iter()
-            .map(|input| (input.parameter.clone(), input.uploaded_name.clone()))
-            .collect();
-        let mut resolved = BoundWorkflow {
-            workflow: bound.workflow.clone(),
-            parameters: bound.parameters.clone(),
-            image_uploads: bound.image_uploads.clone(),
-        };
-        loaded
-            .apply_uploaded_images(&mut resolved, &names)
-            .map_err(|_| MISSING_PROVENANCE)?;
-        if resolved.workflow != archived {
-            return Err(WORKFLOW_MISMATCH);
-        }
-        Ok(())
+        let inputs = serde_json::from_slice(&bytes).map_err(|_| MISSING_PROVENANCE)?;
+        Ok((hash, inputs))
     }
 
     async fn verified_rerun_inputs(
@@ -743,7 +690,7 @@ impl Harness {
         for (parameter, path) in &bound.image_uploads {
             let mut record = inputs.remove(parameter).ok_or(INPUT_MISMATCH)?;
             record.uploaded_name.clear();
-            let input = if let Some(id) = &record.upload_id {
+            let (source, upload_format) = if let Some(id) = &record.upload_id {
                 if path.to_str() != Some(id.as_str()) {
                     return Err(INPUT_MISMATCH);
                 }
@@ -755,38 +702,66 @@ impl Harness {
                 if metadata.sha256 != record.sha256 || metadata.byte_size != record.byte_size {
                     return Err(INPUT_MISMATCH);
                 }
-                let bytes = store
-                    .verified_bytes(&metadata)
+                let file = store
+                    .open_image(&metadata)
                     .await
-                    .map_err(|_| INPUT_MISMATCH)?;
-                VerifiedInput {
-                    record,
-                    bytes,
-                    filename: format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension()),
-                    media_type: metadata.media_type,
-                }
+                    .map_err(|_| INPUT_MISMATCH)?
+                    .into_std()
+                    .await;
+                let extension = metadata.extension().to_owned();
+                (file, Some((extension, metadata.media_type)))
             } else {
                 let path = resolve_input_path(&self.config.workspace, path);
                 if path.to_str() != Some(record.source_path.as_str()) {
                     return Err(INPUT_MISMATCH);
                 }
-                let mut input = snapshot_local_input(parameter, &path, Some(record.byte_size))
-                    .map_err(|_| INPUT_MISMATCH)?;
-                if record.sha256 != input.record.sha256
-                    || record.byte_size != input.record.byte_size
-                {
-                    return Err(INPUT_MISMATCH);
+                (open_local_input(&path).map_err(|_| INPUT_MISMATCH)?, None)
+            };
+            let data_dir = self.config.data_dir.clone();
+            let expected_size = record.byte_size;
+            let check_media_type = upload_format.as_ref().map(|(_, kind)| kind.clone());
+            let snapshot = media::blocking(move || {
+                let mut snapshot = media::snapshot(source, &data_dir, Some(expected_size))?;
+                if let Some(media_type) = check_media_type {
+                    let mut header = Vec::new();
+                    (&mut snapshot.file).take(12).read_to_end(&mut header)?;
+                    if detected_type(&header) != Some(media_type.as_str()) {
+                        return Err(INPUT_MISMATCH);
+                    }
+                    snapshot.file.rewind()?;
                 }
-                let extension = Path::new(&input.filename)
+                Ok(snapshot)
+            })
+            .await
+            .map_err(|_| INPUT_MISMATCH)?;
+            if record.sha256 != snapshot.sha256 || record.byte_size != snapshot.len {
+                return Err(INPUT_MISMATCH);
+            }
+            let path = Path::new(&record.source_path);
+            let (filename, media_type) = if let Some((extension, media_type)) = upload_format {
+                (
+                    format!("genaimage-{}.{extension}", Uuid::new_v4()),
+                    media_type,
+                )
+            } else {
+                let extension = path
                     .extension()
                     .and_then(|s| s.to_str())
                     .map(|s| format!(".{s}"))
                     .unwrap_or_default();
-                input.filename = format!("genaimage-{}{extension}", Uuid::new_v4());
-                input.record = record;
-                input
+                (
+                    format!("genaimage-{}{extension}", Uuid::new_v4()),
+                    local_media_type(path),
+                )
             };
-            verified.push(input);
+            verified.push(VerifiedInput {
+                source: ReferenceInput {
+                    record,
+                    filename,
+                    media_type,
+                },
+                snapshot: snapshot.file,
+            });
         }
         Ok(verified)
     }
@@ -800,76 +775,86 @@ impl Harness {
         deadline: &CancellationToken,
     ) -> Result<Vec<InputFileRecord>> {
         let mut source_inputs = Vec::new();
-        let mut uploaded_names = BTreeMap::new();
-        let store = self.uploads();
-        let snapshots = match (snapshots, stored) {
-            (Some(snapshots), _) => snapshots,
-            (None, Some(stored)) => {
-                let mut snapshots = Vec::new();
-                for (parameter, metadata) in stored {
-                    let bytes = before_deadline(deadline, async {
-                        Ok(store.verified_bytes(&metadata).await?)
-                    })
-                    .await
-                    .map_err(|error| upload_failure(&parameter, error))?;
-                    let filename = format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension());
-                    snapshots.push(VerifiedInput {
-                        bytes,
-                        filename,
-                        media_type: metadata.media_type,
-                        record: InputFileRecord {
-                            parameter,
-                            source_path: String::new(),
-                            upload_id: Some(metadata.upload_id),
-                            sha256: metadata.sha256,
-                            original_filename: Some(metadata.original_filename),
-                            byte_size: metadata.byte_size,
-                            uploaded_name: String::new(),
-                        },
-                    });
-                }
-                snapshots
-            }
-            (None, None) => bound
-                .image_uploads
-                .iter()
-                .map(|(parameter, path)| {
-                    snapshot_local_input(
-                        parameter,
-                        &resolve_input_path(&self.config.workspace, path),
-                        None,
-                    )
+        if let Some(snapshots) = snapshots {
+            for input in snapshots {
+                let bytes = before_deadline(deadline, async {
+                    let mut bytes = Vec::new();
+                    tokio::fs::File::from_std(input.snapshot)
+                        .read_to_end(&mut bytes)
+                        .await?;
+                    Ok(bytes)
                 })
-                .collect::<Result<Vec<_>>>()?,
-        };
-        for VerifiedInput {
+                .await
+                .map_err(|error| upload_failure(&input.source.record.parameter, error))?;
+                source_inputs.push(self.upload_reference(input.source, bytes, deadline).await?);
+            }
+        } else if let Some(stored) = stored {
+            let store = self.uploads();
+            for (parameter, metadata) in stored {
+                let bytes = before_deadline(deadline, async {
+                    Ok(store.verified_bytes(&metadata).await?)
+                })
+                .await
+                .map_err(|error| upload_failure(&parameter, error))?;
+                let filename = format!("genaimage-{}.{}", Uuid::new_v4(), metadata.extension());
+                let source = ReferenceInput {
+                    filename,
+                    media_type: metadata.media_type,
+                    record: InputFileRecord {
+                        parameter,
+                        source_path: String::new(),
+                        upload_id: Some(metadata.upload_id),
+                        sha256: metadata.sha256,
+                        original_filename: Some(metadata.original_filename),
+                        byte_size: metadata.byte_size,
+                        uploaded_name: String::new(),
+                    },
+                };
+                source_inputs.push(self.upload_reference(source, bytes, deadline).await?);
+            }
+        } else {
+            for (parameter, path) in &bound.image_uploads {
+                let path = resolve_input_path(&self.config.workspace, path);
+                let (source, bytes) = read_local_input(parameter, &path)?;
+                source_inputs.push(self.upload_reference(source, bytes, deadline).await?);
+            }
+        }
+        let names = source_inputs
+            .iter()
+            .map(|record| (record.parameter.clone(), record.uploaded_name.clone()))
+            .collect();
+        loaded.apply_uploaded_images(bound, &names)?;
+        Ok(source_inputs)
+    }
+
+    async fn upload_reference(
+        &self,
+        input: ReferenceInput,
+        bytes: Vec<u8>,
+        deadline: &CancellationToken,
+    ) -> Result<InputFileRecord> {
+        let ReferenceInput {
             mut record,
-            bytes,
             filename,
             media_type,
-        } in snapshots
+        } = input;
+        let upload = before_deadline(
+            deadline,
+            self.backend
+                .upload_image_bytes(bytes, &filename, &media_type),
+        )
+        .await
+        .map_err(|error| upload_failure(&record.parameter, error))?;
+        if upload.kind != "input"
+            || !upload.subfolder.is_empty()
+            || !single_path_component(&upload.name)
+            || upload.name.contains([':', '[', ']'])
+            || upload.name.chars().any(char::is_control)
         {
-            let upload = before_deadline(
-                deadline,
-                self.backend
-                    .upload_image_bytes(bytes, &filename, &media_type),
-            )
-            .await
-            .map_err(|error| upload_failure(&record.parameter, error))?;
-            if upload.kind != "input"
-                || !upload.subfolder.is_empty()
-                || !single_path_component(&upload.name)
-                || upload.name.contains([':', '[', ']'])
-                || upload.name.chars().any(char::is_control)
-            {
-                return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{}'; no prompt was submitted.", record.parameter)));
-            }
-            uploaded_names.insert(record.parameter.clone(), upload.name.clone());
-            record.uploaded_name = upload.name;
-            source_inputs.push(record);
+            return Err(HarnessError::Workflow(format!("The backend returned an invalid input filename for parameter '{}'; no prompt was submitted.", record.parameter)));
         }
-        loaded.apply_uploaded_images(bound, &uploaded_names)?;
-        Ok(source_inputs)
+        record.uploaded_name = upload.name;
+        Ok(record)
     }
 
     async fn submit_inner(
@@ -883,7 +868,7 @@ impl Harness {
             SubmissionRequest::New(request) => (request, None),
             SubmissionRequest::Rerun(id) => {
                 let run = repository.get(&id).await?;
-                let (manifest_hash, provenance) = self.rerun_provenance(&run).await?;
+                let (manifest_hash, provenance) = self.rerun_provenance(&run)?;
                 if provenance.parameters != run.parameters {
                     return Err(MISSING_PROVENANCE);
                 }
@@ -967,9 +952,7 @@ impl Harness {
             if parameters != run.parameters {
                 return Err(WORKFLOW_MISMATCH);
             }
-            if run.workflow_manifest_sha256.is_none() {
-                self.verify_legacy_bindings(&run, &loaded, &bound, &inputs)?;
-            }
+            verify_loader_bindings(&loaded, &bound)?;
             let snapshots =
                 before_deadline(deadline, self.verified_rerun_inputs(&bound, inputs)).await?;
             (Some(run.id), Some(snapshots))
@@ -1835,21 +1818,33 @@ fn upload_failure(parameter: &str, error: HarnessError) -> HarnessError {
     ))
 }
 
-fn snapshot_local_input(
-    parameter: &str,
-    path: &Path,
-    expected_size: Option<u64>,
-) -> Result<VerifiedInput> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() || expected_size.is_some_and(|size| size != metadata.len()) {
-        return Err(INPUT_MISMATCH);
-    }
+fn open_local_input(path: &Path) -> Result<File> {
+    let target = path.canonicalize()?;
+    target
+        .parent()
+        .zip(target.file_name())
+        .and_then(|(parent, name)| {
+            crate::safe_file::open_regular_beneath(parent, parent, Path::new(name))
+        })
+        .ok_or(HarnessError::MediaIntegrity)
+}
+
+fn local_media_type(path: &Path) -> String {
+    mime_guess::from_path(path)
+        .first_raw()
+        .unwrap_or("application/octet-stream")
+        .into()
+}
+
+fn read_local_input(parameter: &str, path: &Path) -> Result<(ReferenceInput, Vec<u8>)> {
+    let mut file = open_local_input(path)?;
+    let size = file.metadata()?.len();
     let mut bytes = Vec::new();
-    File::open(path)?
-        .take(metadata.len().saturating_add(1))
+    (&mut file)
+        .take(size.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != metadata.len() {
-        return Err(INPUT_MISMATCH);
+    if bytes.len() as u64 != size {
+        return Err(HarnessError::MediaIntegrity);
     }
     let filename = path
         .file_name()
@@ -1858,23 +1853,50 @@ fn snapshot_local_input(
             path: path.to_path_buf(),
             reason: "file name is not valid UTF-8".into(),
         })?;
-    Ok(VerifiedInput {
+    let source = ReferenceInput {
         record: InputFileRecord {
             parameter: parameter.into(),
             source_path: path.display().to_string(),
             upload_id: None,
             original_filename: None,
             sha256: hex::encode(Sha256::digest(&bytes)),
-            byte_size: metadata.len(),
+            byte_size: size,
             uploaded_name: String::new(),
         },
-        bytes,
         filename: filename.into(),
-        media_type: mime_guess::from_path(path)
-            .first_raw()
-            .unwrap_or("application/octet-stream")
-            .into(),
-    })
+        media_type: local_media_type(path),
+    };
+    Ok((source, bytes))
+}
+
+fn verify_loader_bindings(loaded: &LoadedWorkflow, bound: &BoundWorkflow) -> Result<()> {
+    let slots: BTreeSet<_> = bound
+        .image_uploads
+        .keys()
+        .map(|parameter| {
+            let definition = &loaded.manifest.parameters[parameter];
+            (definition.node.as_str(), definition.input.as_str())
+        })
+        .collect();
+    // An upload binding replaces the actual loader slot after verification.
+    // A filename, a linked path, or a binding on some other slot does not.
+    let nodes = bound.workflow.as_object().ok_or(WORKFLOW_MISMATCH)?;
+    for (node, value) in nodes {
+        let input = match value.get("class_type").and_then(Value::as_str) {
+            Some("LoadImage" | "LoadImageMask" | "LoadImageOutput") => "image",
+            Some("LoadAudio") => "audio",
+            Some("LoadVideo") => "file",
+            Some("LoadLatent") => "latent",
+            _ => continue,
+        };
+        if !slots.contains(&(node.as_str(), input)) {
+            return Err(HarnessError::RerunUnverifiedMedia {
+                node: node.clone(),
+                input,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn read_source_inputs(output_dir: &Path) -> Result<Vec<InputFileRecord>> {

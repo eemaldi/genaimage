@@ -162,7 +162,18 @@ pub(crate) async fn protect(
         }
     }
 
-    let limit = body_limit(request.uri().path(), &config);
+    let bodyless_rerun = request.method() == Method::POST
+        && request
+            .uri()
+            .path()
+            .strip_prefix("/api/v1/runs/")
+            .and_then(|path| path.split_once('/'))
+            .is_some_and(|(id, action)| !id.is_empty() && action == "rerun");
+    let limit = if bodyless_rerun {
+        0
+    } else {
+        body_limit(request.uri().path(), &config)
+    };
     if request.method() == Method::POST && request.uri().path() == "/api/v1/uploads" {
         if request
             .headers()
@@ -205,7 +216,13 @@ pub(crate) async fn protect(
             let too_large = error
                 .source()
                 .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
-            let (status, detail, recovery) = if too_large {
+            let (status, detail, recovery) = if too_large && bodyless_rerun {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Re-run does not accept a request body.",
+                    "Send an empty request, or use Remix to change the run parameters.",
+                )
+            } else if too_large {
                 (
                     StatusCode::PAYLOAD_TOO_LARGE,
                     "The request body exceeds this route's size limit.",

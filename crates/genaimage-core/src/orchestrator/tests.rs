@@ -99,7 +99,7 @@ impl ImageBackend for FakeImageBackend {
         if let Some(gate) = gate {
             gate.wait().await;
         }
-        Ok(json!({"KSampler": {}, "SaveImage": {}, "LoadImage": {}}))
+        Ok(json!({"KSampler": {}, "SaveImage": {}, "LoadImage": {}, "LoadImageMask": {}}))
     }
 
     async fn submit(
@@ -326,18 +326,22 @@ async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_c
     let graph_path = root.join("workflow.api.json");
     let manifest_path = root.join("contract.genaimage.json");
     let mut graph: Value = serde_json::from_slice(&fs::read(&graph_path).unwrap()).unwrap();
-    graph["12"] = json!({"class_type": "LoadImage", "inputs": {"image": "default.png"}});
-    fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["parameters"]["reference"] =
-        json!({"node":"12", "input":"image", "kind":"image_upload", "required":true});
+    let references = [
+        ("reference", "12", "LoadImage", b"original".as_slice()),
+        ("reference_mask", "13", "LoadImageMask", b"mask".as_slice()),
+    ];
+    for (parameter, node, class, bytes) in references {
+        graph[node] = json!({"class_type": class, "inputs": {"image": "default.png"}});
+        manifest["parameters"][parameter] =
+            json!({"node":node, "input":"image", "kind":"image_upload", "required":true});
+        let filename = format!("{parameter}.png");
+        fs::write(workspace.path().join(&filename), bytes).unwrap();
+        request.parameters.insert(parameter.into(), json!(filename));
+    }
+    fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
     let original_manifest = serde_json::to_vec(&manifest).unwrap();
     fs::write(&manifest_path, &original_manifest).unwrap();
-    let reference = workspace.path().join("reference.png");
-    fs::write(&reference, b"original").unwrap();
-    request
-        .parameters
-        .insert("reference".into(), json!("reference.png"));
     let source = harness.submit(request).await.unwrap();
     assert_eq!(source.status, RunStatus::UnknownSubmission);
     let before = serde_json::to_value(harness.repository.get(&source.id).unwrap()).unwrap();
@@ -360,7 +364,13 @@ async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_c
         .await
         .unwrap()
         .unwrap();
-    fs::write(&reference, b"modified").unwrap();
+    for (parameter, ..) in references {
+        fs::write(
+            workspace.path().join(format!("{parameter}.png")),
+            b"modified",
+        )
+        .unwrap();
+    }
     fs::write(&graph_path, b"{}").unwrap();
     fs::write(&manifest_path, b"{}").unwrap();
     gate.release.add_permits(1);
@@ -381,7 +391,12 @@ async fn rerun_of_unconfirmed_run_submits_the_verified_snapshots_even_if_files_c
         let state = state.lock().unwrap();
         assert_eq!(
             state.uploaded_inputs,
-            [b"original".to_vec(), b"original".to_vec()]
+            [
+                b"original".to_vec(),
+                b"mask".to_vec(),
+                b"original".to_vec(),
+                b"mask".to_vec()
+            ]
         );
         let prompt = &state.submission.as_ref().unwrap().0;
         assert_eq!(prompt["3"]["inputs"], json!({"seed": 123, "steps": 10}));

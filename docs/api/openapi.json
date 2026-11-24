@@ -4287,7 +4287,7 @@
     },
     "/api/v1/runs/{id}/rerun": {
       "post": {
-        "description": "Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed.",
+        "description": "Create a new run with the source run’s verified workflow, preset, resolved parameters and inputs. The source run is not changed. Send an empty request body.",
         "operationId": "runs_rerun",
         "parameters": [
           {
@@ -4354,7 +4354,7 @@
                 }
               }
             },
-            "description": "Problem details"
+            "description": "Non-empty request body, invalid key or invalid path"
           },
           "403": {
             "content": {
@@ -4395,16 +4395,6 @@
               }
             },
             "description": "Fingerprint mismatch or idempotency key conflict"
-          },
-          "413": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
           },
           "421": {
             "content": {

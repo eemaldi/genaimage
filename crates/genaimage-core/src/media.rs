@@ -153,7 +153,7 @@ impl Harness {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
     tokio::task::spawn_blocking(work)
@@ -182,7 +182,7 @@ fn verified_output(output: &OutputRecord, root: &Path, data: &Path) -> Result<Me
 
 // Snapshot the verified bytes into a private, unnamed file. An open source
 // descriptor alone would not protect streaming against later in-place edits.
-fn snapshot(mut source: File, data: &Path, limit: Option<u64>) -> Result<MediaFile> {
+pub(crate) fn snapshot(mut source: File, data: &Path, limit: Option<u64>) -> Result<MediaFile> {
     fs::create_dir_all(data)?;
     let mut file = tempfile::tempfile_in(data)?;
     let mut hash = Sha256::new();
