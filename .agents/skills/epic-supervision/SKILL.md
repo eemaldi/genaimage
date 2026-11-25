@@ -23,6 +23,16 @@ learnings come from what slowed those epics down.
 4. Track each work item as a todo with dependencies. Run independent items in
    waves of at most three. Split hard and very hard issues into Easy or Medium
    components (see section 2).
+5. If the user approves a new runtime dependency, make the approval depend on
+   measuring the release binary first. In epic 7, `jsonschema` took the binary
+   over the 25 MiB budget even without default features. It was only replaced
+   by a small hand-written validator after the runtime was built on it.
+6. When parallel branches each add a SQLite migration, have each add one
+   self-contained entry to `MIGRATIONS`. The branch merged second renumbers
+   its entry and its upgrade test. Unshipped migrations on one branch are
+   merged into a single migration before its PR.
+7. Never check out a branch in your own worktree. Inspect other refs with
+   `git show origin/main:<path>`, `git ls-tree` or `git -C <worktree>`.
 
 ## 2. Pick a model tier
 
@@ -80,6 +90,15 @@ the contracts it created. Examples are URL formats such as
 `#/generate?workflow=<id>` and helper exports such as `buildGenerateUrl(run)`.
 Pass those contracts verbatim to the dependent developers.
 
+Once a branch is approved and only waiting to merge, dependent work can start
+from it to save a wave. Tell the developer to branch from `origin/<branch>`,
+then after the merge run `git rebase --onto origin/main <old head> HEAD` and
+confirm that `git log origin/main..HEAD` contains only its own commits.
+
+When a merge or a decision changes a shared contract, send a heads-up to every
+in-flight developer it affects. For example, `LlmRoles::text()` stopped
+requiring tool support, so tool callers must call `check_request`.
+
 ## 4. Review loop
 
 1. Start a `code-review` agent on `git diff origin/main...<branch>`. Give it
@@ -101,22 +120,36 @@ Pass those contracts verbatim to the dependent developers.
    rule. Block only on silent substitution, data loss, false success, duplicate
    or blind submission, or mutation of the source record. Record Medium and Low
    findings as follow-ups.
+5. When a split feature adds a new component to a branch, such as the server
+   half after the core, give it to the same reviewer under full rules again.
+   Apply the High-only rule only to fix deltas.
+6. If you lean towards a design change, put it to the reviewer as a
+   "supervisor note to evaluate" rather than ordering it. In epic 7, this
+   settled base64 image content, a distinct `awaiting_confirmation` event and
+   preview tokens before any client depended on the old form.
+7. Overrule a High finding only when the path fails closed. Write down why,
+   and record the issue as a follow-up in the PR. Example: a race between a
+   preview check and the claim, where `submit_run` re-validates the pinned
+   revision and nothing can be submitted wrongly.
 
 ## 5. Open the PR and merge
 
-1. Check that the branch is current with
-   `git merge-base --is-ancestor origin/main origin/<branch>`. If it is not,
-   ask the developer to rebase.
-2. Fill in `.github/pull_request_template.md`. Include
+1. Fill in `.github/pull_request_template.md`. Include
    `Closes #<issue>` (or `Refs #<issue>` if the issue must stay open),
-   `Part of #<epic>`, each exact validation command with its result, and the
-   checklist.
-3. `gh pr create`, then wait about 20 seconds before running
-   `gh pr checks <pr> --watch`. Starting the watch immediately can report "no
-   checks" and exit.
-4. Merge with `gh pr merge <pr> --merge`. Check the issue is closed and close it
-   with a comment if GitHub has not.
-5. Tell every open branch that main has moved.
+   `Part of #<epic>`, each exact validation command with its result, the
+   checklist, and any decision you overruled or recorded as a follow-up.
+2. Run `ship_pr.sh <branch> <issue> "<title>" <body-file>` from this skill's
+   directory. It:
+   - refuses a branch that is behind `origin/main`, or a body that doesn't
+     reference the issue;
+   - opens the PR, waits 20 seconds and then watches the checks (starting
+     the watch immediately can report "no checks" and exit);
+   - merges with `--merge` only if every check passes;
+   - reports the issue state and the new `origin/main`.
+
+   Close the issue with a comment if GitHub has not.
+3. Tell every open branch that main has moved, and what the merge changed
+   (migration numbers, shared modules, generated files).
 
 ## 6. Rebase rules for developers
 
@@ -145,9 +178,13 @@ then reports "No agent found".
 
 1. Check that every sub-issue is closed.
 2. Run `python3 scripts/ci_check.py` and `python3 scripts/perf_check.py --quick`
-   on `origin/main`.
-3. Close the epic with a comment listing the PRs, the final checks and the
-   budgets.
+   on `origin/main`, in a detached worktree
+   (`git worktree add --detach <repo>.worktrees/epic<N>-final origin/main`).
+   Run them yourself with `bash` and log to files, not in a synchronous
+   subagent, so an interruption doesn't lose the results.
+3. Comment on the epic with the PRs, the final checks, the budgets, the key
+   decisions and the follow-ups. Do this even if someone else closed the epic
+   first, then close it if it is still open.
 4. Remove the epic worktrees. Removing them is slow because `node_modules` and
    `target` are large. Also delete untracked `apps/` build leftovers from
    older branches.
@@ -166,5 +203,31 @@ then reports "No agent found".
   stale events overwriting newer snapshots, lost focus in dialogs, and lossy
   number handling (large seeds, `2.0` versus `2`, `-0.0`). Name these classes
   in the developer prompt from the start.
+- Epic 7 (assistant and LLM work) added these classes. Name them in prompts
+  for similar work:
+  - **Secrets:** derived `Debug` on any type holding a key, provider error
+    bodies that echo the key, and secrets in settings responses.
+  - **Exact numbers in validation:** bounds and `enum` equality compared
+    through `f64`. This was found three times: in the tool schema, `enum`
+    equality and workflow bounds.
+  - **False success:**
+    - a reused `done` event for a paused turn;
+    - a stream that ended without a terminator, treated as complete;
+    - `ok` with no `run_id`;
+    - persisted failures decoded as success;
+    - a 409 hidden by a recovery reload.
+  - **Atomicity:** a check done before an atomic claim (TOCTOU); a lease
+    released while detached `spawn_blocking` work continues; a panic that
+    skips cleanup.
+  - **Snapshot drift:** validating against a different manifest than the one
+    the model was shown, or values arriving through a preset that bypass a
+    filter.
+  - **Byte limits:** character limits that exceed the request body limit, and
+    bounded item counts with unbounded item sizes.
+  - **Weak tests:** expectations copied from the observed output, assertions
+    on event names only, and timeouts that don't cover the whole test.
+- Ask the reviewer of a confirmation or submission UI to check persisted
+  states after a reload, not just the live stream. Both epic 7 UI rounds found
+  bugs that appeared only after a reload.
 - Tell the user when review rounds are what is slowing progress, and offer the
   High-only rule. Do not wait to be asked why it is slow.

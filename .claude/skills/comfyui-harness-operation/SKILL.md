@@ -1,6 +1,6 @@
 ---
 name: comfyui-harness-operation
-description: Operate the local GenAImage CLI safely with explicit workflow bindings, job control, reconciliation and provenance; use the portal and the local API, and distinguish planned assistant features from current capabilities.
+description: Operate the local GenAImage CLI safely with explicit workflow bindings, job control, reconciliation and provenance; use the portal, its assistant and the local API without bypassing confirmation.
 ---
 
 # ComfyUI harness operation
@@ -95,7 +95,24 @@ resolved values for review and pins the submission to the reviewed
 provenance-checked `POST /api/v1/runs/{id}/rerun`, which never alters the
 source run.
 
-The local LLM assistant runtime and the portal assistant page are planned, not
-current interfaces. Do not invent endpoints, commands or availability for them.
-The same rules on explicit binding, confirmation, reconciliation and provenance
-will apply to them once they are implemented.
+## Local LLM assistant
+
+The assistant is available in the portal (a chat panel on every page, and
+`#/assistant`) and through the API under `/api/v1/assistant/` and
+`/api/v1/outputs/{id}/review`. There are no CLI assistant commands; do not
+invent them. Configure it in the `[llm]` settings: `base_url`, `text_model`,
+`vision_model` and an optional write-only `api_key`. Health reports whether
+each role is available and why not.
+
+- Prompt assist (`POST /api/v1/assistant/prompt`) and workflow suggestion
+  (`POST /api/v1/assistant/suggest`) return proposals with `applied: false`.
+  Nothing changes until the user accepts it.
+- In a conversation, `submit_run` pauses with `confirmation_required` and the
+  full effective preview. The user decides through
+  `POST .../confirmations/{id}` with the shown `preview_token`. An edit needs
+  `POST .../confirmations/{id}/preview` first. Never decide on the user's
+  behalf, and treat `awaiting_confirmation` as not submitted.
+- `outcome_unknown` means the submission must be reconciled through Jobs; it
+  is never a success and must not be resubmitted blindly.
+- Vision review writes append-only annotations labelled as model opinion. They
+  are not provenance and never alter run records.
