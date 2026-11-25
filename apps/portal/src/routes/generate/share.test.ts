@@ -1,6 +1,10 @@
 import { expect, test } from 'vitest';
 import { BindingFloat } from '../../lib/api/client';
-import { buildSuggestionGenerateUrl, restoreFormState } from './share';
+import {
+  buildProposalGenerateUrl,
+  buildSuggestionGenerateUrl,
+  restoreFormState,
+} from './share';
 import type { Workflow } from './model';
 
 const workflow: Workflow = {
@@ -150,3 +154,45 @@ test('a suggestion pinned to the loaded revision prefill applies immediately for
   expect(restored.fields.get('seed')?.value).toBe(9007199254740993n);
   expect(restored.warnings).toEqual([]);
 });
+
+test('chat proposal links retain mismatch staging and exclude image paths', () => {
+  const source: Workflow = {
+    ...workflow,
+    parameters: {
+      ...workflow.parameters,
+      image: {
+        node: '2',
+        input: 'image',
+        kind: 'image_upload',
+        required: false,
+        description: '',
+      },
+    },
+  };
+  const hash = buildProposalGenerateUrlForTest({
+    workflow_id: source.id,
+    workflow_revision: 'older-revision',
+    preset: null,
+    parameters: {
+      seed: 9007199254740993n,
+      image: '/private/assistant/path.png',
+    },
+  });
+  const query = new URLSearchParams(hash.split('?')[1]);
+  const restored = restoreFormState(source, query);
+  expect(query.get('assistant')).toBe('chat');
+  expect(restored.pendingSuggestion?.suggestedRevision).toBe('older-revision');
+  expect(restored.pendingSuggestion?.fields.has('seed')).toBe(true);
+  expect(restored.pendingSuggestion?.issues).toContain(
+    'Suggested image input “image” will not be applied; choose the image yourself.',
+  );
+});
+
+function buildProposalGenerateUrlForTest(proposal: {
+  workflow_id: string;
+  workflow_revision: string;
+  preset: string | null;
+  parameters: Record<string, unknown>;
+}) {
+  return buildProposalGenerateUrl(proposal);
+}

@@ -8,6 +8,7 @@ export type SseFrame<T = unknown> = {
 export async function* readSseJson<T>(
   response: Response,
   signal?: AbortSignal,
+  parse: (text: string) => unknown = JSON.parse,
 ): AsyncGenerator<SseFrame<T>> {
   if (!response.body)
     throw new Error('The server did not return an SSE response body.');
@@ -30,7 +31,7 @@ export async function* readSseJson<T>(
       else if (field === 'id' && !value.includes('\0')) id = value;
     }
     if (!data.length) return undefined;
-    return { event, data: JSON.parse(data.join('\n')) as T, id };
+    return { event, data: parse(data.join('\n')) as T, id };
   }
 
   try {

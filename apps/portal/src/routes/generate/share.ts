@@ -42,6 +42,7 @@ type FormState = {
   inherited?: readonly SharedInherited[];
   unverifiedSource?: boolean;
   suggested?: boolean;
+  assistantSource?: 'suggest' | 'chat';
   chosenSeeds?: Readonly<Record<string, Scalar>>;
 };
 
@@ -78,7 +79,8 @@ export function encodeFormState(state: FormState): string {
   if (state.version !== undefined) query.set('wv', state.version);
   if (state.revision !== undefined) query.set('wr', state.revision);
   if (state.unverifiedSource) query.set('unverified_source', '1');
-  if (state.suggested) query.set('assistant', 'suggest');
+  if (state.suggested)
+    query.set('assistant', state.assistantSource ?? 'suggest');
   if (state.preset) query.set('preset', state.preset);
   if (state.modified) query.set('modified', '1');
   if (state.inherited?.length) query.set('i', JSON.stringify(state.inherited));
@@ -201,7 +203,7 @@ export function restoreFormState(workflow: Workflow, query: URLSearchParams) {
     modified: false,
     versionNotice: undefined as string | undefined,
     revisionNotice: undefined as string | undefined,
-    suggested: query.get('assistant') === 'suggest',
+    suggested: ['suggest', 'chat'].includes(query.get('assistant') ?? ''),
     suggestionNotice: undefined as string | undefined,
     pendingSuggestion: undefined as PendingSuggestion | undefined,
     unverifiedSource: query.get('unverified_source') === '1',
@@ -466,7 +468,9 @@ export function displayScalar(value: Scalar | undefined) {
 export type WorkflowSuggestion =
   import('../../lib/api/schema').components['schemas']['WorkflowSuggestion'];
 
-export function suggestionFields(suggestion: WorkflowSuggestion) {
+export function suggestionFields(
+  suggestion: Pick<WorkflowSuggestion, 'parameters'>,
+) {
   const fields = new Map<string, FieldState>();
   for (const [name, value] of Object.entries(suggestion.parameters)) {
     if (
@@ -485,7 +489,15 @@ export function suggestionFields(suggestion: WorkflowSuggestion) {
 }
 
 /** Prefill Generate without submitting; the server omits image inputs from suggestions. */
-export function buildSuggestionGenerateUrl(suggestion: WorkflowSuggestion) {
+type RunProposal = Pick<
+  WorkflowSuggestion,
+  'workflow_id' | 'workflow_revision' | 'preset' | 'parameters'
+>;
+
+function buildRunProposalGenerateUrl(
+  suggestion: RunProposal,
+  assistantSource: 'suggest' | 'chat',
+) {
   return encodeFormState({
     workflow: suggestion.workflow_id,
     revision: suggestion.workflow_revision,
@@ -493,6 +505,16 @@ export function buildSuggestionGenerateUrl(suggestion: WorkflowSuggestion) {
     modified:
       !!suggestion.preset && Object.keys(suggestion.parameters).length > 0,
     suggested: true,
+    assistantSource,
     fields: suggestionFields(suggestion),
   });
+}
+
+export function buildSuggestionGenerateUrl(suggestion: WorkflowSuggestion) {
+  return buildRunProposalGenerateUrl(suggestion, 'suggest');
+}
+
+/** Prefill a chat proposal for review without submitting a run. */
+export function buildProposalGenerateUrl(suggestion: RunProposal) {
+  return buildRunProposalGenerateUrl(suggestion, 'chat');
 }

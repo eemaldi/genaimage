@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
-  import { api, ApiHttpError, ApiProblemError } from '../api/client';
+  import {
+    api,
+    ApiHttpError,
+    ApiProblemError,
+    type AssistantStream,
+  } from '../api/client';
   import type { AssistantStreamEvent } from '../api/client';
   import {
     healthToDisabledReason,
@@ -153,16 +158,19 @@
     const current = ++generation;
     detailLoading = true;
     try {
-      const detail = await api.getAssistantConversation(id, 500, {
-        signal: lifecycle.signal,
-      });
+      const [detail, audit] = await Promise.all([
+        api.getAssistantConversation(id, 500, { signal: lifecycle.signal }),
+        api
+          .listAssistantToolCalls(id, 200, { signal: lifecycle.signal })
+          .catch(() => ({ tool_calls: [] })),
+      ]);
       if (
         current !== generation ||
         id !== selectedId ||
         lifecycle.signal.aborted
       )
         return false;
-      const persisted = messageItems(detail);
+      const persisted = messageItems(detail, audit.tool_calls);
       if (recovery) {
         const submittedIndex = persisted.findIndex(
           (item) =>
@@ -486,6 +494,89 @@
     }
   }
 
+  async function consumeConfirmationStream(
+    stream: AssistantStream,
+    conversationId: string,
+  ) {
+    const assistant = [...items]
+      .reverse()
+      .find(
+        (item): item is Extract<MessageItem, { kind: 'message' }> =>
+          item.kind === 'message' &&
+          item.role === 'assistant' &&
+          item.conversationId === conversationId &&
+          item.status === 'awaiting_confirmation',
+      );
+    streamPending = true;
+    try {
+      for await (const frame of stream) {
+        if (conversationId !== selectedId || lifecycle.signal.aborted) break;
+        const event = {
+          ...frame.data,
+          event: frame.event,
+        } as AssistantStreamEvent;
+        if (event.event === 'delta' && assistant) {
+          updateAssistant(assistant.id, (item) => ({
+            ...item,
+            text: item.text + event.text,
+          }));
+          await scrollTranscript();
+        } else if (event.event === 'tool_result') {
+          const resultId = `${event.tool_call_id}:result`;
+          items = [
+            ...items.filter((item) => item.id !== resultId),
+            {
+              kind: 'tool_result',
+              id: resultId,
+              conversationId,
+              toolCallId: event.tool_call_id,
+              tool: event.tool,
+              ok: event.ok,
+              result: event.result,
+              error: event.error ?? undefined,
+            },
+          ];
+        } else if (event.event === 'confirmation_required') {
+          items = [
+            ...items.filter((item) => item.id !== event.confirmation_id),
+            {
+              kind: 'confirmation_required',
+              id: event.confirmation_id,
+              conversationId,
+              confirmation: event,
+            },
+          ];
+        } else if (event.event === 'done' && assistant) {
+          updateAssistant(assistant.id, (item) => ({
+            ...item,
+            status: 'complete',
+            error: undefined,
+          }));
+          announcement = 'Assistant reply complete.';
+        } else if (event.event === 'awaiting_confirmation' && assistant) {
+          updateAssistant(assistant.id, (item) => ({
+            ...item,
+            status: 'awaiting_confirmation',
+            error: undefined,
+          }));
+          announcement = 'Waiting for your confirmation.';
+        } else if (event.event === 'error' && assistant) {
+          updateAssistant(assistant.id, (item) => ({
+            ...item,
+            status: event.status,
+            error: event.error ?? 'The assistant reply failed.',
+          }));
+          announcement = event.error ?? 'The assistant reply failed.';
+        }
+      }
+    } finally {
+      if (conversationId === selectedId && !lifecycle.signal.aborted) {
+        streamPending = false;
+        await reloadConversation(conversationId);
+      }
+    }
+  }
+
   function updateAssistant(
     id: string,
     update: (item: Extract<MessageItem, { kind: 'message' }>) => MessageItem,
@@ -664,6 +755,8 @@
               <ConfirmationCard
                 confirmation={item.confirmation}
                 conversationId={item.conversationId}
+                onstream={(stream) =>
+                  consumeConfirmationStream(stream, item.conversationId)}
               />
             {/if}
           {/if}
@@ -818,9 +911,7 @@
     min-block-size: 8rem;
     padding-inline-end: var(--space-1);
   }
-  article,
-  :global(.tool-placeholder),
-  :global(.confirmation-placeholder) {
+  article {
     padding: var(--space-3);
     border-radius: var(--radius-control);
   }

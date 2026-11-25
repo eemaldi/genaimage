@@ -58,6 +58,7 @@ beforeEach(() => {
     conversation('new', 'New conversation'),
   );
   vi.spyOn(api, 'deleteAssistantConversation').mockResolvedValue(undefined);
+  vi.spyOn(api, 'listAssistantToolCalls').mockResolvedValue({ tool_calls: [] });
   vi.spyOn(api, 'cancelAssistantConversation').mockResolvedValue(undefined);
 });
 
@@ -552,8 +553,8 @@ it('shows the disabled reason and Settings link', async () => {
   ).toBe(true);
 });
 
-describe('placeholder extension items', () => {
-  it('renders tool and confirmation events as replaceable items', async () => {
+describe('assistant extension items', () => {
+  it('renders tool calls and confirmation events', async () => {
     vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
       (async function* () {
         yield {
@@ -583,7 +584,7 @@ describe('placeholder extension items', () => {
     const user = userEvent.setup();
     await user.type(await startWithSelection(), 'Run it');
     await user.click(screen.getByRole('button', { name: 'Send' }));
-    expect(await screen.findByText(/A tool call happened/)).toBeTruthy();
-    expect(await screen.findByText(/Confirmation required/)).toBeTruthy();
+    expect(await screen.findByText('Tool call')).toBeTruthy();
+    expect(await screen.findByText('Run confirmation')).toBeTruthy();
   });
 });

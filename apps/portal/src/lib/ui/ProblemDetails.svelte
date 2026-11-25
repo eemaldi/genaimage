@@ -7,6 +7,8 @@
     instance?: string;
     recovery?: string;
     errors?: readonly { key: string; reason: string }[];
+    preview?: unknown;
+    preview_token?: string | null;
   };
 </script>
 

@@ -7,7 +7,11 @@ export type ConversationDetail =
 export type StoredMessage = components['schemas']['AssistantMessageResponse'];
 export type ToolCall = components['schemas']['AssistantToolCall'];
 export type Confirmation =
-  components['schemas']['AssistantConfirmationRequiredEvent'];
+  components['schemas']['AssistantConfirmationRequiredEvent'] & {
+    invocation_result?: unknown;
+    invocation_error?: string | null;
+    validation_error?: string | null;
+  };
 
 export type MessageItem =
   | {
@@ -46,8 +50,25 @@ export type MessageItem =
       confirmation: Confirmation;
     };
 
-export function messageItems(detail: ConversationDetail): MessageItem[] {
+export function messageItems(
+  detail: ConversationDetail,
+  audit: components['schemas']['AssistantToolAuditResponse']['tool_calls'] = [],
+): MessageItem[] {
   const items: MessageItem[] = [];
+  const toolNames = new Map<string, string>();
+  const auditByCall = new Map(
+    audit.map((record) => [record.tool_call_id, record]),
+  );
+  const confirmationStatuses = new Set<Confirmation['status']>([
+    'pending',
+    'invoking',
+    'succeeded',
+    'failed',
+    'rejected',
+    'outcome_unknown',
+    'expired',
+  ]);
+
   for (const message of detail.messages) {
     const content = message.content;
     if ('user' in content) {
@@ -78,20 +99,49 @@ export function messageItems(detail: ConversationDetail): MessageItem[] {
         error: message.error ?? undefined,
         createdAt: message.created_at,
       });
-      for (const toolCall of content.assistant.tool_calls)
+      for (const toolCall of content.assistant.tool_calls) {
+        toolNames.set(toolCall.id, toolCall.name);
         items.push({
           kind: 'tool_call',
           id: `${message.id}:${toolCall.id}`,
           conversationId: message.conversation_id,
           toolCall,
         });
+        const record = auditByCall.get(toolCall.id);
+        const status = record?.confirmation_status as Confirmation['status'];
+        if (record?.confirmation_id && confirmationStatuses.has(status)) {
+          items.push({
+            kind: 'confirmation_required',
+            id: record.confirmation_id,
+            conversationId: message.conversation_id,
+            confirmation: {
+              confirmation_id: record.confirmation_id,
+              status,
+              conversation_id: message.conversation_id,
+              tool_call_id: record.tool_call_id,
+              tool: record.tool,
+              arguments:
+                record.effective_arguments ?? record.proposed_arguments,
+              json_schema: {},
+              preview: undefined,
+              preview_token: '',
+              invocation_result: record.invocation_result,
+              invocation_error: record.invocation_error,
+              validation_error: record.validation_error,
+            },
+          });
+        }
+      }
     } else if ('tool' in content) {
       items.push({
         kind: 'tool_result',
         id: message.id,
         conversationId: message.conversation_id,
         toolCallId: content.tool.call_id,
-        tool: message.tool_call_id ?? content.tool.call_id,
+        tool:
+          toolNames.get(content.tool.call_id) ??
+          auditByCall.get(content.tool.call_id)?.tool ??
+          content.tool.call_id,
         ok: !message.error,
         result: content.tool.result,
         error: message.error ?? undefined,
