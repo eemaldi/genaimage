@@ -10,7 +10,7 @@
     error,
   }: {
     tool: string;
-    ok: boolean;
+    ok?: boolean;
     conversationId: string;
     toolCallId: string;
     result?: unknown;
@@ -24,10 +24,13 @@
       : undefined,
   );
   const generated = $derived(
-    tool === 'propose_run' && ok ? generateAction(result) : undefined,
+    tool === 'propose_run' && ok === true ? generateAction(result) : undefined,
   );
   const resultJson = $derived(
     result === undefined ? '' : formatExactJson(result),
+  );
+  const outcome = $derived(
+    ok === true ? 'Succeeded' : ok === false ? 'Failed' : 'Unknown outcome',
   );
   const notes = $derived(
     Array.isArray(record?.truncation_notes)
@@ -38,11 +41,16 @@
   );
 </script>
 
-<details class:failed={!ok} class:succeeded={ok} class="tool-card">
+<details
+  class:failed={ok === false}
+  class:succeeded={ok === true}
+  class:unknown={ok === undefined}
+  class="tool-card"
+>
   <summary>
     <span class="eyebrow">Tool result</span>
     <strong>{tool}</strong>
-    <span class="outcome">{ok ? 'Succeeded' : 'Failed'}</span>
+    <span class="outcome">{outcome}</span>
   </summary>
   <div class="tool-body" aria-live="polite">
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
@@ -86,6 +94,9 @@
   }
   .failed {
     border-inline-start-color: var(--danger);
+  }
+  .unknown {
+    border-inline-start-color: var(--muted);
   }
   summary {
     display: flex;

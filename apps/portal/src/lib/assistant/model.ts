@@ -39,7 +39,7 @@ export type MessageItem =
       conversationId: string;
       toolCallId: string;
       tool: string;
-      ok: boolean;
+      ok?: boolean;
       result?: unknown;
       error?: string;
     }
@@ -56,9 +56,11 @@ export function messageItems(
 ): MessageItem[] {
   const items: MessageItem[] = [];
   const toolNames = new Map<string, string>();
-  const auditByCall = new Map(
-    audit.map((record) => [record.tool_call_id, record]),
-  );
+  const auditByCall = new Map<string, (typeof audit)[number]>();
+  for (const record of audit) {
+    if (!auditByCall.has(record.tool_call_id))
+      auditByCall.set(record.tool_call_id, record);
+  }
   const confirmationStatuses = new Set<Confirmation['status']>([
     'pending',
     'invoking',
@@ -121,7 +123,9 @@ export function messageItems(
               tool_call_id: record.tool_call_id,
               tool: record.tool,
               arguments:
-                record.effective_arguments ?? record.proposed_arguments,
+                status === 'pending'
+                  ? record.proposed_arguments
+                  : (record.effective_arguments ?? record.proposed_arguments),
               json_schema: {},
               preview: undefined,
               preview_token: '',
@@ -133,6 +137,15 @@ export function messageItems(
         }
       }
     } else if ('tool' in content) {
+      const persisted =
+        content.tool.result &&
+        typeof content.tool.result === 'object' &&
+        !Array.isArray(content.tool.result)
+          ? (content.tool.result as Record<string, unknown>)
+          : undefined;
+      const ok = typeof persisted?.ok === 'boolean' ? persisted.ok : undefined;
+      const nestedError =
+        typeof persisted?.error === 'string' ? persisted.error : undefined;
       items.push({
         kind: 'tool_result',
         id: message.id,
@@ -142,9 +155,13 @@ export function messageItems(
           toolNames.get(content.tool.call_id) ??
           auditByCall.get(content.tool.call_id)?.tool ??
           content.tool.call_id,
-        ok: !message.error,
-        result: content.tool.result,
-        error: message.error ?? undefined,
+        ok,
+        result: persisted?.result,
+        error:
+          nestedError ??
+          (ok === undefined
+            ? 'The persisted tool outcome is malformed or unavailable.'
+            : undefined),
       });
     }
   }

@@ -1,7 +1,11 @@
-import { render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
+import { afterEach } from 'vitest';
 import { expect, it } from 'vitest';
+
+afterEach(cleanup);
 import { parseAssistantJson } from '../api/client';
 import ToolCallCard from './ToolCallCard.svelte';
+import { messageItems } from './model';
 import ToolResultCard from './ToolResultCard.svelte';
 
 it('renders tool argument markup as exact text', () => {
@@ -46,4 +50,126 @@ it('shows truncation, run links and proposal Generate links without submitting',
   expect(
     second.getByRole('link', { name: 'Open run run/a' }).getAttribute('href'),
   ).toBe('#/runs/run%2Fa');
+});
+
+it.each([
+  ['failed', false, { ok: false, error: 'Tool failed.' }],
+  ['rejected', false, { ok: false, error: 'The user rejected the tool.' }],
+  ['unknown', undefined, { result: {} }],
+] as const)(
+  'persisted %s outcomes never render as succeeded',
+  (_label, _ok, wrapper) => {
+    const item = messageItems(
+      {
+        id: 'conversation-1',
+        title: 'Conversation',
+        model: 'local',
+        system_prompt: '',
+        system_prompt_sha256: 'hash',
+        system_prompt_template: 'assistant',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+        messages: [
+          {
+            id: 'tool-message',
+            conversation_id: 'conversation-1',
+            seq: 2,
+            role: 'tool',
+            status: 'complete',
+            created_at: '2026-01-01T00:00:00Z',
+            content: { tool: { call_id: 'tool-1', result: wrapper } },
+          },
+        ],
+      },
+      [
+        {
+          id: 1,
+          conversation_id: 'conversation-1',
+          tool_call_id: 'tool-1',
+          tool: 'submit_run',
+          proposed_arguments: {},
+          validation_outcome: 'valid',
+          decision: 'not_invoked',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    ).at(-1);
+    expect(item?.kind).toBe('tool_result');
+    if (item?.kind !== 'tool_result')
+      throw new Error('Expected a tool result.');
+    const rendered = render(ToolResultCard, {
+      tool: item.tool,
+      ok: item.ok,
+      conversationId: item.conversationId,
+      toolCallId: item.toolCallId,
+      result: item.result,
+      error: item.error,
+    });
+    expect(rendered.queryByText('Succeeded')).toBeNull();
+    expect(
+      rendered.getByText(_ok === undefined ? 'Unknown outcome' : 'Failed'),
+    ).toBeTruthy();
+  },
+);
+
+it('links a persisted submit_run success to its unwrapped run result', () => {
+  const item = messageItems(
+    {
+      id: 'conversation-1',
+      title: 'Conversation',
+      model: 'local',
+      system_prompt: '',
+      system_prompt_sha256: 'hash',
+      system_prompt_template: 'assistant',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      messages: [
+        {
+          id: 'tool-message',
+          conversation_id: 'conversation-1',
+          seq: 2,
+          role: 'tool',
+          status: 'complete',
+          created_at: '2026-01-01T00:00:00Z',
+          content: {
+            tool: {
+              call_id: 'tool-1',
+              result: {
+                ok: true,
+                result: { run_id: 'persisted-run', status: 'queued' },
+              },
+            },
+          },
+        },
+      ],
+    },
+    [
+      {
+        id: 1,
+        conversation_id: 'conversation-1',
+        tool_call_id: 'tool-1',
+        tool: 'submit_run',
+        proposed_arguments: {},
+        validation_outcome: 'valid',
+        decision: 'invocation_succeeded',
+        invocation_ok: true,
+        invocation_result: { run_id: 'persisted-run', status: 'queued' },
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ],
+  ).at(-1);
+  if (item?.kind !== 'tool_result') throw new Error('Expected a tool result.');
+  render(ToolResultCard, {
+    tool: item.tool,
+    ok: item.ok,
+    conversationId: item.conversationId,
+    toolCallId: item.toolCallId,
+    result: item.result,
+    error: item.error,
+  });
+  expect(
+    screen
+      .getByRole('link', { name: 'Open run persisted-run' })
+      .getAttribute('href'),
+  ).toBe('#/runs/persisted-run');
 });
