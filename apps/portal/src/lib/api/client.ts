@@ -1,5 +1,6 @@
 import type { components, paths } from './schema';
 import { apiUrl } from './url';
+import type { SseFrame } from './sse';
 
 export type ProblemDetails = components['schemas']['ProblemDetails'] & {
   instance?: string;
@@ -145,6 +146,33 @@ export type PromptAssistRequest = JsonBody<
 export type SuggestWorkflowRequest = JsonBody<
   Operation<'/api/v1/assistant/suggest', 'post'>
 >;
+export type AssistantConversationQuery = Params<
+  '/api/v1/assistant/conversations',
+  'get'
+>['query'];
+export type SendAssistantMessageRequest = JsonBody<
+  Operation<'/api/v1/assistant/conversations/{id}/messages', 'post'>
+>;
+export type AssistantStreamEvent =
+  | ({
+      event: 'message_started';
+    } & components['schemas']['AssistantMessageStartedEvent'])
+  | ({ event: 'delta' } & components['schemas']['AssistantDeltaEvent'])
+  | ({ event: 'tool_call' } & components['schemas']['AssistantToolCallEvent'])
+  | ({
+      event: 'tool_result';
+    } & components['schemas']['AssistantToolResultEvent'])
+  | ({
+      event: 'confirmation_required';
+    } & components['schemas']['AssistantConfirmationRequiredEvent'])
+  | ({ event: 'done' } & components['schemas']['AssistantTerminalEvent'])
+  | ({
+      event: 'awaiting_confirmation';
+    } & components['schemas']['AssistantAwaitingConfirmationEvent'])
+  | ({ event: 'error' } & components['schemas']['AssistantTerminalEvent']);
+type WithoutEvent<T> = T extends { event: unknown } ? Omit<T, 'event'> : never;
+type AssistantStreamPayload = WithoutEvent<AssistantStreamEvent>;
+export type AssistantStream = AsyncGenerator<SseFrame<AssistantStreamPayload>>;
 
 export const outputMediaUrl = (id: string) =>
   apiUrl('/api/v1/outputs/{id}', { id });
@@ -203,11 +231,83 @@ export function parseBindingJson(text: string, bindings = true): unknown {
 
 // A whole-valued float and an integer are distinct serde_json enum values.
 export class BindingFloat {
-  constructor(readonly value: number) {}
+  constructor(
+    readonly value: number,
+    private readonly source?: string,
+  ) {}
   toString(): string {
+    if (this.source !== undefined) return this.source;
     const text = Object.is(this.value, -0) ? '-0' : String(this.value);
     return /[.eE]/.test(text) ? text : `${text}.0`;
   }
+}
+
+/** Parse assistant JSON while retaining every numeric token's wire spelling. */
+export function parseAssistantJson(text: string): unknown {
+  requireExactNumberReads();
+  return JSON.parse(
+    text,
+    (_key, value: unknown, context?: { source?: string }) => {
+      const source = context?.source;
+      if (typeof value !== 'number' || !source) return value;
+      if (/^-?\d+$/.test(source)) {
+        if (source === '-0') return new BindingFloat(value, source);
+        if (!Number.isSafeInteger(value)) return BigInt(source);
+        return value;
+      }
+      return new BindingFloat(value, source);
+    },
+  );
+}
+
+export function formatExactJson(value: unknown, space = 2): string {
+  function format(current: unknown, depth: number): string {
+    if (current instanceof BindingFloat) return current.toString();
+    if (typeof current === 'bigint') return current.toString();
+    if (
+      current === null ||
+      typeof current === 'string' ||
+      typeof current === 'boolean'
+    )
+      return JSON.stringify(current);
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) throw new Error('Invalid JSON number.');
+      return Object.is(current, -0) ? '-0.0' : String(current);
+    }
+    if (Array.isArray(current)) {
+      if (space === 0)
+        return `[${current.map((item) => format(item, depth + 1)).join(',')}]`;
+      const indentation = ' '.repeat(space * (depth + 1));
+      const closing = ' '.repeat(space * depth);
+      return `[\n${current
+        .map((item) => `${indentation}${format(item, depth + 1)}`)
+        .join(',\n')}\n${closing}]`;
+    }
+    if (typeof current === 'object') {
+      const entries = Object.entries(current as Record<string, unknown>);
+      if (space === 0)
+        return `{${entries
+          .map(
+            ([key, item]) =>
+              `${JSON.stringify(key)}:${format(item, depth + 1)}`,
+          )
+          .join(',')}}`;
+      const indentation = ' '.repeat(space * (depth + 1));
+      const closing = ' '.repeat(space * depth);
+      return `{\n${entries
+        .map(
+          ([key, item]) =>
+            `${indentation}${JSON.stringify(key)}: ${format(item, depth + 1)}`,
+        )
+        .join(',\n')}\n${closing}}`;
+    }
+    throw new Error('This value cannot be displayed as JSON.');
+  }
+  return format(value, 0);
+}
+
+async function readAssistantJson(response: Response) {
+  return parseAssistantJson(await response.text());
 }
 
 async function readWorkflowBindings(response: Response) {
@@ -273,7 +373,8 @@ export function createApiClient(
         .toLowerCase();
       if (contentType === 'application/problem+json') {
         const problem: unknown = await response
-          .json()
+          .text()
+          .then(parseAssistantJson)
           .catch((error: unknown) => {
             preserveAbort(error, init.signal);
             return undefined;
@@ -347,6 +448,144 @@ export function createApiClient(
         '/api/v1/assistant/suggest',
         { ...options, body },
         (response) => readExactIntegers(response, true),
+      ),
+    listAssistantConversations: (
+      query?: AssistantConversationQuery,
+      options?: RequestOptions,
+    ) =>
+      json('get', '/api/v1/assistant/conversations', {
+        ...options,
+        query,
+      }),
+    createAssistantConversation: (
+      body: JsonBody<Operation<'/api/v1/assistant/conversations', 'post'>>,
+      options?: RequestOptions,
+    ) =>
+      json('post', '/api/v1/assistant/conversations', {
+        ...options,
+        body,
+      }),
+    getAssistantConversation: (
+      id: string,
+      messageLimit = 100,
+      options?: RequestOptions,
+    ) =>
+      json(
+        'get',
+        '/api/v1/assistant/conversations/{id}',
+        {
+          ...options,
+          path: { id },
+          query: { message_limit: messageLimit },
+        },
+        (response) => readAssistantJson(response),
+      ),
+    deleteAssistantConversation: (id: string, options?: RequestOptions) =>
+      request(
+        apiUrl('/api/v1/assistant/conversations/{id}', { id }),
+        { method: 'DELETE', signal: options?.signal },
+        async () => undefined,
+      ),
+    cancelAssistantConversation: (id: string, options?: RequestOptions) =>
+      request(
+        apiUrl('/api/v1/assistant/conversations/{id}/cancel', { id }),
+        { method: 'POST', signal: options?.signal },
+        async () => undefined,
+      ),
+    sendAssistantMessage: (
+      id: string,
+      body: SendAssistantMessageRequest,
+      options?: RequestOptions,
+    ) =>
+      request<AssistantStream>(
+        apiUrl('/api/v1/assistant/conversations/{id}/messages', { id }),
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream, application/problem+json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: options?.signal,
+        },
+        async (response) => {
+          const { readSseJson } = await import('./sse');
+          return readSseJson<AssistantStreamPayload>(
+            response,
+            options?.signal,
+            parseAssistantJson,
+          );
+        },
+      ),
+    previewAssistantConfirmation: (
+      id: string,
+      confirmationId: string,
+      body: JsonBody<
+        Operation<
+          '/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}/preview',
+          'post'
+        >
+      >,
+      options?: RequestOptions,
+    ) =>
+      json(
+        'post',
+        '/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}/preview',
+        {
+          ...options,
+          path: { id, confirmation_id: confirmationId },
+          body,
+        },
+        (response) => readAssistantJson(response),
+      ),
+    decideAssistantConfirmation: (
+      id: string,
+      confirmationId: string,
+      body: JsonBody<
+        Operation<
+          '/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}',
+          'post'
+        >
+      >,
+      options?: RequestOptions,
+    ) =>
+      request<AssistantStream>(
+        apiUrl(
+          '/api/v1/assistant/conversations/{id}/confirmations/{confirmation_id}',
+          { id, confirmation_id: confirmationId },
+        ),
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream, application/problem+json',
+            'Content-Type': 'application/json',
+          },
+          body: stringifyBindingJson(body),
+          signal: options?.signal,
+        },
+        async (response) => {
+          const { readSseJson } = await import('./sse');
+          return readSseJson<AssistantStreamPayload>(
+            response,
+            options?.signal,
+            parseAssistantJson,
+          );
+        },
+      ),
+    listAssistantToolCalls: (
+      id: string,
+      limit = 200,
+      options?: RequestOptions,
+    ) =>
+      json(
+        'get',
+        '/api/v1/assistant/conversations/{id}/tool-calls',
+        {
+          ...options,
+          path: { id },
+          query: { limit },
+        },
+        (response) => readAssistantJson(response),
       ),
     listWorkflows: (options: RequestOptions = {}) =>
       json('get', '/api/v1/workflows', options),
