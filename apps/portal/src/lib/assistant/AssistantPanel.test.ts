@@ -255,6 +255,15 @@ it('marks a completed server reply as reloaded after an interrupted connection',
     ...detail('one'),
     messages: [
       {
+        id: 'persisted-user',
+        conversation_id: 'one',
+        created_at: '2026-01-01T00:00:00Z',
+        seq: 1,
+        role: 'user',
+        status: 'complete',
+        content: { user: [{ text: 'Hi' }] },
+      },
+      {
         id: 'persisted-assistant',
         conversation_id: 'one',
         created_at: '2026-01-01T00:00:01Z',
@@ -273,6 +282,14 @@ it('marks a completed server reply as reloaded after an interrupted connection',
     .mockResolvedValueOnce(persisted);
   vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
     (async function* () {
+      yield {
+        event: 'message_started',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'persisted-user',
+          model: 'local',
+        },
+      };
       yield {
         event: 'delta',
         data: {
@@ -300,10 +317,18 @@ it('keeps the local interrupted state when authoritative reload fails', async ()
   vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
     (async function* () {
       yield {
+        event: 'message_started',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'current-user',
+          model: 'local',
+        },
+      };
+      yield {
         event: 'delta',
         data: {
           conversation_id: 'one',
-          user_message_id: 'u',
+          user_message_id: 'current-user',
           text: 'Local partial answer.',
         },
       };
@@ -345,6 +370,71 @@ it('keeps the local interrupted state when the persisted reply is missing', asyn
       )
     )[0],
   ).toBeTruthy();
+});
+
+it('does not recover another turn as this submission', async () => {
+  const persisted: Detail = {
+    ...detail('one'),
+    messages: [
+      {
+        id: 'different-user',
+        conversation_id: 'one',
+        created_at: '2026-01-01T00:00:00Z',
+        seq: 1,
+        role: 'user',
+        status: 'complete',
+        content: { user: [{ text: 'Another question' }] },
+      },
+      {
+        id: 'different-assistant',
+        conversation_id: 'one',
+        created_at: '2026-01-01T00:00:01Z',
+        seq: 2,
+        role: 'assistant',
+        model: 'local',
+        status: 'complete',
+        content: { assistant: { text: 'Another answer.', tool_calls: [] } },
+      },
+    ],
+  };
+  vi.mocked(api.getAssistantConversation)
+    .mockResolvedValueOnce(detail('one'))
+    .mockResolvedValueOnce(persisted);
+  vi.spyOn(api, 'sendAssistantMessage').mockResolvedValue(
+    (async function* () {
+      yield {
+        event: 'message_started',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'this-user',
+          model: 'local',
+        },
+      };
+      yield {
+        event: 'delta',
+        data: {
+          conversation_id: 'one',
+          user_message_id: 'this-user',
+          text: 'This partial answer.',
+        },
+      };
+    })(),
+  );
+  const user = userEvent.setup();
+  await user.type(await startWithSelection(), 'This question');
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+  expect(await screen.findByText('This partial answer.')).toBeTruthy();
+  expect(screen.queryByText('Another answer.')).toBeNull();
+  expect(
+    (
+      await screen.findAllByText(
+        'The response was interrupted before a terminal event arrived.',
+      )
+    )[0],
+  ).toBeTruthy();
+  expect(
+    screen.queryByText('Connection interrupted — reloaded from the server'),
+  ).toBeNull();
 });
 
 it('ignores a stale stream after switching conversations', async () => {
@@ -409,6 +499,7 @@ it('explains a 409 without resending', async () => {
       'A confirmation is pending before another reply can be sent.',
     ),
   ).toBeTruthy();
+  expect(api.getAssistantConversation).toHaveBeenCalledTimes(1);
 });
 
 it('paginates the bounded conversation list', async () => {

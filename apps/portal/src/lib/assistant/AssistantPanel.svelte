@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
-  import { api, ApiProblemError } from '../api/client';
+  import { api, ApiHttpError, ApiProblemError } from '../api/client';
   import type { AssistantStreamEvent } from '../api/client';
   import {
     healthToDisabledReason,
@@ -148,7 +148,7 @@
 
   async function reloadConversation(
     id: string,
-    recovery?: { assistantAfterSeq: number; notice: string },
+    recovery?: { userMessageId: string; notice: string },
   ): Promise<boolean> {
     const current = ++generation;
     detailLoading = true;
@@ -164,23 +164,38 @@
         return false;
       const persisted = messageItems(detail);
       if (recovery) {
-        const candidate = persisted.find(
+        const submittedIndex = persisted.findIndex(
           (item) =>
             item.kind === 'message' &&
-            item.role === 'assistant' &&
-            item.seq > recovery.assistantAfterSeq,
+            item.role === 'user' &&
+            item.id === recovery.userMessageId,
         );
-        if (
-          !candidate ||
-          candidate.kind !== 'message' ||
-          ![
-            'complete',
-            'awaiting_confirmation',
-            'cancelled',
-            'failed',
-          ].includes(candidate.status)
-        )
-          return false;
+        if (submittedIndex === -1) return false;
+        const nextUser = persisted.findIndex(
+          (item, index) =>
+            index > submittedIndex &&
+            item.kind === 'message' &&
+            item.role === 'user',
+        );
+        const end = nextUser === -1 ? persisted.length : nextUser;
+        const terminalStatuses: Extract<
+          MessageItem,
+          { kind: 'message' }
+        >['status'][] = [
+          'complete',
+          'awaiting_confirmation',
+          'cancelled',
+          'failed',
+        ];
+        const candidates = persisted
+          .slice(submittedIndex + 1, end)
+          .filter(
+            (item): item is Extract<MessageItem, { kind: 'message' }> =>
+              item.kind === 'message' && item.role === 'assistant',
+          )
+          .filter((item) => terminalStatuses.includes(item.status));
+        const candidate = candidates[candidates.length - 1];
+        if (!candidate) return false;
         candidate.notice = recovery.notice;
       }
       const persistedIds = new Set(persisted.map(({ id }) => id));
@@ -305,6 +320,8 @@
     let terminal = false;
     let cancelled = false;
     let protocolError = false;
+    let definitiveRejection = false;
+    let submittedUserMessageId: string | undefined;
     try {
       const stream = await api.sendAssistantMessage(
         conversationId,
@@ -318,7 +335,9 @@
           event: frame.event,
         } as AssistantStreamEvent;
         if (streamEvent.conversation_id !== conversationId) continue;
-        if (streamEvent.event === 'delta') {
+        if (streamEvent.event === 'message_started') {
+          submittedUserMessageId ??= streamEvent.user_message_id;
+        } else if (streamEvent.event === 'delta') {
           updateAssistant(assistantId, (item) => ({
             ...item,
             text: item.text + streamEvent.text,
@@ -411,8 +430,17 @@
       if (current !== generation || conversationId !== selectedId) return;
       if (!cancelled) {
         const conflict = conflictReason(error);
-        if (conflict) streamNotice = conflict;
-        else problem = asProblem(error, 'Could not send the message');
+        if (conflict) {
+          definitiveRejection = true;
+          streamNotice = conflict;
+        } else if (
+          error instanceof ApiProblemError ||
+          error instanceof ApiHttpError
+        ) {
+          definitiveRejection = true;
+          problem = asProblem(error, 'Could not send the message');
+          streamNotice = error.message;
+        }
       }
     } finally {
       if (current === generation && conversationId === selectedId) {
@@ -420,28 +448,37 @@
         cancelled ||= controller.signal.aborted;
         if (streamController === controller) streamController = undefined;
         if (!terminal) {
-          const interruptedNotice = protocolError
-            ? streamNotice
-            : cancelled
-              ? 'The reply was stopped before completion.'
-              : streamNotice ||
-                'The response was interrupted before a terminal event arrived.';
-          streamNotice = interruptedNotice;
-          updateAssistant(assistantId, (item) => ({
-            ...item,
-            status: 'failed',
-            error: interruptedNotice,
-          }));
-          announcement = interruptedNotice;
-          if (!protocolError) {
-            const recovered = await reloadConversation(conversationId, {
-              assistantAfterSeq: seq,
-              notice: 'Connection interrupted — reloaded from the server',
-            });
-            if (recovered) {
-              streamNotice =
-                'Connection interrupted — reloaded from the server';
-              announcement = streamNotice;
+          if (definitiveRejection) {
+            updateAssistant(assistantId, (item) => ({
+              ...item,
+              status: 'failed',
+              error: streamNotice,
+            }));
+            announcement = streamNotice;
+          } else {
+            const interruptedNotice = protocolError
+              ? streamNotice
+              : cancelled
+                ? 'The reply was stopped before completion.'
+                : streamNotice ||
+                  'The response was interrupted before a terminal event arrived.';
+            streamNotice = interruptedNotice;
+            updateAssistant(assistantId, (item) => ({
+              ...item,
+              status: 'failed',
+              error: interruptedNotice,
+            }));
+            announcement = interruptedNotice;
+            if (!protocolError && !cancelled && submittedUserMessageId) {
+              const recovered = await reloadConversation(conversationId, {
+                userMessageId: submittedUserMessageId,
+                notice: 'Connection interrupted — reloaded from the server',
+              });
+              if (recovered) {
+                streamNotice =
+                  'Connection interrupted — reloaded from the server';
+                announcement = streamNotice;
+              }
             }
           }
         }
