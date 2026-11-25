@@ -1,6 +1,11 @@
 mod common;
 
-use std::{collections::BTreeSet, sync::atomic::Ordering, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    sync::atomic::Ordering,
+    time::Duration,
+};
 
 use common::{install_workflow, ApiHarness};
 use futures_util::StreamExt;
@@ -217,8 +222,44 @@ impl ExpectedAudit {
 struct ExpectedFinal {
     messages: Vec<ExpectedMessage>,
     audits: Vec<ExpectedAudit>,
+    tool_results: BTreeMap<&'static str, ExpectedToolResult>,
+    previews: BTreeMap<&'static str, Value>,
     prompt_calls: usize,
     runs: usize,
+}
+
+#[derive(Clone, Debug)]
+enum ExpectedToolResult {
+    Exact {
+        ok: bool,
+        result: Option<Value>,
+        error: Option<String>,
+    },
+    SubmittedRun {
+        status: &'static str,
+    },
+    RunStatus {
+        status: &'static str,
+        output_count: usize,
+    },
+}
+
+impl ExpectedToolResult {
+    fn success(result: Value) -> Self {
+        Self::Exact {
+            ok: true,
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    fn error(error: &str) -> Self {
+        Self::Exact {
+            ok: false,
+            result: None,
+            error: Some(error.to_owned()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -322,11 +363,10 @@ impl Observation {
 struct StreamRecord {
     user_text: Option<String>,
     turns: Vec<ResolvedTurn>,
-    tool_calls: Vec<ObservedToolCall>,
-    tool_results: Vec<ObservedToolResult>,
     confirmation: Option<ObservedConfirmation>,
     terminal_status: AssistantMessageStatus,
     terminal_message_id: String,
+    expected_tool_results: BTreeMap<String, Value>,
     continuation_call_id: Option<String>,
 }
 
@@ -359,6 +399,8 @@ struct ScenarioHarness {
     latest_preview_token: Option<String>,
     stream_records: Vec<StreamRecord>,
     decisions: Vec<DecisionRecord>,
+    expected_tool_results: BTreeMap<&'static str, ExpectedToolResult>,
+    expected_previews: BTreeMap<&'static str, Value>,
 }
 
 impl ScenarioHarness {
@@ -401,6 +443,8 @@ impl ScenarioHarness {
             latest_preview_token: None,
             stream_records: Vec::new(),
             decisions: Vec::new(),
+            expected_tool_results: BTreeMap::new(),
+            expected_previews: BTreeMap::new(),
         }
     }
 
@@ -483,19 +527,19 @@ impl ScenarioHarness {
         continuation_call_id: Option<String>,
         observation: Observation,
     ) {
-        self.assert_typed_stream(&resolved, continuation_call_id.as_deref(), &observation);
+        let expected_tool_results =
+            self.assert_typed_stream(&resolved, continuation_call_id.as_deref(), &observation);
         let terminal = observation.terminal.as_ref().expect("terminal event");
         self.stream_records.push(StreamRecord {
             user_text: user_text.map(str::to_owned),
             turns: resolved,
-            tool_calls: observation.tool_calls,
-            tool_results: observation.tool_results,
             confirmation: observation.confirmation,
             terminal_status: terminal.status,
             terminal_message_id: terminal
                 .message_id
                 .clone()
                 .expect("persisted terminal message ID"),
+            expected_tool_results,
             continuation_call_id,
         });
     }
@@ -505,7 +549,7 @@ impl ScenarioHarness {
         turns: &[ResolvedTurn],
         continuation_call_id: Option<&str>,
         observation: &Observation,
-    ) {
+    ) -> BTreeMap<String, Value> {
         let conversation_id = observation
             .started_conversation_id
             .as_deref()
@@ -529,19 +573,16 @@ impl ScenarioHarness {
             })
             .collect::<Vec<_>>();
         assert_eq!(observation.tool_calls.len(), expected_calls.len());
-        for (actual, (id, name, arguments)) in observation.tool_calls.iter().zip(expected_calls) {
+        for (actual, (id, name, arguments)) in observation
+            .tool_calls
+            .iter()
+            .zip(expected_calls.iter().copied())
+        {
             assert_eq!(actual.conversation_id, conversation_id);
             assert_eq!(actual.user_message_id, user_message_id);
             assert_eq!(&actual.id, id);
             assert_eq!(&actual.name, name);
             assert_eq!(&actual.arguments, arguments);
-            validate_tool_result_shape(
-                &actual.name,
-                observation
-                    .tool_results
-                    .iter()
-                    .find(|r| r.call_id == actual.id),
-            );
         }
 
         let expected_deltas = turns
@@ -556,6 +597,7 @@ impl ScenarioHarness {
             "scripted delta content"
         );
 
+        let mut expected_tool_results = BTreeMap::new();
         for result in &observation.tool_results {
             assert_eq!(result.conversation_id, conversation_id);
             assert_eq!(result.user_message_id, user_message_id);
@@ -573,25 +615,28 @@ impl ScenarioHarness {
                 assert_eq!(pending.tool_call_id, result.call_id);
                 assert_eq!(pending.tool, result.tool);
             }
-            validate_tool_result_shape(&result.tool, Some(result));
-            if result.ok {
-                let payload = result.result.as_ref().expect("successful result payload");
-                match result.tool.as_str() {
-                    "submit_run" => {
-                        let run_id = payload["run_id"].as_str().expect("submitted run ID");
-                        assert!(self.api.core.get_run(run_id).is_ok());
-                    }
-                    "run_status" => {
-                        let call = observation
-                            .tool_calls
-                            .iter()
-                            .find(|call| call.id == result.call_id)
-                            .expect("run_status call");
-                        assert_eq!(payload["run_id"], call.arguments["run_id"]);
-                    }
-                    _ => {}
-                }
-            }
+            let call_arguments = expected_calls
+                .iter()
+                .find(|(id, _, _)| id.as_str() == result.call_id)
+                .map(|(_, _, arguments)| (*arguments).clone())
+                .or_else(|| {
+                    continuation_call_id
+                        .filter(|id| *id == result.call_id)
+                        .and_then(|_| {
+                            self.pending
+                                .as_ref()
+                                .map(|pending| pending.arguments.clone())
+                        })
+                });
+            let expected = self
+                .expected_tool_results
+                .get(result.call_id.as_str())
+                .unwrap_or_else(|| {
+                    panic!("missing declared result for tool call {}", result.call_id)
+                });
+            let normalized =
+                self.assert_expected_tool_result(result, call_arguments.as_ref(), expected);
+            expected_tool_results.insert(result.call_id.clone(), normalized);
         }
 
         if let Some(confirmation) = &observation.confirmation {
@@ -607,21 +652,15 @@ impl ScenarioHarness {
             assert_eq!(confirmation.tool, call.name);
             assert_eq!(confirmation.arguments, call.arguments);
             let preview = confirmation.preview.as_ref().expect("submit preview");
-            assert_eq!(preview["workflow_id"], call.arguments["workflow_id"]);
-            assert_eq!(
-                preview["workflow_revision"],
-                call.arguments["workflow_revision"]
-            );
-            assert_eq!(preview["preset"], call.arguments["preset"]);
-            assert_eq!(
-                preview["parameters"]["seed"],
-                call.arguments["parameters"]["seed"]
-            );
-            assert_eq!(
-                preview["parameters"]["steps"],
-                call.arguments["parameters"]["steps"]
-            );
+            let expected_preview = self
+                .expected_previews
+                .get(confirmation.tool_call_id.as_str())
+                .unwrap_or_else(|| {
+                    panic!("missing declared preview for {}", confirmation.tool_call_id)
+                });
+            assert_eq!(preview, expected_preview);
         }
+
         if let Some(confirmation_id) = observation.terminal_confirmation_id.as_deref() {
             assert_eq!(
                 confirmation_id,
@@ -639,6 +678,68 @@ impl ScenarioHarness {
             .message_id
             .as_deref()
             .is_some_and(|id| !id.is_empty()));
+        expected_tool_results
+    }
+
+    fn assert_expected_tool_result(
+        &self,
+        actual: &ObservedToolResult,
+        call_arguments: Option<&Value>,
+        expected: &ExpectedToolResult,
+    ) -> Value {
+        match expected {
+            ExpectedToolResult::Exact { ok, result, error } => {
+                assert_eq!(actual.ok, *ok);
+                assert_eq!(actual.result, *result);
+                assert_eq!(actual.error, *error);
+                if *ok {
+                    json!({"ok": true, "result": result.clone().unwrap()})
+                } else {
+                    json!({"ok": false, "error": error.clone().unwrap()})
+                }
+            }
+            ExpectedToolResult::SubmittedRun { status } => {
+                assert!(actual.ok);
+                assert!(actual.error.is_none());
+                let result = actual.result.as_ref().expect("submitted run result");
+                let run_id = result["run_id"].as_str().expect("submitted run ID");
+                assert!(!run_id.is_empty());
+                assert_eq!(result["status"], *status);
+                assert!(
+                    self.api.core.get_run(run_id).is_ok(),
+                    "run_id must link to persisted run"
+                );
+                json!({"ok": true, "result": {"run_id": run_id, "status": status}})
+            }
+            ExpectedToolResult::RunStatus {
+                status,
+                output_count,
+            } => {
+                assert!(actual.ok);
+                assert!(actual.error.is_none());
+                let result = actual.result.as_ref().expect("run status result");
+                let arguments = call_arguments.expect("run_status arguments");
+                assert_eq!(result["run_id"], arguments["run_id"]);
+                assert_eq!(result["status"], *status);
+                assert_eq!(
+                    result["outputs"].as_array().expect("outputs array").len(),
+                    *output_count
+                );
+                assert!(result["outputs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|output| output["run_id"] == result["run_id"]));
+                json!({
+                    "ok": true,
+                    "result": {
+                        "run_id": arguments["run_id"],
+                        "status": status,
+                        "output_count": output_count
+                    }
+                })
+            }
+        }
     }
 
     async fn execute(&mut self, scenario: &Scenario) {
@@ -652,6 +753,8 @@ impl ScenarioHarness {
     async fn execute_inner(&mut self, scenario: &Scenario) {
         assert_eq!(scenario.name, self.name);
         assert_eq!(scenario.supports_tools, self.supports_tools);
+        self.expected_tool_results = scenario.expected.tool_results.clone();
+        self.expected_previews = scenario.expected.previews.clone();
         for step in &scenario.steps {
             match step {
                 Step::Send {
@@ -735,11 +838,13 @@ impl ScenarioHarness {
             .preview_assistant_confirmation(
                 &self.conversation_id,
                 &pending.id,
-                &AssistantConfirmationPreviewRequest { arguments },
+                &AssistantConfirmationPreviewRequest {
+                    arguments: arguments.clone(),
+                },
             )
             .await
             .unwrap();
-        assert!(preview.preview.is_some());
+        assert_eq!(preview.preview, Some(run_preview(&arguments)));
         self.latest_preview_token = Some(preview.preview_token);
     }
 
@@ -961,6 +1066,52 @@ impl ScenarioHarness {
         }
     }
 
+    fn declared_tool_calls(&self) -> BTreeMap<String, (&str, &Value)> {
+        self.stream_records
+            .iter()
+            .flat_map(|record| record.turns.iter())
+            .filter_map(|turn| match turn {
+                ResolvedTurn::Tool {
+                    id,
+                    name,
+                    arguments,
+                } => Some((id.clone(), (name.as_str(), arguments))),
+                ResolvedTurn::Text(_) => None,
+            })
+            .collect()
+    }
+
+    fn normalise_persisted_tool_result(
+        &self,
+        call_id: &str,
+        actual_result: Option<Value>,
+        actual_error: Option<String>,
+        actual_ok: Option<bool>,
+    ) -> Value {
+        let (_, (tool, arguments)) = self
+            .declared_tool_calls()
+            .into_iter()
+            .find(|(id, _)| id == call_id)
+            .expect("persisted tool call must be declared");
+        let expected = self
+            .expected_tool_results
+            .get(call_id)
+            .expect("persisted tool result must be declared");
+        self.assert_expected_tool_result(
+            &ObservedToolResult {
+                conversation_id: self.conversation_id.clone(),
+                user_message_id: String::new(),
+                call_id: call_id.to_owned(),
+                tool: tool.to_owned(),
+                ok: actual_ok.expect("persisted tool result must record ok"),
+                result: actual_result,
+                error: actual_error,
+            },
+            Some(arguments),
+            expected,
+        )
+    }
+
     fn expected_persisted_messages(&self) -> (Vec<PersistedMessageSnapshot>, Vec<(usize, String)>) {
         let mut messages = Vec::new();
         let mut terminal_ids = Vec::new();
@@ -978,12 +1129,11 @@ impl ScenarioHarness {
                 });
             }
             if let Some(call_id) = &record.continuation_call_id {
-                let result = record
-                    .tool_results
-                    .iter()
-                    .find(|result| &result.call_id == call_id)
-                    .expect("continuation tool result");
-                messages.push(tool_message_snapshot(result));
+                let outcome = record
+                    .expected_tool_results
+                    .get(call_id)
+                    .expect("continuation expected tool result");
+                messages.push(tool_message_snapshot(call_id, outcome));
             }
             for turn in &record.turns {
                 match turn {
@@ -1012,12 +1162,11 @@ impl ScenarioHarness {
                             error: None,
                         });
                         if !awaiting {
-                            let result = record
-                                .tool_results
-                                .iter()
-                                .find(|result| result.call_id == *id)
-                                .expect("automatic tool result");
-                            messages.push(tool_message_snapshot(result));
+                            let outcome = record
+                                .expected_tool_results
+                                .get(id)
+                                .expect("automatic expected tool result");
+                            messages.push(tool_message_snapshot(id, outcome));
                         }
                     }
                     ResolvedTurn::Text(text) => messages.push(PersistedMessageSnapshot {
@@ -1082,12 +1231,29 @@ impl ScenarioHarness {
         let actual_snapshots = detail
             .messages
             .iter()
-            .map(|message| PersistedMessageSnapshot {
-                role: message.role,
-                status: message.status,
-                content: serde_json::to_value(&message.content).unwrap(),
-                tool_call_id: message.tool_call_id.clone(),
-                error: message.error.clone(),
+            .map(|message| {
+                let mut content = serde_json::to_value(&message.content).unwrap();
+                if message.role == AssistantMessageRole::Tool {
+                    let call_id = message.tool_call_id.as_deref().expect("tool call ID");
+                    let outcome = content["tool"]["result"].clone();
+                    let normalised = self.normalise_persisted_tool_result(
+                        call_id,
+                        outcome.get("result").cloned(),
+                        outcome
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        outcome.get("ok").and_then(Value::as_bool),
+                    );
+                    content["tool"]["result"] = normalised;
+                }
+                PersistedMessageSnapshot {
+                    role: message.role,
+                    status: message.status,
+                    content,
+                    tool_call_id: message.tool_call_id.clone(),
+                    error: message.error.clone(),
+                }
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -1151,18 +1317,13 @@ impl ScenarioHarness {
             })
             .collect::<Vec<_>>();
         assert_eq!(actual_audit, expected.audits, "{} audit rows", self.name);
-        let known_calls = self
-            .stream_records
-            .iter()
-            .flat_map(|record| record.tool_calls.iter())
-            .map(|call| (call.id.as_str(), call))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let known_calls = self.declared_tool_calls();
         let known_results = self
             .stream_records
             .iter()
-            .flat_map(|record| record.tool_results.iter())
-            .map(|result| (result.call_id.as_str(), result))
-            .collect::<std::collections::BTreeMap<_, _>>();
+            .flat_map(|record| record.expected_tool_results.iter())
+            .map(|(id, result)| (id.clone(), result.clone()))
+            .collect::<BTreeMap<_, _>>();
         let confirmations = self
             .stream_records
             .iter()
@@ -1170,38 +1331,64 @@ impl ScenarioHarness {
             .map(|confirmation| (confirmation.id.as_str(), confirmation))
             .collect::<std::collections::BTreeMap<_, _>>();
         for row in &audit {
-            let call = known_calls
-                .get(row.tool_call_id.as_str())
-                .expect("audit call must link to a scripted SSE call");
-            assert_eq!(row.tool, call.name);
-            assert_eq!(row.proposed_arguments, call.arguments);
+            let (call_name, call_arguments) = known_calls
+                .get(&row.tool_call_id)
+                .expect("audit call must link to a declared tool call");
+            assert_eq!(row.tool, *call_name);
+            assert_eq!(row.proposed_arguments, **call_arguments);
+            if row.invocation_ok.is_some() {
+                let actual_outcome = self.normalise_persisted_tool_result(
+                    &row.tool_call_id,
+                    row.invocation_result.clone(),
+                    row.invocation_error.clone(),
+                    row.invocation_ok,
+                );
+                assert_eq!(actual_outcome, known_results[&row.tool_call_id]);
+            }
             match row.decision.as_str() {
                 "automatic" => {
-                    let result = known_results[call.id.as_str()];
+                    let outcome = &known_results[&row.tool_call_id];
                     assert_eq!(row.validation_outcome, "valid");
                     assert!(row.validation_error.is_none());
-                    assert_eq!(row.effective_arguments, Some(call.arguments.clone()));
+                    assert_eq!(row.effective_arguments, Some((*call_arguments).clone()));
                     assert!(row.decided_by.is_none());
-                    assert_eq!(row.invocation_ok, Some(result.ok));
-                    assert_eq!(row.invocation_result, result.result);
-                    assert_eq!(row.invocation_error, result.error);
+                    assert_eq!(row.invocation_ok, outcome["ok"].as_bool());
+                    assert_eq!(
+                        row.invocation_error,
+                        outcome
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    );
                     assert!(row.confirmation_id.is_none());
                 }
                 "not_invoked" => {
-                    let result = known_results[call.id.as_str()];
+                    let outcome = &known_results[&row.tool_call_id];
                     assert_eq!(row.validation_outcome, "invalid");
-                    assert_eq!(row.validation_error, result.error);
+                    assert_eq!(
+                        row.validation_error,
+                        outcome
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    );
                     assert_eq!(row.invocation_ok, Some(false));
                     assert!(row.effective_arguments.is_none());
                     assert!(row.decided_by.is_none());
                     assert!(row.invocation_result.is_none());
-                    assert_eq!(row.invocation_error, result.error);
+                    assert_eq!(
+                        row.invocation_error,
+                        outcome
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    );
                     assert!(row.confirmation_id.is_none());
                 }
                 "pending" => {
                     let confirmation = confirmations
                         .values()
-                        .find(|confirmation| confirmation.tool_call_id == call.id)
+                        .find(|confirmation| confirmation.tool_call_id == row.tool_call_id)
                         .expect("pending confirmation");
                     assert_eq!(
                         row.confirmation_id.as_deref(),
@@ -1219,7 +1406,7 @@ impl ScenarioHarness {
                         .as_deref()
                         .expect("decision audit confirmation ID");
                     let confirmation = confirmations[confirmation_id];
-                    assert_eq!(confirmation.tool_call_id, call.id);
+                    assert_eq!(confirmation.tool_call_id, row.tool_call_id);
                     let decision = self
                         .decisions
                         .iter()
@@ -1245,10 +1432,15 @@ impl ScenarioHarness {
                         "invocation_succeeded" => {
                             assert!(matches!(decision.decision, "confirm" | "edit"));
                             assert_eq!(row.decided_by.as_deref(), Some("runtime"));
-                            let result = known_results[call.id.as_str()];
+                            let outcome = &known_results[&row.tool_call_id];
                             assert_eq!(row.invocation_ok, Some(true));
-                            assert_eq!(row.invocation_result, result.result);
-                            assert_eq!(row.invocation_error, result.error);
+                            assert_eq!(
+                                row.invocation_error,
+                                outcome
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                            );
                         }
                         _ => unreachable!(),
                     }
@@ -1451,67 +1643,73 @@ fn record_event(observation: &mut Observation, event: AssistantStreamEvent) {
     }
 }
 
-fn tool_message_snapshot(result: &ObservedToolResult) -> PersistedMessageSnapshot {
-    let outcome = if result.ok {
-        json!({"ok": true, "result": result.result})
-    } else {
-        json!({"ok": false, "error": result.error})
-    };
+fn tool_message_snapshot(call_id: &str, outcome: &Value) -> PersistedMessageSnapshot {
     PersistedMessageSnapshot {
         role: AssistantMessageRole::Tool,
         status: AssistantMessageStatus::Complete,
         content: serde_json::to_value(AssistantChatMessage::Tool {
-            call_id: result.call_id.clone(),
-            result: outcome,
+            call_id: call_id.to_owned(),
+            result: outcome.clone(),
         })
         .unwrap(),
-        tool_call_id: Some(result.call_id.clone()),
+        tool_call_id: Some(call_id.to_owned()),
         error: None,
     }
 }
 
-fn validate_tool_result_shape(tool: &str, observed: Option<&ObservedToolResult>) {
-    let Some(observed) = observed else {
-        return;
+fn workflow_list_result(revision: &str) -> Value {
+    json!({
+        "workflows": [{
+            "id": "contract-workflow",
+            "name": "Contract workflow",
+            "description": null,
+            "tags": [],
+            "revision": revision
+        }],
+        "truncated": false
+    })
+}
+
+fn inspect_workflow_result(revision: &str) -> Value {
+    let common = |kind: &str, required: bool| {
+        json!({
+            "type": kind,
+            "required": required,
+            "description": "",
+            "default": null,
+            "allowed_values": null,
+            "minimum": null,
+            "maximum": null,
+            "widget": null,
+            "step": null,
+            "options": null,
+            "group": null,
+            "advanced": null,
+            "placeholder": null,
+            "user_supplied": false
+        })
     };
-    assert_eq!(observed.tool, tool);
-    if observed.ok {
-        assert!(observed.error.is_none());
-        let result = observed.result.as_ref().expect("successful result payload");
-        match tool {
-            "list_workflows" => {
-                assert!(result["workflows"].is_array());
-                assert!(result["truncated"].is_boolean());
-            }
-            "inspect_workflow" => {
-                assert_eq!(result["workflow_id"], "contract-workflow");
-                assert!(result["revision"].is_string());
-                assert!(result["parameters"].is_object());
-            }
-            "propose_run" => {
-                assert_eq!(result["workflow_id"], "contract-workflow");
-                assert!(result["workflow_revision"].is_string());
-                assert!(result["parameters"].is_object());
-                assert_eq!(result["issues"], json!([]));
-            }
-            "submit_run" => {
-                assert!(result["run_id"].as_str().is_some_and(|id| !id.is_empty()));
-                assert!(result["status"].is_string());
-            }
-            "run_status" => {
-                assert!(result["run_id"].as_str().is_some_and(|id| !id.is_empty()));
-                assert_eq!(result["status"], "completed");
-                assert!(result["outputs"].is_array());
-            }
-            other => panic!("unexpected tool result for {other}"),
-        }
-    } else {
-        assert!(observed.result.is_none());
-        assert!(observed
-            .error
-            .as_deref()
-            .is_some_and(|error| !error.is_empty()));
-    }
+    let mut seed = common("seed", true);
+    let mut steps = common("integer", true);
+    seed["minimum"] = Value::Null;
+    steps["minimum"] = json!(1);
+    steps["maximum"] = json!(100);
+    json!({
+        "workflow_id": "contract-workflow",
+        "revision": revision,
+        "parameters": {"seed": seed, "steps": steps},
+        "presets": {"fast": {"seed": 42, "steps": 10}}
+    })
+}
+
+fn run_preview(arguments: &Value) -> Value {
+    json!({
+        "workflow_id": arguments["workflow_id"],
+        "workflow_revision": arguments["workflow_revision"],
+        "preset": arguments["preset"],
+        "parameters": arguments["parameters"],
+        "issues": []
+    })
 }
 
 fn models_response(supports_tools: bool) -> Value {
@@ -1545,468 +1743,642 @@ fn assert_problem_detail(error: Error, status: StatusCode, detail: &str) {
     }
 }
 
+async fn run_scripted_scenario<F>(name: &'static str, test: F)
+where
+    F: Future<Output = ()>,
+{
+    timeout(SCENARIO_TIMEOUT, test)
+        .await
+        .unwrap_or_else(|_| panic!("scenario '{name}' exceeded {SCENARIO_TIMEOUT:?}"));
+}
+
 fn confirmed_messages(turns: usize) -> Vec<ExpectedMessage> {
     ExpectedMessage::sequence(turns, AssistantMessageStatus::Complete)
 }
 
 #[tokio::test]
 async fn multi_step_tools_require_confirmation_then_check_run_status() {
-    let mut harness = ScenarioHarness::start("multi-step tool use", true).await;
-    let arguments = harness.run_arguments(17, 6);
-    let scenario = Scenario {
-        name: "multi-step tool use",
-        supports_tools: true,
-        steps: vec![
-            Step::Send {
-                text: "choose and prepare the workflow",
-                turns: vec![
-                    ModelTurn::Tool {
-                        id: "list",
-                        name: "list_workflows",
-                        arguments: Arguments::Exact(json!({})),
+    run_scripted_scenario(
+        "multi_step_tools_require_confirmation_then_check_run_status",
+        async {
+            let mut harness = ScenarioHarness::start("multi-step tool use", true).await;
+            let arguments = harness.run_arguments(17, 6);
+            let scenario = Scenario {
+                name: "multi-step tool use",
+                supports_tools: true,
+                steps: vec![
+                    Step::Send {
+                        text: "choose and prepare the workflow",
+                        turns: vec![
+                            ModelTurn::Tool {
+                                id: "list",
+                                name: "list_workflows",
+                                arguments: Arguments::Exact(json!({})),
+                            },
+                            ModelTurn::Tool {
+                                id: "inspect",
+                                name: "inspect_workflow",
+                                arguments: Arguments::Exact(
+                                    json!({"workflow_id": "contract-workflow"}),
+                                ),
+                            },
+                            ModelTurn::Tool {
+                                id: "propose",
+                                name: "propose_run",
+                                arguments: Arguments::Exact(arguments.clone()),
+                            },
+                            ModelTurn::Tool {
+                                id: "submit",
+                                name: "submit_run",
+                                arguments: Arguments::Exact(arguments.clone()),
+                            },
+                        ],
+                        outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
+                            "message_started",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "confirmation_required",
+                            "awaiting_confirmation",
+                        ])),
                     },
-                    ModelTurn::Tool {
-                        id: "inspect",
-                        name: "inspect_workflow",
-                        arguments: Arguments::Exact(json!({"workflow_id": "contract-workflow"})),
+                    Step::Confirm {
+                        turns: vec![ModelTurn::Text("submitted for confirmation")],
+                        outcome: ExpectedStream::done(&[
+                            "message_started",
+                            "tool_result",
+                            "delta",
+                            "done",
+                        ]),
                     },
-                    ModelTurn::Tool {
-                        id: "propose",
-                        name: "propose_run",
-                        arguments: Arguments::Exact(arguments.clone()),
-                    },
-                    ModelTurn::Tool {
-                        id: "submit",
-                        name: "submit_run",
-                        arguments: Arguments::Exact(arguments),
+                    Step::CompleteBackend,
+                    Step::Send {
+                        text: "check the run",
+                        turns: vec![
+                            ModelTurn::Tool {
+                                id: "status",
+                                name: "run_status",
+                                arguments: Arguments::LastRun,
+                            },
+                            ModelTurn::Text("run completed"),
+                        ],
+                        outcome: SendOutcome::Stream(ExpectedStream::done(&[
+                            "message_started",
+                            "tool_call",
+                            "tool_result",
+                            "delta",
+                            "done",
+                        ])),
                     },
                 ],
-                outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
-                    "message_started",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "confirmation_required",
-                    "awaiting_confirmation",
-                ])),
-            },
-            Step::Confirm {
-                turns: vec![ModelTurn::Text("submitted for confirmation")],
-                outcome: ExpectedStream::done(&["message_started", "tool_result", "delta", "done"]),
-            },
-            Step::CompleteBackend,
-            Step::Send {
-                text: "check the run",
-                turns: vec![
-                    ModelTurn::Tool {
-                        id: "status",
-                        name: "run_status",
-                        arguments: Arguments::LastRun,
-                    },
-                    ModelTurn::Text("run completed"),
-                ],
-                outcome: SendOutcome::Stream(ExpectedStream::done(&[
-                    "message_started",
-                    "tool_call",
-                    "tool_result",
-                    "delta",
-                    "done",
-                ])),
-            },
-        ],
-        expected: ExpectedFinal {
-            messages: [
-                vec![
-                    ExpectedMessage::user(),
-                    ExpectedMessage::assistant(),
-                    ExpectedMessage::tool(),
-                    ExpectedMessage::assistant(),
-                    ExpectedMessage::tool(),
-                    ExpectedMessage::assistant(),
-                    ExpectedMessage::tool(),
-                    ExpectedMessage::assistant(),
-                    ExpectedMessage::tool(),
-                    ExpectedMessage::assistant(),
-                ],
-                vec![
-                    ExpectedMessage::user(),
-                    ExpectedMessage::assistant(),
-                    ExpectedMessage::tool(),
-                    ExpectedMessage::assistant(),
-                ],
-            ]
-            .concat(),
-            audits: vec![
-                ExpectedAudit::automatic("list_workflows", true),
-                ExpectedAudit::automatic("inspect_workflow", true),
-                ExpectedAudit::automatic("propose_run", true),
-                ExpectedAudit::decision("submit_run", "pending", None, "succeeded"),
-                ExpectedAudit::decision("submit_run", "invocation_started", None, "succeeded"),
-                ExpectedAudit::decision(
-                    "submit_run",
-                    "invocation_succeeded",
-                    Some(true),
-                    "succeeded",
-                ),
-                ExpectedAudit::automatic("run_status", true),
-            ],
-            prompt_calls: 1,
-            runs: 1,
+                expected: ExpectedFinal {
+                    messages: [
+                        vec![
+                            ExpectedMessage::user(),
+                            ExpectedMessage::assistant(),
+                            ExpectedMessage::tool(),
+                            ExpectedMessage::assistant(),
+                            ExpectedMessage::tool(),
+                            ExpectedMessage::assistant(),
+                            ExpectedMessage::tool(),
+                            ExpectedMessage::assistant(),
+                            ExpectedMessage::tool(),
+                            ExpectedMessage::assistant(),
+                        ],
+                        vec![
+                            ExpectedMessage::user(),
+                            ExpectedMessage::assistant(),
+                            ExpectedMessage::tool(),
+                            ExpectedMessage::assistant(),
+                        ],
+                    ]
+                    .concat(),
+                    audits: vec![
+                        ExpectedAudit::automatic("list_workflows", true),
+                        ExpectedAudit::automatic("inspect_workflow", true),
+                        ExpectedAudit::automatic("propose_run", true),
+                        ExpectedAudit::decision("submit_run", "pending", None, "succeeded"),
+                        ExpectedAudit::decision(
+                            "submit_run",
+                            "invocation_started",
+                            None,
+                            "succeeded",
+                        ),
+                        ExpectedAudit::decision(
+                            "submit_run",
+                            "invocation_succeeded",
+                            Some(true),
+                            "succeeded",
+                        ),
+                        ExpectedAudit::automatic("run_status", true),
+                    ],
+                    tool_results: BTreeMap::from([
+                        (
+                            "list",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "inspect",
+                            ExpectedToolResult::success(inspect_workflow_result(&harness.revision)),
+                        ),
+                        (
+                            "propose",
+                            ExpectedToolResult::success(run_preview(&arguments)),
+                        ),
+                        (
+                            "submit",
+                            ExpectedToolResult::SubmittedRun { status: "queued" },
+                        ),
+                        (
+                            "status",
+                            ExpectedToolResult::RunStatus {
+                                status: "completed",
+                                output_count: 1,
+                            },
+                        ),
+                    ]),
+                    previews: BTreeMap::from([("submit", run_preview(&arguments))]),
+                    prompt_calls: 1,
+                    runs: 1,
+                },
+            };
+            harness.execute(&scenario).await;
         },
-    };
-    harness.execute(&scenario).await;
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn invalid_arguments_are_returned_to_the_model_and_never_executed() {
-    let mut harness = ScenarioHarness::start("invalid arguments", true).await;
-    let scenario = Scenario {
-        name: "invalid arguments",
-        supports_tools: true,
-        steps: vec![Step::Send {
-            text: "inspect with an invalid request",
-            turns: vec![
-                ModelTurn::Tool {
-                    id: "invalid",
-                    name: "inspect_workflow",
-                    arguments: Arguments::Exact(json!({"workflow_id": 7})),
+    run_scripted_scenario(
+        "invalid_arguments_are_returned_to_the_model_and_never_executed",
+        async {
+            let mut harness = ScenarioHarness::start("invalid arguments", true).await;
+            let scenario = Scenario {
+                name: "invalid arguments",
+                supports_tools: true,
+                steps: vec![Step::Send {
+                    text: "inspect with an invalid request",
+                    turns: vec![
+                        ModelTurn::Tool {
+                            id: "invalid",
+                            name: "inspect_workflow",
+                            arguments: Arguments::Exact(json!({"workflow_id": 7})),
+                        },
+                        ModelTurn::Text("I handled the validation error"),
+                    ],
+                    outcome: SendOutcome::Stream(ExpectedStream::done(&[
+                        "message_started",
+                        "tool_call",
+                        "tool_result",
+                        "delta",
+                        "done",
+                    ])),
+                }],
+                expected: ExpectedFinal {
+                    messages: confirmed_messages(1),
+                    audits: vec![ExpectedAudit::invalid("inspect_workflow")],
+                    tool_results: BTreeMap::from([(
+                        "invalid",
+                        ExpectedToolResult::error("$.workflow_id: expected string"),
+                    )]),
+                    previews: BTreeMap::new(),
+                    prompt_calls: 0,
+                    runs: 0,
                 },
-                ModelTurn::Text("I handled the validation error"),
-            ],
-            outcome: SendOutcome::Stream(ExpectedStream::done(&[
-                "message_started",
-                "tool_call",
-                "tool_result",
-                "delta",
-                "done",
-            ])),
-        }],
-        expected: ExpectedFinal {
-            messages: confirmed_messages(1),
-            audits: vec![ExpectedAudit::invalid("inspect_workflow")],
-            prompt_calls: 0,
-            runs: 0,
+            };
+            harness.execute(&scenario).await;
+            let requests = harness.llm.recorded_requests();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message["role"] == "tool"
+                        && message["tool_call_id"] == "invalid"
+                        && message["content"]
+                            .as_str()
+                            .is_some_and(|content| content.contains("expected string"))
+                }));
         },
-    };
-    harness.execute(&scenario).await;
-    let requests = harness.llm.recorded_requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1]["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|message| {
-            message["role"] == "tool"
-                && message["tool_call_id"] == "invalid"
-                && message["content"]
-                    .as_str()
-                    .is_some_and(|content| content.contains("expected string"))
-        }));
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn rejecting_confirmation_creates_no_run() {
-    let mut harness = ScenarioHarness::start("confirmation reject", true).await;
-    let arguments = harness.run_arguments(21, 8);
-    let scenario = Scenario {
-        name: "confirmation reject",
-        supports_tools: true,
-        steps: vec![
-            Step::Send {
-                text: "prepare a run",
-                turns: vec![ModelTurn::Tool {
-                    id: "submit-reject",
-                    name: "submit_run",
-                    arguments: Arguments::Exact(arguments),
-                }],
-                outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
-                    "message_started",
-                    "tool_call",
-                    "confirmation_required",
-                    "awaiting_confirmation",
-                ])),
-            },
-            Step::Reject {
-                turns: vec![ModelTurn::Text("the run was rejected")],
-                outcome: ExpectedStream::done(&["message_started", "tool_result", "delta", "done"]),
-            },
-        ],
-        expected: ExpectedFinal {
-            messages: vec![
-                ExpectedMessage::user(),
-                ExpectedMessage::assistant(),
-                ExpectedMessage::tool(),
-                ExpectedMessage::assistant(),
+    run_scripted_scenario("rejecting_confirmation_creates_no_run", async {
+        let mut harness = ScenarioHarness::start("confirmation reject", true).await;
+        let arguments = harness.run_arguments(21, 8);
+        let scenario = Scenario {
+            name: "confirmation reject",
+            supports_tools: true,
+            steps: vec![
+                Step::Send {
+                    text: "prepare a run",
+                    turns: vec![ModelTurn::Tool {
+                        id: "submit-reject",
+                        name: "submit_run",
+                        arguments: Arguments::Exact(arguments.clone()),
+                    }],
+                    outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
+                        "message_started",
+                        "tool_call",
+                        "confirmation_required",
+                        "awaiting_confirmation",
+                    ])),
+                },
+                Step::Reject {
+                    turns: vec![ModelTurn::Text("the run was rejected")],
+                    outcome: ExpectedStream::done(&[
+                        "message_started",
+                        "tool_result",
+                        "delta",
+                        "done",
+                    ]),
+                },
             ],
-            audits: vec![
-                ExpectedAudit::decision("submit_run", "pending", None, "rejected"),
-                ExpectedAudit::decision("submit_run", "rejected", None, "rejected"),
-            ],
-            prompt_calls: 0,
-            runs: 0,
-        },
-    };
-    harness.execute(&scenario).await;
+            expected: ExpectedFinal {
+                messages: vec![
+                    ExpectedMessage::user(),
+                    ExpectedMessage::assistant(),
+                    ExpectedMessage::tool(),
+                    ExpectedMessage::assistant(),
+                ],
+                audits: vec![
+                    ExpectedAudit::decision("submit_run", "pending", None, "rejected"),
+                    ExpectedAudit::decision("submit_run", "rejected", None, "rejected"),
+                ],
+                tool_results: BTreeMap::from([(
+                    "submit-reject",
+                    ExpectedToolResult::error(
+                        "The user rejected tool 'submit_run'. Reason: declined by scenario",
+                    ),
+                )]),
+                previews: BTreeMap::from([("submit-reject", run_preview(&arguments))]),
+                prompt_calls: 0,
+                runs: 0,
+            },
+        };
+        harness.execute(&scenario).await;
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn the_tool_loop_guard_terminates_with_a_failed_state() {
-    let mut harness = ScenarioHarness::start("loop guard", true).await;
-    let turns = (0..8)
-        .map(|index| ModelTurn::Tool {
-            id: match index {
-                0 => "loop-0",
-                1 => "loop-1",
-                2 => "loop-2",
-                3 => "loop-3",
-                4 => "loop-4",
-                5 => "loop-5",
-                6 => "loop-6",
-                _ => "loop-7",
-            },
-            name: "list_workflows",
-            arguments: Arguments::Exact(json!({})),
-        })
-        .collect();
-    let scenario = Scenario {
-        name: "loop guard",
-        supports_tools: true,
-        steps: vec![Step::Send {
-            text: "keep using tools",
-            turns,
-            outcome: SendOutcome::Stream(ExpectedStream::error(
-                &[
-                    "message_started",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "tool_call",
-                    "tool_result",
-                    "error",
-                ],
-                AssistantMessageStatus::Failed,
-            )),
-        }],
-        expected: ExpectedFinal {
-            messages: ExpectedMessage::sequence(8, AssistantMessageStatus::Failed),
-            audits: (0..8)
-                .map(|_| ExpectedAudit::automatic("list_workflows", true))
-                .collect(),
-            prompt_calls: 0,
-            runs: 0,
+    run_scripted_scenario(
+        "the_tool_loop_guard_terminates_with_a_failed_state",
+        async {
+            let mut harness = ScenarioHarness::start("loop guard", true).await;
+            let turns = (0..8)
+                .map(|index| ModelTurn::Tool {
+                    id: match index {
+                        0 => "loop-0",
+                        1 => "loop-1",
+                        2 => "loop-2",
+                        3 => "loop-3",
+                        4 => "loop-4",
+                        5 => "loop-5",
+                        6 => "loop-6",
+                        _ => "loop-7",
+                    },
+                    name: "list_workflows",
+                    arguments: Arguments::Exact(json!({})),
+                })
+                .collect();
+            let scenario = Scenario {
+                name: "loop guard",
+                supports_tools: true,
+                steps: vec![Step::Send {
+                    text: "keep using tools",
+                    turns,
+                    outcome: SendOutcome::Stream(ExpectedStream::error(
+                        &[
+                            "message_started",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "tool_call",
+                            "tool_result",
+                            "error",
+                        ],
+                        AssistantMessageStatus::Failed,
+                    )),
+                }],
+                expected: ExpectedFinal {
+                    messages: ExpectedMessage::sequence(8, AssistantMessageStatus::Failed),
+                    audits: (0..8)
+                        .map(|_| ExpectedAudit::automatic("list_workflows", true))
+                        .collect(),
+                    tool_results: BTreeMap::from([
+                        (
+                            "loop-0",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-1",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-2",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-3",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-4",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-5",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-6",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                        (
+                            "loop-7",
+                            ExpectedToolResult::success(workflow_list_result(&harness.revision)),
+                        ),
+                    ]),
+                    previews: BTreeMap::new(),
+                    prompt_calls: 0,
+                    runs: 0,
+                },
+            };
+            harness.execute(&scenario).await;
+            let detail = harness
+                .client
+                .assistant_conversation(
+                    &harness.conversation_id,
+                    &AssistantConversationDetailQuery::default(),
+                )
+                .await
+                .unwrap();
+            assert!(detail
+                .messages
+                .last()
+                .unwrap()
+                .error
+                .as_deref()
+                .is_some_and(|error| { error.contains("maximum of 8 model steps") }));
         },
-    };
-    harness.execute(&scenario).await;
-    let detail = harness
-        .client
-        .assistant_conversation(
-            &harness.conversation_id,
-            &AssistantConversationDetailQuery::default(),
-        )
-        .await
-        .unwrap();
-    assert!(detail
-        .messages
-        .last()
-        .unwrap()
-        .error
-        .as_deref()
-        .is_some_and(|error| { error.contains("maximum of 8 model steps") }));
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn edit_uses_a_fresh_preview_token_and_exact_edited_values() {
-    let mut harness = ScenarioHarness::start("preview edit", true).await;
-    let original = harness.run_arguments(31, 10);
-    let edited = harness.run_arguments(41, 12);
-    let scenario = Scenario {
-        name: "preview edit",
-        supports_tools: true,
-        steps: vec![
-            Step::Send {
-                text: "prepare the original run",
-                turns: vec![ModelTurn::Tool {
-                    id: "submit-edit",
-                    name: "submit_run",
-                    arguments: Arguments::Exact(original),
-                }],
-                outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
-                    "message_started",
-                    "tool_call",
-                    "confirmation_required",
-                    "awaiting_confirmation",
-                ])),
-            },
-            Step::Preview {
-                arguments: edited.clone(),
-            },
-            Step::Edit {
-                arguments: edited.clone(),
-                turns: vec![ModelTurn::Text("edited run submitted")],
-                outcome: ExpectedStream::done(&["message_started", "tool_result", "delta", "done"]),
-            },
-        ],
-        expected: ExpectedFinal {
-            messages: vec![
-                ExpectedMessage::user(),
-                ExpectedMessage::assistant(),
-                ExpectedMessage::tool(),
-                ExpectedMessage::assistant(),
-            ],
-            audits: vec![
-                ExpectedAudit::decision("submit_run", "pending", None, "succeeded"),
-                ExpectedAudit::decision("submit_run", "invocation_started", None, "succeeded"),
-                ExpectedAudit::decision(
-                    "submit_run",
-                    "invocation_succeeded",
-                    Some(true),
-                    "succeeded",
-                ),
-            ],
-            prompt_calls: 1,
-            runs: 1,
+    run_scripted_scenario(
+        "edit_uses_a_fresh_preview_token_and_exact_edited_values",
+        async {
+            let mut harness = ScenarioHarness::start("preview edit", true).await;
+            let original = harness.run_arguments(31, 10);
+            let edited = harness.run_arguments(41, 12);
+            let scenario = Scenario {
+                name: "preview edit",
+                supports_tools: true,
+                steps: vec![
+                    Step::Send {
+                        text: "prepare the original run",
+                        turns: vec![ModelTurn::Tool {
+                            id: "submit-edit",
+                            name: "submit_run",
+                            arguments: Arguments::Exact(original.clone()),
+                        }],
+                        outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
+                            "message_started",
+                            "tool_call",
+                            "confirmation_required",
+                            "awaiting_confirmation",
+                        ])),
+                    },
+                    Step::Preview {
+                        arguments: edited.clone(),
+                    },
+                    Step::Edit {
+                        arguments: edited.clone(),
+                        turns: vec![ModelTurn::Text("edited run submitted")],
+                        outcome: ExpectedStream::done(&[
+                            "message_started",
+                            "tool_result",
+                            "delta",
+                            "done",
+                        ]),
+                    },
+                ],
+                expected: ExpectedFinal {
+                    messages: vec![
+                        ExpectedMessage::user(),
+                        ExpectedMessage::assistant(),
+                        ExpectedMessage::tool(),
+                        ExpectedMessage::assistant(),
+                    ],
+                    audits: vec![
+                        ExpectedAudit::decision("submit_run", "pending", None, "succeeded"),
+                        ExpectedAudit::decision(
+                            "submit_run",
+                            "invocation_started",
+                            None,
+                            "succeeded",
+                        ),
+                        ExpectedAudit::decision(
+                            "submit_run",
+                            "invocation_succeeded",
+                            Some(true),
+                            "succeeded",
+                        ),
+                    ],
+                    tool_results: BTreeMap::from([(
+                        "submit-edit",
+                        ExpectedToolResult::SubmittedRun { status: "queued" },
+                    )]),
+                    previews: BTreeMap::from([("submit-edit", run_preview(&original))]),
+                    prompt_calls: 1,
+                    runs: 1,
+                },
+            };
+            harness.execute(&scenario).await;
+            let graph = harness
+                .api
+                .fake
+                .submitted_graph
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap();
+            assert_eq!(graph["3"]["inputs"]["seed"], edited["parameters"]["seed"]);
+            assert_eq!(graph["3"]["inputs"]["steps"], edited["parameters"]["steps"]);
+            let run = harness.api.core.list_runs(10).unwrap().pop().unwrap();
+            assert_eq!(run.parameters, edited["parameters"]);
         },
-    };
-    harness.execute(&scenario).await;
-    let graph = harness
-        .api
-        .fake
-        .submitted_graph
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap();
-    assert_eq!(graph["3"]["inputs"]["seed"], edited["parameters"]["seed"]);
-    assert_eq!(graph["3"]["inputs"]["steps"], edited["parameters"]["steps"]);
-    let run = harness.api.core.list_runs(10).unwrap().pop().unwrap();
-    assert_eq!(run.parameters, edited["parameters"]);
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn stale_preview_token_is_refused_and_confirmation_stays_pending() {
-    let mut harness = ScenarioHarness::start("stale preview", true).await;
-    let original = harness.run_arguments(51, 14);
-    let edited = harness.run_arguments(52, 16);
-    let scenario = Scenario {
-        name: "stale preview",
-        supports_tools: true,
-        steps: vec![
-            Step::Send {
-                text: "prepare a run to edit",
-                turns: vec![ModelTurn::Tool {
-                    id: "submit-stale",
-                    name: "submit_run",
-                    arguments: Arguments::Exact(original),
-                }],
-                outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
-                    "message_started",
-                    "tool_call",
-                    "confirmation_required",
-                    "awaiting_confirmation",
-                ])),
-            },
-            Step::Preview {
-                arguments: edited.clone(),
-            },
-            Step::StaleEdit {
-                arguments: edited.clone(),
-                status: StatusCode::UNPROCESSABLE_ENTITY,
-            },
-            Step::Preview { arguments: edited },
-            Step::Reject {
-                turns: vec![ModelTurn::Text("stale edit safely rejected")],
-                outcome: ExpectedStream::done(&["message_started", "tool_result", "delta", "done"]),
-            },
-        ],
-        expected: ExpectedFinal {
-            messages: vec![
-                ExpectedMessage::user(),
-                ExpectedMessage::assistant(),
-                ExpectedMessage::tool(),
-                ExpectedMessage::assistant(),
-            ],
-            audits: vec![
-                ExpectedAudit::decision("submit_run", "pending", None, "rejected"),
-                ExpectedAudit::decision("submit_run", "rejected", None, "rejected"),
-            ],
-            prompt_calls: 0,
-            runs: 0,
+    run_scripted_scenario(
+        "stale_preview_token_is_refused_and_confirmation_stays_pending",
+        async {
+            let mut harness = ScenarioHarness::start("stale preview", true).await;
+            let original = harness.run_arguments(51, 14);
+            let edited = harness.run_arguments(52, 16);
+            let scenario = Scenario {
+                name: "stale preview",
+                supports_tools: true,
+                steps: vec![
+                    Step::Send {
+                        text: "prepare a run to edit",
+                        turns: vec![ModelTurn::Tool {
+                            id: "submit-stale",
+                            name: "submit_run",
+                            arguments: Arguments::Exact(original.clone()),
+                        }],
+                        outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
+                            "message_started",
+                            "tool_call",
+                            "confirmation_required",
+                            "awaiting_confirmation",
+                        ])),
+                    },
+                    Step::Preview {
+                        arguments: edited.clone(),
+                    },
+                    Step::StaleEdit {
+                        arguments: edited.clone(),
+                        status: StatusCode::UNPROCESSABLE_ENTITY,
+                    },
+                    Step::Preview { arguments: edited },
+                    Step::Reject {
+                        turns: vec![ModelTurn::Text("stale edit safely rejected")],
+                        outcome: ExpectedStream::done(&[
+                            "message_started",
+                            "tool_result",
+                            "delta",
+                            "done",
+                        ]),
+                    },
+                ],
+                expected: ExpectedFinal {
+                    messages: vec![
+                        ExpectedMessage::user(),
+                        ExpectedMessage::assistant(),
+                        ExpectedMessage::tool(),
+                        ExpectedMessage::assistant(),
+                    ],
+                    audits: vec![
+                        ExpectedAudit::decision("submit_run", "pending", None, "rejected"),
+                        ExpectedAudit::decision("submit_run", "rejected", None, "rejected"),
+                    ],
+                    tool_results: BTreeMap::from([(
+                        "submit-stale",
+                        ExpectedToolResult::error(
+                            "The user rejected tool 'submit_run'. Reason: declined by scenario",
+                        ),
+                    )]),
+                    previews: BTreeMap::from([("submit-stale", run_preview(&original))]),
+                    prompt_calls: 0,
+                    runs: 0,
+                },
+            };
+            harness.execute(&scenario).await;
         },
-    };
-    harness.execute(&scenario).await;
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn double_confirm_creates_exactly_one_run() {
-    let mut harness = ScenarioHarness::start("double confirm", true).await;
-    let arguments = harness.run_arguments(61, 18);
-    let scenario = Scenario {
-        name: "double confirm",
-        supports_tools: true,
-        steps: vec![
-            Step::Send {
-                text: "prepare one run",
-                turns: vec![ModelTurn::Tool {
-                    id: "submit-twice",
-                    name: "submit_run",
-                    arguments: Arguments::Exact(arguments),
-                }],
-                outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
-                    "message_started",
-                    "tool_call",
-                    "confirmation_required",
-                    "awaiting_confirmation",
-                ])),
-            },
-            Step::Confirm {
-                turns: vec![ModelTurn::Text("the run was confirmed once")],
-                outcome: ExpectedStream::done(&["message_started", "tool_result", "delta", "done"]),
-            },
-            Step::ConfirmAgain {
-                status: StatusCode::CONFLICT,
-            },
-        ],
-        expected: ExpectedFinal {
-            messages: vec![
-                ExpectedMessage::user(),
-                ExpectedMessage::assistant(),
-                ExpectedMessage::tool(),
-                ExpectedMessage::assistant(),
+    run_scripted_scenario("double_confirm_creates_exactly_one_run", async {
+        let mut harness = ScenarioHarness::start("double confirm", true).await;
+        let arguments = harness.run_arguments(61, 18);
+        let scenario = Scenario {
+            name: "double confirm",
+            supports_tools: true,
+            steps: vec![
+                Step::Send {
+                    text: "prepare one run",
+                    turns: vec![ModelTurn::Tool {
+                        id: "submit-twice",
+                        name: "submit_run",
+                        arguments: Arguments::Exact(arguments.clone()),
+                    }],
+                    outcome: SendOutcome::Stream(ExpectedStream::awaiting(&[
+                        "message_started",
+                        "tool_call",
+                        "confirmation_required",
+                        "awaiting_confirmation",
+                    ])),
+                },
+                Step::Confirm {
+                    turns: vec![ModelTurn::Text("the run was confirmed once")],
+                    outcome: ExpectedStream::done(&[
+                        "message_started",
+                        "tool_result",
+                        "delta",
+                        "done",
+                    ]),
+                },
+                Step::ConfirmAgain {
+                    status: StatusCode::CONFLICT,
+                },
             ],
-            audits: vec![
-                ExpectedAudit::decision("submit_run", "pending", None, "succeeded"),
-                ExpectedAudit::decision("submit_run", "invocation_started", None, "succeeded"),
-                ExpectedAudit::decision(
-                    "submit_run",
-                    "invocation_succeeded",
-                    Some(true),
-                    "succeeded",
-                ),
-            ],
-            prompt_calls: 1,
-            runs: 1,
-        },
-    };
-    harness.execute(&scenario).await;
+            expected: ExpectedFinal {
+                messages: vec![
+                    ExpectedMessage::user(),
+                    ExpectedMessage::assistant(),
+                    ExpectedMessage::tool(),
+                    ExpectedMessage::assistant(),
+                ],
+                audits: vec![
+                    ExpectedAudit::decision("submit_run", "pending", None, "succeeded"),
+                    ExpectedAudit::decision("submit_run", "invocation_started", None, "succeeded"),
+                    ExpectedAudit::decision(
+                        "submit_run",
+                        "invocation_succeeded",
+                        Some(true),
+                        "succeeded",
+                    ),
+                ],
+                tool_results: BTreeMap::from([(
+                    "submit-twice",
+                    ExpectedToolResult::SubmittedRun { status: "queued" },
+                )]),
+                previews: BTreeMap::from([("submit-twice", run_preview(&arguments))]),
+                prompt_calls: 1,
+                runs: 1,
+            },
+        };
+        harness.execute(&scenario).await;
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn cancellation_during_stream_persists_partial_response_without_submission() {
+    run_scripted_scenario("cancellation_during_stream_persists_partial_response_without_submission", async {
+
     let mut harness = ScenarioHarness::start("stream cancellation", true).await;
     let scenario = Scenario {
         name: "stream cancellation",
@@ -2025,6 +2397,8 @@ async fn cancellation_during_stream_persists_partial_response_without_submission
                 ExpectedMessage::assistant_status(AssistantMessageStatus::Cancelled),
             ],
             audits: vec![],
+            tool_results: BTreeMap::new(),
+            previews: BTreeMap::new(),
             prompt_calls: 0,
             runs: 0,
         },
@@ -2042,31 +2416,41 @@ async fn cancellation_during_stream_persists_partial_response_without_submission
         &detail.messages[1].content,
         genaimage_api::AssistantChatMessage::Assistant { text, .. } if text == "partial response"
     ));
+
+    }).await;
 }
 
 #[tokio::test]
 async fn a_model_without_tool_support_fails_clearly_before_streaming() {
-    let mut harness = ScenarioHarness::start("unsupported tools", false).await;
-    let scenario = Scenario {
-        name: "unsupported tools",
-        supports_tools: false,
-        steps: vec![Step::Send {
-            text: "list workflows",
-            turns: vec![],
-            outcome: SendOutcome::Problem(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "lacks the required tools capability",
-            ),
-        }],
-        expected: ExpectedFinal {
-            messages: vec![],
-            audits: vec![],
-            prompt_calls: 0,
-            runs: 0,
+    run_scripted_scenario(
+        "a_model_without_tool_support_fails_clearly_before_streaming",
+        async {
+            let mut harness = ScenarioHarness::start("unsupported tools", false).await;
+            let scenario = Scenario {
+                name: "unsupported tools",
+                supports_tools: false,
+                steps: vec![Step::Send {
+                    text: "list workflows",
+                    turns: vec![],
+                    outcome: SendOutcome::Problem(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "lacks the required tools capability",
+                    ),
+                }],
+                expected: ExpectedFinal {
+                    messages: vec![],
+                    audits: vec![],
+                    tool_results: BTreeMap::new(),
+                    previews: BTreeMap::new(),
+                    prompt_calls: 0,
+                    runs: 0,
+                },
+            };
+            harness.execute(&scenario).await;
+            assert_eq!(harness.llm.chat_request_count(), 0);
         },
-    };
-    harness.execute(&scenario).await;
-    assert_eq!(harness.llm.chat_request_count(), 0);
+    )
+    .await;
 }
 
 fn loopback_url(value: &str) -> Url {
