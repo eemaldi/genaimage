@@ -19,18 +19,24 @@
 
   const record = $derived(asRecord(result));
   const runId = $derived(
-    tool === 'submit_run' && typeof record?.run_id === 'string'
+    tool === 'submit_run' &&
+      typeof record?.run_id === 'string' &&
+      record.run_id.length > 0
       ? record.run_id
       : undefined,
   );
+  const confirmed = $derived(
+    ok === true && (tool !== 'submit_run' || runId !== undefined),
+  );
+  const failed = $derived(ok === false);
   const generated = $derived(
-    tool === 'propose_run' && ok === true ? generateAction(result) : undefined,
+    tool === 'propose_run' && confirmed ? generateAction(result) : undefined,
   );
   const resultJson = $derived(
     result === undefined ? '' : formatExactJson(result),
   );
   const outcome = $derived(
-    ok === true ? 'Succeeded' : ok === false ? 'Failed' : 'Unknown outcome',
+    confirmed ? 'Succeeded' : failed ? 'Failed' : 'Unknown outcome',
   );
   const notes = $derived(
     Array.isArray(record?.truncation_notes)
@@ -42,9 +48,9 @@
 </script>
 
 <details
-  class:failed={ok === false}
-  class:succeeded={ok === true}
-  class:unknown={ok === undefined}
+  class:failed
+  class:succeeded={confirmed}
+  class:unknown={!confirmed && !failed}
   class="tool-card"
 >
   <summary>
@@ -54,6 +60,9 @@
   </summary>
   <div class="tool-body" aria-live="polite">
     {#if error}<p class="error-text" role="alert">{error}</p>{/if}
+    {#if !confirmed && !failed && !error}<p class="error-text" role="alert">
+        The run outcome is unknown. Check Jobs.
+      </p>{/if}
     {#if resultJson}<p class="label">Result (exact JSON)</p>
       <pre><code>{resultJson}</code></pre>{/if}
     {#if record?.truncated === true}

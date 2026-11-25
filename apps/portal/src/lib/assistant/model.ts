@@ -143,24 +143,41 @@ export function messageItems(
         !Array.isArray(content.tool.result)
           ? (content.tool.result as Record<string, unknown>)
           : undefined;
-      const ok = typeof persisted?.ok === 'boolean' ? persisted.ok : undefined;
+      const rawOk =
+        typeof persisted?.ok === 'boolean' ? persisted.ok : undefined;
       const nestedError =
         typeof persisted?.error === 'string' ? persisted.error : undefined;
+      const tool =
+        toolNames.get(content.tool.call_id) ??
+        auditByCall.get(content.tool.call_id)?.tool ??
+        content.tool.call_id;
+      const result = persisted?.result;
+      const runId =
+        result && typeof result === 'object' && !Array.isArray(result)
+          ? (result as Record<string, unknown>).run_id
+          : undefined;
+      const ok =
+        rawOk === false
+          ? false
+          : rawOk === true &&
+              (tool !== 'submit_run' ||
+                (typeof runId === 'string' && runId.length > 0))
+            ? true
+            : undefined;
       items.push({
         kind: 'tool_result',
         id: message.id,
         conversationId: message.conversation_id,
         toolCallId: content.tool.call_id,
-        tool:
-          toolNames.get(content.tool.call_id) ??
-          auditByCall.get(content.tool.call_id)?.tool ??
-          content.tool.call_id,
+        tool,
         ok,
-        result: persisted?.result,
+        result,
         error:
           nestedError ??
           (ok === undefined
-            ? 'The persisted tool outcome is malformed or unavailable.'
+            ? tool === 'submit_run'
+              ? 'The persisted run outcome is missing a run ID. Check Jobs.'
+              : 'The persisted tool outcome is malformed or unavailable.'
             : undefined),
       });
     }

@@ -173,3 +173,74 @@ it('links a persisted submit_run success to its unwrapped run result', () => {
       .getAttribute('href'),
   ).toBe('#/runs/persisted-run');
 });
+
+it.each([
+  ['missing result', { ok: true }],
+  ['empty result', { ok: true, result: {} }],
+] as const)(
+  'does not show a persisted submit_run as succeeded with %s',
+  (_label, wrapper) => {
+    const item = messageItems(
+      {
+        id: 'conversation-1',
+        title: 'Conversation',
+        model: 'local',
+        system_prompt: '',
+        system_prompt_sha256: 'hash',
+        system_prompt_template: 'assistant',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+        messages: [
+          {
+            id: 'tool-message',
+            conversation_id: 'conversation-1',
+            seq: 2,
+            role: 'tool',
+            status: 'complete',
+            created_at: '2026-01-01T00:00:00Z',
+            content: { tool: { call_id: 'tool-1', result: wrapper } },
+          },
+        ],
+      },
+      [
+        {
+          id: 1,
+          conversation_id: 'conversation-1',
+          tool_call_id: 'tool-1',
+          tool: 'submit_run',
+          proposed_arguments: {},
+          validation_outcome: 'valid',
+          decision: 'invocation_succeeded',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    ).at(-1);
+    if (item?.kind !== 'tool_result')
+      throw new Error('Expected a tool result.');
+    expect(item.ok).toBeUndefined();
+    render(ToolResultCard, {
+      tool: item.tool,
+      ok: item.ok,
+      conversationId: item.conversationId,
+      toolCallId: item.toolCallId,
+      result: item.result,
+      error: item.error,
+    });
+    expect(screen.queryByText('Succeeded')).toBeNull();
+    expect(screen.getByText('Unknown outcome')).toBeTruthy();
+    expect(screen.getByText(/Check Jobs/)).toBeTruthy();
+  },
+);
+
+it('also guards live submit_run success values without a run ID', () => {
+  const rendered = render(ToolResultCard, {
+    tool: 'submit_run',
+    ok: true,
+    conversationId: 'conversation-1',
+    toolCallId: 'tool-1',
+    result: {},
+  });
+  expect(rendered.queryByText('Succeeded')).toBeNull();
+  expect(rendered.getByText('Unknown outcome')).toBeTruthy();
+  expect(rendered.getByText(/Check Jobs/)).toBeTruthy();
+});
