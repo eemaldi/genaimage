@@ -158,6 +158,9 @@ See the [workflow manifest reference](docs/workflow-manifest.md) and
 
 ## Development
 
+See the [testing guide](docs/testing.md) for focused assistant scenarios,
+opt-in local Ollama tests and the repository's test safety invariants.
+
 Run all repository checks:
 
 ```bash
