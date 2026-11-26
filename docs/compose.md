@@ -46,9 +46,38 @@ exits at once with `COMFYUI_REQUIRE_GPU=1 but torch sees no GPU`. Check
   groups by numeric ID; set `VIDEO_GID` and `RENDER_GID` if they differ from
   `44` and `992` (`getent group video render`). Some cards need extra settings,
   such as `HSA_OVERRIDE_GFX_VERSION`; add them in your own override file.
+  See [AMD ROCm (RDNA4)](#amd-rocm-rdna4) for a verified setup.
 
 Older drivers can build another PyTorch variant by overriding the `TORCH_INDEX`,
 `TORCH_VERSION` and `TORCHVISION_VERSION` build arguments in `docker/comfyui`.
+
+### AMD ROCm (RDNA4)
+
+Verified on Nobara Linux 44 (kernel 7.3) with a Radeon RX 9070 XT (gfx1201) next
+to the Ryzen integrated GPU, using the stock `rocm7.2` PyTorch 2.14.1 wheels and
+Ollama `0.40.18-rocm`. No `HSA_OVERRIDE_GFX_VERSION` was needed.
+
+```sh
+getent group video render        # video:x:39: and render:x:105: on that machine
+VIDEO_GID=39 RENDER_GID=105 \
+  docker compose -f compose.yaml -f compose.rocm.yaml up -d --build --wait
+```
+
+Use the numeric group IDs from your host (the user running Docker need not be a
+member, because the daemon opens the devices); put them in a `.env` file to keep
+them. The ComfyUI image needs `libatomic1`, which the Dockerfile installs.
+
+- **GPU selection.** ComfyUI lists the integrated GPU as a second device
+  (`cuda:1`, named after the CPU) and uses `cuda:0`, the discrete card, by
+  default. Check `curl -s http://127.0.0.1:8188/system_stats`: the discrete card
+  has the larger `vram_total`, and the doctor `gpu` check lists both. Ollama
+  drops the unsupported iGPU (`gfx1036`) with a warning and logs
+  `library=ROCm compute=gfx1201 ... RX 9070 XT`. To hide a device for both
+  services, add `HIP_VISIBLE_DEVICES` (or `ROCR_VISIBLE_DEVICES`) to the
+  `environment` of your own override file; GenAImage never sets it for you.
+- **Check.** `docker compose exec comfyui python -c "import torch; print(torch.cuda.get_device_name(0))"`
+  prints `AMD Radeon Graphics` (the generic name of the RX 9070 XT here).
+- **Size.** The ROCm ComfyUI image is about 25 GB on disk.
 
 ## Adding models
 
