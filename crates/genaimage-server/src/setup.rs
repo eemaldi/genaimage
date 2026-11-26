@@ -1,6 +1,9 @@
 //! First-run service detection over a fixed, bounded candidate list.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use genaimage_api::{
     DetectStatus, DetectedService, DetectedServiceKind as Kind, LlmFlavour, SettingSource,
@@ -70,8 +73,22 @@ impl Candidate {
     }
 }
 
+/// Exact parsed equality: scheme, host (case-insensitive), effective port and path without a
+/// trailing slash. `localhost` and `127.0.0.1` are deliberately not merged.
 fn same_url(a: &str, b: &str) -> bool {
-    a.trim_end_matches('/') == b.trim_end_matches('/')
+    let key = |value: &str| {
+        let url = Url::parse(value).ok()?;
+        Some((
+            url.scheme().to_owned(),
+            url.host_str()?.to_ascii_lowercase(),
+            url.port_or_known_default()?,
+            url.path().trim_end_matches('/').to_owned(),
+        ))
+    };
+    match (key(a), key(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.trim_end_matches('/') == b.trim_end_matches('/'),
+    }
 }
 
 /// The fixed list plus the saved URLs. Nothing else is ever probed.
@@ -115,7 +132,7 @@ pub(crate) fn candidates(config: &ResolvedConfig) -> Vec<Candidate> {
     found
 }
 
-pub(crate) fn status(config: &ResolvedConfig) -> SetupStatus {
+pub(crate) fn status(config: &ResolvedConfig, restart_required: Vec<String>) -> SetupStatus {
     let SetupAssessment {
         needs_setup,
         reasons,
@@ -157,6 +174,7 @@ pub(crate) fn status(config: &ResolvedConfig) -> SetupStatus {
         config_file: config.settings_file().to_string_lossy().into_owned(),
         config_file_exists,
         endpoints_env_owned,
+        restart_required,
         comfyui: endpoint("comfyui.base_url", &config.comfyui.base_url),
         llm: endpoint("llm.base_url", &config.llm.base_url),
     }
@@ -204,7 +222,7 @@ fn result(
 async fn probe(candidate: Candidate, hosts: &[String], api_key: Option<&str>) -> DetectedService {
     let url = match validate_endpoint(candidate.key(), &candidate.url, hosts) {
         Ok(url) => url,
-        Err(error) => return skipped(&candidate, &error.to_string()),
+        Err(error) => return skipped(&candidate, hosts, &error.to_string()),
     };
     match tokio::time::timeout(PROBE_DEADLINE, request(&candidate, hosts, url, api_key)).await {
         Ok(found) => found,
@@ -217,12 +235,22 @@ async fn probe(candidate: Candidate, hosts: &[String], api_key: Option<&str>) ->
     }
 }
 
-fn skipped(candidate: &Candidate, reason: &str) -> DetectedService {
+/// A host name (not an IP literal, not `localhost`) that the allow-list does not name yet.
+fn needs_allow_listing(host: &str, hosts: &[String]) -> bool {
+    let bare = host.trim_matches(['[', ']']);
+    bare.parse::<IpAddr>().is_err()
+        && !bare.eq_ignore_ascii_case("localhost")
+        && !hosts
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(bare))
+}
+
+fn skipped(candidate: &Candidate, hosts: &[String], reason: &str) -> DetectedService {
     let host = Url::parse(&candidate.url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned));
     let fix = match host {
-        Some(host) if reason.contains("allowed_hosts") => format!(
+        Some(host) if needs_allow_listing(&host, hosts) => format!(
             "Add \"{host}\" to {} (or set {}={host} in the environment), then detect again.",
             candidate.allow_list(),
             candidate.env_allow_list()
@@ -274,10 +302,20 @@ async fn request(
         );
     };
     let addresses: Vec<SocketAddr> = addresses.collect();
+    request_resolved(candidate, hosts, url, api_key, addresses).await
+}
+
+async fn request_resolved(
+    candidate: &Candidate,
+    hosts: &[String],
+    url: Url,
+    api_key: Option<&str>,
+    addresses: Vec<SocketAddr>,
+) -> DetectedService {
     if let Err(error) =
         validate_endpoint_addresses(candidate.key(), &candidate.url, hosts, &addresses)
     {
-        return skipped(candidate, &error.to_string());
+        return skipped(candidate, hosts, &error.to_string());
     }
     let Ok(client) = Client::builder()
         .no_proxy()
@@ -324,7 +362,11 @@ async fn request(
         return result(
             candidate,
             DetectStatus::Error,
-            "The server answered but requires an API key.",
+            if candidate.configured {
+                "The server answered but requires an API key."
+            } else {
+                "The server requires an API key; this candidate is probed without one."
+            },
             Some(if candidate.configured {
                 "Check the LLM API key in the settings.".into()
             } else {
@@ -429,14 +471,18 @@ mod tests {
     }
 
     async fn fake(status: u16, content_type: &str, body: &str, delay: Duration) -> Fake {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let hits = Arc::new(Mutex::new(Vec::new()));
-        let recorded = hits.clone();
         let reply = format!(
             "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
+        serve(reply, delay).await
+    }
+
+    async fn serve(reply: String, delay: Duration) -> Fake {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = hits.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -488,6 +534,21 @@ mod tests {
         )
         .await
         .expect("detection is bounded")
+    }
+
+    fn load_config(temp: &tempfile::TempDir, env: &[(&str, &str)]) -> ResolvedConfig {
+        let root = temp.path().display().to_string();
+        let vars: HashMap<&str, String> = env
+            .iter()
+            .map(|(k, v)| (*k, (*v).to_owned()))
+            .chain(
+                ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+                    .into_iter()
+                    .map(|name| (name, root.clone())),
+            )
+            .collect();
+        HarnessConfig::load_with(temp.path(), None, temp.path(), |key| vars.get(key).cloned())
+            .unwrap()
     }
 
     #[tokio::test]
@@ -640,20 +701,7 @@ mod tests {
     #[test]
     fn candidate_list_is_the_fixed_list_plus_the_saved_urls_without_duplicates() {
         let temp = tempfile::TempDir::new().unwrap();
-        let root = temp.path().display().to_string();
-        let load = |env: &'static [(&'static str, &'static str)]| {
-            let vars: HashMap<&str, String> = env
-                .iter()
-                .map(|(k, v)| (*k, (*v).to_owned()))
-                .chain(
-                    ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
-                        .into_iter()
-                        .map(|name| (name, root.clone())),
-                )
-                .collect();
-            HarnessConfig::load_with(temp.path(), None, temp.path(), |key| vars.get(key).cloned())
-                .unwrap()
-        };
+        let load = |env| load_config(&temp, env);
         let urls = |config: &ResolvedConfig| -> Vec<(String, bool)> {
             candidates(config)
                 .into_iter()
@@ -679,5 +727,102 @@ mod tests {
         assert_eq!(custom[0], ("http://127.0.0.1:9999".to_owned(), true));
         assert_eq!(custom.len(), defaults.len() + 1);
         assert!(custom.contains(&("http://127.0.0.1:11434/v1".to_owned(), true)));
+    }
+
+    #[test]
+    fn saved_urls_merge_only_on_exact_parsed_equality() {
+        assert!(same_url("HTTP://127.0.0.1:8188/", "http://127.0.0.1:8188"));
+        assert!(same_url(
+            "http://example.test/v1/",
+            "http://EXAMPLE.test:80/v1"
+        ));
+        assert!(!same_url("http://localhost:8188", "http://127.0.0.1:8188"));
+        assert!(!same_url("http://127.0.0.1:8188", "https://127.0.0.1:8188"));
+        assert!(!same_url(
+            "http://127.0.0.1:8188/a",
+            "http://127.0.0.1:8188"
+        ));
+    }
+
+    #[tokio::test]
+    async fn redirects_are_never_followed() {
+        let target = comfy(r#"{"system":{}}"#).await;
+        let reply = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {}/system_stats\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            target.url
+        );
+        let redirector = serve(reply, Duration::ZERO).await;
+        let found = run(
+            vec![candidate(Kind::Comfyui, &redirector.url, false)],
+            &[],
+            None,
+        )
+        .await;
+        assert_ne!(found[0].status, DetectStatus::Found, "{found:?}");
+        assert_eq!(redirector.hits.lock().unwrap().len(), 1);
+        assert!(target.hits.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn allow_listed_name_resolving_to_a_public_address_is_skipped_without_connecting() {
+        let hosts = vec!["comfyui".to_owned()];
+        let candidate = candidate(Kind::Comfyui, "http://comfyui:8188", false);
+        let url = Url::parse(&candidate.url).unwrap();
+        let public: SocketAddr = "8.8.8.8:8188".parse().unwrap();
+        let found = timeout(
+            Duration::from_secs(5),
+            request_resolved(&candidate, &hosts, url, None, vec![public]),
+        )
+        .await
+        .expect("refusal is immediate");
+        assert_eq!(found.status, DetectStatus::Skipped, "{found:?}");
+        assert!(found.detail.contains("public"), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn saved_llm_key_reaches_only_the_saved_endpoint_through_the_real_candidates() {
+        for form in ["{}/v1/", "localhost"] {
+            let saved = comfy(r#"{"data":[{"id":"m"}]}"#).await;
+            let url = if form == "localhost" {
+                saved.url.replace("127.0.0.1", "localhost") + "/v1"
+            } else {
+                form.replace("{}", &saved.url)
+            };
+            let temp = tempfile::TempDir::new().unwrap();
+            let config = load_config(
+                &temp,
+                &[
+                    ("GENAIMAGE_LLM_URL", &url),
+                    ("GENAIMAGE_LLM_API_KEY", SECRET),
+                ],
+            );
+            let all = candidates(&config);
+            assert_eq!(
+                all.iter()
+                    .filter(|c| c.kind == Kind::Llm && c.configured)
+                    .count(),
+                1
+            );
+            let found = timeout(
+                Duration::from_secs(10),
+                detect(
+                    all,
+                    &config.comfyui.allowed_hosts,
+                    &config.llm.allowed_hosts,
+                    config.llm.api_key.as_deref(),
+                ),
+            )
+            .await
+            .unwrap();
+            let configured = found
+                .iter()
+                .find(|s| s.kind == Kind::Llm && s.configured)
+                .unwrap();
+            assert_eq!(configured.status, DetectStatus::Found, "{form}: {found:?}");
+            let hits = saved.hits.lock().unwrap();
+            assert_eq!(hits.len(), 1, "{form}");
+            assert!(hits[0].contains(&format!("bearer {SECRET}")), "{form}");
+            assert!(!serde_json::to_string(&found).unwrap().contains(SECRET));
+        }
     }
 }

@@ -137,3 +137,32 @@ async fn detect_refuses_cross_origin_browser_posts() {
     .await
     .expect("test is bounded");
 }
+
+#[tokio::test]
+async fn status_is_not_cached_and_reports_a_pending_restart_after_a_save() {
+    timeout(Duration::from_secs(30), async {
+        let api = ApiHarness::start().await;
+        let url = format!("{}/api/v1/setup/status", api.origin);
+        let response = reqwest::get(&url).await.unwrap();
+        assert_eq!(response.headers()["cache-control"], "no-store");
+
+        let client = client(&api);
+        let before = client.setup_status().await.unwrap();
+        assert!(before.restart_required.is_empty(), "{before:?}");
+        let saved = api
+            .request(reqwest::Method::PUT, "/api/v1/settings")
+            .json(&serde_json::json!({"llm.api_key": SECRET}))
+            .send()
+            .await
+            .unwrap();
+        assert!(saved.status().is_success(), "{:?}", saved.text().await);
+        let after = client.setup_status().await.unwrap();
+        assert!(!after.needs_setup, "{after:?}");
+        assert!(
+            after.restart_required.contains(&"llm.api_key".to_owned()),
+            "{after:?}"
+        );
+    })
+    .await
+    .expect("test is bounded");
+}

@@ -22,9 +22,10 @@ use crate::{setup, AppState};
 pub(super) async fn status(
     State(state): State<AppState>,
 ) -> ([(header::HeaderName, &'static str); 1], Json<SetupStatus>) {
+    let restart_required = state.settings.get().1.restart_required;
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Json(setup::status(&state.settings.desired())),
+        Json(setup::status(&state.settings.desired(), restart_required)),
     )
 }
 

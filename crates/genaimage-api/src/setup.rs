@@ -52,6 +52,8 @@ pub struct SetupStatus {
     pub config_file_exists: bool,
     /// True when the environment owns `comfyui.base_url`, so saving cannot change it.
     pub endpoints_env_owned: bool,
+    /// Setting keys saved but not yet live; a restart applies them.
+    pub restart_required: Vec<String>,
     pub comfyui: SetupEndpoint,
     pub llm: SetupEndpoint,
 }

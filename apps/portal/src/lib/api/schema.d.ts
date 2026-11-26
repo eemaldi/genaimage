@@ -1335,6 +1335,8 @@ export interface components {
              */
             needs_setup: boolean;
             reasons: components["schemas"]["SetupReason"][];
+            /** @description Setting keys saved but not yet live; a restart applies them. */
+            restart_required: string[];
         };
         /** @description Explicit bindings for a workflow configured in the local workspace. */
         SubmitRunRequest: {

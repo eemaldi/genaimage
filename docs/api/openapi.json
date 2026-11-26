@@ -2428,6 +2428,13 @@
               "$ref": "#/components/schemas/SetupReason"
             },
             "type": "array"
+          },
+          "restart_required": {
+            "description": "Setting keys saved but not yet live; a restart applies them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -2436,6 +2443,7 @@
           "config_file",
           "config_file_exists",
           "endpoints_env_owned",
+          "restart_required",
           "comfyui",
           "llm"
         ],
