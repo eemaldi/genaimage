@@ -20,7 +20,10 @@ ComfyUI image generation, assisted by local LLMs. Read
   The isolated `serve` module wires the core and adapter to the local Axum
   server in `crates/genaimage-server`; the local `config init` module uses only
   core configuration and error types to write an example configuration.
-- The server binds to loopback only and currently serves health, workflows, runs,
+- The server binds to loopback only; inside a container with
+  `GENAIMAGE_CONTAINER=1` it may bind `0.0.0.0` or `::`, and ports must be
+  published on `127.0.0.1` only (`Dockerfile`, [setup](docs/setup.md#container)).
+  It currently serves health, workflows, runs,
   outputs and their vision-review annotations, uploads, settings, live events,
   the assistant API, an OpenAPI contract and the embedded Svelte portal in
   `apps/portal`: dashboard, generate, jobs, gallery, workflows, run detail,

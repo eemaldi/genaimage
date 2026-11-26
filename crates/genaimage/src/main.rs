@@ -1,6 +1,7 @@
 mod artefacts;
 mod completions;
 mod config_local;
+mod healthcheck;
 mod open;
 mod output;
 mod run_commands;
@@ -58,6 +59,9 @@ enum Command {
     },
     /// Check the server and its ComfyUI backend.
     Doctor,
+    /// Exit non-zero unless the server answers its health endpoint (container probe).
+    #[command(hide = true)]
+    Healthcheck,
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -182,6 +186,7 @@ async fn main() -> ExitCode {
         };
     }
     match &cli.command {
+        Command::Healthcheck => healthcheck::execute(&cli).await,
         Command::Serve { portal_dev_url } => serve::execute(&cli, portal_dev_url.as_deref()).await,
         Command::Config {
             command: ConfigCommand::Init { force },

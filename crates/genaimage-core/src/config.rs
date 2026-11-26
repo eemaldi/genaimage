@@ -31,6 +31,19 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub max_upload_bytes: usize,
+    /// Set from `GENAIMAGE_CONTAINER=1`; permits binding `0.0.0.0` or `::`.
+    #[serde(skip)]
+    pub container: bool,
+}
+
+impl ServerConfig {
+    pub fn permits_unspecified_bind(&self) -> bool {
+        self.container
+            && self
+                .host
+                .parse::<IpAddr>()
+                .is_ok_and(|ip| ip.is_unspecified() && ip.to_canonical() == ip)
+    }
 }
 
 impl Default for ServerConfig {
@@ -39,6 +52,7 @@ impl Default for ServerConfig {
             host: "127.0.0.1".into(),
             port: 3000,
             max_upload_bytes: 32 * 1024 * 1024,
+            container: false,
         }
     }
 }
@@ -326,6 +340,7 @@ impl HarnessConfig {
                 }
             };
         }
+        config.server.container = env("GENAIMAGE_CONTAINER").as_deref() == Some("1");
         text!("GENAIMAGE_SERVER_HOST", config.server.host);
         number!("GENAIMAGE_SERVER_PORT", config.server.port);
         number!(
@@ -446,11 +461,11 @@ fn validate_fields(
     llm: &LlmConfig,
 ) -> Vec<HarnessError> {
     let mut errors = Vec::new();
-    if !is_loopback_name(&server.host) {
+    if !is_loopback_name(&server.host) && !server.permits_unspecified_bind() {
         errors.push(invalid(
             "server.host",
             &server.host,
-            "bind to a loopback host: localhost, 127.0.0.0/8 or ::1",
+            "bind to a loopback host: localhost, 127.0.0.0/8 or ::1 (0.0.0.0 and :: need GENAIMAGE_CONTAINER=1)",
         ));
     }
     if server.port == 0 {
@@ -1051,6 +1066,38 @@ mod tests {
                 && error.contains("0.0.0.0")
                 && error.contains("loopback")
         );
+    }
+
+    #[test]
+    fn container_flag_permits_only_unspecified_binds() {
+        let temp = TempDir::new().unwrap();
+        let host_with = |host: &str, container: Option<&str>| {
+            let mut vars = values(&temp);
+            vars.push(("GENAIMAGE_SERVER_HOST", host.into()));
+            if let Some(value) = container {
+                vars.push(("GENAIMAGE_CONTAINER", value.into()));
+            }
+            load(&temp, None, &vars)
+        };
+        assert!(host_with("0.0.0.0", None).is_err());
+        assert!(host_with("::", None).is_err());
+        for value in ["true", "0", "", "yes"] {
+            assert!(host_with("0.0.0.0", Some(value)).is_err(), "{value}");
+        }
+        for host in ["0.0.0.0", "::"] {
+            let config = host_with(host, Some("1")).unwrap();
+            assert!(config.server.permits_unspecified_bind());
+        }
+        for host in [
+            "192.0.2.1",
+            "10.0.0.5",
+            "0.0.0.1",
+            "::ffff:0.0.0.0",
+            "example.test",
+        ] {
+            assert!(host_with(host, Some("1")).is_err(), "{host}");
+        }
+        assert!(host_with("127.0.0.1", Some("1")).is_ok());
     }
 
     #[test]
