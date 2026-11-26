@@ -51,8 +51,8 @@ holds one reference image at a time in memory before sending it to ComfyUI.
 ## Container
 
 The root `Dockerfile` builds a distroless image (under 60 MB, non-root user
-65532) with the portal embedded. Docker Compose support for ComfyUI and the LLM
-service is planned and not yet implemented. Published images are described
+65532) with the portal embedded. To run it with ComfyUI and Ollama in one
+command, see [Docker Compose](compose.md). Published images are described
 under [Releases](#releases).
 
 ```sh

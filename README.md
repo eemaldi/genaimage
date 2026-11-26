@@ -39,6 +39,11 @@ management are outside the current scope. The planned outbound endpoint policy
 allows explicitly configured private or Compose hosts; the server itself
 binds to loopback only.
 
+## Docker Compose
+
+`docker compose up -d` starts GenAImage, ComfyUI and Ollama on loopback; see
+[Docker Compose](docs/compose.md).
+
 ## Prerequisites
 
 - A working local ComfyUI installation and server, normally at

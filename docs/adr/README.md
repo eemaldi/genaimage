@@ -9,6 +9,7 @@ superseding decisions where appropriate.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-target-architecture.md) | Accepted | Target architecture |
+| [0002](0002-comfyui-image.md) | Accepted | ComfyUI container image for Docker Compose |
 
 ## Template
 

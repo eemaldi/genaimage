@@ -626,8 +626,8 @@ tests use a fake backend
 without connecting to ComfyUI; adapter contract tests still exercise the wire
 protocol against a fake server.
 
-ComfyUI and the LLM service remain separate from GenAImage. A planned local
-Docker Compose setup can run the dependencies with host-published ports bound
+ComfyUI and the LLM service remain separate from GenAImage. The local
+Docker Compose setup ([compose](compose.md)) runs the dependencies with host-published ports bound
 to loopback; GenAImage can run on the host. Compose does not change the server's
 loopback-only bind or justify automatically installing or changing models,
 nodes or settings.
