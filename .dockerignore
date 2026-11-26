@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.agents
+.supervision
+target
+**/node_modules
+apps/portal/dist
+docs
+*.sqlite3*
+runs
+.genaimage
+Dockerfile
+.dockerignore
