@@ -1,0 +1,64 @@
+name: genaimage
+
+services:
+  genaimage:
+    image: ${GENAIMAGE_IMAGE:-genaimage:local}
+    build: .
+    restart: unless-stopped
+    depends_on:
+      comfyui:
+        condition: service_started
+      ollama:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${GENAIMAGE_PORT:-8190}:${GENAIMAGE_PORT:-8190}"
+    environment:
+      GENAIMAGE_SERVER_PORT: ${GENAIMAGE_PORT:-8190}
+      GENAIMAGE_COMFYUI_URL: http://comfyui:8188
+      GENAIMAGE_COMFYUI_ALLOWED_HOSTS: comfyui
+      GENAIMAGE_LLM_URL: http://ollama:11434/v1
+      GENAIMAGE_LLM_ALLOWED_HOSTS: ollama
+      GENAIMAGE_LLM_TEXT_MODEL:
+      GENAIMAGE_LLM_VISION_MODEL:
+    volumes:
+      - data:/data
+
+  comfyui:
+    image: genaimage-comfyui:cpu
+    build:
+      context: docker/comfyui
+      args:
+        TORCH_INDEX: cpu
+    restart: unless-stopped
+    command: ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--cpu"]
+    ports:
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
+    volumes:
+      - comfyui-models:/opt/comfyui/models
+      - comfyui-custom-nodes:/opt/comfyui/custom_nodes
+      - comfyui-input:/opt/comfyui/input
+      - comfyui-output:/opt/comfyui/output
+      - comfyui-user:/opt/comfyui/user
+
+  ollama:
+    image: docker.io/ollama/ollama:0.40.18@sha256:1cabd20e1762a7a8444bf4a7110b346d923cd77ab6c97c984434140638c913ec
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    volumes:
+      - ollama-models:/root/.ollama
+
+volumes:
+  data:
+  comfyui-models:
+  comfyui-custom-nodes:
+  comfyui-input:
+  comfyui-output:
+  comfyui-user:
+  ollama-models:
