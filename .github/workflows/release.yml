@@ -1,0 +1,381 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build every artefact and the image without publishing anything
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      publish: ${{ steps.meta.outputs.publish }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          publish=false
+          if [ "$REF_TYPE" = tag ] && { [ "$EVENT" = push ] || [ "$DRY_RUN" = false ]; }; then
+            publish=true
+            if [ "$REF_NAME" != "v${version}" ]; then
+              echo "::error::Tag ${REF_NAME} does not match the workspace version ${version} in Cargo.toml (expected v${version})"
+              exit 1
+            fi
+          fi
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=${version}"
+            echo "publish=${publish}"
+            echo "prerelease=${prerelease}"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version ${version}, publish=${publish}, prerelease=${prerelease}"
+
+  portal:
+    name: Portal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/portal/package-lock.json
+
+      - name: Build portal
+        working-directory: apps/portal
+        run: npm ci && npm run build
+
+      - name: Upload portal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: portal-dist
+          path: apps/portal/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  binaries:
+    name: Binary (${{ matrix.target }})
+    needs: [prepare, portal]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Older Ubuntu images keep the glibc requirement of the Linux binaries low.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, smoke: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, smoke: true }
+          - { target: aarch64-apple-darwin, os: macos-14, smoke: true }
+          - { target: x86_64-apple-darwin, os: macos-14, smoke: false }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025, smoke: true }
+    env:
+      NAME: genaimage-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download portal
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: portal-dist
+          path: apps/portal/dist
+
+      - name: Set up Rust target
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
+          rustup default stable
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --locked -p genaimage --target "${{ matrix.target }}"
+
+      - name: Smoke test binary
+        if: matrix.smoke
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/genaimage
+          [ -f "$bin" ] || bin="$bin.exe"
+          "$bin" --version
+
+      - name: Package archive
+        shell: bash
+        run: |
+          mkdir -p "dist/${NAME}"
+          bin=target/${{ matrix.target }}/release/genaimage
+          [ -f "$bin" ] || bin="$bin.exe"
+          cp "$bin" "dist/${NAME}/"
+          cp README.md "dist/${NAME}/"
+          if [ -f LICENSE ]; then cp LICENSE "dist/${NAME}/"; fi
+          cd dist
+          if [ "${{ runner.os }}" = Windows ]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '${NAME}' -DestinationPath '${NAME}.zip'"
+          else
+            tar -czf "${NAME}.tar.gz" "${NAME}"
+          fi
+          rm -r "${NAME}"
+          ls -l
+
+      - name: Upload archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  image:
+    name: Image (${{ matrix.platform }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, os: ubuntu-24.04, slug: amd64 }
+          - { platform: linux/arm64, os: ubuntu-24.04-arm, slug: arm64 }
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.slug }}
+
+      - name: Build without pushing (dry run)
+        if: needs.prepare.outputs.publish != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=oci,dest=${{ runner.temp }}/image-${{ matrix.slug }}.tar
+          cache-from: type=gha,scope=release-${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.slug }}
+
+      - name: Export digest
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.slug }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload image archive (dry run)
+        if: needs.prepare.outputs.publish != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-${{ matrix.slug }}-oci
+          path: ${{ runner.temp }}/image-${{ matrix.slug }}.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Checksums and release notes
+    needs: [prepare, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 5
+
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
+        with:
+          config: cliff.toml
+          args: ${{ github.ref_type == 'tag' && '--current' || format('--unreleased --tag v{0}', needs.prepare.outputs.version) }} --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Upload release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-files
+          path: |
+            dist/*
+            RELEASE_NOTES.md
+          if-no-files-found: error
+
+  image-manifest:
+    name: Image manifest
+    needs: [prepare, image]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Compute image tags
+        id: tags
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease != 'true' }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Inspect manifest
+        id: inspect
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ needs.prepare.outputs.image }}
+          subject-digest: ${{ steps.inspect.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    name: GitHub Release
+    needs: [prepare, package, image-manifest]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-files
+
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
+            --verify-tag --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}"

@@ -52,8 +52,8 @@ holds one reference image at a time in memory before sending it to ComfyUI.
 
 The root `Dockerfile` builds a distroless image (under 60 MB, non-root user
 65532) with the portal embedded. Docker Compose support for ComfyUI and the LLM
-service is planned and not yet implemented; publishing the image is also
-planned.
+service is planned and not yet implemented. Published images are described
+under [Releases](#releases).
 
 ```sh
 docker build -t genaimage:dev .
@@ -87,6 +87,30 @@ unless `--server` or `GENAIMAGE_SERVER` is set.
   `GENAIMAGE_COMFYUI_URL` and `GENAIMAGE_LLM_URL` at them and list non-loopback
   hosts in `GENAIMAGE_COMFYUI_ALLOWED_HOSTS` and `GENAIMAGE_LLM_ALLOWED_HOSTS`;
   public endpoints remain refused.
+
+## Releases
+
+Not yet available: nothing is published until the first release tag exists.
+Each release provides archives for Linux (x86_64, aarch64), macOS (arm64,
+x86_64) and Windows (x86_64), each containing the `genaimage` binary with the
+portal embedded, a `SHA256SUMS` file, and a multi-arch image
+(`linux/amd64`, `linux/arm64`) at `ghcr.io/eemaldi/genaimage`. Pre-releases
+(for example `v0.1.0-rc.1`) never move the `latest` image tag.
+
+```sh
+# Download an archive and SHA256SUMS from the GitHub Release, then verify.
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify genaimage-0.1.0-x86_64-unknown-linux-gnu.tar.gz --repo eemaldi/genaimage
+tar -xzf genaimage-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+./genaimage-0.1.0-x86_64-unknown-linux-gnu/genaimage --version
+
+docker pull ghcr.io/eemaldi/genaimage:0.1.0
+gh attestation verify oci://ghcr.io/eemaldi/genaimage:0.1.0 --repo eemaldi/genaimage
+```
+
+On macOS use `shasum -a 256 --check --ignore-missing SHA256SUMS`. The binaries
+are not code-signed or notarised, so macOS and Windows may warn on first run.
+Maintainers: see [releasing](releasing.md).
 
 ## 2. Configuration
 
