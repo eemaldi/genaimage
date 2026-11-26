@@ -1,0 +1,24 @@
+services:
+  comfyui:
+    image: genaimage-comfyui:rocm
+    build:
+      args:
+        TORCH_INDEX: rocm7.2
+    command: ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]
+    environment:
+      COMFYUI_REQUIRE_GPU: "1"
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"
+
+  ollama:
+    image: docker.io/ollama/ollama:0.40.18-rocm@sha256:ab28cc8337abd53e03d21a3d160f3fff2e798ff13d0eb6125284622f9074e5ac
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"

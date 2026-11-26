@@ -1,0 +1,25 @@
+services:
+  comfyui:
+    image: genaimage-comfyui:nvidia
+    build:
+      args:
+        TORCH_INDEX: cu130
+    command: ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]
+    environment:
+      COMFYUI_REQUIRE_GPU: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
