@@ -78,6 +78,24 @@ them. The ComfyUI image needs `libatomic1`, which the Dockerfile installs.
 - **Check.** `docker compose exec comfyui python -c "import torch; print(torch.cuda.get_device_name(0))"`
   prints `AMD Radeon Graphics` (the generic name of the RX 9070 XT here).
 - **Size.** The ROCm ComfyUI image is about 25 GB on disk.
+- **First models and image.** Verified with SDXL base 1.0 and `qwen3:8b`.
+  Copy the checkpoint in, check its SHA-256 against the Hugging Face file page,
+  then pull the LLM and recreate GenAImage with it as the text model:
+
+  ```sh
+  docker compose -f compose.yaml -f compose.rocm.yaml cp sd_xl_base_1.0.safetensors comfyui:/opt/comfyui/models/checkpoints/
+  docker compose -f compose.yaml -f compose.rocm.yaml exec genaimage genaimage models pull qwen3:8b
+  GENAIMAGE_LLM_TEXT_MODEL=qwen3:8b VIDEO_GID=39 RENDER_GID=105 \
+    docker compose -f compose.yaml -f compose.rocm.yaml up -d --wait genaimage
+  docker compose -f compose.yaml -f compose.rocm.yaml exec genaimage genaimage run text-to-image --wait --json \
+    --set 'checkpoint="sd_xl_base_1.0.safetensors"' \
+    --set 'positive_prompt="a lighthouse on a rocky coast at sunset, detailed, photograph"' \
+    --set 'negative_prompt="blurry, low quality"' --set seed=42 --set width=1024 --set height=1024
+  ```
+
+  Keep the exports for every later `up`, or the setting reverts. On the RX 9070
+  XT the 1024x1024, 20-step run took about 15 s, and `qwen3:8b` loaded all 37
+  layers on the GPU. Ollama logs a harmless `rocblaslt ... gfx1201` warning.
 
 ## Adding models
 
