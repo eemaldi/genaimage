@@ -149,11 +149,24 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   a local `browser_error` (exit `1`) with a `--print` hint, while a launcher still
   running after that is assumed to have opened the URL. The server must be
   running (otherwise exit `3`); non-loopback URLs are rejected (exit `5`).
-- **`doctor`** checks the server and ComfyUI. JSON is a `HealthResponse`:
-  `{self, image_backend, llm}` plus `image_backend_reason` when present.
-  Status strings are `ok`, `unavailable`, or `not_configured`; the optional
-  reason is `probe_failed` or `timeout`. Exit `6` means the server or image
-  backend did not report `ok`; an unconfigured LLM does not fail the check.
+- **`doctor`** runs the server's diagnostics (`GET /api/v1/doctor`). Human
+  output has one line per check (`[ok]`, `[warning]`, `[ERROR]` or `[skipped]`),
+  followed by a `Fix:` line for everything that is not `ok`. JSON is a
+  `DoctorReport`: `{"checks": [{id, status, summary, items, fix}]}`. `status` is
+  `ok`, `warning`, `error` or `skipped`; `items` is a bounded list of detail
+  lines; `fix` is a string for every check except `ok` (where it is `null`).
+  The check ids are `server`, `config`, `comfyui.reachable`, `comfyui.version`,
+  `comfyui.object_info`, `workflows.nodes`, `llm.reachable`, `llm.text`,
+  `llm.vision`, `gpu`, `disk` and `ports`; see
+  [troubleshooting](troubleshooting.md#doctor-checks). Every id is always
+  present. Exit `6` means at least one check is an `error`; warnings and skipped
+  checks (such as an LLM that is not configured) exit `0`. If the server is
+  not running, `doctor` still prints a report on stdout, with a `server` error,
+  a `ports` check and every other check skipped, and exits `3`. If another
+  program is listening on the server port, the `server` and `ports` checks are
+  errors and the exit code is `6`. This replaces the earlier `HealthResponse`
+  JSON (`self`, `image_backend`, `llm`); use the `GET /api/v1/health` endpoint
+  for that shape.
 - **`workflow list`** lists catalogue entries and non-fatal discovery
   diagnostics. JSON is `{workflows, diagnostics}`. Each workflow has `id`,
   `name`, `version`, `revision`, `description`, `tags`, `category` and `thumbnail_url`;

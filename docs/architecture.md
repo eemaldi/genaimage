@@ -97,6 +97,15 @@ callers must provide the intended port.
   refresh. If ComfyUI is unavailable, `image_backend_reason` is `timeout` or
   `probe_failed`; neither prevents server startup. Optional `hints` provide
   recovery guidance for each service.
+- `GET /api/v1/doctor` runs the core `doctor` module (`genaimage-core`) and
+  returns `{checks: [...]}`: one entry per check id, in a fixed order, each with
+  `status` (`ok`, `warning`, `error` or `skipped`), `summary`, bounded `items`
+  and a `fix` that is always present unless the status is `ok`. Unlike health,
+  it probes ComfyUI (`/system_stats`, `/object_info`), the LLM model listing,
+  the workflow node classes, free disk space and configured ports concurrently,
+  each with its own deadline (at most about seven seconds in total). It is
+  read-only, contacts only the configured endpoints, and never includes the
+  LLM API key. See [troubleshooting](troubleshooting.md#doctor-checks).
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`
