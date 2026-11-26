@@ -8,8 +8,8 @@ available today; planned components and budgets are not yet guarantees.
 
 GenAImage is a thin, fast, local glue layer between an operator, a local LLM
 and ComfyUI. ComfyUI generates images; GenAImage owns the workflow manifests,
-explicit parameter binding, run queue, reconciliation, provenance and the
-self-hosted web portal. The assistant tool runtime is planned.
+explicit parameter binding, run queue, reconciliation, provenance, the
+assistant tool runtime and the self-hosted web portal.
 
 ## Workspace crates
 
@@ -66,7 +66,8 @@ genaimage-llm -> genaimage-core (OpenAI-compatible provider)
 
 The CLI and the browser portal use the same loopback API. The portal in
 `apps/portal` uses Svelte 5, TypeScript, Vite and hash routing, with a typed
-API client and one shared event stream. The assistant page is planned. The
+API client and one shared event stream. The assistant chat panel is lazily
+loaded, available on every page and full-width at `#/assistant`. The
 default binary embeds
 `apps/portal/dist` at compile time, including Brotli and gzip sidecars created
 with Node's built-in zlib at portal build time. No Node process is needed at
@@ -144,7 +145,7 @@ are disabled because the hardening middleware bounds the request body. Each body
 30 seconds or receives 408; body reads are cancelled with 503 when graceful
 shutdown starts, so a stalled upload cannot prevent draining.
 
-Core `LlmRoles` is the public gate for future assistant routes. `text()` and
+Core `LlmRoles` is the public gate for assistant routes. `text()` and
 `vision()` return a role binding only for the exact configured model and never
 fall back to the other role. A text binding requires a configured, reachable,
 listed model but does not itself require tools support; a vision binding still
@@ -574,9 +575,9 @@ drain; dropping the fixture signals shutdown and applies a best-effort deadline.
 
 `genaimage-llm` provides the OpenAI-compatible provider, with explicitly
 configured endpoint and role models. Ollama, llama.cpp and LM Studio are
-intended local options when their compatible APIs are enabled. The assistant
-runtime remains planned; the registered provider is currently used for explicit
-operator-requested output reviews and settings capability probes.
+intended local options when their compatible APIs are enabled. The registered
+provider drives assistant conversations and tools, prompt assist, workflow
+suggestion, operator-requested output reviews and settings capability probes.
 
 Core vision review sends the verified output bytes and recorded run parameters
 through the exact configured vision role model on each request. It never falls
@@ -601,8 +602,8 @@ The core defines async, object-safe `ImageBackend`, `LlmProvider`,
 `AssistantTool` and `EventSink` contracts. The CLI serve module builds an `ExtensionRegistry`
 from the resolved ComfyUI settings using an adapter factory supplied by the CLI;
 core does not construct adapters. The registry looks up registered extensions by
-name without a fallback. Only the image backend and LLM provider are configured
-today; tool contracts remain planned. The LLM provider implementation and fake
+name without a fallback. The image backend, the LLM provider and the built-in
+assistant tools are registered today. The LLM provider implementation and fake
 server are available, while the core conversation store and service persist
 bounded, immutable message history, snapshot an explicit creation model and
 prompt, expose a token stream, and retain cancelled or failed partial assistant

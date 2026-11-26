@@ -8,9 +8,11 @@ ComfyUI image generation, assisted by local LLMs. Read
 ## Architecture
 
 - `crates/genaimage-core` owns configuration, workflow manifests and explicit
-  binding, run orchestration, persistence and provenance. The assistant tool
-  runtime and provider abstractions are planned in the core; do not duplicate
-  orchestration in operator surfaces.
+  binding, run orchestration, persistence and provenance. It also owns the
+  assistant: LLM model roles (`llm_roles.rs`), conversations, prompt assist,
+  workflow suggestion, vision review and the tool runtime with its confirmation
+  protocol (`assistant/`). Do not duplicate orchestration in operator surfaces.
+- `crates/genaimage-llm` implements the OpenAI-compatible `LlmProvider`.
 - `crates/genaimage-comfyui` implements the core transport port using ComfyUI
   HTTP and WebSocket connections.
 - `crates/genaimage` is the scripted interface. Health, workflow, preset and
@@ -19,10 +21,11 @@ ComfyUI image generation, assisted by local LLMs. Read
   server in `crates/genaimage-server`; the local `config init` module uses only
   core configuration and error types to write an example configuration.
 - The server binds to loopback only and currently serves health, workflows, runs,
-  outputs, uploads, settings, live events, an OpenAPI contract and the embedded
-  Svelte portal in `apps/portal`: dashboard, generate, jobs, gallery, workflows,
-  run detail and settings. The assistant page is planned.
-  ComfyUI and the planned OpenAI-compatible local LLM service remain separate
+  outputs and their vision-review annotations, uploads, settings, live events,
+  the assistant API, an OpenAPI contract and the embedded Svelte portal in
+  `apps/portal`: dashboard, generate, jobs, gallery, workflows, run detail,
+  settings, and an assistant chat panel available on every page.
+  ComfyUI and the OpenAI-compatible local LLM service remain separate
   processes. Docker Compose support is planned for local dependencies, not public
   exposure.
 - Outbound service endpoints default to loopback. Explicitly allow-listed
@@ -39,6 +42,14 @@ ComfyUI image generation, assisted by local LLMs. Read
 - LLM output is a proposal the user can edit and must explicitly confirm. The
   assistant never submits a run without that confirmation. A successful
   technical run is not creative approval.
+  - An assistant tool that requires confirmation runs only after a confirm or
+    edit decision bound to the `preview_token` of the preview the user saw.
+    The confirmation ID is the run's idempotency key. An interrupted
+    invocation settles as `outcome_unknown` and is never re-invoked.
+  - Validate assistant proposals against the exact workflow revision the model
+    was shown. Drop invalid items with a note; never coerce them. The
+    assistant never chooses image inputs.
+  - Never fall back between the text and vision model roles.
 - Reconcile an ambiguous prompt submission against ComfyUI queue/history;
   never blindly retry it.
 - Preserve source workflows and previously written run/production records.
@@ -51,12 +62,16 @@ ComfyUI image generation, assisted by local LLMs. Read
     outcome is definitive. Retry with the same key, never a new one.
   - Show a run as successful only once the backend has confirmed its outputs.
   - Keep numbers exact. Do not round large seeds, and do not turn `2.0` into
-    `2` or `-0.0` into `0`.
+    `2` or `-0.0` into `0`. Validation compares numbers exactly too, never
+    through `f64`.
   - Show every submitted value before submission, including inherited workflow
     inputs.
+- The LLM API key is write-only. Never return, log or print it, including in
+  `Debug` output and error messages.
 - Keep the harness thin and fast. The target budgets are cold start < 150 ms,
   idle RSS < 40 MB, binary < 25 MB, portal initial JS < 150 KB gzip and p95
-  non-ComfyUI API latency < 20 ms.
+  non-ComfyUI API latency < 20 ms. Measure the binary-size impact of a new
+  runtime dependency before building on it.
 
 ## Project-local agent skills
 
@@ -73,7 +88,9 @@ dependency.
 - Check existing implementation and documentation before deciding how a feature
   fits the architecture. Clearly mark planned behaviour as not yet implemented.
 - Prefer focused Rust tests against fake ComfyUI and LLM servers; no real models
-  are required in CI. Keep real-model tests opt-in and explicit.
+  are required in CI. Keep real-model tests opt-in and explicit. See
+  [testing](docs/testing.md) for the assistant regression scenarios and the
+  live LLM tests, which run only with `GENAIMAGE_LIVE_LLM=1`.
 - Keep CLI output JSON-stable and errors actionable. Keep Copilot- and
   Claude-specific entry points aligned with this guidance.
 - Regenerate the API contract with `cargo run -p genaimage-server --no-default-features --example openapi`.
