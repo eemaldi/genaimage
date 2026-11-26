@@ -5,7 +5,6 @@ ARG COMFYUI_TAG=v0.46.0
 ARG COMFYUI_COMMIT=a277b5bf213e8a44fa34817b7770b54f86ef4cea
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
-ARG TORCHAUDIO_VERSION=2.11.0
 ARG TORCH_INDEX=cpu
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
@@ -15,11 +14,11 @@ RUN git clone --depth 1 --branch "${COMFYUI_TAG}" https://github.com/Comfy-Org/C
     && rm -rf /opt/comfyui/.git
 RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH PIP_NO_CACHE_DIR=1
-RUN pip install "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}" \
+RUN pip install "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
         --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}" \
-    && printf 'torch==%s\ntorchvision==%s\ntorchaudio==%s\n' "${TORCH_VERSION}" "${TORCHVISION_VERSION}" "${TORCHAUDIO_VERSION}" > /tmp/torch-constraints.txt \
+    && printf 'torch==%s\ntorchvision==%s\n' "${TORCH_VERSION}" "${TORCHVISION_VERSION}" > /tmp/torch-constraints.txt \
     && pip install -c /tmp/torch-constraints.txt -r /opt/comfyui/requirements.txt \
-    && python -c "import torch, torchvision, torchaudio"
+    && python -c "import torch, torchvision"
 
 FROM ${PYTHON_IMAGE}
 COPY --from=build /opt/venv /opt/venv

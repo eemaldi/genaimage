@@ -2,11 +2,10 @@ import re
 import sys
 import urllib.request
 
-PACKAGES = ("torch", "torchvision", "torchaudio")
+PACKAGES = ("torch", "torchvision")
 DEFAULTS = {
     "TORCH_VERSION": "torch",
     "TORCHVISION_VERSION": "torchvision",
-    "TORCHAUDIO_VERSION": "torchaudio",
 }
 
 

@@ -30,11 +30,13 @@ Build ComfyUI from a thin Dockerfile in `docker/comfyui/`:
 - ComfyUI `v0.46.0` from `Comfy-Org/ComfyUI`, pinned by tag and verified against
   the full commit SHA (`COMFYUI_COMMIT`) at build time; the `.git` directory is
   removed.
-- `torch==2.14.1`, `torchvision==0.29.1` and `torchaudio==2.11.0` from the
+- `torch==2.14.1` and `torchvision==0.29.1` from the
   PyTorch wheel index of the chosen accelerator (`cpu`, `cu130`, `rocm7.2`),
   then ComfyUI's `requirements.txt` from the same tag under a constraints file
-  that pins those three, so pip cannot replace them from PyPI. One build
-  argument (`TORCH_INDEX`) selects the accelerator.
+  that pins those two, so pip cannot replace them from PyPI. One build
+  argument (`TORCH_INDEX`) selects the accelerator. torchaudio is intentionally
+  not installed because ComfyUI v0.46.0 does not use it; re-add it deliberately
+  if a future version needs it.
 - Runs as uid 65532 with no custom nodes, no ComfyUI-Manager and no models.
   Models, custom nodes, input, output and user data are named volumes.
 - The GPU variants set `COMFYUI_REQUIRE_GPU=1`; the entrypoint then exits

@@ -48,7 +48,7 @@ exits at once with `COMFYUI_REQUIRE_GPU=1 but torch sees no GPU`. Check
   such as `HSA_OVERRIDE_GFX_VERSION`; add them in your own override file.
 
 Older drivers can build another PyTorch variant by overriding the `TORCH_INDEX`,
-`TORCH_VERSION`, `TORCHVISION_VERSION` and `TORCHAUDIO_VERSION` build arguments in `docker/comfyui`.
+`TORCH_VERSION` and `TORCHVISION_VERSION` build arguments in `docker/comfyui`.
 
 ## Adding models
 

@@ -45,10 +45,10 @@ class ResolvedConfigTests(unittest.TestCase):
 
 class TorchWheelTests(unittest.TestCase):
     def test_pinned_versions_read_from_dockerfile(self):
-        text = "ARG TORCH_VERSION=2.14.1\nARG TORCHVISION_VERSION=0.29.1\nARG TORCHAUDIO_VERSION=2.11.0\n"
+        text = "ARG TORCH_VERSION=2.14.1\nARG TORCHVISION_VERSION=0.29.1\n"
         self.assertEqual(
             check_torch_wheels.pinned_versions(text),
-            {"torch": "2.14.1", "torchvision": "0.29.1", "torchaudio": "2.11.0"},
+            {"torch": "2.14.1", "torchvision": "0.29.1"},
         )
 
     def test_index_match_requires_exact_version_and_index(self):
