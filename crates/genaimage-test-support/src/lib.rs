@@ -6,8 +6,10 @@
 
 mod api_fixture;
 mod fake_llm;
+mod fake_ollama;
 pub use api_fixture::{install_contract_workflow, ApiFixture};
 pub use fake_llm::{FakeLlmEvent, FakeLlmScript, FakeLlmServer, FakeToolCallDelta};
+pub use fake_ollama::{FakeOllamaScript, FakeOllamaServer, FakePullStep};
 
 use axum::{
     body::Bytes,
