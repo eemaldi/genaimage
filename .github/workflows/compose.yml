@@ -1,0 +1,89 @@
+name: Compose stack
+
+on:
+  pull_request:
+    paths:
+      - "compose*.yaml"
+      - "docker/**"
+      - "Dockerfile"
+      - "scripts/check_compose_config.py"
+      - "scripts/check_torch_wheels.py"
+      - "scripts/tests/test_compose.py"
+      - "scripts/tests/test_check_compose_config.py"
+      - ".github/workflows/compose.yml"
+  push:
+    branches: [main]
+    paths:
+      - "compose*.yaml"
+      - "docker/**"
+      - "Dockerfile"
+      - "scripts/check_compose_config.py"
+      - "scripts/check_torch_wheels.py"
+      - "scripts/tests/test_compose.py"
+      - "scripts/tests/test_check_compose_config.py"
+      - ".github/workflows/compose.yml"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compose-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compose-stack:
+    name: Compose stack (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          docker system prune --all --force
+          df -h /
+
+      - name: Validate the Compose files and the resolved configuration
+        run: |
+          for files in "compose.yaml" "compose.yaml compose.nvidia.yaml" "compose.yaml compose.rocm.yaml"; do
+            args=$(printf -- '-f %s ' $files)
+            docker compose $args config --quiet
+            docker compose $args config --format json | python3 scripts/check_compose_config.py
+          done
+
+      - name: Check that the pinned PyTorch wheels exist
+        run: python3 scripts/check_torch_wheels.py docker/comfyui/Dockerfile cpu cu130 rocm7.2
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the stack and wait until every service is healthy
+        run: docker compose up -d --wait --wait-timeout 600
+
+      - name: Check every service from the host
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8190/api/v1/health
+          curl --fail --silent --show-error http://127.0.0.1:8188/system_stats
+          curl --fail --silent --show-error http://127.0.0.1:11434/api/version
+
+      - name: Check that GenAImage reaches ComfyUI over the Compose network
+        run: |
+          health=$(curl --fail --silent --show-error http://127.0.0.1:8190/api/v1/health)
+          echo "$health"
+          echo "$health" | python3 -c "import json, sys; h = json.load(sys.stdin); assert h['image_backend'] == 'ok', h"
+
+      - name: Show Compose diagnostics
+        if: failure()
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color || true
+
+      - name: Remove the stack
+        if: always()
+        run: docker compose down --volumes

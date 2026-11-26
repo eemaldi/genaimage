@@ -30,10 +30,11 @@ Build ComfyUI from a thin Dockerfile in `docker/comfyui/`:
 - ComfyUI `v0.46.0` from `Comfy-Org/ComfyUI`, pinned by tag and verified against
   the full commit SHA (`COMFYUI_COMMIT`) at build time; the `.git` directory is
   removed.
-- `torch==2.14.1` and `torchvision==0.29.1` from the PyTorch wheel index of the
-  chosen accelerator (`cpu`, `cu130`, `rocm7.2`), then ComfyUI's
-  `requirements.txt` from the same tag. One build argument (`TORCH_INDEX`)
-  selects the accelerator.
+- `torch==2.14.1`, `torchvision==0.29.1` and `torchaudio==2.11.0` from the
+  PyTorch wheel index of the chosen accelerator (`cpu`, `cu130`, `rocm7.2`),
+  then ComfyUI's `requirements.txt` from the same tag under a constraints file
+  that pins those three, so pip cannot replace them from PyPI. One build
+  argument (`TORCH_INDEX`) selects the accelerator.
 - Runs as uid 65532 with no custom nodes, no ComfyUI-Manager and no models.
   Models, custom nodes, input, output and user data are named volumes.
 - The GPU variants set `COMFYUI_REQUIRE_GPU=1`; the entrypoint then exits
@@ -57,4 +58,8 @@ GPU builds (the stack targets `linux/amd64`).
 - The newer PyTorch wheels need an up-to-date NVIDIA driver (CUDA 13: 580 or
   later) or ROCm 7.2 support for the card; users with older drivers override
   `TORCH_INDEX` and the torch versions.
+- Only the torch family is pinned, by version and from one index. Other
+  transitive Python dependencies float within the ranges in ComfyUI's
+  `requirements.txt`, so two builds of the same revision can differ; there is no
+  hash lock.
 - Pinned wheels and digests age; a routine update is needed for security fixes.

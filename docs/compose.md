@@ -48,7 +48,7 @@ exits at once with `COMFYUI_REQUIRE_GPU=1 but torch sees no GPU`. Check
   such as `HSA_OVERRIDE_GFX_VERSION`; add them in your own override file.
 
 Older drivers can build another PyTorch variant by overriding the `TORCH_INDEX`,
-`TORCH_VERSION` and `TORCHVISION_VERSION` build arguments in `docker/comfyui`.
+`TORCH_VERSION`, `TORCHVISION_VERSION` and `TORCHAUDIO_VERSION` build arguments in `docker/comfyui`.
 
 ## Adding models
 
@@ -72,9 +72,10 @@ docker compose cp ./model.safetensors comfyui:/opt/comfyui/models/checkpoints/
 ```
 
 ComfyUI lists new files without a restart after a refresh. Pull an Ollama model
-yourself, then choose it in the portal settings or set `GENAIMAGE_LLM_TEXT_MODEL`
-(and optionally `GENAIMAGE_LLM_VISION_MODEL`) in the environment of
-`docker compose up`:
+yourself, then choose it in the portal settings. Alternatively set
+`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in the
+environment of `docker compose up`, but leave them unset rather than empty: an
+empty value locks the setting to empty through the environment.
 
 ```sh
 docker compose exec ollama ollama pull <model>
@@ -115,3 +116,19 @@ git pull && docker compose up -d --build   # update
 
 Volumes persist across `down` and updates. `down --volumes` deletes everything,
 including downloaded models and run records.
+
+Named volumes are initialised from the image on first use (ownership and the
+`models`, `custom_nodes`, `input`, `output` and `user` scaffolding). Upgrades do
+not refresh that scaffolding in a volume that already exists. Bind mounts
+instead of named volumes get none of it: no copy-up and no image ownership, so
+make the host directory writable by uid 65532 (ComfyUI) yourself.
+
+## Continuous integration
+
+The `Compose stack` workflow (`.github/workflows/compose.yml`) builds and starts
+the CPU stack, checks that every service is healthy and that GenAImage reaches
+ComfyUI, validates all three file combinations (the resolved configuration must
+publish only on `127.0.0.1` and never use `network_mode`), and checks that the
+pinned PyTorch wheels exist on the `cpu`, `cu130` and `rocm7.2` indexes. It runs
+only when Compose, Docker or its own scripts change, plus weekly and on demand,
+not on every pull request. GPU variants are validated but never started in CI.
