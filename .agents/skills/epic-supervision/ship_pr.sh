@@ -14,7 +14,7 @@ repo=${GENAIMAGE_REPO:-eemaldi/genaimage}
 
 git fetch -q origin
 if ! git merge-base --is-ancestor origin/main "origin/$branch"; then
-  echo "origin/$branch is behind origin/main; ask the developer to rebase." >&2
+  echo "origin/$branch is behind origin/main; start a fresh developer to rebase." >&2
   exit 2
 fi
 if ! grep -Eq "(Closes|Refs) #$issue\b" "$body"; then
