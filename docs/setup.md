@@ -94,8 +94,9 @@ Not yet available: nothing is published until the first release tag exists.
 Each release provides archives for Linux (x86_64, aarch64), macOS (arm64,
 x86_64) and Windows (x86_64), each containing the `genaimage` binary with the
 portal embedded, a `SHA256SUMS` file, and a multi-arch image
-(`linux/amd64`, `linux/arm64`) at `ghcr.io/eemaldi/genaimage`. Pre-releases
-(for example `v0.1.0-rc.1`) never move the `latest` image tag.
+(`linux/amd64`, `linux/arm64`) at `ghcr.io/eemaldi/genaimage`. Every release is
+tagged `<version>`; `latest` moves only for stable releases, and pre-releases
+(for example `v0.1.0-rc.1`) never move it.
 
 ```sh
 # Download an archive and SHA256SUMS from the GitHub Release, then verify.

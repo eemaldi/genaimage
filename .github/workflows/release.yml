@@ -4,11 +4,6 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Build every artefact and the image without publishing anything
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -27,6 +22,7 @@ jobs:
       publish: ${{ steps.meta.outputs.publish }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       image: ${{ steps.meta.outputs.image }}
+      rust: ${{ steps.meta.outputs.rust }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -39,16 +35,20 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           EVENT: ${{ github.event_name }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           publish=false
-          if [ "$REF_TYPE" = tag ] && { [ "$EVENT" = push ] || [ "$DRY_RUN" = false ]; }; then
+          if [ "$REF_TYPE" = tag ] && [ "$EVENT" = push ]; then
             publish=true
             if [ "$REF_NAME" != "v${version}" ]; then
               echo "::error::Tag ${REF_NAME} does not match the workspace version ${version} in Cargo.toml (expected v${version})"
               exit 1
             fi
+          fi
+          rust=$(sed -nE 's/^FROM docker\.io\/library\/rust:([0-9]+\.[0-9]+)(\.[0-9]+)?-.*/\1\2/p' Dockerfile | head -n 1)
+          if [ -z "$rust" ]; then
+            echo "::error::Could not read the Rust version from the Dockerfile build stage"
+            exit 1
           fi
           prerelease=false
           case "$version" in *-*) prerelease=true ;; esac
@@ -57,6 +57,7 @@ jobs:
             echo "publish=${publish}"
             echo "prerelease=${prerelease}"
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "rust=${rust}"
           } >> "$GITHUB_OUTPUT"
           echo "Version ${version}, publish=${publish}, prerelease=${prerelease}"
 
@@ -120,13 +121,17 @@ jobs:
 
       - name: Set up Rust target
         shell: bash
+        env:
+          RUST_VERSION: ${{ needs.prepare.outputs.rust }}
         run: |
-          rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
-          rustup default stable
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --target "${{ matrix.target }}"
+          rustup default "${RUST_VERSION}"
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked -p genaimage --target "${{ matrix.target }}"
+        run: |
+          test -f apps/portal/dist/index.html || { echo "::error::Portal build is missing; the binary would not embed it"; exit 1; }
+          cargo build --release --locked -p genaimage --target "${{ matrix.target }}"
 
       - name: Smoke test binary
         if: matrix.smoke
@@ -144,10 +149,10 @@ jobs:
           [ -f "$bin" ] || bin="$bin.exe"
           cp "$bin" "dist/${NAME}/"
           cp README.md "dist/${NAME}/"
-          if [ -f LICENSE ]; then cp LICENSE "dist/${NAME}/"; fi
+          if [ -f LICENSE ]; then cp LICENSE "dist/${NAME}/"; else echo "::warning::No LICENSE file; the archive ships without one"; fi
           cd dist
           if [ "${{ runner.os }}" = Windows ]; then
-            powershell -NoProfile -Command "Compress-Archive -Path '${NAME}' -DestinationPath '${NAME}.zip'"
+            pwsh -NoProfile -Command "Compress-Archive -Path '${NAME}' -DestinationPath '${NAME}.zip'"
           else
             tar -czf "${NAME}.tar.gz" "${NAME}"
           fi
@@ -375,7 +380,13 @@ jobs:
           TAG: ${{ github.ref_name }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
-          flags=()
-          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest); fi
-          gh release create "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
-            --verify-tag --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}"
+          files=(dist/*.tar.gz dist/*.zip dist/SHA256SUMS)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release ${TAG} exists; uploading assets to it only"
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            flags=()
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest); fi
+            gh release create "$TAG" "${files[@]}" \
+              --verify-tag --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}"
+          fi

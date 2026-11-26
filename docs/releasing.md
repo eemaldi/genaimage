@@ -6,10 +6,11 @@ Releases are built by `.github/workflows/release.yml`. The version comes from
 ## Dry run
 
 A dry run builds every archive and both image architectures and publishes
-nothing: no GitHub Release, no GHCR push, no attestations.
+nothing: no GitHub Release, no GHCR push, no attestations. Only a pushed `v*`
+tag publishes; a manual (`workflow_dispatch`) run is always a dry run.
 
 ```sh
-gh workflow run release.yml --ref main -f dry_run=true
+gh workflow run release.yml --ref main
 gh run watch
 ```
 
@@ -38,3 +39,24 @@ cancel each other.
 Verify a release with the steps in [setup](setup.md#releases). Deleting a bad
 release means deleting the GitHub Release, the tag and the GHCR package
 versions by hand.
+
+## Rust toolchain
+
+The binaries are built with the same Rust version as the container image. The
+`prepare` job reads it from the `FROM docker.io/library/rust:<version>-...` line
+of the `Dockerfile`, so that line is the single source of truth. To bump it,
+change the tag and digest in the `Dockerfile` together, then run a dry run.
+`ci.yml` still uses the latest stable toolchain (follow-up).
+
+## Recovering a partial release
+
+Publishing is not atomic: the image, attestations and GitHub Release are
+separate steps. If a tag run fails part-way, re-run the failed jobs from the
+workflow run. Re-runs are safe:
+
+- The `release` job uploads to the existing release for that tag with
+  `--clobber` instead of creating a second one, and never touches another tag.
+- Image tags are immutable by version. Never retag a different digest under an
+  existing version; if the image is wrong, fix forward with a new version.
+- Archives are rebuilt on re-run, so their checksums can change; the new
+  `SHA256SUMS` and attestations replace the old ones in that release.
