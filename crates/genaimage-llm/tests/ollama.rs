@@ -225,7 +225,8 @@ async fn an_idle_stream_fails_after_the_idle_timeout() {
         FakePullStep::Hang,
     ])
     .await;
-    let manager = manager(&server.base_url(), None, Duration::from_millis(200));
+    let manager = manager(&server.base_url(), None, Duration::from_millis(50))
+        .with_pull_idle_timeout(Duration::from_millis(200));
     let events = run_pull(&server, &manager).await;
     assert_eq!(events.len(), 2);
     assert_failed_with(&events, "no data");

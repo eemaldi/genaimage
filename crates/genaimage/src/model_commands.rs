@@ -1,3 +1,4 @@
+use client::PullStart;
 use futures_util::StreamExt;
 use genaimage_api::{
     client::{self, Client},
@@ -166,6 +167,7 @@ async fn follow(client: &Client, output: Output, first: ModelPull) -> Result<Mod
     loop {
         match client.model_pull_events(&id).await {
             Ok(mut stream) => {
+                connection_failures = 0;
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(pull) => {
@@ -198,7 +200,10 @@ async fn follow(client: &Client, output: Output, first: ModelPull) -> Result<Mod
         // The stream was cut before a terminal event: ask for the real state.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         match client.model_pull(&id).await {
-            Ok(pull) => last = pull,
+            Ok(pull) => {
+                connection_failures = 0;
+                last = pull;
+            }
             Err(client::Error::Problem(problem)) if problem.status == 404 => {
                 return Err(Error::PullUnknown(id));
             }
@@ -220,11 +225,23 @@ async fn follow(client: &Client, output: Output, first: ModelPull) -> Result<Mod
 }
 
 async fn pull(client: &Client, output: Output, name: &str) -> Result<Status, Error> {
-    let started = client.start_model_pull(name).await?;
-    output.progress(format_args!(
-        "Pulling {} (pull {}).",
-        started.name, started.id
-    ));
+    let started = match client.start_model_pull(name).await? {
+        PullStart::Started(started) => {
+            output.progress(format_args!(
+                "Pulling {} (pull {}).",
+                started.name, started.id
+            ));
+            started
+        }
+        PullStart::AlreadyRunning { id } => {
+            let existing = client.model_pull(&id).await?;
+            output.progress(format_args!(
+                "{} is already being pulled (pull {}); following that pull.",
+                existing.name, existing.id
+            ));
+            existing
+        }
+    };
     let done = follow(client, output, started).await?;
     output.write(&done, |out| match done.state {
         ModelPullState::Succeeded => writeln!(

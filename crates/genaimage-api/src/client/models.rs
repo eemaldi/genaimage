@@ -2,12 +2,22 @@ use std::pin::Pin;
 
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
-use reqwest::{header, Method};
+use reqwest::{header, Method, StatusCode};
 
 use super::{events::with_safe_preamble, has_content_type, Client, Error};
 use crate::{
     CheckpointsResponse, LlmModelsResponse, ModelPull, ModelPullListResponse, StartModelPullRequest,
 };
+
+/// The outcome of asking for a pull.
+#[derive(Clone, Debug)]
+pub enum PullStart {
+    Started(ModelPull),
+    /// The model is already being pulled; follow this pull ID.
+    AlreadyRunning {
+        id: String,
+    },
+}
 
 /// Snapshots of one pull. The stream ends after the terminal snapshot
 /// (`succeeded`, `failed` or `cancelled`); ending earlier means the connection
@@ -19,15 +29,33 @@ impl Client {
         self.json(self.get(&["models", "llm"])?).await
     }
 
-    /// Starts a download. Call only for an explicit user action.
-    pub async fn start_model_pull(&self, name: &str) -> Result<ModelPull, Error> {
-        self.json(
-            self.request(Method::POST, &["models", "llm", "pulls"])?
-                .json(&StartModelPullRequest {
-                    name: name.to_owned(),
-                }),
-        )
-        .await
+    /// Starts a download. Call only for an explicit user action. A 409 means
+    /// the model is already being pulled: attach to that pull, never post again.
+    pub async fn start_model_pull(&self, name: &str) -> Result<PullStart, Error> {
+        let request = self
+            .request(Method::POST, &["models", "llm", "pulls"])?
+            .json(&StartModelPullRequest {
+                name: name.to_owned(),
+            })
+            .build()?;
+        let response = self.execute(request).await?;
+        if response.status() == StatusCode::CONFLICT {
+            let existing = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|location| location.rsplit('/').next())
+                .filter(|id| !id.is_empty());
+            if let Some(id) = existing {
+                return Ok(PullStart::AlreadyRunning { id: id.to_owned() });
+            }
+        }
+        Ok(PullStart::Started(
+            Self::check_status(response, false, false)
+                .await?
+                .json()
+                .await?,
+        ))
     }
 
     pub async fn model_pulls(&self) -> Result<ModelPullListResponse, Error> {

@@ -481,3 +481,58 @@ async fn checkpoints_without_comfyui_or_loader_are_an_error_not_an_empty_list() 
     .await;
     assert!(problem.detail.contains("CheckpointLoaderSimple"));
 }
+
+#[tokio::test]
+async fn a_cut_event_stream_does_not_stop_the_pull_and_a_late_attach_sees_the_end() {
+    let (server, api) = ollama(gated()).await;
+    let pull = started(&api, "llama3.2:3b").await;
+    wait_for(&api, &pull.id, |pull| pull.total_bytes.is_some()).await;
+    let events = api
+        .request(Method::GET, &format!("{PULLS}/{}/events", pull.id))
+        .send()
+        .await
+        .unwrap();
+    let mut body = events.bytes_stream();
+    timeout(BOUND, body.next())
+        .await
+        .expect("first frame")
+        .unwrap()
+        .unwrap();
+    drop(body);
+    server.release_pulls();
+    assert_eq!(
+        finished(&api, &pull.id).await.state,
+        ModelPullState::Succeeded
+    );
+    let late = api
+        .request(Method::GET, &format!("{PULLS}/{}/events", pull.id))
+        .send()
+        .await
+        .unwrap();
+    let frames = sse_frames(late).await;
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].0, "pull_succeeded");
+}
+
+#[tokio::test]
+async fn cross_origin_pull_requests_are_refused_without_a_download() {
+    let (server, api) = ollama(gated()).await;
+    let pull = started(&api, "llama3.2:3b").await;
+    for (method, path) in [
+        (Method::POST, PULLS.to_owned()),
+        (Method::DELETE, format!("{PULLS}/{}", pull.id)),
+    ] {
+        let refused = api
+            .request_with_origin(method, &path, Some("http://evil.example"))
+            .json(&json!({ "name": "other:1b" }))
+            .send()
+            .await
+            .unwrap();
+        ApiHarness::assert_problem(refused, StatusCode::FORBIDDEN).await;
+    }
+    assert_eq!(server.pull_count(), 1);
+    assert_eq!(
+        pull_state(&api, &pull.id).await.state,
+        ModelPullState::Running
+    );
+}

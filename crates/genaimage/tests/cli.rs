@@ -1428,6 +1428,33 @@ mod models {
     }
 
     #[tokio::test]
+    async fn pulling_a_model_already_being_pulled_follows_the_existing_pull() {
+        let (ollama, server) = with_ollama(vec![
+            FakePullStep::progress("pulling manifest"),
+            FakePullStep::Gate,
+            FakePullStep::success(),
+        ])
+        .await;
+        let client = Client::with_base_url(&server.origin).unwrap();
+        client.start_model_pull("llama3.2:3b").await.unwrap();
+        let attached = server.cli(&["models", "pull", "llama3.2:3b"]);
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            ollama.release_pulls();
+        };
+        let (output, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(attached, release)
+        })
+        .await
+        .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Pulled llama3.2:3b"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("already being pulled"));
+        assert_eq!(ollama.pull_count(), 1);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn pull_fails_for_invalid_names_and_unsupported_endpoints() {
         let (ollama, server) = with_ollama(FakePullStep::default_steps()).await;
         let problem = error(

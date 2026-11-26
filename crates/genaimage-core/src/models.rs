@@ -5,7 +5,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use async_trait::async_trait;
@@ -25,6 +25,8 @@ const MAX_NAME_SEGMENTS: usize = 3;
 pub const CHECKPOINT_LOADER: &str = "CheckpointLoaderSimple";
 const DEFAULT_MAX_CONCURRENT_PULLS: usize = 2;
 const DEFAULT_RETAINED_PULLS: usize = 50;
+const MAX_TRACKED_LAYERS: usize = 256;
+const MAX_DIGEST_BYTES: usize = 128;
 
 #[derive(Debug, Error, Eq, PartialEq)]
 #[error("{0}")]
@@ -202,6 +204,24 @@ impl Entry {
     }
 }
 
+/// Ends a pull that is still running when its owner goes away: the request
+/// future was dropped before the pull task started, or the task panicked or
+/// was aborted. A finished pull is left unchanged.
+struct PullGuard {
+    registry: PullRegistry,
+    id: String,
+    message: &'static str,
+}
+
+impl Drop for PullGuard {
+    fn drop(&mut self) {
+        let message = self.message;
+        self.registry.update(&self.id, |entry| {
+            entry.finish(PullState::Failed, "failed", Some(message.to_owned()));
+        });
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     entries: BTreeMap<String, Entry>,
@@ -248,6 +268,11 @@ impl PullRegistry {
             return Err(PullStartError::ShuttingDown);
         }
         let (id, cancel) = self.reserve(name)?;
+        let mut guard = PullGuard {
+            registry: self.clone(),
+            id: id.clone(),
+            message: "The request that started this pull was interrupted.",
+        };
         let stream = match manager.pull(name).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -255,15 +280,20 @@ impl PullRegistry {
                 return Err(error.into());
             }
         };
+        guard.message = "The pull task ended unexpectedly.";
         let snapshot = self.get(&id).expect("a reserved pull exists");
         let registry = self.clone();
         let shutdown = self.shutdown.clone();
         tokio::spawn(async move {
             registry
-                .drive(&id, stream, cancel, shutdown, on_success)
+                .drive(guard, stream, cancel, shutdown, on_success)
                 .await;
         });
         Ok(snapshot)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn reserve(
@@ -271,7 +301,7 @@ impl PullRegistry {
         name: &str,
     ) -> std::result::Result<(String, CancellationToken), PullStartError> {
         let canonical = canonical_name(name);
-        let mut inner = self.inner.lock().expect("pull registry lock");
+        let mut inner = self.lock();
         let running = inner
             .entries
             .values()
@@ -331,19 +361,20 @@ impl PullRegistry {
     }
 
     fn release(&self, id: &str) {
-        let mut inner = self.inner.lock().expect("pull registry lock");
+        let mut inner = self.lock();
         inner.entries.remove(id);
         inner.order.retain(|candidate| candidate != id);
     }
 
     async fn drive(
         &self,
-        id: &str,
+        guard: PullGuard,
         mut stream: PullStream,
         cancel: CancellationToken,
         shutdown: CancellationToken,
         on_success: impl FnOnce(),
     ) {
+        let id = guard.id.as_str();
         loop {
             let event = tokio::select! {
                 biased;
@@ -364,15 +395,28 @@ impl PullRegistry {
                         entry.snapshot.status = progress.status;
                         if let (Some(digest), Some(total)) = (progress.digest, progress.total_bytes)
                         {
-                            entry.layers.insert(
-                                digest.clone(),
-                                (total, progress.completed_bytes.unwrap_or(0)),
-                            );
-                            entry.snapshot.layer = Some(digest);
-                            entry.snapshot.total_bytes =
-                                Some(entry.layers.values().map(|layer| layer.0).sum());
-                            entry.snapshot.completed_bytes =
-                                Some(entry.layers.values().map(|layer| layer.1).sum());
+                            let known = entry.layers.contains_key(&digest);
+                            if digest.len() <= MAX_DIGEST_BYTES
+                                && (known || entry.layers.len() < MAX_TRACKED_LAYERS)
+                            {
+                                entry.layers.insert(
+                                    digest.clone(),
+                                    (total, progress.completed_bytes.unwrap_or(0)),
+                                );
+                                entry.snapshot.layer = Some(digest);
+                                entry.snapshot.total_bytes = Some(
+                                    entry
+                                        .layers
+                                        .values()
+                                        .fold(0u64, |sum, layer| sum.saturating_add(layer.0)),
+                                );
+                                entry.snapshot.completed_bytes = Some(
+                                    entry
+                                        .layers
+                                        .values()
+                                        .fold(0u64, |sum, layer| sum.saturating_add(layer.1)),
+                                );
+                            }
                         }
                         entry.publish();
                     });
@@ -408,7 +452,7 @@ impl PullRegistry {
 
     /// Applies `change` unless the pull already reached a terminal state.
     fn update(&self, id: &str, change: impl FnOnce(&mut Entry)) -> bool {
-        let mut inner = self.inner.lock().expect("pull registry lock");
+        let mut inner = self.lock();
         match inner.entries.get_mut(id) {
             Some(entry) if !entry.snapshot.state.is_terminal() => {
                 change(entry);
@@ -420,7 +464,7 @@ impl PullRegistry {
 
     /// Newest first.
     pub fn list(&self) -> Vec<PullSnapshot> {
-        let inner = self.inner.lock().expect("pull registry lock");
+        let inner = self.lock();
         inner
             .order
             .iter()
@@ -430,21 +474,21 @@ impl PullRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<PullSnapshot> {
-        let inner = self.inner.lock().expect("pull registry lock");
+        let inner = self.lock();
         inner.entries.get(id).map(|entry| entry.snapshot.clone())
     }
 
     /// Subscribes to snapshots of one pull. The receiver holds the latest
     /// snapshot immediately, so a client can attach at any time.
     pub fn subscribe(&self, id: &str) -> Option<watch::Receiver<PullSnapshot>> {
-        let inner = self.inner.lock().expect("pull registry lock");
+        let inner = self.lock();
         inner.entries.get(id).map(|entry| entry.sender.subscribe())
     }
 
     /// Cancels a running pull and records `cancelled`. A finished pull is
     /// returned unchanged.
     pub fn cancel(&self, id: &str) -> Option<PullSnapshot> {
-        let mut inner = self.inner.lock().expect("pull registry lock");
+        let mut inner = self.lock();
         let entry = inner.entries.get_mut(id)?;
         if !entry.snapshot.state.is_terminal() {
             entry.cancel.cancel();
@@ -494,6 +538,8 @@ pub fn checkpoint_names(object_info: &Value) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     use serde_json::json;
 
     #[test]
@@ -566,6 +612,159 @@ mod tests {
             registry.start(Arc::new(Hanging), "other", || {}).await,
             Err(PullStartError::TooManyPulls { max: 2 })
         ));
+    }
+
+    struct Stalled;
+
+    #[async_trait]
+    impl LlmModelManager for Stalled {
+        async fn list_installed(&self) -> Result<ModelListing> {
+            unimplemented!()
+        }
+
+        async fn pull(&self, _name: &str) -> Result<PullStream> {
+            std::future::pending().await
+        }
+    }
+
+    struct Panicking;
+
+    #[async_trait]
+    impl LlmModelManager for Panicking {
+        async fn list_installed(&self) -> Result<ModelListing> {
+            unimplemented!()
+        }
+
+        async fn pull(&self, _name: &str) -> Result<PullStream> {
+            Ok(Box::pin(futures_util::stream::poll_fn(|_| {
+                panic!("stream failure")
+            })))
+        }
+    }
+
+    async fn settled(registry: &PullRegistry, id: &str) -> PullSnapshot {
+        for _ in 0..100 {
+            let snapshot = registry.get(id).unwrap();
+            if snapshot.state.is_terminal() {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("pull did not settle");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_start_request_frees_the_name_and_the_slot() {
+        let registry = PullRegistry::new(CancellationToken::new());
+        let abandoned = tokio::time::timeout(
+            Duration::from_millis(50),
+            registry.start(Arc::new(Stalled), "llama3", || {}),
+        )
+        .await;
+        assert!(abandoned.is_err());
+        let pulls = registry.list();
+        assert_eq!(pulls.len(), 1);
+        assert_eq!(pulls[0].state, PullState::Failed);
+        assert!(pulls[0].error.as_deref().unwrap().contains("interrupted"));
+        assert!(registry
+            .start(Arc::new(Hanging), "llama3", || {})
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_panicking_pull_task_ends_failed_and_frees_the_slot() {
+        let registry = PullRegistry::new(CancellationToken::new());
+        let started = registry
+            .start(Arc::new(Panicking), "llama3", || {})
+            .await
+            .unwrap();
+        let snapshot = settled(&registry, &started.id).await;
+        assert_eq!(snapshot.state, PullState::Failed);
+        assert!(snapshot.error.as_deref().unwrap().contains("unexpectedly"));
+        assert!(registry
+            .start(Arc::new(Hanging), "llama3", || {})
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn concurrent_aliases_start_exactly_one_pull() {
+        let registry = PullRegistry::new(CancellationToken::new());
+        let (first, second) = tokio::join!(
+            registry.start(Arc::new(Hanging), "llama3", || {}),
+            registry.start(Arc::new(Hanging), "llama3:latest", || {}),
+        );
+        assert_eq!(
+            [first.is_ok(), second.is_ok()]
+                .into_iter()
+                .filter(|accepted| *accepted)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            first.err().or(second.err()),
+            Some(PullStartError::InProgress(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn retention_never_evicts_a_running_pull() {
+        let mut registry = PullRegistry::new(CancellationToken::new());
+        registry.retained = 2;
+        let running = registry
+            .start(Arc::new(Hanging), "keep", || {})
+            .await
+            .unwrap();
+        for index in 0..5 {
+            let pull = registry
+                .start(Arc::new(Hanging), &format!("other{index}"), || {})
+                .await
+                .unwrap();
+            registry.cancel(&pull.id).unwrap();
+        }
+        assert_eq!(registry.get(&running.id).unwrap().state, PullState::Running);
+        assert_eq!(registry.list().len(), 2);
+    }
+
+    struct Flood;
+
+    #[async_trait]
+    impl LlmModelManager for Flood {
+        async fn list_installed(&self) -> Result<ModelListing> {
+            unimplemented!()
+        }
+
+        async fn pull(&self, _name: &str) -> Result<PullStream> {
+            let layer = |digest: String| {
+                PullEvent::Progress(PullProgress {
+                    status: "pulling".to_owned(),
+                    digest: Some(digest),
+                    total_bytes: Some(u64::MAX),
+                    completed_bytes: Some(u64::MAX),
+                })
+            };
+            let mut events = (0..MAX_TRACKED_LAYERS + 10)
+                .map(|index| layer(format!("sha256:{index}")))
+                .collect::<Vec<_>>();
+            events.push(layer("x".repeat(MAX_DIGEST_BYTES + 1)));
+            events.push(PullEvent::Success);
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn untrusted_progress_saturates_and_caps_tracked_layers() {
+        let registry = PullRegistry::new(CancellationToken::new());
+        let started = registry
+            .start(Arc::new(Flood), "llama3", || {})
+            .await
+            .unwrap();
+        let snapshot = settled(&registry, &started.id).await;
+        assert_eq!(snapshot.state, PullState::Succeeded);
+        assert_eq!(snapshot.total_bytes, Some(u64::MAX));
+        assert_eq!(snapshot.completed_bytes, Some(u64::MAX));
+        assert_eq!(snapshot.layer.as_deref(), Some("sha256:255"));
     }
 
     #[test]

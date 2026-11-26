@@ -31,6 +31,9 @@ const MAX_TAGS_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_VERSION_BODY_BYTES: usize = 16 * 1024;
 const DEFAULT_MAX_PULL_LINE_BYTES: usize = 64 * 1024;
 const DEFAULT_PULL_OVERALL_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+/// Ollama can stay silent for minutes while it verifies a large layer, so a
+/// pull tolerates far more silence than an ordinary completion request.
+const DEFAULT_PULL_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 const NOT_V1_REASON: &str = "The LLM base URL does not end in /v1, so the Ollama native API cannot be derived. Install models with your LLM server's own tooling.";
 const NOT_OLLAMA_REASON: &str = "This endpoint does not answer Ollama's native API (/api/version), so it looks like another OpenAI-compatible server such as llama.cpp or LM Studio. Install models with that server's own tooling.";
@@ -40,6 +43,7 @@ pub struct OllamaModelManager {
     native_base: Option<Url>,
     max_line_bytes: usize,
     overall_timeout: Duration,
+    pull_idle_timeout: Duration,
 }
 
 impl fmt::Debug for OllamaModelManager {
@@ -49,6 +53,7 @@ impl fmt::Debug for OllamaModelManager {
             .field("native_base", &self.native_base)
             .field("max_line_bytes", &self.max_line_bytes)
             .field("overall_timeout", &self.overall_timeout)
+            .field("pull_idle_timeout", &self.pull_idle_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -61,14 +66,21 @@ impl OllamaModelManager {
             native_base,
             max_line_bytes: DEFAULT_MAX_PULL_LINE_BYTES,
             overall_timeout: DEFAULT_PULL_OVERALL_TIMEOUT,
+            pull_idle_timeout: DEFAULT_PULL_IDLE_TIMEOUT,
         }
     }
 
-    /// Caps one streamed pull line and the whole pull. The idle timeout between
-    /// chunks comes from the provider options.
+    /// Caps one streamed pull line and the whole pull.
     pub fn with_pull_limits(mut self, max_line_bytes: usize, overall_timeout: Duration) -> Self {
         self.max_line_bytes = max_line_bytes;
         self.overall_timeout = overall_timeout;
+        self
+    }
+
+    /// Replaces the longest silence tolerated between pull chunks (default 10
+    /// minutes; it does not use the provider's completion idle timeout).
+    pub fn with_pull_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.pull_idle_timeout = idle_timeout;
         self
     }
 
@@ -256,7 +268,7 @@ impl LlmModelManager for OllamaModelManager {
         Ok(pull_stream(
             response,
             PullLimits {
-                idle: self.provider.options.idle_timeout,
+                idle: self.pull_idle_timeout,
                 overall: self.overall_timeout,
                 max_line: self.max_line_bytes,
                 api_key: self.provider.options.api_key.clone(),

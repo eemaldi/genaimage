@@ -282,7 +282,7 @@ export interface paths {
         get: operations["models_llm_pull_get"];
         put?: never;
         post?: never;
-        /** @description Cancel a running pull. The response has state `cancelled`; a pull that already finished is returned unchanged. Cancelling closes the request to Ollama; partial downloads may remain and a later pull resumes them. */
+        /** @description Cancel a running pull. The response has state `cancelled`; a pull that already finished is returned unchanged. Cancelling closes the request to Ollama; partial downloads may remain and a later pull resumes them. A cancelled pull may still have installed the model if it finished just before the request closed, so `GET /models/llm` is the authoritative answer. */
         delete: operations["models_llm_pull_cancel"];
         options?: never;
         /** @description The current snapshot of a pull, with exact byte counts. 404 when the ID is unknown, including after a server restart. */

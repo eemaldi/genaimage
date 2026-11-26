@@ -44,11 +44,15 @@ fn llm_unavailable(detail: impl Into<String>) -> Problem {
     .with_type("urn:genaimage:problem:llm-unavailable")
 }
 
-fn llm_not_configured() -> Problem {
+fn llm_not_configured(state: &AppState) -> Problem {
+    let detail = match &state.model_manager_error {
+        Some(error) => format!("The configured LLM endpoint is not valid: {error}"),
+        None => "No LLM endpoint is configured.".to_owned(),
+    };
     Problem::new(
         StatusCode::SERVICE_UNAVAILABLE,
-        "No LLM endpoint is configured.",
-        "Set llm.base_url in Settings and restart the server.",
+        detail,
+        "Set a valid llm.base_url in Settings and restart the server.",
     )
     .with_type("urn:genaimage:problem:llm-not-configured")
 }
@@ -100,7 +104,10 @@ fn role_models(state: &AppState, listing: &ModelListing) -> Vec<LlmRoleModel> {
 pub(super) async fn list_llm(
     State(state): State<AppState>,
 ) -> Result<Json<LlmModelsResponse>, Problem> {
-    let manager = state.model_manager.clone().ok_or_else(llm_not_configured)?;
+    let manager = state
+        .model_manager
+        .clone()
+        .ok_or_else(|| llm_not_configured(&state))?;
     let listing = timeout(LISTING_DEADLINE, manager.list_installed())
         .await
         .map_err(|_| llm_unavailable("Listing the installed models timed out."))?
@@ -188,7 +195,7 @@ pub(super) async fn start_pull(
         }
     };
     let Some(manager) = state.model_manager.clone() else {
-        return llm_not_configured().into_response();
+        return llm_not_configured(&state).into_response();
     };
     let roles = state.llm_roles().clone();
     match state
@@ -288,7 +295,7 @@ pub(super) async fn get_pull(
     delete, path = "/models/llm/pulls/{id}",
     operation_id = "models_llm_pull_cancel",
     tag = "models",
-    description = "Cancel a running pull. The response has state `cancelled`; a pull that already finished is returned unchanged. Cancelling closes the request to Ollama; partial downloads may remain and a later pull resumes them.",
+    description = "Cancel a running pull. The response has state `cancelled`; a pull that already finished is returned unchanged. Cancelling closes the request to Ollama; partial downloads may remain and a later pull resumes them. A cancelled pull may still have installed the model if it finished just before the request closed, so `GET /models/llm` is the authoritative answer.",
     params(("id" = String, Path, description = "Pull ID")),
     responses(
         (status = 200, body = genaimage_api::ModelPull),
@@ -301,11 +308,12 @@ pub(super) async fn cancel_pull(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ModelPull>, Problem> {
-    state
-        .pulls
-        .cancel(&id)
-        .map(|snapshot| Json(api_pull(snapshot)))
-        .ok_or_else(pull_not_found)
+    let snapshot = state.pulls.cancel(&id).ok_or_else(pull_not_found)?;
+    if snapshot.state == PullState::Cancelled {
+        // The model may have finished installing before the request closed.
+        state.llm_roles().invalidate_models();
+    }
+    Ok(Json(api_pull(snapshot)))
 }
 
 fn pull_event(pull: &ModelPull) -> Event {
@@ -340,17 +348,18 @@ pub(super) async fn pull_events(
     Path(id): Path<String>,
 ) -> Result<Response, Problem> {
     let receiver = state.pulls.subscribe(&id).ok_or_else(pull_not_found)?;
-    let frames = stream::unfold(Some(receiver), |receiver| async move {
-        let mut receiver = receiver?;
+    // The first frame is the current snapshot; later frames wait for a change.
+    let frames = stream::unfold(Some((receiver, true)), |state| async move {
+        let (mut receiver, first) = state?;
+        if !first {
+            tokio::time::sleep(PROGRESS_INTERVAL).await;
+            // The sender lives as long as the pull entry; a closed channel ends the stream.
+            receiver.changed().await.ok()?;
+        }
         let pull = api_pull(receiver.borrow_and_update().clone());
         let event = pull_event(&pull);
-        if pull.state != ModelPullState::Running {
-            return Some((Ok::<_, Infallible>(event), None));
-        }
-        tokio::time::sleep(PROGRESS_INTERVAL).await;
-        // The sender lives as long as the pull entry; a closed channel ends the stream.
-        let next = receiver.changed().await.ok().map(|()| receiver);
-        Some((Ok(event), next))
+        let next = (pull.state == ModelPullState::Running).then_some((receiver, false));
+        Some((Ok::<_, Infallible>(event), next))
     })
     .take_until(async move { state.wait_for_shutdown().await });
     Ok((
@@ -373,7 +382,7 @@ fn locations() -> Vec<CheckpointLocation> {
             environment: CheckpointEnvironment::Compose,
             directory: COMPOSE_CHECKPOINTS.into(),
             steps: vec![
-                "The directory is in the comfyui-models volume of the ComfyUI service.".into(),
+                "The directory is in the genaimage_comfyui-models volume of the ComfyUI service (see docs/compose.md).".into(),
                 format!(
                     "Copy a file in with: docker compose cp <file> comfyui:{COMPOSE_CHECKPOINTS}/"
                 ),

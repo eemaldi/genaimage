@@ -38,7 +38,17 @@ Pulls are server-side jobs held in memory:
 - A stream that ends without Ollama's `success` is a failure. Idle streams and
   pulls running longer than six hours are stopped and reported as failed.
 - `DELETE /api/v1/models/llm/pulls/{id}` cancels a running pull. Ollama keeps
-  partial layers, so a later pull resumes.
+  partial layers, so a later pull resumes. The request may have finished just
+  before it closed, so a cancelled pull can still have installed the model;
+  `GET /api/v1/models/llm` is authoritative.
+- A pull whose request or task ends unexpectedly is recorded as failed and
+  frees its model name and slot.
+- Pulls tolerate up to ten minutes of silence between progress lines, because
+  Ollama can stay quiet while it verifies a large layer. Progress tracks at
+  most 256 layers.
+- Names are only canonicalised for the implied `:latest` tag. `llama3` and
+  `library/llama3` count as different names; Ollama deduplicates their layers,
+  so the second pull is cheap.
 
 Starter models are listed in the [Ollama library](https://ollama.com/library).
 For a text assistant with tool calling, look at the models tagged "tools"; for
@@ -53,9 +63,12 @@ lacks that node, the answer is an error, not an empty list.
 
 Put checkpoint files here:
 
-- Docker Compose: `/opt/comfyui/models/checkpoints` in the `comfyui-models`
-  volume. Copy a file in with
-  `docker compose cp <file> comfyui:/opt/comfyui/models/checkpoints/`.
+- Docker Compose: `/opt/comfyui/models/checkpoints` in the
+  `genaimage_comfyui-models` volume (see [Compose](compose.md)). Copy a file in
+  with `docker compose cp <file> comfyui:/opt/comfyui/models/checkpoints/`.
+  Under Compose you can also pull an LLM model with
+  `docker compose exec ollama ollama pull <model>`; the Ollama native API is
+  `http://ollama:11434`.
 - Native ComfyUI: `<ComfyUI>/models/checkpoints`.
 
 ComfyUI only sees new files after a refresh (press `r` in its web UI) or a
