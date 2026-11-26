@@ -3,10 +3,12 @@
 mod assistant;
 mod events;
 mod media;
+mod models;
 
 pub use assistant::{AssistantEventStream, AssistantStreamEvent};
 pub use events::{EventStream, EventsQuery, StreamEvent};
 pub use media::{HeadEndpoint, OutputRequest};
+pub use models::{ModelPullStream, PullStart};
 
 use std::{error::Error as StdError, io, net::SocketAddr, time::Duration};
 
@@ -326,7 +328,12 @@ impl Client {
     ) -> Result<Response, Error> {
         let request = request.build()?;
         let head = request.method() == Method::HEAD;
-        let response = self.http.execute(request).await.map_err(|source| {
+        let response = self.execute(request).await?;
+        Self::check_status(response, allow_not_modified, head).await
+    }
+
+    async fn execute(&self, request: reqwest::Request) -> Result<Response, Error> {
+        self.http.execute(request).await.map_err(|source| {
             if !source.is_connect() {
                 Error::Http(source)
             } else if connection_refused(&source) {
@@ -340,7 +347,14 @@ impl Client {
                     source,
                 }
             }
-        })?;
+        })
+    }
+
+    async fn check_status(
+        response: Response,
+        allow_not_modified: bool,
+        head: bool,
+    ) -> Result<Response, Error> {
         let status = response.status();
         if status.is_success() || (allow_not_modified && status == StatusCode::NOT_MODIFIED) {
             return Ok(response);

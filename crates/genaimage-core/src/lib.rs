@@ -9,6 +9,7 @@ pub mod extensions;
 pub mod image_backend;
 pub mod llm_roles;
 pub mod media;
+pub mod models;
 pub mod orchestrator;
 pub mod persistence;
 #[doc(hidden)]

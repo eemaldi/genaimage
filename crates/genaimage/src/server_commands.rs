@@ -15,6 +15,7 @@ pub(crate) enum Command<'a> {
     Open { print: bool },
     Run(&'a crate::RunCommand),
     Jobs(&'a crate::JobsCommand),
+    Models(&'a crate::ModelsCommand),
 }
 
 impl<'a> Command<'a> {
@@ -29,6 +30,7 @@ impl<'a> Command<'a> {
             } => Some(Self::ConfigShow),
             crate::Command::Run(command) => Some(Self::Run(command)),
             crate::Command::Jobs { command } => Some(Self::Jobs(command)),
+            crate::Command::Models { command } => Some(Self::Models(command)),
             _ => None,
         }
     }
@@ -37,6 +39,9 @@ impl<'a> Command<'a> {
         match self {
             Self::Run(command) => return crate::run_commands::run(client, output, command).await,
             Self::Jobs(command) => return crate::run_commands::jobs(client, output, command).await,
+            Self::Models(command) => {
+                return crate::model_commands::execute(client, output, command).await
+            }
             Self::Doctor => return crate::doctor::run(client, output).await,
             Self::Workflow(WorkflowCommand::List) => {
                 let catalogue = client.workflows().await?;

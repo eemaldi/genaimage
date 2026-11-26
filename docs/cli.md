@@ -36,6 +36,7 @@ for client commands and select that instance with `--server`. The retired
 | `7` | A submission failed, or the run being waited on failed or was cancelled. |
 | `8` | The submission outcome is unconfirmed. Reconcile before considering another submission. |
 | `9` | The observation deadline or a run-status request deadline expired. |
+| `10` | A model pull failed or was cancelled. |
 
 For the server-backed commands below, `--json` writes one compact JSON value
 and a newline to stdout for a completed command, including a negative check
@@ -49,7 +50,8 @@ stderr, leaving stdout empty:
 
 The stable `kind` values are `server_not_running`, `server_problem`,
 `client_error`, `input_error`, `output_error`, `file_error`, `browser_error`,
-`failed_submission`, `unknown_submission`, and `wait_timeout`. Server problem
+`failed_submission`, `unknown_submission`, `wait_timeout`, `model_pull_failed`
+and `model_pull_unknown`. Server problem
 details, when available, are included in
 `problem` with `type`, `title`, `status`, `detail`, `recovery`, and optional
 `errors` (field-specific `{key, reason}` objects). Submission errors include
@@ -202,6 +204,35 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
 filesystem paths. To validate a local workflow, install its sidecar and graph
 in the server's configured workflow directory and use the ID from
 `workflow list`. Resolve duplicate IDs or broken sidecars before validating.
+
+### Models
+
+Nothing here downloads unless you run `models pull`. See [models](models.md)
+for where checkpoints go and which models to start with.
+
+- **`models list`** reads installed LLM models and ComfyUI checkpoints from the
+  server. `--json` prints `{llm, llm_error, checkpoints, checkpoints_error}`.
+  `llm` is `{source, pull_supported, pull_unsupported_reason, models, roles}`:
+  `source` is `ollama` or `openai`, each model has `name`, `size_bytes`
+  (exact, nullable), `digest` and `modified_at`, and each of the `text` and
+  `vision` `roles` has `model` and `state` (`present`, `missing` or
+  `not_configured`; the name must match exactly). `checkpoints` is
+  `{checkpoints, locations, refresh_note}`. A section that is unavailable, for
+  example because ComfyUI is down, is `null` with its message in `*_error`, and
+  the command exits `4`; it never reports an empty list as success.
+- **`models pull <NAME>`** starts one explicit download through Ollama and
+  follows it. In human mode a progress line with sizes and a percentage is
+  written to stderr. The total grows as Ollama announces layers. With `--json`
+  stdout carries one final status object only:
+  `{id, name, state, status, layer, total_bytes, completed_bytes, error,
+  started_at, finished_at, sequence}`, where `state` is `succeeded`, `failed`
+  or `cancelled`. A failure exits `10` with that object on stdout and a
+  `model_pull_failed` error on stderr. A name that is invalid (`422`), already
+  being pulled (`409`), or on an endpoint without Ollama's pull API (`501`)
+  exits `4` with the problem details. Interrupting the CLI does not cancel the
+  server's pull; the server keeps it running and the next `models pull` of the
+  same name reports a `409` naming it. If the server restarts mid-pull the
+  outcome is unknown (`model_pull_unknown`, exit `5`); run `models list`.
 
 ### Runs and jobs
 

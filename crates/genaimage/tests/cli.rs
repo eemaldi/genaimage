@@ -56,6 +56,10 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
+        Self::start_with_env(&[]).await
+    }
+
+    async fn start_with_env(env: &[(&str, &str)]) -> Self {
         let ApiFixture {
             workspace,
             fake,
@@ -68,7 +72,12 @@ impl Server {
             workspace.path(),
             Some(&config_path),
             workspace.path(),
-            |key| (key == "HOME").then(|| workspace.path().display().to_string()),
+            |key| {
+                env.iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| (*value).to_owned())
+                    .or_else(|| (key == "HOME").then(|| workspace.path().display().to_string()))
+            },
         )
         .unwrap();
         let workflows = config.workflows.clone();
@@ -1316,4 +1325,155 @@ async fn healthcheck_derives_its_target_from_the_server_port() {
         .env("GENAIMAGE_SERVER_PORT", ok.to_string())
         .arg("healthcheck");
     assert!(cli_output(command).await.status.success());
+}
+
+mod models {
+    use genaimage_test_support::{
+        FakeLlmScript, FakeLlmServer, FakeOllamaScript, FakeOllamaServer, FakePullStep,
+    };
+
+    use super::*;
+
+    async fn with_ollama(pull: Vec<FakePullStep>) -> (FakeOllamaServer, Server) {
+        let ollama = FakeOllamaServer::start(FakeOllamaScript {
+            pull,
+            ..Default::default()
+        })
+        .await;
+        let server = Server::start_with_env(&[
+            ("GENAIMAGE_LLM_URL", &ollama.base_url()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "llama3.2:3b"),
+        ])
+        .await;
+        *server.fake.object_info_override.lock().unwrap() = Some(json!({
+            "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["sd.safetensors"]]}}}
+        }));
+        (ollama, server)
+    }
+
+    #[tokio::test]
+    async fn list_json_has_a_stable_shape_and_never_pulls() {
+        let (ollama, server) = with_ollama(FakePullStep::default_steps()).await;
+        let report = report(server.cli(&["--json", "models", "list"]).await, 0);
+        assert_eq!(report["llm_error"], Value::Null);
+        assert_eq!(report["checkpoints_error"], Value::Null);
+        assert_eq!(report["llm"]["source"], "ollama");
+        assert_eq!(report["llm"]["pull_supported"], true);
+        assert_eq!(report["llm"]["models"][0]["size_bytes"], 2_019_393_189_u64);
+        assert_eq!(report["llm"]["roles"][0]["state"], "present");
+        assert_eq!(
+            report["checkpoints"]["checkpoints"],
+            json!(["sd.safetensors"])
+        );
+        assert_eq!(ollama.pull_count(), 0);
+
+        let human = server.cli(&["models", "list"]).await;
+        assert_eq!(human.status.code(), Some(0));
+        let text = String::from_utf8_lossy(&human.stdout);
+        assert!(
+            text.contains("llama3.2:3b  2.0 GB") && text.contains("sd.safetensors"),
+            "{text}"
+        );
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn list_exits_non_zero_when_a_section_is_unavailable() {
+        let server = Server::start().await;
+        let report = report(server.cli(&["--json", "models", "list"]).await, 4);
+        assert_eq!(report["llm"], Value::Null);
+        assert!(report["llm_error"]
+            .as_str()
+            .unwrap()
+            .contains("No LLM endpoint"));
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pull_json_prints_the_final_status_object() {
+        let (ollama, server) = with_ollama(FakePullStep::default_steps()).await;
+        let done = report(
+            server
+                .cli(&["--json", "models", "pull", "llama3.2:3b"])
+                .await,
+            0,
+        );
+        assert_eq!(done["state"], "succeeded");
+        assert_eq!(done["name"], "llama3.2:3b");
+        assert_eq!(done["total_bytes"], 1000);
+        assert_eq!(done["completed_bytes"], 1000);
+        assert_eq!(done["error"], Value::Null);
+        assert_eq!(ollama.pull_count(), 1);
+
+        let human = server.cli(&["models", "pull", "llama3.2:3b"]).await;
+        assert_eq!(human.status.code(), Some(0));
+        assert!(String::from_utf8_lossy(&human.stdout).contains("Pulled llama3.2:3b (1.0 kB)"));
+        assert!(String::from_utf8_lossy(&human.stderr).contains("(100%)"));
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_prints_the_object_and_exits_ten() {
+        let (_ollama, server) = with_ollama(vec![FakePullStep::progress("pulling manifest")]).await;
+        let output = server
+            .cli(&["--json", "models", "pull", "llama3.2:3b"])
+            .await;
+        assert_eq!(output.status.code(), Some(10));
+        let done: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(done["state"], "failed");
+        assert!(done["error"].as_str().unwrap().contains("without Ollama"));
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["kind"], "model_pull_failed");
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pulling_a_model_already_being_pulled_follows_the_existing_pull() {
+        let (ollama, server) = with_ollama(vec![
+            FakePullStep::progress("pulling manifest"),
+            FakePullStep::Gate,
+            FakePullStep::success(),
+        ])
+        .await;
+        let client = Client::with_base_url(&server.origin).unwrap();
+        client.start_model_pull("llama3.2:3b").await.unwrap();
+        let attached = server.cli(&["models", "pull", "llama3.2:3b"]);
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            ollama.release_pulls();
+        };
+        let (output, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(attached, release)
+        })
+        .await
+        .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Pulled llama3.2:3b"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("already being pulled"));
+        assert_eq!(ollama.pull_count(), 1);
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pull_fails_for_invalid_names_and_unsupported_endpoints() {
+        let (ollama, server) = with_ollama(FakePullStep::default_steps()).await;
+        let problem = error(
+            server.cli(&["--json", "models", "pull", "bad name"]).await,
+            4,
+        );
+        assert_eq!(problem["problem"]["status"], 422);
+        assert_eq!(ollama.pull_count(), 0);
+        server.shutdown().await;
+
+        let llm = FakeLlmServer::start(FakeLlmScript::default()).await;
+        let server = Server::start_with_env(&[("GENAIMAGE_LLM_URL", &llm.base_url())]).await;
+        let problem = error(
+            server
+                .cli(&["--json", "models", "pull", "llama3.2:3b"])
+                .await,
+            4,
+        );
+        assert_eq!(problem["problem"]["status"], 501);
+        server.shutdown().await;
+    }
 }

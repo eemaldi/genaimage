@@ -346,6 +346,13 @@ impl LlmRoles {
         })
     }
 
+    /// Forgets the cached model list so the next use probes the service again,
+    /// for example after the user explicitly pulled a model.
+    pub fn invalidate_models(&self) {
+        *self.cache.write().expect("LLM cache lock") = ProbeCache::Pending;
+        self.refresh_in_background();
+    }
+
     pub fn refresh_in_background(&self) {
         if self.provider.is_none()
             || self.background_refreshing.load(Ordering::Acquire)
@@ -441,7 +448,8 @@ impl LlmRoles {
         }
     }
 
-    fn model(&self, role: LlmRole) -> &str {
+    /// The configured model name for a role; empty when the role is not configured.
+    pub fn model(&self, role: LlmRole) -> &str {
         match role {
             LlmRole::Text => &self.text_model,
             LlmRole::Vision => &self.vision_model,

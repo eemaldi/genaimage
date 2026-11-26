@@ -22,7 +22,11 @@ use axum::{
 };
 use genaimage_core::{
     assistant::{ConversationService, PromptTemplates},
+    models::{LlmModelManager, PullRegistry},
     Harness, HarnessError, LlmRoles,
+};
+use genaimage_llm::{
+    OllamaModelManager, OpenAiCompatibleProvider, OpenAiCompatibleProviderOptions,
 };
 use tokio::task::JoinHandle;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -47,6 +51,10 @@ pub struct AppState {
     workflow_index: Arc<WorkflowIndexCache>,
     llm_roles: LlmRoles,
     conversation_service: ConversationService,
+    model_manager: Option<Arc<dyn LlmModelManager>>,
+    /// Why the startup LLM configuration produced no model manager.
+    model_manager_error: Option<String>,
+    pulls: PullRegistry,
     // Shared by tasks from every active-harness generation.
     lifecycle: Arc<Lifecycle>,
 }
@@ -89,9 +97,35 @@ impl AppState {
             harness.conversation_store(),
             PromptTemplates::new(harness.config().data_dir()),
         );
+        let lifecycle = Arc::<Lifecycle>::default();
+        // LLM endpoint settings need a restart, so the startup configuration is the live one.
+        let llm = &harness.config().llm;
+        let (model_manager, model_manager_error) = if llm.base_url.is_empty() {
+            (None, None)
+        } else {
+            match OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions::from_config(llm)) {
+                Ok(provider) => (
+                    Some(Arc::new(OllamaModelManager::new(provider)) as Arc<dyn LlmModelManager>),
+                    None,
+                ),
+                Err(error) => {
+                    let message = error.to_string().replace(
+                        llm.api_key
+                            .as_deref()
+                            .filter(|key| !key.is_empty())
+                            .unwrap_or("\0"),
+                        "<redacted>",
+                    );
+                    (None, Some(message.chars().take(300).collect()))
+                }
+            }
+        };
         Self {
             settings: Arc::new(settings::SettingsState::new(harness)),
-            lifecycle: Arc::default(),
+            model_manager,
+            model_manager_error,
+            pulls: PullRegistry::new(lifecycle.shutdown.clone()),
+            lifecycle,
             portal_dev: None,
             workflow_index: Arc::default(),
             llm_roles,
@@ -101,6 +135,13 @@ impl AppState {
 
     pub fn with_llm_roles(mut self, llm_roles: LlmRoles) -> Self {
         self.llm_roles = llm_roles;
+        self
+    }
+
+    /// Replaces the model manager built from the startup `llm` configuration.
+    pub fn with_model_manager(mut self, manager: Arc<dyn LlmModelManager>) -> Self {
+        self.model_manager = Some(manager);
+        self.model_manager_error = None;
         self
     }
 

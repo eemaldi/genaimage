@@ -25,6 +25,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
+mod ollama;
+pub use ollama::OllamaModelManager;
+
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -63,6 +66,19 @@ impl fmt::Debug for OpenAiCompatibleProviderOptions {
             .field("first_byte_timeout", &self.first_byte_timeout)
             .field("idle_timeout", &self.idle_timeout)
             .finish()
+    }
+}
+
+impl OpenAiCompatibleProviderOptions {
+    pub fn from_config(config: &genaimage_core::config::LlmConfig) -> Self {
+        Self {
+            base_url: config.base_url.clone(),
+            api_key: config.api_key.clone(),
+            allowed_hosts: config.allowed_hosts.clone(),
+            connect_timeout: Duration::from_secs(config.connect_timeout_secs),
+            first_byte_timeout: Duration::from_secs(config.request_timeout_secs),
+            idle_timeout: Duration::from_secs(config.idle_timeout_secs),
+        }
     }
 }
 

@@ -384,6 +384,19 @@ bytes. Malformed multipart requests return 400,
 oversized requests 413 and unrecognised signatures 415, with problem details
 and a recovery hint.
 
+### Models API
+
+Model bootstrap is explicit. `GET /api/v1/models/llm` lists installed LLM models
+(Ollama `/api/tags`, or `/v1/models` with `pull_supported: false`) and flags the
+configured text and vision models as present or missing.
+`POST /api/v1/models/llm/pulls` is the only operation that downloads, and runs
+only on that request. The core `LlmModelManager` port is implemented by the
+Ollama adapter in `genaimage-llm`, and the core `PullRegistry` keeps pulls in
+memory, one per model name and at most two at a time. Pull state is not
+persisted; see [models](models.md) for the re-attach and restart semantics.
+`GET /api/v1/models/checkpoints` reads ComfyUI `object_info` and fails when it
+cannot, rather than returning an empty list.
+
 ### Runs API
 
 | Method and path (under `/api/v1`) | Behaviour |

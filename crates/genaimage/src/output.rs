@@ -3,7 +3,7 @@ use std::{
     process::ExitCode,
 };
 
-use genaimage_api::{client, ProblemDetails, RunResponse};
+use genaimage_api::{client, ModelPull, ModelPullState, ProblemDetails, RunResponse};
 use serde::Serialize;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -18,6 +18,7 @@ pub(crate) enum Status {
     UnsuccessfulRun = 7,
     UnknownSubmission = 8,
     WaitTimeout = 9,
+    ModelPullFailed = 10,
 }
 
 impl From<Status> for ExitCode {
@@ -37,6 +38,8 @@ pub(crate) enum Error {
     Observe { run_id: String, error: Box<Error> },
     Output(serde_json::Error),
     Io(io::Error),
+    PullFailed(Box<ModelPull>),
+    PullUnknown(String),
 }
 
 impl From<client::Error> for Error {
@@ -139,6 +142,21 @@ impl Error {
                 report.message.push_str(&format!(" Could not confirm the state of run '{run_id}'. Use `genaimage jobs show {run_id}` or `genaimage jobs reconcile {run_id}`."));
                 (status, report)
             }
+            Self::PullFailed(pull) => (
+                Status::ModelPullFailed,
+                ErrorReport::new("model_pull_failed", format!(
+                    "Pull of '{}' {}: {}",
+                    pull.name,
+                    if pull.state == ModelPullState::Cancelled { "was cancelled" } else { "failed" },
+                    pull.error.as_deref().unwrap_or("no detail supplied"),
+                )),
+            ),
+            Self::PullUnknown(id) => (
+                Status::ClientFailure,
+                ErrorReport::new("model_pull_unknown", format!(
+                    "The server no longer knows pull '{id}', probably because it restarted, so its outcome is unknown. Run `genaimage models list` to see whether the model is installed."
+                )),
+            ),
             Self::WaitTimeout(message) => (Status::WaitTimeout, ErrorReport::new("wait_timeout", message)),
             Self::File(message) => (Status::LocalFailure, ErrorReport::new("file_error", message)),
             Self::Input(message) => (Status::LocalFailure, ErrorReport::new("input_error", message)),
@@ -185,6 +203,10 @@ impl Output {
         } else {
             human(&mut stdout).map_err(Error::Io)
         }
+    }
+
+    pub(crate) fn is_json(self) -> bool {
+        self.json
     }
 
     pub(crate) fn progress(self, message: impl std::fmt::Display) {

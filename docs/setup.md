@@ -339,6 +339,9 @@ cargo run -p genaimage -- workflow validate text-to-image --preset fast \
 cargo run -p genaimage -- doctor
 ```
 
+Models are never downloaded automatically. See [models](models.md) to list,
+pull and place them.
+
 ## 4. Verification
 
 Run `python3 scripts/ci_check.py`. It expects Python 3.11 or newer and the Rust
