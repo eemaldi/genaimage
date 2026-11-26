@@ -213,6 +213,7 @@ beforeEach(() => {
   fake.listOutputs.mockResolvedValue({ outputs: [] });
   fake.getSettings.mockResolvedValue({
     config_file: '',
+    config_file_exists: true,
     api_key_set: false,
     api_key_read_only: false,
     restart_required: [],

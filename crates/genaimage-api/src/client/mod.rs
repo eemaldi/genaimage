@@ -23,8 +23,8 @@ use crate::{
     OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
     ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse,
     RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse,
-    SettingsTestResponse, SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
-    WorkflowValidationRequest, WorkflowValidationResponse,
+    SettingsTestResponse, SetupDetectResponse, SetupStatus, SubmitRunRequest, UploadResponse,
+    WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest, WorkflowValidationResponse,
 };
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:3000";
@@ -276,6 +276,17 @@ impl Client {
 
     pub async fn upload_metadata(&self, id: &str) -> Result<UploadResponse, Error> {
         self.json(self.get(&["uploads", id])?).await
+    }
+
+    /// Offline first-run assessment of the saved configuration.
+    pub async fn setup_status(&self) -> Result<SetupStatus, Error> {
+        self.json(self.get(&["setup", "status"])?).await
+    }
+
+    /// Probes a fixed candidate list and the saved endpoints; allow a few seconds.
+    pub async fn detect_services(&self) -> Result<SetupDetectResponse, Error> {
+        self.json(self.request(Method::POST, &["setup", "detect"])?)
+            .await
     }
 
     pub async fn settings(&self) -> Result<SettingsResponse, Error> {

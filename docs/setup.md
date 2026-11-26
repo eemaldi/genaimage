@@ -239,6 +239,16 @@ loopback URLs for new endpoints and probes; configure allow-listed private or
 Compose hosts through the file or environment. Public endpoints are never
 permitted.
 
+### Setup wizard
+
+The portal's first-run setup wizard (`#/setup`) is being built in issue #63 and
+is not yet implemented. Its backend prerequisites exist: `GET /api/v1/setup/status`
+says whether setup is needed (no configuration file and no environment-supplied
+ComfyUI endpoint, or invalid endpoints), and `POST /api/v1/setup/detect` probes a
+fixed list of common local ports and Compose hosts. Hosts that are not
+allow-listed are reported with the setting to add, never probed. See the
+[architecture](architecture.md#local-http-server).
+
 ### Environment overrides
 
 `GENAIMAGE_CONTAINER=1` is not a setting: it only lets `server.host` be

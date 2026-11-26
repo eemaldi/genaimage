@@ -216,98 +216,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/models/checkpoints": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Checkpoints ComfyUI reports through the `ckpt_name` options of CheckpointLoaderSimple, plus where to put new files. GenAImage never downloads checkpoints. If ComfyUI cannot be reached, or does not list that node, the response is 503 and not an empty list. */
-        get: operations["models_checkpoints"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        /** @description Checkpoints ComfyUI reports through the `ckpt_name` options of CheckpointLoaderSimple, plus where to put new files. GenAImage never downloads checkpoints. If ComfyUI cannot be reached, or does not list that node, the response is 503 and not an empty list. */
-        head: operations["models_checkpoints_head"];
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/models/llm": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description List installed LLM models and check the configured text and vision models against them (exact name match). `source` is `ollama` when the Ollama native API answered and `openai` for the `/v1/models` fallback, where pulls are unsupported. Never downloads anything. */
-        get: operations["models_llm_list"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        /** @description List installed LLM models and check the configured text and vision models against them (exact name match). `source` is `ollama` when the Ollama native API answered and `openai` for the `/v1/models` fallback, where pulls are unsupported. Never downloads anything. */
-        head: operations["models_llm_list_head"];
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/models/llm/pulls": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Pulls started since the server started, newest first. Finished pulls are kept for a bounded number only. Not persisted: after a restart the list is empty, which never means a model was installed. */
-        get: operations["models_llm_pull_list"];
-        put?: never;
-        /** @description Start downloading one LLM model. This is the only operation that downloads, and it runs only on this explicit request: never at startup, on saving settings, in doctor or after a missing-model error. Returns 202 once the endpoint accepted the request; observe it through the pull resources. Errors: 409 when this model is already being pulled (the problem names the pull), 422 for an invalid name, 429 when too many pulls run, 501 when the endpoint has no native pull API. */
-        post: operations["models_llm_pull_start"];
-        delete?: never;
-        options?: never;
-        /** @description Pulls started since the server started, newest first. Finished pulls are kept for a bounded number only. Not persisted: after a restart the list is empty, which never means a model was installed. */
-        head: operations["models_llm_pull_list_head"];
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/models/llm/pulls/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description The current snapshot of a pull, with exact byte counts. 404 when the ID is unknown, including after a server restart. */
-        get: operations["models_llm_pull_get"];
-        put?: never;
-        post?: never;
-        /** @description Cancel a running pull. The response has state `cancelled`; a pull that already finished is returned unchanged. Cancelling closes the request to Ollama; partial downloads may remain and a later pull resumes them. A cancelled pull may still have installed the model if it finished just before the request closed, so `GET /models/llm` is the authoritative answer. */
-        delete: operations["models_llm_pull_cancel"];
-        options?: never;
-        /** @description The current snapshot of a pull, with exact byte counts. 404 when the ID is unknown, including after a server restart. */
-        head: operations["models_llm_pull_get_head"];
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/models/llm/pulls/{id}/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description SSE stream for one pull; attach at any time, for example after a page reload. The first frame is the current snapshot. Event names: pull_progress (state running), then exactly one of pull_succeeded, pull_failed or pull_cancelled, after which the stream ends. Data is the ModelPull schema. Progress frames are coalesced, so intermediate snapshots may be skipped; the sequence increases. A stream that ends without a terminal event was cut: read the pull again. 404 when the ID is unknown. */
-        get: operations["models_llm_pull_events"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        /** @description SSE stream for one pull; attach at any time, for example after a page reload. The first frame is the current snapshot. Event names: pull_progress (state running), then exactly one of pull_succeeded, pull_failed or pull_cancelled, after which the stream ends. Data is the ModelPull schema. Progress frames are coalesced, so intermediate snapshots may be skipped; the sequence increases. A stream that ends without a terminal event was cut: read the pull again. 404 when the ID is unknown. */
-        head: operations["models_llm_pull_events_head"];
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/openapi.json": {
         parameters: {
             query?: never;
@@ -626,6 +534,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/setup/detect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Probe a fixed list of local ComfyUI and OpenAI-compatible LLM addresses plus the saved URLs, concurrently, with a 1.5 s deadline each. Takes no body and no user-supplied hosts. Hosts outside the allow-list are reported as skipped with the setting to add, never probed. The LLM API key is sent only to the saved LLM URL. */
+        post: operations["setup_detect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/setup/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed. */
+        get: operations["setup_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed. */
+        head: operations["setup_status_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads": {
         parameters: {
             query?: never;
@@ -931,24 +874,28 @@ export interface components {
         };
         /** Format: binary */
         BinaryData: string;
-        /** @enum {string} */
-        CheckpointEnvironment: "compose" | "native";
-        /** @description Where to put checkpoint files for one kind of installation. */
-        CheckpointLocation: {
-            directory: string;
-            environment: components["schemas"]["CheckpointEnvironment"];
-            steps: string[];
-        };
-        CheckpointsResponse: {
-            /** @description `ckpt_name` options of ComfyUI's `CheckpointLoaderSimple`, sorted. */
-            checkpoints: string[];
-            locations: components["schemas"]["CheckpointLocation"][];
-            /** @description ComfyUI only sees new files after a refresh or restart. */
-            refresh_note: string;
-        };
         CreateAssistantConversationRequest: {
             title: string;
         };
+        /** @enum {string} */
+        DetectStatus: "found" | "not_found" | "skipped" | "error";
+        /** @description The outcome for one fixed candidate or the configured URL. */
+        DetectedService: {
+            /** @description True when this is the currently saved endpoint. */
+            configured: boolean;
+            detail: string;
+            fix?: string | null;
+            flavour?: null | components["schemas"]["LlmFlavour"];
+            kind: components["schemas"]["DetectedServiceKind"];
+            /** @description Human label such as `Ollama` or `ComfyUI (Compose)`. */
+            label: string;
+            status: components["schemas"]["DetectStatus"];
+            url: string;
+            /** @description ComfyUI version reported by `/system_stats`, when present. */
+            version?: string | null;
+        };
+        /** @enum {string} */
+        DetectedServiceKind: "comfyui" | "llm";
         /** @description One diagnostic check. `fix` is present for every status except `ok`. */
         DoctorCheck: {
             /** @description A concrete action naming the setting, command or page to change. */
@@ -1086,88 +1033,18 @@ export interface components {
         HealthStatus: "ok" | "unavailable" | "not_configured";
         /** @enum {string} */
         ImageBackendHealthReason: "probe_failed" | "timeout";
-        InstalledLlmModel: {
-            digest?: string | null;
-            modified_at?: string | null;
-            name: string;
-            /**
-             * Format: int64
-             * @description Exact bytes on disk; null when the endpoint does not report it.
-             */
-            size_bytes?: number | null;
-        };
+        /** @enum {string} */
+        LlmFlavour: "ollama" | "openai";
         LlmModel: {
             id: string;
             supports_tools: boolean;
             supports_vision: boolean;
-        };
-        /** @enum {string} */
-        LlmModelRole: "text" | "vision";
-        /**
-         * @description Which API listed the installed LLM models.
-         * @enum {string}
-         */
-        LlmModelSource: "ollama" | "openai";
-        LlmModelsResponse: {
-            models: components["schemas"]["InstalledLlmModel"][];
-            /** @description Whether `POST /api/v1/models/llm/pulls` can work on this endpoint. */
-            pull_supported: boolean;
-            /** @description Set when `pull_supported` is false. */
-            pull_unsupported_reason?: string | null;
-            roles: components["schemas"]["LlmRoleModel"][];
-            source: components["schemas"]["LlmModelSource"];
         };
         LlmRoleHealth: {
             model?: string | null;
             reason?: string | null;
             status: components["schemas"]["HealthStatus"];
         };
-        /** @description A configured model role checked against the installed list. */
-        LlmRoleModel: {
-            model?: string | null;
-            role: components["schemas"]["LlmModelRole"];
-            state: components["schemas"]["LlmRoleModelState"];
-        };
-        /** @enum {string} */
-        LlmRoleModelState: "present" | "missing" | "not_configured";
-        /**
-         * @description A snapshot of one pull. Pulls live in server memory only: after a restart
-         *     the id is unknown (404), which never means the model was installed. List the
-         *     models to find out.
-         */
-        ModelPull: {
-            /** Format: int64 */
-            completed_bytes?: number | null;
-            /** @description Set when `state` is `failed`, or when `cancelled` has a reason. */
-            error?: string | null;
-            /** Format: date-time */
-            finished_at?: string | null;
-            id: string;
-            /** @description The layer announced by the latest progress line. */
-            layer?: string | null;
-            name: string;
-            /**
-             * Format: int64
-             * @description Increases with every update of this pull.
-             */
-            sequence: number;
-            /** Format: date-time */
-            started_at: string;
-            state: components["schemas"]["ModelPullState"];
-            /** @description Ollama's latest status text, or `starting`, `success`, `failed`, `cancelled`. */
-            status: string;
-            /**
-             * Format: int64
-             * @description Exact sum of the layer sizes announced so far; it can grow as layers start.
-             */
-            total_bytes?: number | null;
-        };
-        ModelPullListResponse: {
-            /** @description Newest first; only pulls since the server started, with finished ones bounded. */
-            pulls: components["schemas"]["ModelPull"][];
-        };
-        /** @enum {string} */
-        ModelPullState: "running" | "succeeded" | "failed" | "cancelled";
         OutputAnnotationListResponse: {
             annotations: components["schemas"]["OutputAnnotationResponse"][];
         };
@@ -1406,6 +1283,8 @@ export interface components {
             api_key_set: boolean;
             /** @description Existing selected configuration file or the default target for a first save. */
             config_file: string;
+            /** @description Whether `config_file` exists on disk now. False before a first save. */
+            config_file_exists: boolean;
             /** @description Keys whose saved and active values differ. */
             restart_required: string[];
             settings: {
@@ -1420,10 +1299,42 @@ export interface components {
             llm_models?: components["schemas"]["LlmModel"][];
             llm_reason?: string | null;
         };
-        /** @description An explicit request to download one model. Nothing downloads without it. */
-        StartModelPullRequest: {
-            /** @description `[namespace/]name[:tag]`, for example `llama3.2:3b`. At most 255 bytes. */
-            name: string;
+        SetupDetectResponse: {
+            services: components["schemas"]["DetectedService"][];
+        };
+        /** @description One saved endpoint and where its value comes from. */
+        SetupEndpoint: components["schemas"]["SettingSource"] & {
+            /** @description Empty when the optional LLM is not configured. */
+            configured_url: string;
+        };
+        SetupReason: {
+            /** @description Only blocking reasons make `needs_setup` true. */
+            blocking: boolean;
+            code: components["schemas"]["SetupReasonCode"];
+            fix?: string | null;
+            /** @description Offending settings, as `key: reason`. */
+            items?: string[];
+            summary: string;
+        };
+        /**
+         * @description Stable codes explaining the first-run assessment.
+         * @enum {string}
+         */
+        SetupReasonCode: "no_config_file" | "invalid_config" | "endpoints_from_environment" | "llm_not_configured" | "llm_text_model_unset";
+        /** @description Offline assessment of the saved configuration. It never probes a service. */
+        SetupStatus: {
+            comfyui: components["schemas"]["SetupEndpoint"];
+            config_file: string;
+            config_file_exists: boolean;
+            /** @description True when the environment owns `comfyui.base_url`, so saving cannot change it. */
+            endpoints_env_owned: boolean;
+            llm: components["schemas"]["SetupEndpoint"];
+            /**
+             * @description True when any reason is blocking: no config file and the ComfyUI endpoint
+             *     is not set by the environment, or the saved configuration is invalid.
+             */
+            needs_setup: boolean;
+            reasons: components["schemas"]["SetupReason"][];
         };
         /** @description Explicit bindings for a workflow configured in the local workspace. */
         SubmitRunRequest: {
@@ -3235,588 +3146,6 @@ export interface operations {
             };
             /** @description Problem details */
             503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    models_checkpoints: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CheckpointsResponse"];
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description ComfyUI unreachable or without the checkpoint loader */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_checkpoints_head: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description ComfyUI unreachable or without the checkpoint loader */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    models_llm_list: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LlmModelsResponse"];
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description LLM not configured or unreachable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_llm_list_head: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description LLM not configured or unreachable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    models_llm_pull_list: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelPullListResponse"];
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_llm_pull_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StartModelPullRequest"];
-            };
-        };
-        responses: {
-            202: {
-                headers: {
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelPull"];
-                };
-            };
-            /** @description Problem details */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description This model is already being pulled */
-            409: {
-                headers: {
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            415: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Invalid model name */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Too many pulls are running */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description The endpoint has no native pull API */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description LLM not configured or unreachable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_llm_pull_list_head: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    models_llm_pull_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Pull ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelPull"];
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Unknown pull */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_llm_pull_cancel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Pull ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelPull"];
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Unknown pull */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_llm_pull_get_head: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Pull ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Unknown pull */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    models_llm_pull_events: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Pull ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description SSE frames; JSON data is ModelPull */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": string;
-                };
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Unknown pull */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Problem details */
-            421: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    models_llm_pull_events_head: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Pull ID */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description SSE frames; JSON data is ModelPull */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Unknown pull */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Problem details */
-            421: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6913,6 +6242,236 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
+            };
+        };
+    };
+    setup_detect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupDetectResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    setup_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupStatus"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    setup_status_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

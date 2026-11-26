@@ -18,6 +18,9 @@ pub use models::*;
 mod settings;
 pub use settings::*;
 
+mod setup;
+pub use setup::*;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 

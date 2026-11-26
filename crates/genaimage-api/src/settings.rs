@@ -32,6 +32,8 @@ pub struct SettingsResponse {
     pub settings: BTreeMap<String, Setting>,
     /// Existing selected configuration file or the default target for a first save.
     pub config_file: String,
+    /// Whether `config_file` exists on disk now. False before a first save.
+    pub config_file_exists: bool,
     /// Whether a write-only LLM API key is configured. Its value is never returned.
     pub api_key_set: bool,
     /// Whether the environment owns the write-only LLM API key.

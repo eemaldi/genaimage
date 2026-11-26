@@ -18,7 +18,7 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::{
-    config::{validate_endpoint, ResolvedConfig},
+    config::ResolvedConfig,
     image_backend::{parse_release, MIN_TARGETED_INTERRUPT},
     AssistantUnavailable, Harness, LlmRoleBinding, LlmRoles, LoadedWorkflow,
 };
@@ -230,19 +230,11 @@ fn clean(text: &str, secret: Option<&str>) -> String {
 }
 
 fn config_check(config: &ResolvedConfig, restart_required: &[String]) -> DoctorCheck {
-    let mut problems = Vec::new();
-    if let Err(error) = config.comfyui.validate_base_url() {
-        problems.push(error.to_string());
-    }
-    if !config.llm.base_url.is_empty() {
-        if let Err(error) = validate_endpoint(
-            "llm.base_url",
-            &config.llm.base_url,
-            &config.llm.allowed_hosts,
-        ) {
-            problems.push(error.to_string());
-        }
-    }
+    let problems: Vec<String> = config
+        .endpoint_errors()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     let file = config.settings_file().display();
     if !problems.is_empty() {
         return DoctorCheck::error(

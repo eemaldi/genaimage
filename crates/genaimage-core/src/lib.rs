@@ -14,6 +14,7 @@ pub mod orchestrator;
 pub mod persistence;
 #[doc(hidden)]
 pub mod safe_file;
+pub mod setup;
 mod tool_schema;
 pub mod uploads;
 pub mod workflow;

@@ -762,63 +762,6 @@
         "format": "binary",
         "type": "string"
       },
-      "CheckpointEnvironment": {
-        "enum": [
-          "compose",
-          "native"
-        ],
-        "type": "string"
-      },
-      "CheckpointLocation": {
-        "description": "Where to put checkpoint files for one kind of installation.",
-        "properties": {
-          "directory": {
-            "type": "string"
-          },
-          "environment": {
-            "$ref": "#/components/schemas/CheckpointEnvironment"
-          },
-          "steps": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "environment",
-          "directory",
-          "steps"
-        ],
-        "type": "object"
-      },
-      "CheckpointsResponse": {
-        "properties": {
-          "checkpoints": {
-            "description": "`ckpt_name` options of ComfyUI's `CheckpointLoaderSimple`, sorted.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "locations": {
-            "items": {
-              "$ref": "#/components/schemas/CheckpointLocation"
-            },
-            "type": "array"
-          },
-          "refresh_note": {
-            "description": "ComfyUI only sees new files after a refresh or restart.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "checkpoints",
-          "locations",
-          "refresh_note"
-        ],
-        "type": "object"
-      },
       "CreateAssistantConversationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -830,6 +773,80 @@
           "title"
         ],
         "type": "object"
+      },
+      "DetectStatus": {
+        "enum": [
+          "found",
+          "not_found",
+          "skipped",
+          "error"
+        ],
+        "type": "string"
+      },
+      "DetectedService": {
+        "description": "The outcome for one fixed candidate or the configured URL.",
+        "properties": {
+          "configured": {
+            "description": "True when this is the currently saved endpoint.",
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flavour": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LlmFlavour",
+                "description": "A hint from the candidate's well-known port, not a protocol check. LLM only."
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DetectedServiceKind"
+          },
+          "label": {
+            "description": "Human label such as `Ollama` or `ComfyUI (Compose)`.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DetectStatus"
+          },
+          "url": {
+            "type": "string"
+          },
+          "version": {
+            "description": "ComfyUI version reported by `/system_stats`, when present.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "url",
+          "configured",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "DetectedServiceKind": {
+        "enum": [
+          "comfyui",
+          "llm"
+        ],
+        "type": "string"
       },
       "DoctorCheck": {
         "description": "One diagnostic check. `fix` is present for every status except `ok`.",
@@ -1388,37 +1405,12 @@
         ],
         "type": "string"
       },
-      "InstalledLlmModel": {
-        "properties": {
-          "digest": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "modified_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "description": "Exact bytes on disk; null when the endpoint does not report it.",
-            "format": "int64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name"
+      "LlmFlavour": {
+        "enum": [
+          "ollama",
+          "openai"
         ],
-        "type": "object"
+        "type": "string"
       },
       "LlmModel": {
         "properties": {
@@ -1436,58 +1428,6 @@
           "id",
           "supports_tools",
           "supports_vision"
-        ],
-        "type": "object"
-      },
-      "LlmModelRole": {
-        "enum": [
-          "text",
-          "vision"
-        ],
-        "type": "string"
-      },
-      "LlmModelSource": {
-        "description": "Which API listed the installed LLM models.",
-        "enum": [
-          "ollama",
-          "openai"
-        ],
-        "type": "string"
-      },
-      "LlmModelsResponse": {
-        "properties": {
-          "models": {
-            "items": {
-              "$ref": "#/components/schemas/InstalledLlmModel"
-            },
-            "type": "array"
-          },
-          "pull_supported": {
-            "description": "Whether `POST /api/v1/models/llm/pulls` can work on this endpoint.",
-            "type": "boolean"
-          },
-          "pull_unsupported_reason": {
-            "description": "Set when `pull_supported` is false.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "roles": {
-            "items": {
-              "$ref": "#/components/schemas/LlmRoleModel"
-            },
-            "type": "array"
-          },
-          "source": {
-            "$ref": "#/components/schemas/LlmModelSource"
-          }
-        },
-        "required": [
-          "source",
-          "pull_supported",
-          "models",
-          "roles"
         ],
         "type": "object"
       },
@@ -1513,135 +1453,6 @@
           "status"
         ],
         "type": "object"
-      },
-      "LlmRoleModel": {
-        "description": "A configured model role checked against the installed list.",
-        "properties": {
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "role": {
-            "$ref": "#/components/schemas/LlmModelRole"
-          },
-          "state": {
-            "$ref": "#/components/schemas/LlmRoleModelState"
-          }
-        },
-        "required": [
-          "role",
-          "state"
-        ],
-        "type": "object"
-      },
-      "LlmRoleModelState": {
-        "enum": [
-          "present",
-          "missing",
-          "not_configured"
-        ],
-        "type": "string"
-      },
-      "ModelPull": {
-        "description": "A snapshot of one pull. Pulls live in server memory only: after a restart\nthe id is unknown (404), which never means the model was installed. List the\nmodels to find out.",
-        "properties": {
-          "completed_bytes": {
-            "format": "int64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "error": {
-            "description": "Set when `state` is `failed`, or when `cancelled` has a reason.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "finished_at": {
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "layer": {
-            "description": "The layer announced by the latest progress line.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "sequence": {
-            "description": "Increases with every update of this pull.",
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "started_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "state": {
-            "$ref": "#/components/schemas/ModelPullState"
-          },
-          "status": {
-            "description": "Ollama's latest status text, or `starting`, `success`, `failed`, `cancelled`.",
-            "type": "string"
-          },
-          "total_bytes": {
-            "description": "Exact sum of the layer sizes announced so far; it can grow as layers start.",
-            "format": "int64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "state",
-          "status",
-          "started_at",
-          "sequence"
-        ],
-        "type": "object"
-      },
-      "ModelPullListResponse": {
-        "properties": {
-          "pulls": {
-            "description": "Newest first; only pulls since the server started, with finished ones bounded.",
-            "items": {
-              "$ref": "#/components/schemas/ModelPull"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "pulls"
-        ],
-        "type": "object"
-      },
-      "ModelPullState": {
-        "enum": [
-          "running",
-          "succeeded",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
       },
       "OutputAnnotationListResponse": {
         "properties": {
@@ -2442,6 +2253,10 @@
             "description": "Existing selected configuration file or the default target for a first save.",
             "type": "string"
           },
+          "config_file_exists": {
+            "description": "Whether `config_file` exists on disk now. False before a first save.",
+            "type": "boolean"
+          },
           "restart_required": {
             "description": "Keys whose saved and active values differ.",
             "items": {
@@ -2462,6 +2277,7 @@
         "required": [
           "settings",
           "config_file",
+          "config_file_exists",
           "api_key_set",
           "api_key_read_only",
           "restart_required"
@@ -2506,18 +2322,122 @@
         ],
         "type": "object"
       },
-      "StartModelPullRequest": {
-        "additionalProperties": false,
-        "description": "An explicit request to download one model. Nothing downloads without it.",
+      "SetupDetectResponse": {
         "properties": {
-          "name": {
-            "description": "`[namespace/]name[:tag]`, for example `llama3.2:3b`. At most 255 bytes.",
-            "maxLength": 255,
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/DetectedService"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "services"
+        ],
+        "type": "object"
+      },
+      "SetupEndpoint": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SettingSource"
+          },
+          {
+            "properties": {
+              "configured_url": {
+                "description": "Empty when the optional LLM is not configured.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "configured_url"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "One saved endpoint and where its value comes from."
+      },
+      "SetupReason": {
+        "properties": {
+          "blocking": {
+            "description": "Only blocking reasons make `needs_setup` true.",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/SetupReasonCode"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "description": "Offending settings, as `key: reason`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "summary": {
             "type": "string"
           }
         },
         "required": [
-          "name"
+          "code",
+          "summary",
+          "blocking"
+        ],
+        "type": "object"
+      },
+      "SetupReasonCode": {
+        "description": "Stable codes explaining the first-run assessment.",
+        "enum": [
+          "no_config_file",
+          "invalid_config",
+          "endpoints_from_environment",
+          "llm_not_configured",
+          "llm_text_model_unset"
+        ],
+        "type": "string"
+      },
+      "SetupStatus": {
+        "description": "Offline assessment of the saved configuration. It never probes a service.",
+        "properties": {
+          "comfyui": {
+            "$ref": "#/components/schemas/SetupEndpoint"
+          },
+          "config_file": {
+            "type": "string"
+          },
+          "config_file_exists": {
+            "type": "boolean"
+          },
+          "endpoints_env_owned": {
+            "description": "True when the environment owns `comfyui.base_url`, so saving cannot change it.",
+            "type": "boolean"
+          },
+          "llm": {
+            "$ref": "#/components/schemas/SetupEndpoint"
+          },
+          "needs_setup": {
+            "description": "True when any reason is blocking: no config file and the ComfyUI endpoint\nis not set by the environment, or the saved configuration is invalid.",
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/SetupReason"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "needs_setup",
+          "reasons",
+          "config_file",
+          "config_file_exists",
+          "endpoints_env_owned",
+          "comfyui",
+          "llm"
         ],
         "type": "object"
       },
@@ -5018,600 +4938,6 @@
         },
         "tags": [
           "health"
-        ]
-      }
-    },
-    "/api/v1/models/checkpoints": {
-      "get": {
-        "description": "Checkpoints ComfyUI reports through the `ckpt_name` options of CheckpointLoaderSimple, plus where to put new files. GenAImage never downloads checkpoints. If ComfyUI cannot be reached, or does not list that node, the response is 503 and not an empty list.",
-        "operationId": "models_checkpoints",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CheckpointsResponse"
-                }
-              }
-            },
-            "description": ""
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "503": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "ComfyUI unreachable or without the checkpoint loader"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "head": {
-        "description": "Checkpoints ComfyUI reports through the `ckpt_name` options of CheckpointLoaderSimple, plus where to put new files. GenAImage never downloads checkpoints. If ComfyUI cannot be reached, or does not list that node, the response is 503 and not an empty list.",
-        "operationId": "models_checkpoints_head",
-        "responses": {
-          "200": {
-            "description": ""
-          },
-          "403": {
-            "description": "Problem details"
-          },
-          "421": {
-            "description": "Problem details"
-          },
-          "503": {
-            "description": "ComfyUI unreachable or without the checkpoint loader"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      }
-    },
-    "/api/v1/models/llm": {
-      "get": {
-        "description": "List installed LLM models and check the configured text and vision models against them (exact name match). `source` is `ollama` when the Ollama native API answered and `openai` for the `/v1/models` fallback, where pulls are unsupported. Never downloads anything.",
-        "operationId": "models_llm_list",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LlmModelsResponse"
-                }
-              }
-            },
-            "description": ""
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "503": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "LLM not configured or unreachable"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "head": {
-        "description": "List installed LLM models and check the configured text and vision models against them (exact name match). `source` is `ollama` when the Ollama native API answered and `openai` for the `/v1/models` fallback, where pulls are unsupported. Never downloads anything.",
-        "operationId": "models_llm_list_head",
-        "responses": {
-          "200": {
-            "description": ""
-          },
-          "403": {
-            "description": "Problem details"
-          },
-          "421": {
-            "description": "Problem details"
-          },
-          "503": {
-            "description": "LLM not configured or unreachable"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      }
-    },
-    "/api/v1/models/llm/pulls": {
-      "get": {
-        "description": "Pulls started since the server started, newest first. Finished pulls are kept for a bounded number only. Not persisted: after a restart the list is empty, which never means a model was installed.",
-        "operationId": "models_llm_pull_list",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelPullListResponse"
-                }
-              }
-            },
-            "description": ""
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "head": {
-        "description": "Pulls started since the server started, newest first. Finished pulls are kept for a bounded number only. Not persisted: after a restart the list is empty, which never means a model was installed.",
-        "operationId": "models_llm_pull_list_head",
-        "responses": {
-          "200": {
-            "description": ""
-          },
-          "403": {
-            "description": "Problem details"
-          },
-          "421": {
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "post": {
-        "description": "Start downloading one LLM model. This is the only operation that downloads, and it runs only on this explicit request: never at startup, on saving settings, in doctor or after a missing-model error. Returns 202 once the endpoint accepted the request; observe it through the pull resources. Errors: 409 when this model is already being pulled (the problem names the pull), 422 for an invalid name, 429 when too many pulls run, 501 when the endpoint has no native pull API.",
-        "operationId": "models_llm_pull_start",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StartModelPullRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelPull"
-                }
-              }
-            },
-            "description": "",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "409": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "This model is already being pulled",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "413": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "415": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Invalid model name"
-          },
-          "429": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Too many pulls are running"
-          },
-          "501": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "The endpoint has no native pull API"
-          },
-          "503": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "LLM not configured or unreachable"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      }
-    },
-    "/api/v1/models/llm/pulls/{id}": {
-      "delete": {
-        "description": "Cancel a running pull. The response has state `cancelled`; a pull that already finished is returned unchanged. Cancelling closes the request to Ollama; partial downloads may remain and a later pull resumes them. A cancelled pull may still have installed the model if it finished just before the request closed, so `GET /models/llm` is the authoritative answer.",
-        "operationId": "models_llm_pull_cancel",
-        "parameters": [
-          {
-            "description": "Pull ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelPull"
-                }
-              }
-            },
-            "description": ""
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "404": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Unknown pull"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "get": {
-        "description": "The current snapshot of a pull, with exact byte counts. 404 when the ID is unknown, including after a server restart.",
-        "operationId": "models_llm_pull_get",
-        "parameters": [
-          {
-            "description": "Pull ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelPull"
-                }
-              }
-            },
-            "description": ""
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "404": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Unknown pull"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "head": {
-        "description": "The current snapshot of a pull, with exact byte counts. 404 when the ID is unknown, including after a server restart.",
-        "operationId": "models_llm_pull_get_head",
-        "parameters": [
-          {
-            "description": "Pull ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          },
-          "403": {
-            "description": "Problem details"
-          },
-          "404": {
-            "description": "Unknown pull"
-          },
-          "421": {
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      }
-    },
-    "/api/v1/models/llm/pulls/{id}/events": {
-      "get": {
-        "description": "SSE stream for one pull; attach at any time, for example after a page reload. The first frame is the current snapshot. Event names: pull_progress (state running), then exactly one of pull_succeeded, pull_failed or pull_cancelled, after which the stream ends. Data is the ModelPull schema. Progress frames are coalesced, so intermediate snapshots may be skipped; the sequence increases. A stream that ends without a terminal event was cut: read the pull again. 404 when the ID is unknown.",
-        "operationId": "models_llm_pull_events",
-        "parameters": [
-          {
-            "description": "Pull ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "SSE frames; JSON data is ModelPull"
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          },
-          "404": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Unknown pull"
-          },
-          "421": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            },
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
-        ]
-      },
-      "head": {
-        "description": "SSE stream for one pull; attach at any time, for example after a page reload. The first frame is the current snapshot. Event names: pull_progress (state running), then exactly one of pull_succeeded, pull_failed or pull_cancelled, after which the stream ends. Data is the ModelPull schema. Progress frames are coalesced, so intermediate snapshots may be skipped; the sequence increases. A stream that ends without a terminal event was cut: read the pull again. 404 when the ID is unknown.",
-        "operationId": "models_llm_pull_events_head",
-        "parameters": [
-          {
-            "description": "Pull ID",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "SSE frames; JSON data is ModelPull"
-          },
-          "403": {
-            "description": "Problem details"
-          },
-          "404": {
-            "description": "Unknown pull"
-          },
-          "421": {
-            "description": "Problem details"
-          }
-        },
-        "tags": [
-          "models"
         ]
       }
     },
@@ -9329,6 +8655,221 @@
         },
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/api/v1/setup/detect": {
+      "post": {
+        "description": "Probe a fixed list of local ComfyUI and OpenAI-compatible LLM addresses plus the saved URLs, concurrently, with a 1.5 s deadline each. Takes no body and no user-supplied hosts. Hosts outside the allow-list are reported as skipped with the setting to add, never probed. The LLM API key is sent only to the saved LLM URL.",
+        "operationId": "setup_detect",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupDetectResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/api/v1/setup/status": {
+      "get": {
+        "description": "Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed.",
+        "operationId": "setup_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "setup"
+        ]
+      },
+      "head": {
+        "description": "Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed.",
+        "operationId": "setup_status_head",
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "setup"
         ]
       }
     },

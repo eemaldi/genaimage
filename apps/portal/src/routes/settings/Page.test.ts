@@ -71,6 +71,7 @@ function fixture(): Settings {
   return {
     settings,
     config_file: '/config.toml',
+    config_file_exists: true,
     api_key_set: false,
     api_key_read_only: false,
     restart_required: [],

@@ -105,6 +105,7 @@ impl Snapshot {
         SettingsResponse {
             settings,
             config_file: self.desired.settings_file().to_string_lossy().into_owned(),
+            config_file_exists: self.desired.settings_file().is_file(),
             api_key_set: self.desired.llm_api_key_set(),
             api_key_read_only: self.desired.llm_api_key_read_only(),
             restart_required,
@@ -123,6 +124,14 @@ impl SettingsState {
             }),
             writer: Mutex::new(()),
         }
+    }
+
+    pub(crate) fn desired(&self) -> Arc<ResolvedConfig> {
+        self.snapshot
+            .read()
+            .expect("settings lock poisoned")
+            .desired
+            .clone()
     }
 
     pub(crate) fn harness(&self) -> Arc<Harness> {
