@@ -159,7 +159,8 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   `comfyui.object_info`, `workflows.nodes`, `llm.reachable`, `llm.text`,
   `llm.vision`, `gpu`, `disk` and `ports`; see
   [troubleshooting](troubleshooting.md#doctor-checks). Every id is always
-  present. Exit `6` means at least one check is an `error`; warnings and skipped
+  present. Exit `6` means at least one check is an `error`, including a server that
+  accepts connections but does not answer within 20 s; warnings and skipped
   checks (such as an LLM that is not configured) exit `0`. If the server is
   not running, `doctor` still prints a report on stdout, with a `server` error,
   a `ports` check and every other check skipped, and exits `3`. The `ports` check

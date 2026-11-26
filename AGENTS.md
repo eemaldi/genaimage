@@ -27,7 +27,7 @@ ComfyUI image generation, assisted by local LLMs. Read
   outputs and their vision-review annotations, uploads, settings, live events,
   the assistant API, an OpenAPI contract and the embedded Svelte portal in
   `apps/portal`: dashboard, generate, jobs, gallery, workflows, run detail,
-  settings, and an assistant chat panel available on every page.
+  diagnostics, settings, and an assistant chat panel available on every page.
   ComfyUI and the OpenAI-compatible local LLM service remain separate
   processes. Docker Compose support is planned for local dependencies, not public
   exposure.

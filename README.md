@@ -6,7 +6,8 @@ a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-archite
 and the [architecture](docs/architecture.md). The loopback server offers a health
 endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
 The server embeds the Svelte portal: dashboard, generate, jobs, gallery,
-workflows, run detail and settings. LLM assistance is still being built.
+workflows, run detail, diagnostics and settings. LLM assistance is still being
+built.
 
 Today it validates API-format workflows, submits explicit parameter values,
 tracks queue state, and captures outputs and provenance.

@@ -5,6 +5,7 @@ import Generate from './routes/generate/Page.svelte';
 import Jobs from './routes/jobs/Page.svelte';
 import Gallery from './routes/gallery/Page.svelte';
 import Assistant from './routes/assistant/Page.svelte';
+import Diagnostics from './routes/diagnostics/Page.svelte';
 import Settings from './routes/settings/Page.svelte';
 import Workflows from './routes/workflows/Page.svelte';
 import WorkflowDetail from './routes/workflows/Detail.svelte';
@@ -28,6 +29,7 @@ describe('hash routing', () => {
     ['#/gallery', Gallery],
     ['#/workflows', Workflows],
     ['#/assistant', Assistant],
+    ['#/diagnostics', Diagnostics],
     ['#/settings', Settings],
   ])('registers %s', (hash, component) => {
     expect(matchHash(hash).component).toBe(component);

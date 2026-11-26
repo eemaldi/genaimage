@@ -437,6 +437,7 @@
   {#if healthError}<ProblemDetails problem={healthError} />
   {:else if !health}<p role="status">Checking services…</p>
   {:else}
+    <p><a href="#/diagnostics">Run diagnostics</a> for details and fixes.</p>
     <div class="health-grid">
       {#each [{ name: 'GenAImage', status: health.self, hint: health.hints?.self }, { name: 'ComfyUI', status: health.image_backend, hint: health.hints?.image_backend }, { name: 'LLM', status: health.llm, hint: health.hints?.llm }] as service (service.name)}
         <article class="card">

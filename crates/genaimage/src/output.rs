@@ -6,6 +6,7 @@ use std::{
 use genaimage_api::{client, ProblemDetails, RunResponse};
 use serde::Serialize;
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Status {
     Success = 0,
     LocalFailure = 1,
