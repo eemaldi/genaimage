@@ -1188,3 +1188,62 @@ async fn an_unanswered_status_request_has_its_own_deadline() {
         .unwrap()
         .contains("status request timed out"));
 }
+
+async fn stub_health_server(status: &'static str) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buffer = [0; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let body = if status.starts_with("200") {
+                    r#"{"self":"ok","image_backend":"unavailable","llm":"not_configured"}"#
+                } else {
+                    "{}"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn healthcheck_succeeds_only_when_the_server_answers_health() {
+    let ok = stub_health_server("200 OK").await;
+    let failing = stub_health_server("500 Internal Server Error").await;
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    for (port, success) in [(ok, true), (failing, false), (closed, false)] {
+        let mut command = cli();
+        command
+            .env("GENAIMAGE_SERVER", format!("http://127.0.0.1:{port}"))
+            .arg("healthcheck");
+        assert_eq!(
+            cli_output(command).await.status.success(),
+            success,
+            "{port}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn healthcheck_derives_its_target_from_the_server_port() {
+    let ok = stub_health_server("200 OK").await;
+    let mut command = cli();
+    command
+        .env("GENAIMAGE_SERVER_PORT", ok.to_string())
+        .arg("healthcheck");
+    assert!(cli_output(command).await.status.success());
+}

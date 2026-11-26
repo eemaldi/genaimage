@@ -48,6 +48,46 @@ multipart framing. Oversized requests return 413. Bodies must arrive within
 shutdown begins. Uploads are streamed to disk; submitting a run verifies and
 holds one reference image at a time in memory before sending it to ComfyUI.
 
+## Container
+
+The root `Dockerfile` builds a distroless image (under 60 MB, non-root user
+65532) with the portal embedded. Docker Compose support for ComfyUI and the LLM
+service is planned and not yet implemented; publishing the image is also
+planned.
+
+```sh
+docker build -t genaimage:dev .
+docker run -d --name genaimage -p 127.0.0.1:8190:8190 \
+  -v genaimage-data:/data genaimage:dev
+```
+
+Open `http://127.0.0.1:8190/`. The container health check runs
+`genaimage healthcheck`, which succeeds when `/api/v1/health` answers on
+`GENAIMAGE_SERVER_PORT` within two seconds; an unavailable ComfyUI does not make
+the container unhealthy. CLI commands run with `docker exec` use the same port
+unless `--server` or `GENAIMAGE_SERVER` is set.
+
+- **Bind exception.** The server normally refuses every non-loopback host. The
+  image sets `GENAIMAGE_CONTAINER=1`, and only exactly `1` allows
+  `GENAIMAGE_SERVER_HOST` to be `0.0.0.0` or `::`; `true`, `0` and any other
+  value do not, and other non-loopback addresses such as `192.0.2.1` stay
+  refused. A container cannot be reached on its own loopback, so this is needed
+  inside it. Isolation relies on publishing the port to `127.0.0.1` on the host
+  only: never use `-p 8190:8190` or `0.0.0.0:8190`.
+- **Port.** The image listens on 8190. Requests are checked against the listener
+  port, so publish the same host port (`127.0.0.1:8190:8190`); a different host
+  port is refused with 421.
+- **Data.** `/data` is the volume: `/data/state.sqlite3`, `/data/runs`,
+  `/data/uploads` and `/data/config` (settings file).
+- **Workflows.** Starter workflows ship read-only at
+  `/usr/share/genaimage/workflows/comfyui` (`GENAIMAGE_WORKFLOWS`). To use your
+  own, mount them and override the variable, for example
+  `-v ./my-workflows:/workflows:ro -e GENAIMAGE_WORKFLOWS=/workflows`.
+- **Services.** ComfyUI and the LLM stay outside the image. Point
+  `GENAIMAGE_COMFYUI_URL` and `GENAIMAGE_LLM_URL` at them and list non-loopback
+  hosts in `GENAIMAGE_COMFYUI_ALLOWED_HOSTS` and `GENAIMAGE_LLM_ALLOWED_HOSTS`;
+  public endpoints remain refused.
+
 ## 2. Configuration
 
 No configuration file is required. To customise it, copy the example to
@@ -175,6 +215,9 @@ Compose hosts through the file or environment. Public endpoints are never
 permitted.
 
 ### Environment overrides
+
+`GENAIMAGE_CONTAINER=1` is not a setting: it only lets `server.host` be
+`0.0.0.0` or `::` (see [Container](#container)).
 
 Environment values take precedence over the selected file. Host lists are
 comma-separated; an empty value clears the list.

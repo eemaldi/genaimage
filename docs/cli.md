@@ -8,7 +8,7 @@ commands below. ComfyUI is a separate process. `serve`, `config init` and
 
 | Option | Meaning |
 | --- | --- |
-| `--server <URL>` | Loopback HTTP(S) origin for API calls, without a path. Takes precedence over `GENAIMAGE_SERVER`, which defaults to `http://127.0.0.1:3000` when unset. Does not change the listener used by `serve`. |
+| `--server <URL>` | Loopback HTTP(S) origin for API calls, without a path. Takes precedence over `GENAIMAGE_SERVER`. When neither is set, the CLI uses `http://127.0.0.1:$GENAIMAGE_SERVER_PORT` if that is a valid port, otherwise `http://127.0.0.1:3000`; the CLI ignores an invalid `GENAIMAGE_SERVER_PORT`, whereas `serve` rejects it. Does not change the listener used by `serve`. |
 | `--json` | Emit machine-readable JSON rather than human-readable output. |
 | `--workspace <PATH>` | Select the workspace for `serve`; defaults to the current directory. |
 | `--config <PATH>` | Select the configuration file for `serve`, or the output path for `config init` (see [configuration discovery](setup.md)). |

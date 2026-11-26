@@ -34,10 +34,11 @@ Operator surfaces must:
 Never return, log or print the write-only LLM API key, including in `Debug`
 output. See [AGENTS.md](../AGENTS.md) for details.
 
-Everything runs locally; the server binds to loopback only. Outbound services
-default to loopback, with explicitly allow-listed private or Compose hosts as
-the only exceptions. Keep documentation and user-facing text in
-English (UK), and respect the performance budgets in ADR 0001; measure the
+Everything runs locally; the server binds to loopback only (inside a container
+with `GENAIMAGE_CONTAINER=1` it may bind `0.0.0.0`; publish ports on `127.0.0.1`
+only). Outbound services default to loopback, with explicitly allow-listed
+private or Compose hosts as the only exceptions. Keep documentation and
+user-facing text in English (UK), and respect the performance budgets in ADR 0001; measure the
 binary-size impact of any new runtime dependency.
 
 Regenerate the API contract with `cargo run -p genaimage-server --no-default-features --example openapi`;

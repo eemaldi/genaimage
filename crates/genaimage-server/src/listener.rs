@@ -18,7 +18,8 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 pub async fn serve(state: AppState) -> io::Result<()> {
     let harness = state.harness();
     let config = &harness.config().server;
-    let listener = bind_loopback(&config.host, config.port).await?;
+    let listener =
+        bind_loopback(&config.host, config.port, config.permits_unspecified_bind()).await?;
     let signal = shutdown_signal()?;
     serve_on_listener(state, listener, signal, DRAIN_TIMEOUT).await
 }
@@ -31,7 +32,8 @@ pub async fn serve_on_listener(
     drain_timeout: Duration,
 ) -> io::Result<()> {
     let address = listener.local_addr()?;
-    verify_loopback(&address.ip().to_string(), &[address])?;
+    let unspecified = state.harness().config().server.permits_unspecified_bind();
+    verify_loopback(&address.ip().to_string(), &[address], unspecified)?;
     if state
         .portal_dev
         .as_ref()
@@ -111,7 +113,7 @@ fn report_connection(result: Result<(), tokio::task::JoinError>) {
     }
 }
 
-async fn bind_loopback(host: &str, port: u16) -> io::Result<TcpListener> {
+async fn bind_loopback(host: &str, port: u16, unspecified: bool) -> io::Result<TcpListener> {
     let addresses: Vec<_> = lookup_host((host, port))
         .await
         .map_err(|error| {
@@ -121,7 +123,7 @@ async fn bind_loopback(host: &str, port: u16) -> io::Result<TcpListener> {
             )
         })?
         .collect();
-    verify_loopback(host, &addresses)?;
+    verify_loopback(host, &addresses, unspecified)?;
     // Bind only the checked socket addresses; never resolve the name again.
     TcpListener::bind(addresses.as_slice())
         .await
@@ -133,17 +135,17 @@ async fn bind_loopback(host: &str, port: u16) -> io::Result<TcpListener> {
         })
 }
 
-fn verify_loopback(host: &str, addresses: &[SocketAddr]) -> io::Result<()> {
+fn verify_loopback(host: &str, addresses: &[SocketAddr], unspecified: bool) -> io::Result<()> {
     if addresses.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             format!("server.host '{host}' did not resolve; use 127.0.0.1 or ::1"),
         ));
     }
-    if let Some(address) = addresses
-        .iter()
-        .find(|addr| !addr.ip().to_canonical().is_loopback())
-    {
+    if let Some(address) = addresses.iter().find(|addr| {
+        let ip = addr.ip();
+        !ip.to_canonical().is_loopback() && !(unspecified && ip.is_unspecified())
+    }) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("refusing to bind server.host '{host}' to non-loopback address {address}; set server.host or GENAIMAGE_SERVER_HOST to 127.0.0.1 or ::1"),
@@ -284,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn bind_refuses_non_loopback_addresses() {
         for host in ["0.0.0.0", "::", "192.0.2.1", "::ffff:192.0.2.1"] {
-            let error = bind_loopback(host, 0).await.unwrap_err();
+            let error = bind_loopback(host, 0, false).await.unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
             assert!(error.to_string().contains("non-loopback"));
             assert!(error.to_string().contains("GENAIMAGE_SERVER_HOST"));
@@ -297,7 +299,26 @@ mod tests {
             "127.0.0.1:3000".parse().unwrap(),
             "192.0.2.1:3000".parse().unwrap(),
         ];
-        let error = verify_loopback("localhost", &addresses).unwrap_err();
+        let error = verify_loopback("localhost", &addresses, false).unwrap_err();
         assert!(error.to_string().contains("192.0.2.1:3000"));
+    }
+
+    #[tokio::test]
+    async fn bind_allows_an_unspecified_address_only_with_permission() {
+        assert!(bind_loopback("0.0.0.0", 0, false).await.is_err());
+        let listener = bind_loopback("0.0.0.0", 0, true).await.unwrap();
+        assert!(listener.local_addr().unwrap().ip().is_unspecified());
+    }
+
+    #[test]
+    fn unspecified_binds_need_the_container_permission() {
+        let addresses = ["0.0.0.0:8190".parse().unwrap()];
+        assert!(verify_loopback("0.0.0.0", &addresses, false).is_err());
+        assert!(verify_loopback("0.0.0.0", &addresses, true).is_ok());
+        let v6 = ["[::]:8190".parse().unwrap()];
+        assert!(verify_loopback("::", &v6, false).is_err());
+        assert!(verify_loopback("::", &v6, true).is_ok());
+        let public = ["192.0.2.1:8190".parse().unwrap()];
+        assert!(verify_loopback("192.0.2.1", &public, true).is_err());
     }
 }
