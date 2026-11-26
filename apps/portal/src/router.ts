@@ -6,6 +6,7 @@ import Gallery from './routes/gallery/Page.svelte';
 import Workflows from './routes/workflows/Page.svelte';
 import WorkflowDetail from './routes/workflows/Detail.svelte';
 import Assistant from './routes/assistant/Page.svelte';
+import Diagnostics from './routes/diagnostics/Page.svelte';
 import Settings from './routes/settings/Page.svelte';
 import RunDetail from './routes/runs/Detail.svelte';
 import NotFound from './routes/not-found/Page.svelte';
@@ -24,6 +25,7 @@ const routes: Route[] = [
   { pattern: '/workflows', component: Workflows },
   { pattern: '/workflows/:id', component: WorkflowDetail },
   { pattern: '/assistant', component: Assistant },
+  { pattern: '/diagnostics', component: Diagnostics },
   { pattern: '/settings', component: Settings },
   { pattern: '/runs/:id', component: RunDetail },
 ];

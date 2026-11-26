@@ -440,6 +440,8 @@ export function createApiClient(
   return {
     health: (options: RequestOptions = {}) =>
       json('get', '/api/v1/health', options),
+    doctor: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/doctor', options),
     promptAssist: (body: PromptAssistRequest, options?: RequestOptions) =>
       json('post', '/api/v1/assistant/prompt', { ...options, body }),
     suggestWorkflow: (body: SuggestWorkflowRequest, options?: RequestOptions) =>

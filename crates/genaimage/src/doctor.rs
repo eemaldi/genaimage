@@ -246,7 +246,7 @@ mod tests {
         let ports = find(&report, "ports");
         assert_eq!(ports.status, DoctorStatus::Warning);
         assert!(ports.summary.contains("its owner is unknown"));
-        assert_eq!(status as u8, Status::NegativeResult as u8);
+        assert_eq!(status, Status::NegativeResult);
     }
 
     #[test]
@@ -259,6 +259,6 @@ mod tests {
         assert_eq!(ports.status, DoctorStatus::Skipped);
         assert!(ports.summary.contains("state of port 3000 is unknown"));
         assert!(ports.fix.is_some());
-        assert_eq!(status as u8, Status::ServerNotRunning as u8);
+        assert_eq!(status, Status::ServerNotRunning);
     }
 }
