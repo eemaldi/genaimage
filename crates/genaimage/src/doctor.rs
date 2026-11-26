@@ -48,7 +48,11 @@ pub(crate) async fn run(client: &Client, output: Output) -> Result<Status, Error
         Ok(Err(error)) => return Err(error.into()),
     };
     output.write(&report, |out| render(out, &report))?;
-    Ok(match failure {
+    Ok(exit_status(&report, failure.as_ref()))
+}
+
+fn exit_status(report: &DoctorReport, failure: Option<&Failure>) -> Status {
+    match failure {
         Some(Failure::NotRunning | Failure::Unreachable) => Status::ServerNotRunning,
         Some(Failure::Problem(_)) => Status::ServerProblem,
         _ if report
@@ -59,7 +63,7 @@ pub(crate) async fn run(client: &Client, output: Output) -> Result<Status, Error
             Status::NegativeResult
         }
         _ => Status::Success,
-    })
+    }
 }
 
 enum PortState {
@@ -216,4 +220,45 @@ fn render(out: &mut dyn io::Write, report: &DoctorReport) -> io::Result<()> {
         count(DoctorStatus::Warning),
         count(DoctorStatus::Skipped)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offline_report(failure: Failure) -> (DoctorReport, Status) {
+        let client = Client::with_base_url("http://127.0.0.1:3000").unwrap();
+        let (report, failure) = offline(&client, failure);
+        let status = exit_status(&report, failure.as_ref());
+        (report, status)
+    }
+
+    fn find<'a>(report: &'a DoctorReport, id: &str) -> &'a DoctorCheck {
+        report.checks.iter().find(|check| check.id == id).unwrap()
+    }
+
+    #[test]
+    fn stalled_server_is_an_error_with_an_unknown_port_owner() {
+        let (report, status) = offline_report(Failure::Stalled);
+        let server = find(&report, "server");
+        assert_eq!(server.status, DoctorStatus::Error);
+        assert!(server.summary.contains("did not answer within 20 s"));
+        let ports = find(&report, "ports");
+        assert_eq!(ports.status, DoctorStatus::Warning);
+        assert!(ports.summary.contains("its owner is unknown"));
+        assert_eq!(status as u8, Status::NegativeResult as u8);
+    }
+
+    #[test]
+    fn unreachable_server_leaves_the_port_state_unknown() {
+        let (report, status) = offline_report(Failure::Unreachable);
+        let server = find(&report, "server");
+        assert_eq!(server.status, DoctorStatus::Error);
+        assert!(server.summary.contains("could be reached"));
+        let ports = find(&report, "ports");
+        assert_eq!(ports.status, DoctorStatus::Skipped);
+        assert!(ports.summary.contains("state of port 3000 is unknown"));
+        assert!(ports.fix.is_some());
+        assert_eq!(status as u8, Status::ServerNotRunning as u8);
+    }
 }

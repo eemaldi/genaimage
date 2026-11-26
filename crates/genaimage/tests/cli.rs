@@ -375,9 +375,17 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
         .env("GENAIMAGE_SERVER", &server.origin)
         .args(["doctor", "--json"]);
     let output = cli_output(command).await;
-    let low_disk = serde_json::from_slice::<Value>(&output.stdout)
-        .is_ok_and(|value| doctor_checks(&value)["disk"]["status"] == "error");
-    let healthy = report(output, if low_disk { 6 } else { 0 });
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON on stdout");
+    let errors: std::collections::BTreeSet<&str> = doctor_checks(&parsed)
+        .into_iter()
+        .filter(|(_, check)| check["status"] == "error")
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        errors.is_empty() || errors == std::collections::BTreeSet::from(["disk"]),
+        "only a low disk may fail the healthy fixture: {errors:?}"
+    );
+    let healthy = report(output, if errors.is_empty() { 0 } else { 6 });
     let checks = doctor_checks(&healthy);
     assert_eq!(
         checks
