@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod assistant;
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod event;
 mod exact_number;

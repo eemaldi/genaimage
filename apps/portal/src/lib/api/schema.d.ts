@@ -162,6 +162,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/doctor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Run diagnostics over the configuration, ComfyUI, workflows, the optional LLM, GPU, disk space and ports. Every check that is not ok has a suggested fix. */
+        get: operations["doctor_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Run diagnostics over the configuration, ComfyUI, workflows, the optional LLM, GPU, disk space and ports. Every check that is not ok has a suggested fix. */
+        head: operations["doctor_report_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -824,6 +842,30 @@ export interface components {
         CreateAssistantConversationRequest: {
             title: string;
         };
+        /** @description One diagnostic check. `fix` is present for every status except `ok`. */
+        DoctorCheck: {
+            /** @description A concrete action naming the setting, command or page to change. */
+            fix?: string | null;
+            /**
+             * @description Stable identifier, one of `server`, `config`, `comfyui.reachable`,
+             *     `comfyui.version`, `comfyui.object_info`, `workflows.nodes`,
+             *     `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.
+             */
+            id: string;
+            /** @description Bounded detail lines, such as missing node classes per workflow. */
+            items: string[];
+            status: components["schemas"]["DoctorStatus"];
+            summary: string;
+        };
+        /** @description Every check in a fixed order; look checks up by `id`. */
+        DoctorReport: {
+            checks: components["schemas"]["DoctorCheck"][];
+        };
+        /**
+         * @description Outcome of one diagnostic check.
+         * @enum {string}
+         */
+        DoctorStatus: "ok" | "warning" | "error" | "skipped";
         DroppedWorkflowSuggestion: {
             field: string;
             reason: string;
@@ -2551,6 +2593,154 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
+            };
+        };
+    };
+    doctor_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DoctorReport"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    doctor_report_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

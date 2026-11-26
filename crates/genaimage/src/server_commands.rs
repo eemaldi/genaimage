@@ -1,6 +1,5 @@
 use genaimage_api::{
-    client::Client, HealthStatus, ImageBackendHealthReason, SettingSource, WorkflowNodeCheckStatus,
-    WorkflowValidationRequest,
+    client::Client, SettingSource, WorkflowNodeCheckStatus, WorkflowValidationRequest,
 };
 
 use crate::{
@@ -38,45 +37,7 @@ impl<'a> Command<'a> {
         match self {
             Self::Run(command) => return crate::run_commands::run(client, output, command).await,
             Self::Jobs(command) => return crate::run_commands::jobs(client, output, command).await,
-            Self::Doctor => {
-                let mut health = client.health().await?;
-                // Preserve the established doctor JSON shape as the API evolves.
-                health.hints = None;
-                output.write(&health, |out| {
-                    writeln!(out, "GenAImage server: {}", health_label(health.server))?;
-                    writeln!(out, "ComfyUI: {}", health_label(health.image_backend))?;
-                    if let Some(reason) = health.image_backend_reason {
-                        let reason = match reason {
-                            ImageBackendHealthReason::ProbeFailed => "health check failed",
-                            ImageBackendHealthReason::Timeout => "health check timed out",
-                        };
-                        writeln!(out, "  {reason}. Check that ComfyUI is running and check `genaimage config show`.")?;
-                    }
-                    writeln!(out, "LLM: {}", health_label(health.llm))?;
-                    if let Some(reason) = &health.llm_reason {
-                        writeln!(out, "  {reason}")?;
-                    }
-                    for (name, role) in [
-                        ("text", health.llm_text.as_ref()),
-                        ("vision", health.llm_vision.as_ref()),
-                    ] {
-                        if let Some(role) = role {
-                            write!(out, "  {name}: {}", health_label(role.status))?;
-                            if let Some(model) = &role.model {
-                                write!(out, " ({model})")?;
-                            }
-                            if let Some(reason) = &role.reason {
-                                write!(out, " — {reason}")?;
-                            }
-                            writeln!(out)?;
-                        }
-                    }
-                    Ok(())
-                })?;
-                if health.server != HealthStatus::Ok || health.image_backend != HealthStatus::Ok {
-                    return Ok(Status::NegativeResult);
-                }
-            }
+            Self::Doctor => return crate::doctor::run(client, output).await,
             Self::Workflow(WorkflowCommand::List) => {
                 let catalogue = client.workflows().await?;
                 output.write(&catalogue, |out| {
@@ -228,13 +189,5 @@ impl<'a> Command<'a> {
             }
         }
         Ok(Status::Success)
-    }
-}
-
-fn health_label(status: HealthStatus) -> &'static str {
-    match status {
-        HealthStatus::Ok => "OK",
-        HealthStatus::Unavailable => "unavailable",
-        HealthStatus::NotConfigured => "not configured",
     }
 }

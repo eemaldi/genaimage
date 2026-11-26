@@ -207,6 +207,10 @@ impl LlmRoles {
         }
     }
 
+    pub(crate) fn config(&self) -> &LlmConfig {
+        &self.runtime_config
+    }
+
     pub fn matches_config(&self, config: &LlmConfig) -> bool {
         self.runtime_config.as_ref() == config
     }
@@ -444,7 +448,7 @@ impl LlmRoles {
         }
     }
 
-    fn capabilities(&self, model: &LlmModel) -> (bool, bool) {
+    pub(crate) fn capabilities(&self, model: &LlmModel) -> (bool, bool) {
         let override_capabilities = self.capability_overrides.get(&model.id);
         (
             override_capabilities

@@ -53,6 +53,8 @@ pub struct FakeComfyState {
     pub reject_upload: Arc<AtomicBool>,
     pub interrupt_calls: Arc<AtomicUsize>,
     pub comfyui_version: Arc<Mutex<Option<String>>>,
+    /// The `devices` array served by `/system_stats`; a CUDA device by default.
+    pub devices: Arc<Mutex<Value>>,
     pub interrupt_queue_head: Arc<Mutex<Option<String>>>,
     pub interrupted_prompt_id: Arc<Mutex<Option<String>>>,
     pub interrupt_target: Arc<Mutex<Option<String>>>,
@@ -97,6 +99,9 @@ impl Default for FakeComfyState {
             reject_upload: Default::default(),
             interrupt_calls: Default::default(),
             comfyui_version: Arc::new(Mutex::new(Some("0.3.57".into()))),
+            devices: Arc::new(Mutex::new(
+                json!([{ "name": "cuda:0 Fake GPU", "type": "cuda" }]),
+            )),
             interrupt_queue_head: Default::default(),
             interrupted_prompt_id: Default::default(),
             interrupt_target: Default::default(),
@@ -172,7 +177,7 @@ async fn fake_system(State(state): State<FakeComfyState>) -> Response {
     if state.health_unavailable.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    Json(json!({ "system": { "os": "test", "comfyui_version": state.comfyui_version.lock().expect("version lock").clone() }, "devices": [] })).into_response()
+    Json(json!({ "system": { "os": "test", "comfyui_version": state.comfyui_version.lock().expect("version lock").clone() }, "devices": state.devices.lock().expect("devices lock").clone() })).into_response()
 }
 
 async fn fake_object_info(State(state): State<FakeComfyState>) -> Response {

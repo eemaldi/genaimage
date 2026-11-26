@@ -1,4 +1,5 @@
 pub(crate) mod conversations;
+mod doctor;
 mod events;
 mod health;
 mod outputs;
@@ -95,6 +96,7 @@ fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::<AppState>::with_openapi(ApiDoc::openapi())
         .routes(routes!(openapi_endpoint))
         .routes(routes!(health::health))
+        .routes(routes!(doctor::doctor))
         .routes(routes!(events::events))
         .routes(routes!(conversations::list, conversations::create))
         .routes(routes!(suggestions::suggest))

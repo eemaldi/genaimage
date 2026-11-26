@@ -1,6 +1,7 @@
 mod artefacts;
 mod completions;
 mod config_local;
+mod doctor;
 mod healthcheck;
 mod open;
 mod output;
@@ -75,7 +76,7 @@ enum Command {
         #[arg(long)]
         print: bool,
     },
-    /// Check the server and its ComfyUI backend.
+    /// Diagnose the server, ComfyUI, workflows, the LLM, GPU, disk space and ports.
     Doctor,
     /// Exit non-zero unless the server answers its health endpoint (container probe).
     #[command(hide = true)]
