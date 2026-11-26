@@ -3,6 +3,7 @@ mod completions;
 mod config_local;
 mod doctor;
 mod healthcheck;
+mod model_commands;
 mod open;
 mod output;
 mod run_commands;
@@ -93,6 +94,11 @@ enum Command {
         id: String,
     },
     Run(RunCommand),
+    /// List LLM models and ComfyUI checkpoints, or explicitly pull an LLM model.
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommand,
+    },
     Jobs {
         #[command(subcommand)]
         command: JobsCommand,
@@ -141,6 +147,17 @@ struct RunCommand {
     /// Maximum observation time in seconds (default: 600).
     #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..=86400))]
     timeout: Option<u64>,
+}
+
+#[derive(Subcommand)]
+enum ModelsCommand {
+    /// List installed LLM models and ComfyUI checkpoints. Never downloads.
+    List,
+    /// Download an LLM model through Ollama. Runs only because you asked for it.
+    Pull {
+        /// Model name such as llama3.2:3b.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
