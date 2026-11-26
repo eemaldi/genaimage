@@ -151,6 +151,15 @@ fn report(output: Output, code: i32) -> Value {
     serde_json::from_slice(&output.stdout).expect("one JSON report on stdout")
 }
 
+fn doctor_checks(report: &Value) -> std::collections::BTreeMap<&str, &Value> {
+    report["checks"]
+        .as_array()
+        .expect("checks array")
+        .iter()
+        .map(|check| (check["id"].as_str().expect("check id"), check))
+        .collect()
+}
+
 fn error(output: Output, code: i32) -> Value {
     assert_eq!(
         output.status.code(),
@@ -365,22 +374,37 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
     command
         .env("GENAIMAGE_SERVER", &server.origin)
         .args(["doctor", "--json"]);
+    let output = cli_output(command).await;
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON on stdout");
+    let errors: std::collections::BTreeSet<&str> = doctor_checks(&parsed)
+        .into_iter()
+        .filter(|(_, check)| check["status"] == "error")
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        errors.is_empty() || errors == std::collections::BTreeSet::from(["disk"]),
+        "only a low disk may fail the healthy fixture: {errors:?}"
+    );
+    let healthy = report(output, if errors.is_empty() { 0 } else { 6 });
+    let checks = doctor_checks(&healthy);
     assert_eq!(
-        report(cli_output(command).await, 0),
-        json!({
-            "self": "ok",
-            "image_backend": "ok",
-            "llm": "not_configured",
-            "llm_reason": "Set llm.base_url to enable the assistant.",
-            "llm_text": {
-                "status": "not_configured",
-                "reason": "llm.text_model is empty."
-            },
-            "llm_vision": {
-                "status": "not_configured",
-                "reason": "llm.vision_model is empty."
-            }
-        })
+        checks
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        genaimage_api::DOCTOR_CHECK_IDS.into_iter().collect()
+    );
+    for id in ["server", "comfyui.reachable", "comfyui.object_info", "gpu"] {
+        assert_eq!(checks[id]["status"], "ok", "{id}: {}", checks[id]);
+        assert!(checks[id]["fix"].is_null(), "{id}");
+    }
+    for id in ["llm.reachable", "llm.text", "llm.vision"] {
+        assert_eq!(checks[id]["status"], "skipped", "{id}");
+        assert!(checks[id]["fix"].as_str().unwrap().contains("llm.base_url"));
+    }
+    assert!(
+        healthy.get("self").is_none(),
+        "the old HealthResponse shape is gone"
     );
 
     let mut command = cli();
@@ -403,29 +427,20 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
     );
 
     server.fake.health_unavailable.store(true, Ordering::SeqCst);
-    assert_eq!(
-        report(server.cli(&["--json", "doctor"]).await, 6),
-        json!({
-            "self": "ok",
-            "image_backend": "unavailable",
-            "llm": "not_configured",
-            "image_backend_reason": "probe_failed",
-            "llm_reason": "Set llm.base_url to enable the assistant.",
-            "llm_text": {
-                "status": "not_configured",
-                "reason": "llm.text_model is empty."
-            },
-            "llm_vision": {
-                "status": "not_configured",
-                "reason": "llm.vision_model is empty."
-            }
-        })
-    );
+    let failing = report(server.cli(&["--json", "doctor"]).await, 6);
+    let checks = doctor_checks(&failing);
+    assert_eq!(checks["comfyui.reachable"]["status"], "error");
+    assert!(checks["comfyui.reachable"]["fix"]
+        .as_str()
+        .unwrap()
+        .contains("comfyui.base_url"));
+    assert_eq!(checks["comfyui.object_info"]["status"], "skipped");
     let human = server.cli(&["doctor"]).await;
     assert_eq!(human.status.code(), Some(6));
-    assert!(String::from_utf8(human.stdout)
-        .unwrap()
-        .contains("ComfyUI: unavailable"));
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(text.contains("[ERROR  ] comfyui.reachable"), "{text}");
+    assert!(text.contains("Fix: Start ComfyUI"), "{text}");
+    assert!(text.contains("Errors: 1, warnings:"), "{text}");
     server.shutdown().await;
 }
 
@@ -562,24 +577,79 @@ async fn refused_connections_have_an_actionable_error_and_distinct_exit_code() {
     command.args(["--server", &origin, "doctor"]);
     let human = cli_output(command).await;
     assert_eq!(human.status.code(), Some(3));
-    assert!(human.stdout.is_empty());
-    let message = String::from_utf8(human.stderr).unwrap();
-    for hint in [&origin, "genaimage serve", "--server", "GENAIMAGE_SERVER"] {
+    assert!(human.stderr.is_empty());
+    let message = String::from_utf8(human.stdout).unwrap();
+    for hint in [
+        &origin,
+        "genaimage serve",
+        "--server",
+        "GENAIMAGE_SERVER",
+        "[ERROR  ] server",
+    ] {
         assert!(message.contains(hint), "{message}");
     }
     let mut command = cli();
     command
         .env("GENAIMAGE_SERVER", &origin)
         .args(["doctor", "--json"]);
-    assert_eq!(
-        error(cli_output(command).await, 3),
-        json!({
-            "kind": "server_not_running", "message": message.trim().strip_prefix("Error: ").unwrap()
-        })
-    );
+    let offline = report(cli_output(command).await, 3);
+    let checks = doctor_checks(&offline);
+    assert_eq!(checks.len(), genaimage_api::DOCTOR_CHECK_IDS.len());
+    assert_eq!(checks["server"]["status"], "error");
+    assert!(checks["server"]["fix"]
+        .as_str()
+        .unwrap()
+        .contains("genaimage serve"));
+    assert_eq!(checks["ports"]["status"], "ok");
+    for (id, check) in &checks {
+        if !matches!(*id, "server" | "ports") {
+            assert_eq!(check["status"], "skipped", "{id}");
+            assert!(!check["fix"].as_str().unwrap().is_empty(), "{id}");
+        }
+    }
     let mut command = cli();
     command.args(["--server", "not-an-origin", "--json", "doctor"]);
     assert_eq!(error(cli_output(command).await, 5)["kind"], "client_error");
+}
+
+#[tokio::test]
+async fn doctor_reports_a_foreign_process_on_the_server_port() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 1024];
+            let _ = stream.read(&mut buffer).await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .await;
+        }
+    });
+    let mut command = cli();
+    command.args([
+        "--server",
+        &format!("http://127.0.0.1:{port}"),
+        "doctor",
+        "--json",
+    ]);
+    let result = report(cli_output(command).await, 6);
+    let checks = doctor_checks(&result);
+    assert_eq!(checks["server"]["status"], "error");
+    assert!(checks["server"]["summary"]
+        .as_str()
+        .unwrap()
+        .contains("not a GenAImage server"));
+    assert_eq!(checks["ports"]["status"], "error");
+    let fix = checks["ports"]["fix"].as_str().unwrap();
+    assert!(
+        fix.contains(&port.to_string()) && fix.contains("server.port"),
+        "{fix}"
+    );
+    task.abort();
 }
 
 #[test]

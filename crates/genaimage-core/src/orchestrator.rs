@@ -272,6 +272,10 @@ impl Harness {
         &self.config
     }
 
+    pub(crate) fn backend(&self) -> &Arc<dyn ImageBackend> {
+        &self.backend
+    }
+
     /// Persists an update and prepares the live snapshot. Call on the blocking
     /// pool and serialise publishers. Listener, storage and endpoint identity
     /// are fixed until restart, when database ownership is checked again.

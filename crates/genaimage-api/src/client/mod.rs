@@ -17,11 +17,11 @@ use thiserror::Error;
 use url::{Host, Url};
 
 use crate::{
-    HealthResponse, OutputAnnotationListResponse, OutputAnnotationResponse, OutputListQuery,
-    OutputListResponse, ProblemDetails, ReconcileRunResponse, ReconcileRunsResponse,
-    ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse, RunListQuery,
-    RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse, SettingsTestResponse,
-    SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
+    DoctorReport, HealthResponse, OutputAnnotationListResponse, OutputAnnotationResponse,
+    OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
+    ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse,
+    RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse,
+    SettingsTestResponse, SubmitRunRequest, UploadResponse, WorkflowDetails, WorkflowListResponse,
     WorkflowValidationRequest, WorkflowValidationResponse,
 };
 
@@ -127,6 +127,11 @@ impl Client {
 
     pub async fn health(&self) -> Result<HealthResponse, Error> {
         self.json(self.get(&["health"])?).await
+    }
+
+    /// Runs the server's diagnostics. They probe ComfyUI and the LLM, so allow several seconds.
+    pub async fn doctor(&self) -> Result<DoctorReport, Error> {
+        self.json(self.get(&["doctor"])?).await
     }
 
     /// Fetches the OpenAPI document as a JSON object, preserving all schema fields.

@@ -6,6 +6,9 @@ pub mod client;
 mod assistant;
 pub use assistant::*;
 
+mod doctor;
+pub use doctor::*;
+
 mod events;
 pub use events::*;
 

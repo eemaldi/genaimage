@@ -774,6 +774,67 @@
         ],
         "type": "object"
       },
+      "DoctorCheck": {
+        "description": "One diagnostic check. `fix` is present for every status except `ok`.",
+        "properties": {
+          "fix": {
+            "description": "A concrete action naming the setting, command or page to change.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Stable identifier, one of `server`, `config`, `comfyui.reachable`,\n`comfyui.version`, `comfyui.object_info`, `workflows.nodes`,\n`llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.",
+            "type": "string"
+          },
+          "items": {
+            "description": "Bounded detail lines, such as missing node classes per workflow.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DoctorStatus"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "summary",
+          "items"
+        ],
+        "type": "object"
+      },
+      "DoctorReport": {
+        "description": "Every check in a fixed order; look checks up by `id`.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/DoctorCheck"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "checks"
+        ],
+        "type": "object"
+      },
+      "DoctorStatus": {
+        "description": "Outcome of one diagnostic check.",
+        "enum": [
+          "ok",
+          "warning",
+          "error",
+          "skipped"
+        ],
+        "type": "string"
+      },
       "DroppedWorkflowSuggestion": {
         "properties": {
           "field": {
@@ -4222,6 +4283,130 @@
         },
         "tags": [
           "assistant"
+        ]
+      }
+    },
+    "/api/v1/doctor": {
+      "get": {
+        "description": "Run diagnostics over the configuration, ComfyUI, workflows, the optional LLM, GPU, disk space and ports. Every check that is not ok has a suggested fix.",
+        "operationId": "doctor_report",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DoctorReport"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "doctor"
+        ]
+      },
+      "head": {
+        "description": "Run diagnostics over the configuration, ComfyUI, workflows, the optional LLM, GPU, disk space and ports. Every check that is not ok has a suggested fix.",
+        "operationId": "doctor_report_head",
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "doctor"
         ]
       }
     },
