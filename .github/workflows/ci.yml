@@ -110,7 +110,10 @@ jobs:
         run: |
           size=$(docker image inspect genaimage:ci --format '{{.Size}}')
           echo "Image size: ${size} bytes"
-          test "$size" -lt 60000000
+          if [ "$size" -ge 60000000 ]; then
+            echo "::error::Image is ${size} bytes; the limit is 60000000 bytes"
+            exit 1
+          fi
 
       - name: Start container and wait for health
         run: |
@@ -126,3 +129,9 @@ jobs:
 
       - name: Check health endpoint from the host
         run: curl --fail --silent http://127.0.0.1:8190/api/v1/health
+
+      - name: Show container diagnostics
+        if: failure()
+        run: |
+          docker logs genaimage || true
+          docker inspect genaimage --format '{{json .State.Health}}' || true

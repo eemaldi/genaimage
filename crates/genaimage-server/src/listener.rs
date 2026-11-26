@@ -303,11 +303,21 @@ mod tests {
         assert!(error.to_string().contains("192.0.2.1:3000"));
     }
 
+    #[tokio::test]
+    async fn bind_allows_an_unspecified_address_only_with_permission() {
+        assert!(bind_loopback("0.0.0.0", 0, false).await.is_err());
+        let listener = bind_loopback("0.0.0.0", 0, true).await.unwrap();
+        assert!(listener.local_addr().unwrap().ip().is_unspecified());
+    }
+
     #[test]
     fn unspecified_binds_need_the_container_permission() {
         let addresses = ["0.0.0.0:8190".parse().unwrap()];
         assert!(verify_loopback("0.0.0.0", &addresses, false).is_err());
         assert!(verify_loopback("0.0.0.0", &addresses, true).is_ok());
+        let v6 = ["[::]:8190".parse().unwrap()];
+        assert!(verify_loopback("::", &v6, false).is_err());
+        assert!(verify_loopback("::", &v6, true).is_ok());
         let public = ["192.0.2.1:8190".parse().unwrap()];
         assert!(verify_loopback("192.0.2.1", &public, true).is_err());
     }

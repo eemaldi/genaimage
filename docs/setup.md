@@ -50,18 +50,22 @@ holds one reference image at a time in memory before sending it to ComfyUI.
 
 ## Container
 
-The root `Dockerfile` builds a distroless image (about 46 MB, non-root user
+The root `Dockerfile` builds a distroless image (under 60 MB, non-root user
 65532) with the portal embedded. Docker Compose support for ComfyUI and the LLM
-service is planned and not yet implemented; publishing the image is also planned.
+service is planned and not yet implemented; publishing the image is also
+planned.
 
 ```sh
 docker build -t genaimage:dev .
-docker run -d --name genaimage -p 127.0.0.1:8190:8190 -v genaimage-data:/data genaimage:dev
+docker run -d --name genaimage -p 127.0.0.1:8190:8190 \
+  -v genaimage-data:/data genaimage:dev
 ```
 
 Open `http://127.0.0.1:8190/`. The container health check runs
-`genaimage healthcheck`, which succeeds when `/api/v1/health` answers; an
-unavailable ComfyUI does not make the container unhealthy.
+`genaimage healthcheck`, which succeeds when `/api/v1/health` answers on
+`GENAIMAGE_SERVER_PORT` within two seconds; an unavailable ComfyUI does not make
+the container unhealthy. CLI commands run with `docker exec` use the same port
+unless `--server` or `GENAIMAGE_SERVER` is set.
 
 - **Bind exception.** The server normally refuses every non-loopback host. The
   image sets `GENAIMAGE_CONTAINER=1`, and only exactly `1` allows
@@ -212,7 +216,8 @@ permitted.
 
 ### Environment overrides
 
-`GENAIMAGE_CONTAINER=1` is not a setting: it only lets `server.host` be `0.0.0.0` or `::` (see [Container](#container)).
+`GENAIMAGE_CONTAINER=1` is not a setting: it only lets `server.host` be
+`0.0.0.0` or `::` (see [Container](#container)).
 
 Environment values take precedence over the selected file. Host lists are
 comma-separated; an empty value clears the list.

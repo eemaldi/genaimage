@@ -21,7 +21,6 @@ COPY workflows /usr/share/genaimage/workflows
 ENV GENAIMAGE_CONTAINER=1 \
     GENAIMAGE_SERVER_HOST=0.0.0.0 \
     GENAIMAGE_SERVER_PORT=8190 \
-    GENAIMAGE_SERVER=http://127.0.0.1:8190 \
     GENAIMAGE_STATE_DATABASE=/data/state.sqlite3 \
     GENAIMAGE_RUNS=/data/runs \
     GENAIMAGE_UPLOADS=/data/uploads \

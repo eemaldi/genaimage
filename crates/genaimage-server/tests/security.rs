@@ -596,3 +596,53 @@ async fn portal_proxy_filters_hop_by_hop_headers_and_keeps_api_local() {
     .await;
     server.abort();
 }
+
+#[tokio::test]
+async fn container_bind_on_all_interfaces_keeps_the_host_allow_list() {
+    let workspace = TempDir::new().unwrap();
+    let config =
+        HarnessConfig::load_with(workspace.path(), None, workspace.path(), |key| match key {
+            "HOME" => Some(workspace.path().to_str().unwrap().to_owned()),
+            "GENAIMAGE_CONTAINER" => Some("1".to_owned()),
+            "GENAIMAGE_SERVER_HOST" => Some("0.0.0.0".to_owned()),
+            _ => None,
+        })
+        .unwrap();
+    let backend = ComfyUiClient::new(&config.comfyui).unwrap();
+    let state = AppState::new(
+        Harness::new_async(config, Arc::new(backend))
+            .await
+            .unwrap()
+            .into(),
+    );
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shutdown = state.clone();
+    let server = tokio::spawn(genaimage_server::serve_on_listener(
+        state.clone(),
+        listener,
+        async move { shutdown.wait_for_shutdown().await },
+        std::time::Duration::from_secs(2),
+    ));
+
+    let status_for = |host: String| async move {
+        let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let request =
+            format!("GET /api/v1/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        socket.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).await.unwrap();
+        response.split_whitespace().nth(1).unwrap().to_owned()
+    };
+    for host in [format!("127.0.0.1:{port}"), format!("localhost:{port}")] {
+        assert_eq!(status_for(host.clone()).await, "200", "{host}");
+    }
+    for host in [format!("evil.test:{port}"), format!("0.0.0.0:{port}")] {
+        assert_eq!(status_for(host.clone()).await, "421", "{host}");
+    }
+
+    state.begin_shutdown();
+    server.await.unwrap().unwrap();
+}

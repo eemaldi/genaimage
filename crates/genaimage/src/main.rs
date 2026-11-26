@@ -27,14 +27,32 @@ struct Cli {
     /// Emit machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
-    /// Loopback API origin for server-backed commands.
-    #[arg(long, global = true, env = "GENAIMAGE_SERVER", default_value = DEFAULT_BASE_URL, value_name = "URL")]
-    server: String,
+    /// Loopback API origin for server-backed commands; defaults to the loopback
+    /// address of GENAIMAGE_SERVER_PORT when set, else http://127.0.0.1:3000.
+    #[arg(long, global = true, env = "GENAIMAGE_SERVER", value_name = "URL")]
+    server: Option<String>,
     /// Configuration file for `serve`, or destination for `config init`.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    fn server_url(&self) -> String {
+        server_url(
+            self.server.as_deref(),
+            std::env::var("GENAIMAGE_SERVER_PORT").ok().as_deref(),
+        )
+    }
+}
+
+fn server_url(explicit: Option<&str>, port: Option<&str>) -> String {
+    match (explicit, port.and_then(|port| port.parse::<u16>().ok())) {
+        (Some(url), _) => url.to_owned(),
+        (None, Some(port)) => format!("http://127.0.0.1:{port}"),
+        (None, None) => DEFAULT_BASE_URL.to_owned(),
+    }
 }
 
 #[derive(Subcommand)]
@@ -209,7 +227,7 @@ async fn execute_server(
     if std::env::var_os("GENAIMAGE_PROFILE").is_some() {
         return Err(output::Error::Input("GENAIMAGE_PROFILE is no longer supported. Unset it, migrate the selected profile to [comfyui] in the configuration used by `genaimage serve`, and select the server with --server.".into()));
     }
-    let client = Client::with_base_url(&cli.server)?;
+    let client = Client::with_base_url(&cli.server_url())?;
     command.execute(&client, output).await
 }
 
@@ -231,4 +249,20 @@ fn parse_parameters(values: &[String]) -> Result<BTreeMap<String, Value>, String
         parameters.insert(name.to_owned(), parsed);
     }
     Ok(parameters)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_url;
+
+    #[test]
+    fn server_url_prefers_the_explicit_origin_then_the_server_port() {
+        assert_eq!(
+            server_url(Some("http://127.0.0.1:1"), Some("9")),
+            "http://127.0.0.1:1"
+        );
+        assert_eq!(server_url(None, Some("9000")), "http://127.0.0.1:9000");
+        assert_eq!(server_url(None, Some("bogus")), "http://127.0.0.1:3000");
+        assert_eq!(server_url(None, None), "http://127.0.0.1:3000");
+    }
 }

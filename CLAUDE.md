@@ -8,4 +8,5 @@ dashboard, generate, jobs, gallery, workflows, run detail and settings pages,
 and an assistant chat panel available on every page. See [setup](docs/setup.md) for source builds
 and [portal development](README.md#portal-development) for Vite.
 
-Inside a container with `GENAIMAGE_CONTAINER=1` the server may bind `0.0.0.0`; publish ports on `127.0.0.1` only.
+Inside a container with `GENAIMAGE_CONTAINER=1` the server may bind `0.0.0.0`;
+publish ports on `127.0.0.1` only.
