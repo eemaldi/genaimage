@@ -16,7 +16,7 @@
 {/snippet}
 
 <ul class="doctor-checks">
-  {#each checks as check (check.id)}
+  {#each checks as check, position (position)}
     {@const info = describeCheckStatus(check.status)}
     <li class="doctor-check {info.tone}" data-check={check.id}>
       <h3>

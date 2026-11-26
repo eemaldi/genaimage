@@ -4,6 +4,54 @@ export type DoctorReport = components['schemas']['DoctorReport'];
 export type DoctorCheck = components['schemas']['DoctorCheck'];
 export type Tone = 'ok' | 'warning' | 'error' | 'skipped';
 
+export const DOCTOR_CHECK_IDS = [
+  'server',
+  'config',
+  'comfyui.reachable',
+  'comfyui.version',
+  'comfyui.object_info',
+  'workflows.nodes',
+  'llm.reachable',
+  'llm.text',
+  'llm.vision',
+  'gpu',
+  'disk',
+  'ports',
+] as const;
+
+export type ReportValidation = {
+  valid: boolean;
+  missing: string[];
+  unexpected: string[];
+  duplicated: string[];
+};
+
+/** Checks that the server reported each expected check exactly once. */
+export function validateReport(report: unknown): ReportValidation {
+  const raw = (report as { checks?: unknown } | null | undefined)?.checks;
+  const reported = Array.isArray(raw)
+    ? raw.map((check) => String((check as { id?: unknown } | null)?.id))
+    : [];
+  const expected: readonly string[] = DOCTOR_CHECK_IDS;
+  const missing = expected.filter((id) => !reported.includes(id));
+  const unexpected = [
+    ...new Set(reported.filter((id) => !expected.includes(id))),
+  ];
+  const duplicated = [
+    ...new Set(reported.filter((id, at) => reported.indexOf(id) !== at)),
+  ];
+  return {
+    valid:
+      Array.isArray(raw) &&
+      !missing.length &&
+      !unexpected.length &&
+      !duplicated.length,
+    missing,
+    unexpected,
+    duplicated,
+  };
+}
+
 const labels: Record<string, string> = {
   server: 'GenAImage server',
   config: 'Configuration',
@@ -51,6 +99,14 @@ export function summarise(checks: readonly DoctorCheck[]) {
     skipped,
     errors: checks.length - ok - warnings - skipped,
   };
+}
+
+const plural = (count: number, noun: string) =>
+  `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+export function describeCounts(checks: readonly DoctorCheck[]): string {
+  const { ok, errors, warnings, skipped } = summarise(checks);
+  return `${ok} of ${checks.length} checks OK · ${plural(errors, 'error')} · ${plural(warnings, 'warning')} · ${skipped} skipped`;
 }
 
 export type Segment = { text: string; code: boolean };

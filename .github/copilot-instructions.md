@@ -8,8 +8,8 @@ GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
 loopback server currently serves health, workflows, runs, outputs and their
 vision-review annotations, uploads, settings, live events, the assistant API,
 an OpenAPI contract and the embedded Svelte portal (dashboard, generate, jobs,
-gallery, workflows, run detail, diagnostics, settings and an assistant chat panel on every
-page). Keep generation orchestration, run state, provenance and the assistant
+gallery, workflows, run detail, diagnostics, settings and an assistant chat
+panel on every page). Keep generation orchestration, run state, provenance and the assistant
 (model roles, conversations, tool runtime and confirmations) in the core, the
 OpenAI-compatible LLM provider in `genaimage-llm`, and ComfyUI
 transport in its adapter. CLI client commands use `genaimage-api`; only the isolated
