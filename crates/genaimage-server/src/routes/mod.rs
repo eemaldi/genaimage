@@ -2,6 +2,7 @@ pub(crate) mod conversations;
 mod doctor;
 mod events;
 mod health;
+pub(crate) mod models;
 mod outputs;
 pub(crate) mod prompt;
 mod runs;
@@ -129,6 +130,11 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(outputs::thumbnail))
         .routes(routes!(uploads::upload))
         .routes(routes!(uploads::metadata))
+        .routes(routes!(models::list_llm))
+        .routes(routes!(models::start_pull, models::list_pulls))
+        .routes(routes!(models::get_pull, models::cancel_pull))
+        .routes(routes!(models::pull_events))
+        .routes(routes!(models::checkpoints))
         .routes(routes!(settings::read, settings::save))
         .routes(routes!(settings::probe))
 }

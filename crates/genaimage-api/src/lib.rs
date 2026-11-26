@@ -12,6 +12,9 @@ pub use doctor::*;
 mod events;
 pub use events::*;
 
+mod models;
+pub use models::*;
+
 mod settings;
 pub use settings::*;
 

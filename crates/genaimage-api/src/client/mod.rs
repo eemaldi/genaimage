@@ -3,10 +3,12 @@
 mod assistant;
 mod events;
 mod media;
+mod models;
 
 pub use assistant::{AssistantEventStream, AssistantStreamEvent};
 pub use events::{EventStream, EventsQuery, StreamEvent};
 pub use media::{HeadEndpoint, OutputRequest};
+pub use models::ModelPullStream;
 
 use std::{error::Error as StdError, io, net::SocketAddr, time::Duration};
 

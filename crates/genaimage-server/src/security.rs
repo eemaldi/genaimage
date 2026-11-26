@@ -31,6 +31,7 @@ fn body_limit(path: &str, config: &SecurityConfig) -> usize {
         }
         "/api/v1/assistant/prompt" => crate::routes::prompt::PROMPT_ASSIST_BODY_LIMIT,
         "/api/v1/uploads" => config.max_upload_bytes,
+        "/api/v1/models/llm/pulls" => crate::routes::models::PULL_BODY_LIMIT,
         _ => DEFAULT_BODY_LIMIT,
     }
 }
