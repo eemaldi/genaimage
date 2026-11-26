@@ -1,13 +1,69 @@
 ---
 name: epic-supervision
-description: Supervise a GenAImage roadmap epic by dispatching developer and reviewer subagents, tracking progress, opening pull requests and merging them. Use when asked to complete an epic or a batch of sub-issues as a supervisor who does not write code.
+description: Supervises a GenAImage roadmap epic by dispatching fresh developer and reviewer subagents, tracking progress, opening and merging pull requests, keeping session memory, and ending each session with a retrospective that updates repository instructions and skills. Use when asked to complete an epic or a batch of sub-issues as a supervisor who does not write code.
 ---
 
 # Epic supervision
 
 In this role you plan, dispatch, decide and merge. You do not edit repository
-code yourself. This procedure has been used to deliver several epics. Its
-learnings come from what slowed those epics down.
+code yourself. You do maintain the session memory, instruction files and skills.
+This procedure has been used to deliver several epics. Its learnings come from
+what slowed those epics down.
+
+Copy this checklist and keep it current:
+
+```text
+- [ ] Open the session memory and consolidate any left from earlier sessions
+- [ ] Plan the epic
+- [ ] For each work item: develop, review, open the PR, merge
+- [ ] Close the epic
+- [ ] Consolidate the session (every session, even if the epic is unfinished)
+```
+
+## Subagents are single-use
+
+**Do not resume subagents. Every time a subagent reports, it is finished. If you
+need that role again, start a fresh one.** This applies to developers and
+reviewers, including review fixes, rebases, follow-up questions and recovery.
+
+A fresh subagent knows nothing about earlier work, so every prompt after the
+first one for a work item carries a handoff brief:
+
+- the role, issue, difficulty and exact task;
+- the existing worktree, branch and latest SHA;
+- the required reading, scope, delivery rules and final reply format from
+  section 3;
+- the public contracts it depends on, verbatim;
+- the latest validation results;
+- every review finding so far, with your decision and reason;
+- whether `origin/main` has moved, what the merge changed and whether a rebase
+  is needed.
+
+Run only one subagent at a time in a worktree.
+
+## Session memory
+
+Save memory throughout the session, as things happen. Do not leave it to the
+end, because the session can be interrupted.
+
+Keep one untracked file per session in the main checkout:
+`.supervision/memory/<YYYY-MM-DD>-epic<N>.md`. Only you write to it.
+
+- **Work items:** for each one, the worktree, branch, latest SHA, state,
+  contracts, validation results and review decisions. Handoff briefs and
+  recovery are built from this.
+- **Learnings:** one line each, tagged `tool`, `process`, `feedback` or
+  `opinion`, with the evidence and the source (user, supervisor or subagent).
+  - `tool`: commands, flags and tool behaviour that worked or failed.
+  - `process`: what sped the work up or slowed it down.
+  - `feedback`: corrections, approvals and preferences from the user, and
+    recurring review findings.
+  - `opinion`: judgements and suggestions that are not yet verified.
+
+Update it after each user message that steers the work, each subagent report,
+each decision and each merge. Never record secrets or personal data. Write paths
+as inline code, not Markdown links, because the repository link check also reads
+this file.
 
 ## 1. Plan
 
@@ -34,17 +90,20 @@ learnings come from what slowed those epics down.
 7. Never check out a branch in your own worktree. Inspect other refs with
    `git show origin/main:<path>`, `git ls-tree` or `git -C <worktree>`.
 
-## 2. Pick a model tier
+## 2. Pick a model
 
-Use the user's pool if they gave one. The usual pool is:
+Use the user's pool if they gave one. Otherwise use only these models, for
+developers and reviewers alike:
 
-| Difficulty | Model | Reasoning |
-| --- | --- | --- |
-| Easy | `gpt-6-luna` | `max` |
-| Medium | `mai-code-2` | `high` |
-| Hard and very hard | No single model. Break the task down. | — |
+| Difficulty | Model | Claude Code `model` | GitHub Copilot model ID | Reasoning |
+| --- | --- | --- | --- | --- |
+| Easy | Haiku 5.5 | `haiku` | `claude-haiku-5.5` | Normal |
+| Medium | Sonnet 5.5 | `sonnet` | `claude-sonnet-5.5` | Normal |
+| Hard and very hard | No single model. Break the task down. | — | — | — |
 
-Use the `long_context` tier whenever the chosen model supports it.
+Normal reasoning is the `medium` effort level. Set the model and the effort
+explicitly on every dispatch, so that a subagent does not inherit yours. Use a
+long-context tier when the client offers one for the model.
 
 You must not give a hard or very hard task to a single subagent. Break it into
 simpler components that are Easy or Medium. Give each component its own
@@ -57,19 +116,22 @@ independent. Here are splits that worked:
 - Core and server, then the client and portal.
 
 Give anything that touches run submission, reconciliation, idempotency,
-provenance or numeric exactness to Medium, never Easy. Review it at Medium.
+provenance or numeric exactness to Sonnet 5.5, never Haiku 5.5. Review it with
+Sonnet 5.5.
 
-Reviewers work at the developer's tier or above, which in practice means
-`mai-code-2` at `high`. If a reviewer is asked to review a whole split feature,
-point it at the integrated branch.
+Reviewers work at the developer's difficulty or above, which in practice means
+Sonnet 5.5 with Normal reasoning. If a reviewer is asked to review a whole split
+feature, point it at the integrated branch.
 
 ## 3. Write the developer prompt
 
 Every developer prompt contains the following:
 
-- **Setup:** `git -C <main checkout> fetch origin`, then
+- **Setup:** for the first developer on a work item,
+  `git -C <main checkout> fetch origin`, then
   `git worktree add <repo>.worktrees/epic<N>-<issue> -b epic<N>/<issue>-<slug> origin/main`.
-  Tell the developer to work only in that worktree.
+  Later developers use that existing worktree. Tell the developer to work only
+  there.
 - **Required reading:** `AGENTS.md`, ADR 0001, `docs/architecture.md`, the
   issue, and the exact files and helpers it should reuse.
 - **Parallel work:** which other developers are active and which directories
@@ -79,15 +141,17 @@ Every developer prompt contains the following:
 - **Delivery:**
   - `python3 scripts/ci_check.py` must pass.
   - Commits are conventional, with real newlines (no literal `\n`).
-  - Each commit ends with the trailer
+  - Each commit ends with the co-author trailer that the client in use
+    specifies. For GitHub Copilot it is
     `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
   - Push the branch, but do not open a PR or merge.
 - **Final reply:** SHAs, a summary, any public helpers or contracts that later
-  issues will use, the exact validation results, the JS size and any caveats.
+  issues will use, the exact validation results, the JS size, any caveats, and
+  learnings about tools and processes, plus opinions, for the session memory.
 
-When later issues depend on an earlier one, ask the earlier developer to report
-the contracts it created. Examples are URL formats such as
-`#/generate?workflow=<id>` and helper exports such as `buildGenerateUrl(run)`.
+When later issues depend on an earlier one, ask the earlier developer in its
+first prompt to report the contracts it creates. Examples are URL formats such
+as `#/generate?workflow=<id>` and helper exports such as `buildGenerateUrl(run)`.
 Pass those contracts verbatim to the dependent developers.
 
 Once a branch is approved and only waiting to merge, dependent work can start
@@ -96,16 +160,17 @@ then after the merge run `git rebase --onto origin/main <old head> HEAD` and
 confirm that `git log origin/main..HEAD` contains only its own commits.
 
 When a merge or a decision changes a shared contract, send a heads-up to every
-in-flight developer it affects. For example, `LlmRoles::text()` stopped
-requiring tool support, so tool callers must call `check_request`.
+in-flight developer it affects. Message only developers that are still running;
+otherwise put it in the next handoff brief. For example, `LlmRoles::text()`
+stopped requiring tool support, so tool callers must call `check_request`.
 
 ## 4. Review loop
 
-1. Start a `code-review` agent on `git diff origin/main...<branch>`. Give it
-   the guardrails to focus on and require a verdict of `APPROVE` or
-   `CHANGES_REQUESTED`, with severity and `file:line` for each finding.
-2. Send the findings back to the **same** developer with `write_agent`, and
-   state a decision on every finding:
+1. Start a fresh reviewer on `git diff origin/main...<branch>`. Give it the
+   guardrails to focus on. Require a verdict of `APPROVE` or
+   `CHANGES_REQUESTED`, with severity and `file:line` for each finding, and
+   learnings for the session memory.
+2. Decide on every finding:
    - **Accept** real correctness or guardrail problems.
    - **Overrule** with a reason when a finding conflicts with project direction
      or a decision already made. For example, raw provenance is not redacted in
@@ -114,20 +179,21 @@ requiring tool support, so tool callers must call `check_request`.
    - **Spin off** a backend prerequisite to a separate developer and PR when a
      UI finding can only be fixed server-side. Examples are a re-run endpoint,
      workflow revision pinning and explicit reconcile outcomes.
-3. Return the fix to the **same** reviewer, which keeps its context. Name your
-   decisions so it does not re-raise overruled points.
-4. After about three rounds on one branch, switch the reviewer to a High-only
+3. Start a fresh developer with a handoff brief that lists your decisions.
+4. When it reports, start a fresh reviewer. Give it the earlier findings and
+   decisions, so it verifies the fixes and does not re-raise overruled points.
+5. After about three rounds on one branch, give the next reviewer a High-only
    rule. Block only on silent substitution, data loss, false success, duplicate
    or blind submission, or mutation of the source record. Record Medium and Low
    findings as follow-ups.
-5. When a split feature adds a new component to a branch, such as the server
-   half after the core, give it to the same reviewer under full rules again.
+6. When a split feature adds a new component to a branch, such as the server
+   half after the core, have a fresh reviewer assess it under full rules.
    Apply the High-only rule only to fix deltas.
-6. If you lean towards a design change, put it to the reviewer as a
+7. If you lean towards a design change, put it to the reviewer as a
    "supervisor note to evaluate" rather than ordering it. In epic 7, this
    settled base64 image content, a distinct `awaiting_confirmation` event and
    preview tokens before any client depended on the old form.
-7. Overrule a High finding only when the path fails closed. Write down why,
+8. Overrule a High finding only when the path fails closed. Write down why,
    and record the issue as a follow-up in the PR. Example: a race between a
    preview check and the claim, where `submit_run` re-validates the pinned
    revision and nothing can be submitted wrongly.
@@ -140,18 +206,21 @@ requiring tool support, so tool callers must call `check_request`.
    checklist, and any decision you overruled or recorded as a follow-up.
 2. Run `ship_pr.sh <branch> <issue> "<title>" <body-file>` from this skill's
    directory. It:
-   - refuses a branch that is behind `origin/main`, or a body that doesn't
-     reference the issue;
+   - refuses a branch that is behind `origin/main` (start a fresh developer to
+     rebase it), or a body that doesn't reference the issue;
    - opens the PR, waits 20 seconds and then watches the checks (starting
      the watch immediately can report "no checks" and exit);
    - merges with `--merge` only if every check passes;
    - reports the issue state and the new `origin/main`.
 
    Close the issue with a comment if GitHub has not.
-3. Tell every open branch that main has moved, and what the merge changed
-   (migration numbers, shared modules, generated files).
+3. Record in the session memory that `main` has moved and what the merge changed
+   (migration numbers, shared modules, generated files). Send a heads-up to
+   running developers. The next subagent on each open branch rebases first.
 
 ## 6. Rebase rules for developers
+
+Include these in the prompt of any developer that rebases.
 
 - Shared generated files conflict on almost every merge: `docs/api/openapi.json`
   and `apps/portal/src/lib/api/schema.d.ts`. Always regenerate them with
@@ -162,17 +231,16 @@ requiring tool support, so tool callers must call `check_request`.
 
 ## 7. Recovering after an interruption
 
-Background agents can disappear if the session is interrupted. `read_agent`
-then reports "No agent found".
+Background subagents can disappear if the session is interrupted. Treat every
+subagent that has not reported and can no longer be found as lost.
 
-1. Run `list_agents`. For each in-flight item, check its worktree with
+1. Read the session memory. For each in-flight item, check its worktree with
    `git status -sb` and `git log`, and check the remote branch.
-2. Start fresh agents with a **resume** prompt. It describes the remote SHA,
-   the uncommitted local changes and any half-finished rebase. It tells the
-   agent to keep the correct work, delete build leftovers such as
-   `*.o`/`*.res`, and finish the remaining task.
-3. If a reviewer was lost, start a new one with a summary of the earlier
-   decisions.
+2. Start fresh developers with a handoff brief that also describes the remote
+   SHA, the uncommitted local changes and any half-finished rebase. Tell each one
+   to keep the correct work, delete build leftovers such as `*.o`/`*.res`, and
+   finish the remaining task.
+3. For a lost review, start a fresh reviewer with the earlier decisions.
 
 ## 8. Close the epic
 
@@ -190,6 +258,41 @@ then reports "No agent found".
    older branches.
 5. Give the user a summary that includes every supervisor decision they may
    want to revisit.
+
+## 9. Consolidate the session
+
+Do this at the end of every session, whether the epic is finished, paused or
+abandoned. If a session ended without it, do it at the start of the next one.
+
+1. Read the session memory, including any file not yet consolidated.
+2. Run a retrospective: what worked, what slowed the work, what had to be redone
+   and why, and which decisions to revisit. Support each conclusion with
+   evidence from the session.
+3. Choose one destination for each learning. Prefer correcting or removing
+   existing text over adding more.
+
+   | Learning | Destination |
+   | --- | --- |
+   | Fact or rule needed in every session | `AGENTS.md`, keeping `CLAUDE.md` and `.github/copilot-instructions.md` aligned |
+   | Rule for particular paths only | Matching files in `.github/instructions/*.instructions.md` and `.claude/rules/` |
+   | Repeatable multi-step procedure or domain knowledge | A new or existing skill |
+   | Repetitive, deterministic commands | A script, written by a fresh developer, in `scripts/` or in the skill that uses it |
+   | Supervision procedure | This skill |
+   | One-off or unverified | No change; say why in the retrospective |
+
+4. Edit instruction files and skills in a new worktree on a `retro/<date>-<slug>`
+   branch.
+   - Keep each instruction file short, ideally under 200 lines.
+   - Give each skill `name` and `description` frontmatter only. The name matches
+     its directory (lowercase letters, numbers and hyphens, at most 64
+     characters). The description is in the third person, says what the skill
+     does and when to use it, and is at most 1,024 characters.
+   - Keep `SKILL.md` under 500 lines; move detail to files it links to directly.
+   - Keep the `.agents/skills/` and `.claude/skills/` copies identical.
+5. Run `python3 scripts/ci_check.py`, push, and open a PR containing the
+   retrospective. These changes steer every future session, so show the user the
+   summary and merge only after they approve.
+6. Add `Consolidated: <PR URL, or "no changes">` to the memory file.
 
 ## Learnings
 
