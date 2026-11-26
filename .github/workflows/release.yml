@@ -102,8 +102,8 @@ jobs:
           # Older Ubuntu images keep the glibc requirement of the Linux binaries low.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, smoke: true }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, smoke: true }
-          - { target: aarch64-apple-darwin, os: macos-14, smoke: true }
-          - { target: x86_64-apple-darwin, os: macos-14, smoke: false }
+          - { target: aarch64-apple-darwin, os: macos-15, smoke: true }
+          - { target: x86_64-apple-darwin, os: macos-15, smoke: false }
           - { target: x86_64-pc-windows-msvc, os: windows-2025, smoke: true }
     env:
       NAME: genaimage-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
