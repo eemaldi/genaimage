@@ -14,7 +14,9 @@ const PORT_PROBE_DEADLINE: Duration = Duration::from_secs(1);
 
 enum Failure {
     NotRunning,
+    Unreachable,
     NotGenAImage,
+    Stalled,
     Problem(Box<genaimage_api::ProblemDetails>),
 }
 
@@ -27,12 +29,19 @@ pub(crate) async fn run(client: &Client, output: Output) -> Result<Status, Error
             client::Error::Http(_)
             | client::Error::HttpStatus { .. }
             | client::Error::Connect { .. },
-        ))
-        | Err(_) => {
-            let failure = if listening(client).await {
-                Failure::NotGenAImage
-            } else {
-                Failure::NotRunning
+        )) => {
+            let failure = match probe(client).await {
+                PortState::Accepting => Failure::NotGenAImage,
+                PortState::Refused => Failure::NotRunning,
+                PortState::Unknown => Failure::Unreachable,
+            };
+            offline(client, failure)
+        }
+        Err(_) => {
+            let failure = match probe(client).await {
+                PortState::Accepting => Failure::Stalled,
+                PortState::Refused => Failure::NotRunning,
+                PortState::Unknown => Failure::Unreachable,
             };
             offline(client, failure)
         }
@@ -40,7 +49,7 @@ pub(crate) async fn run(client: &Client, output: Output) -> Result<Status, Error
     };
     output.write(&report, |out| render(out, &report))?;
     Ok(match failure {
-        Some(Failure::NotRunning) => Status::ServerNotRunning,
+        Some(Failure::NotRunning | Failure::Unreachable) => Status::ServerNotRunning,
         Some(Failure::Problem(_)) => Status::ServerProblem,
         _ if report
             .checks
@@ -53,19 +62,27 @@ pub(crate) async fn run(client: &Client, output: Output) -> Result<Status, Error
     })
 }
 
-async fn listening(client: &Client) -> bool {
+enum PortState {
+    Accepting,
+    Refused,
+    Unknown,
+}
+
+async fn probe(client: &Client) -> PortState {
     let url = client.base_url();
     let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
-        return false;
+        return PortState::Unknown;
     };
-    matches!(
-        timeout(
-            PORT_PROBE_DEADLINE,
-            TcpStream::connect(format!("{host}:{port}"))
-        )
-        .await,
-        Ok(Ok(_))
+    match timeout(
+        PORT_PROBE_DEADLINE,
+        TcpStream::connect(format!("{host}:{port}")),
     )
+    .await
+    {
+        Ok(Ok(_)) => PortState::Accepting,
+        Ok(Err(error)) if error.kind() == io::ErrorKind::ConnectionRefused => PortState::Refused,
+        _ => PortState::Unknown,
+    }
 }
 
 fn check(
@@ -100,6 +117,34 @@ fn offline(client: &Client, failure: Failure) -> (DoctorReport, Option<Failure>)
                 Some(start.into()),
             ),
             check("ports", DoctorStatus::Ok, format!("Port {port} is free: nothing is listening there."), None),
+        ),
+        Failure::Unreachable => (
+            check(
+                "server",
+                DoctorStatus::Error,
+                format!("No GenAImage server could be reached at {origin}."),
+                Some(start.into()),
+            ),
+            check(
+                "ports",
+                DoctorStatus::Skipped,
+                format!("The state of port {port} is unknown: the connection neither succeeded nor was refused."),
+                Some("Check the host in --server or GENAIMAGE_SERVER, your network and any firewall, then run `genaimage doctor` again.".into()),
+            ),
+        ),
+        Failure::Stalled => (
+            check(
+                "server",
+                DoctorStatus::Error,
+                format!("Something at {origin} accepted a connection but did not answer within {} s.", REPORT_DEADLINE.as_secs()),
+                Some("The GenAImage server may be stuck or overloaded: check its console, restart `genaimage serve` and run `genaimage doctor` again. If another program owns the port, stop it or pick another `server.port`.".into()),
+            ),
+            check(
+                "ports",
+                DoctorStatus::Warning,
+                format!("Port {port} accepted a connection but nothing answered in time; its owner is unknown."),
+                Some(format!("Find the process that owns port {port} (for example `lsof -i :{port}` or `netstat -ano`) and confirm it is `genaimage serve`.")),
+            ),
         ),
         Failure::NotGenAImage => (
             check(

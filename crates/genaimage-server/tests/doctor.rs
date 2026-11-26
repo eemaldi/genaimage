@@ -73,6 +73,9 @@ fn assert_failing(report: &DoctorReport, id: &str, status: DoctorStatus, fix_nam
 
 fn direct_roles(api: &ApiHarness) -> LlmRoles {
     let config = &api.core.config().llm;
+    if config.base_url.is_empty() {
+        return LlmRoles::new(config, None);
+    }
     let provider = OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
         base_url: config.base_url.clone(),
         api_key: config.api_key.clone(),
@@ -409,6 +412,241 @@ async fn the_llm_key_never_appears_in_the_report_even_if_the_provider_echoes_it(
     assert!(
         !format!("{direct:?}").contains(SECRET)
             && !serde_json::to_string(&direct).unwrap().contains(SECRET)
+    );
+    api.shutdown().await;
+}
+
+async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(20), future)
+        .await
+        .expect("the doctor must finish within its deadlines")
+}
+
+fn quick() -> DoctorOptions {
+    DoctorOptions {
+        comfyui_deadline: Duration::from_millis(300),
+        object_info_deadline: Duration::from_millis(300),
+        llm_deadline: Duration::from_millis(300),
+        ..generous()
+    }
+}
+
+async fn run_direct(api: &ApiHarness, options: &DoctorOptions) -> DoctorReport {
+    let report = bounded(doctor::run(&api.core, &direct_roles(api), &[], options)).await;
+    DoctorReport {
+        checks: report
+            .checks
+            .into_iter()
+            .map(|check| DoctorCheck {
+                id: check.id,
+                status: match check.status {
+                    doctor::DoctorStatus::Ok => DoctorStatus::Ok,
+                    doctor::DoctorStatus::Warning => DoctorStatus::Warning,
+                    doctor::DoctorStatus::Error => DoctorStatus::Error,
+                    doctor::DoctorStatus::Skipped => DoctorStatus::Skipped,
+                },
+                summary: check.summary,
+                items: check.items,
+                fix: check.fix,
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test]
+async fn a_hanging_comfyui_health_probe_is_an_error_not_a_hang() {
+    let api = ApiHarness::start().await;
+    api.fake.health_hangs.store(true, Ordering::SeqCst);
+    let report = run_direct(&api, &quick()).await;
+    assert_failing(
+        &report,
+        "comfyui.reachable",
+        DoctorStatus::Error,
+        "comfyui.base_url",
+    );
+    assert!(check(&report, "comfyui.reachable")
+        .summary
+        .contains("did not answer within"));
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_hanging_object_info_is_an_error_and_skips_workflow_nodes() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    api.fake.object_info_hangs.store(true, Ordering::SeqCst);
+    let report = run_direct(&api, &quick()).await;
+    assert_failing(
+        &report,
+        "comfyui.object_info",
+        DoctorStatus::Error,
+        "run `genaimage doctor` again",
+    );
+    assert_eq!(
+        check(&report, "workflows.nodes").status,
+        DoctorStatus::Skipped
+    );
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_hanging_llm_is_an_unreachable_error_with_skipped_roles() {
+    let script = FakeLlmScript::default()
+        .with_models_response(models(true))
+        .with_models_response_delay(Duration::from_secs(30));
+    let (_llm, url) = llm(script).await;
+    let api = configured(&url, &[]).await;
+    let report = run_direct(&api, &quick()).await;
+    assert_failing(
+        &report,
+        "llm.reachable",
+        DoctorStatus::Error,
+        "llm.base_url",
+    );
+    assert!(check(&report, "llm.reachable")
+        .summary
+        .contains("did not answer within"));
+    assert_eq!(check(&report, "llm.text").status, DoctorStatus::Skipped);
+    api.shutdown().await;
+}
+
+#[test]
+fn workflow_discovery_past_its_deadline_is_an_error_with_a_fix() {
+    tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let api = ApiHarness::start().await;
+            install_workflow(&api);
+            // Occupy the only blocking thread so discovery cannot start in time.
+            let busy = tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_secs(1)));
+            let options = DoctorOptions {
+                workflow_deadline: Duration::from_millis(300),
+                ..quick()
+            };
+            let report = run_direct(&api, &options).await;
+            busy.await.unwrap();
+            assert_failing(
+                &report,
+                "workflows.nodes",
+                DoctorStatus::Error,
+                "paths.workflows",
+            );
+            assert!(check(&report, "workflows.nodes")
+                .summary
+                .contains("did not finish"));
+            api.shutdown().await;
+        });
+}
+
+#[tokio::test]
+async fn a_service_that_is_not_comfyui_is_not_reported_as_reachable() {
+    let api = ApiHarness::start().await;
+    *api.fake.health_override.lock().unwrap() = Some(json!({"status": "welcome"}));
+    let report = report(&api).await;
+    assert_failing(
+        &report,
+        "comfyui.reachable",
+        DoctorStatus::Warning,
+        "comfyui.base_url",
+    );
+    assert!(check(&report, "comfyui.reachable")
+        .summary
+        .contains("not ComfyUI"));
+    for id in [
+        "comfyui.version",
+        "comfyui.object_info",
+        "workflows.nodes",
+        "gpu",
+    ] {
+        assert_eq!(check(&report, id).status, DoctorStatus::Skipped, "{id}");
+    }
+    assert_eq!(check(&report, "ports").status, DoctorStatus::Warning);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_empty_object_info_is_an_error() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    *api.fake.object_info_override.lock().unwrap() = Some(json!({}));
+    let report = report(&api).await;
+    assert_failing(
+        &report,
+        "comfyui.object_info",
+        DoctorStatus::Error,
+        "restart it",
+    );
+    assert_eq!(
+        check(&report, "workflows.nodes").status,
+        DoctorStatus::Skipped
+    );
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn versions_the_strict_gate_rejects_are_a_warning() {
+    for version in ["0.3.57.1", "0.3.60rc1", "0.3.56"] {
+        let api = ApiHarness::start().await;
+        *api.fake.comfyui_version.lock().unwrap() = Some(version.into());
+        let report = report(&api).await;
+        assert_failing(&report, "comfyui.version", DoctorStatus::Warning, "0.3.57");
+        api.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn two_services_on_one_address_are_a_ports_error() {
+    let api = ApiHarness::start().await;
+    let mut llm_config = api.core.config().llm.clone();
+    llm_config.base_url = api.core.config().comfyui.base_url.clone();
+    let roles = LlmRoles::new(&llm_config, None);
+    let report = bounded(doctor::run(&api.core, &roles, &[], &quick())).await;
+    let ports = report
+        .checks
+        .iter()
+        .find(|check| check.id == "ports")
+        .unwrap();
+    assert_eq!(ports.status, doctor::DoctorStatus::Error);
+    assert!(ports.items[0].contains("ComfyUI") && ports.items[0].contains("LLM"));
+    assert!(ports.fix.as_deref().unwrap().contains("comfyui.base_url"));
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn unloadable_workflows_are_counted_never_silently_dropped() {
+    let api = ApiHarness::start().await;
+    install_workflow(&api);
+    let dir = api.core.config().workflows.clone();
+    std::fs::write(dir.join("array.api.json"), "[]").unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("contract.genaimage.json")).unwrap())
+            .unwrap();
+    manifest["id"] = json!("array");
+    manifest["workflow"] = json!("array.api.json");
+    std::fs::write(
+        dir.join("array.genaimage.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(dir.join("garbage.genaimage.json"), "{not json").unwrap();
+    let report = report(&api).await;
+    let nodes = check(&report, "workflows.nodes");
+    assert_eq!(nodes.status, DoctorStatus::Warning, "{}", nodes.summary);
+    assert!(
+        nodes.summary.contains("could not be checked"),
+        "{}",
+        nodes.summary
+    );
+    assert!(!nodes.summary.starts_with("All"));
+    assert!(nodes.fix.is_some());
+    assert!(
+        nodes.items.iter().any(|item| item.contains("garbage"))
+            && nodes.items.iter().any(|item| item.contains("array")),
+        "{:?}",
+        nodes.items
     );
     api.shutdown().await;
 }

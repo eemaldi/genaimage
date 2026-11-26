@@ -22,8 +22,9 @@ use genaimage_core::{
     async_trait,
     config::ComfyUiProfile,
     image_backend::{
-        BackendEvent, BackendHealth, EventMonitor, HistoryOutcome, HistorySnapshot, ImageBackend,
-        OutputReference, PromptResponse, QueueSnapshot, UploadResponse,
+        supports_targeted_interrupt, BackendEvent, BackendHealth, EventMonitor, HistoryOutcome,
+        HistorySnapshot, ImageBackend, OutputReference, PromptResponse, QueueSnapshot,
+        UploadResponse,
     },
     HarnessError, Result,
 };
@@ -527,18 +528,6 @@ fn parse_response_json<T: for<'de> Deserialize<'de>>(body: &str, operation: &str
             "{operation} returned invalid JSON: {error}; body={body}"
         ))
     })
-}
-
-fn supports_targeted_interrupt(version: &str) -> bool {
-    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
-    let parsed = (|| {
-        Some((
-            parts.next()?.parse::<u64>().ok()?,
-            parts.next()?.parse::<u64>().ok()?,
-            parts.next()?.parse::<u64>().ok()?,
-        ))
-    })();
-    parts.next().is_none() && parsed.is_some_and(|version| version >= (0, 3, 57))
 }
 
 async fn response_body(response: reqwest::Response, operation: &str) -> Result<String> {

@@ -162,7 +162,9 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   present. Exit `6` means at least one check is an `error`; warnings and skipped
   checks (such as an LLM that is not configured) exit `0`. If the server is
   not running, `doctor` still prints a report on stdout, with a `server` error,
-  a `ports` check and every other check skipped, and exits `3`. If another
+  a `ports` check and every other check skipped, and exits `3`. The `ports` check
+  claims the port is free only when the connection was refused; otherwise its
+  state is reported as unknown. If another
   program is listening on the server port, the `server` and `ports` checks are
   errors and the exit code is `6`. This replaces the earlier `HealthResponse`
   JSON (`self`, `image_backend`, `llm`); use the `GET /api/v1/health` endpoint

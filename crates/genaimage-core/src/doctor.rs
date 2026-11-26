@@ -19,7 +19,8 @@ use url::Url;
 
 use crate::{
     config::{validate_endpoint, ResolvedConfig},
-    Harness, LlmModel, LlmRoles, LoadedWorkflow,
+    image_backend::{parse_release, MIN_TARGETED_INTERRUPT},
+    AssistantUnavailable, Harness, LlmRoleBinding, LlmRoles, LoadedWorkflow,
 };
 
 pub const SERVER: &str = "server";
@@ -55,7 +56,6 @@ const MAX_ITEMS: usize = 20;
 const MAX_CLASSES_PER_WORKFLOW: usize = 10;
 const MAX_WORKFLOWS: usize = 200;
 const MAX_TEXT: usize = 240;
-const MIN_TARGETED_INTERRUPT: (u64, u64, u64) = (0, 3, 57);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -314,11 +314,38 @@ async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks
             };
         }
     };
-    let protocol_note = (!stats.get("system").is_some_and(Value::is_object)).then(|| {
-        format!("{url} answered /system_stats but not in ComfyUI's format; another service may be using that port.")
-    });
+    if !stats.get("system").is_some_and(Value::is_object) {
+        let note = format!("{url} answered /system_stats but not in ComfyUI's format; another service may be using that port.");
+        let dependent = |id: &str| {
+            DoctorCheck::skipped(
+                id,
+                "Not run: the address did not answer as ComfyUI.",
+                "Fix `comfyui.reachable` first.",
+            )
+        };
+        return ComfyChecks {
+            reachable: DoctorCheck::warning(
+                COMFYUI_REACHABLE,
+                format!("Something answered at {url}, but it is not ComfyUI."),
+                "Check which program listens on that port, stop it or correct `comfyui.base_url`, and make sure ComfyUI is running there.",
+            ),
+            version: dependent(COMFYUI_VERSION),
+            object_info: dependent(COMFYUI_OBJECT_INFO),
+            gpu: dependent(GPU),
+            protocol_note: Some(note),
+            node_classes: None,
+        };
+    }
     let (object_info, node_classes) =
         match timeout(options.object_info_deadline, backend.object_info()).await {
+            Ok(Ok(Value::Object(classes))) if classes.is_empty() => (
+                DoctorCheck::error(
+                    COMFYUI_OBJECT_INFO,
+                    "ComfyUI /object_info lists no node classes.",
+                    "ComfyUI may still be starting or failed to load its nodes; check its console, restart it and run `genaimage doctor` again.",
+                ),
+                None,
+            ),
             Ok(Ok(Value::Object(classes))) => (
                 DoctorCheck::ok(
                     COMFYUI_OBJECT_INFO,
@@ -359,21 +386,9 @@ async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks
         version: version_check(&stats),
         object_info,
         gpu: gpu_check(&stats),
-        protocol_note,
+        protocol_note: None,
         node_classes,
     }
-}
-
-fn parse_version(version: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = version
-        .trim_start_matches('v')
-        .split(|c: char| !c.is_ascii_digit())
-        .map(|part| part.parse::<u64>());
-    Some((
-        parts.next()?.ok()?,
-        parts.next()?.ok()?,
-        parts.next()?.ok()?,
-    ))
 }
 
 fn version_check(stats: &Value) -> DoctorCheck {
@@ -384,7 +399,7 @@ fn version_check(stats: &Value) -> DoctorCheck {
     else {
         return DoctorCheck::warning(COMFYUI_VERSION, "ComfyUI did not report its version.", fix);
     };
-    match parse_version(version) {
+    match parse_release(version) {
         Some(parsed) if parsed >= MIN_TARGETED_INTERRUPT => DoctorCheck::ok(
             COMFYUI_VERSION,
             format!("ComfyUI {}.", clean(version, None)),
@@ -446,7 +461,21 @@ fn gpu_check(stats: &Value) -> DoctorCheck {
 
 struct DiscoveredGraphs {
     graphs: Result<Vec<(String, BTreeSet<String>)>, String>,
-    diagnostics: Vec<String>,
+    /// One line per workflow that could not be checked, for any reason.
+    unchecked: Vec<String>,
+    /// Workflows beyond the cap, counted but not named.
+    truncated: usize,
+}
+
+fn node_classes(workflow: &Value) -> Option<BTreeSet<String>> {
+    Some(
+        workflow
+            .as_object()?
+            .values()
+            .filter_map(|node| node.get("class_type").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 async fn discover_workflows(harness: &Harness, options: &DoctorOptions) -> DiscoveredGraphs {
@@ -455,7 +484,7 @@ async fn discover_workflows(harness: &Harness, options: &DoctorOptions) -> Disco
         let discovery = harness
             .discover_workflows()
             .map_err(|error| error.to_string())?;
-        let diagnostics = discovery
+        let mut unchecked: Vec<String> = discovery
             .diagnostics
             .iter()
             .map(|item| {
@@ -466,36 +495,46 @@ async fn discover_workflows(harness: &Harness, options: &DoctorOptions) -> Disco
                 )
             })
             .collect();
-        let graphs = discovery
-            .indexable_manifest_paths
-            .iter()
-            .take(MAX_WORKFLOWS)
-            .filter_map(|(id, path)| {
-                let loaded = LoadedWorkflow::load(path).ok()?;
-                let classes = loaded
-                    .workflow
-                    .as_object()?
-                    .values()
-                    .filter_map(|node| node.get("class_type").and_then(Value::as_str))
-                    .map(str::to_owned)
-                    .collect();
-                Some((id.clone(), classes))
-            })
-            .collect();
-        Ok::<_, String>((graphs, diagnostics))
+        let mut graphs = Vec::new();
+        let paths = &discovery.indexable_manifest_paths;
+        for (id, path) in paths.iter().take(MAX_WORKFLOWS) {
+            let classes = LoadedWorkflow::load(path)
+                .map_err(|error| clean(&error.to_string(), None))
+                .and_then(|loaded| {
+                    node_classes(&loaded.workflow)
+                        .ok_or_else(|| "the workflow is not a JSON object".to_owned())
+                });
+            match classes {
+                Ok(classes) => graphs.push((id.clone(), classes)),
+                Err(error) => unchecked.push(format!("{id}: {error}")),
+            }
+        }
+        let truncated = paths.len().saturating_sub(MAX_WORKFLOWS);
+        if truncated > 0 {
+            unchecked.push(format!(
+                "{truncated} workflows beyond the first {MAX_WORKFLOWS} were not checked."
+            ));
+        }
+        Ok::<_, String>((graphs, unchecked, truncated))
     });
     match timeout(options.workflow_deadline, task).await {
-        Ok(Ok(Ok((graphs, diagnostics)))) => DiscoveredGraphs {
+        Ok(Ok(Ok((graphs, unchecked, truncated)))) => DiscoveredGraphs {
             graphs: Ok(graphs),
-            diagnostics,
+            unchecked,
+            truncated,
         },
         Ok(Ok(Err(error))) => DiscoveredGraphs {
             graphs: Err(clean(&error, None)),
-            diagnostics: Vec::new(),
+            unchecked: Vec::new(),
+            truncated: 0,
         },
         _ => DiscoveredGraphs {
-            graphs: Err("workflow discovery did not finish in time".into()),
-            diagnostics: Vec::new(),
+            graphs: Err(format!(
+                "workflow discovery did not finish within {} s",
+                options.workflow_deadline.as_secs_f64()
+            )),
+            unchecked: Vec::new(),
+            truncated: 0,
         },
     }
 }
@@ -525,7 +564,8 @@ fn nodes_check(
             )
         }
     };
-    let broken = discovered.diagnostics.len();
+    let unchecked = discovered.unchecked;
+    let broken = unchecked.len() - usize::from(discovered.truncated > 0) + discovered.truncated;
     let missing: BTreeMap<&str, Vec<&String>> = graphs
         .iter()
         .filter_map(|(id, classes)| {
@@ -534,7 +574,7 @@ fn nodes_check(
         })
         .collect();
     if !missing.is_empty() {
-        let items = missing
+        let mut items: Vec<String> = missing
             .iter()
             .map(|(id, classes)| {
                 let listed: Vec<&str> = classes
@@ -551,11 +591,15 @@ fn nodes_check(
                 format!("{id}: missing {}{suffix}", listed.join(", "))
             })
             .collect();
-        let summary = format!(
-            "{} of {} workflows need node classes that ComfyUI does not provide.",
+        let mut summary = format!(
+            "{} of {} checked workflows need node classes that ComfyUI does not provide.",
             missing.len(),
             graphs.len()
         );
+        if broken > 0 {
+            summary.push_str(&format!(" {broken} more could not be checked."));
+            items.extend(unchecked);
+        }
         let fix = "Install the custom nodes that provide the missing classes in ComfyUI yourself (GenAImage never installs or substitutes nodes), restart ComfyUI and run `genaimage doctor` again; `genaimage workflow validate <ID>` rechecks one workflow.";
         let check = if missing.len() == graphs.len() {
             DoctorCheck::error(WORKFLOWS_NODES, summary, fix)
@@ -570,15 +614,19 @@ fn nodes_check(
             format!("No usable workflows were found in {directory}."),
             format!("Add a *.genaimage.json manifest and its API-format workflow under {directory} (`paths.workflows`); see docs/workflow-manifest.md."),
         )
-        .with_items(discovered.diagnostics);
+        .with_items(unchecked);
     }
     if broken > 0 {
         return DoctorCheck::warning(
             WORKFLOWS_NODES,
-            format!("{broken} workflow file(s) could not be loaded; the {} loaded workflows have every node they need.", graphs.len()),
-            "Repair or move the listed manifests; `genaimage workflow list` shows the same diagnostics.",
+            format!(
+                "{broken} of {} workflows could not be checked; the {} checked ones have every node they need.",
+                graphs.len() + broken,
+                graphs.len()
+            ),
+            "Repair or move the listed manifests (`genaimage workflow list` shows load diagnostics); with more than 200 workflows, `genaimage workflow validate <ID>` checks one.",
         )
-        .with_items(discovered.diagnostics);
+        .with_items(unchecked);
     }
     DoctorCheck::ok(
         WORKFLOWS_NODES,
@@ -640,101 +688,92 @@ async fn llm_checks(
             ];
         }
     };
-    let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+    let listed: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
     let reachable = DoctorCheck::ok(
         LLM_REACHABLE,
         format!("The LLM answered and lists {} models.", models.len()),
     );
+    let (text, vision) = tokio::join!(roles.text(), roles.vision());
     [
         reachable,
         role_check(
-            roles,
             LLM_TEXT,
             "llm.text_model",
             &config.text_model,
-            &models,
-            &ids,
+            text,
+            &listed,
         ),
         role_check(
-            roles,
             LLM_VISION,
             "llm.vision_model",
             &config.vision_model,
-            &models,
-            &ids,
+            vision,
+            &listed,
         ),
     ]
 }
 
+/// Reports exactly what the runtime role binding decides; the roles never fall back to each other.
 fn role_check(
-    roles: &LlmRoles,
     id: &str,
     key: &str,
     model: &str,
-    models: &[LlmModel],
+    binding: Result<LlmRoleBinding, AssistantUnavailable>,
     listed: &[&str],
 ) -> DoctorCheck {
     let is_vision = id == LLM_VISION;
+    let model = clean(model, None);
     let available = || {
         let shown: Vec<&str> = listed.iter().take(5).copied().collect();
         format!("available models: {}", shown.join(", "))
     };
-    if model.is_empty() {
-        return if is_vision {
-            DoctorCheck::skipped(
-                id,
-                "No vision model is configured.",
-                format!(
-                    "Optional: set `{key}` to a vision-capable model ({}) to enable vision review.",
-                    available()
-                ),
-            )
-        } else {
-            DoctorCheck::warning(
-                id,
-                "No text model is configured, so the assistant cannot run.",
-                format!("Set `{key}` on the Settings page or in genaimage.toml ({}) and restart `genaimage serve`.", available()),
-            )
-        };
-    }
-    let Some(found) = models.iter().find(|candidate| candidate.id == model) else {
-        return DoctorCheck::error(
+    let table = format!("[llm.capabilities.\"{model}\"]");
+    match binding {
+        Err(AssistantUnavailable::NotConfigured { .. }) if is_vision => DoctorCheck::skipped(
             id,
+            "No vision model is configured.",
             format!(
-                "The configured model '{}' is not served by the LLM.",
-                clean(model, None)
+                "Optional: set `{key}` to a vision-capable model ({}) to enable vision review.",
+                available()
             ),
+        ),
+        Err(AssistantUnavailable::NotConfigured { .. }) => DoctorCheck::warning(
+            id,
+            "No text model is configured, so the assistant cannot run.",
+            format!("Set `{key}` on the Settings page or in genaimage.toml ({}) and restart `genaimage serve`.", available()),
+        ),
+        Err(AssistantUnavailable::ModelNotFound { .. }) => DoctorCheck::error(
+            id,
+            format!("The configured model '{model}' is not served by the LLM."),
             format!(
                 "Load that model in the LLM server or set `{key}` to one it lists ({}).",
                 available()
             ),
-        );
-    };
-    let (tools, vision) = roles.capabilities(found);
-    let table = format!("[llm.capabilities.\"{model}\"]");
-    if is_vision && !vision {
-        return DoctorCheck::error(
-            id,
-            format!("Model '{}' does not report image input support.", clean(model, None)),
-            format!("Set `{key}` to a vision-capable model, or, if '{}' does accept images, declare it with `vision = true` under {table} in genaimage.toml.", clean(model, None)),
-        );
-    }
-    if !is_vision && !tools {
-        return DoctorCheck::warning(
-            id,
-            format!("Model '{}' does not report tool-calling support.", clean(model, None)),
-            format!("Assistant tools will be refused. Set `{key}` to a tool-capable model, or declare `tools = true` under {table} in genaimage.toml if it does support tools."),
-        );
-    }
-    DoctorCheck::ok(
-        id,
-        format!(
-            "Model '{}' is available (tools: {}, vision: {}).",
-            clean(model, None),
-            if tools { "yes" } else { "no" },
-            if vision { "yes" } else { "no" }
         ),
-    )
+        Err(AssistantUnavailable::CapabilityUnsupported { .. }) => DoctorCheck::error(
+            id,
+            format!("Model '{model}' does not report image input support."),
+            format!("Set `{key}` to a vision-capable model, or, if '{model}' does accept images, declare it with `vision = true` under {table} in genaimage.toml."),
+        ),
+        Err(AssistantUnavailable::Unreachable { reason }) => DoctorCheck::error(
+            id,
+            format!("The model list became unavailable: {}", clean(&reason, None)),
+            "Check that the LLM server is still running and run `genaimage doctor` again.",
+        ),
+        Ok(binding) if !is_vision && !binding.supports_tools() => DoctorCheck::warning(
+            id,
+            format!("Model '{model}' does not report tool-calling support."),
+            format!("Assistant tools will be refused. Set `{key}` to a tool-capable model, or declare `tools = true` under {table} in genaimage.toml if it does support tools."),
+        ),
+        Ok(binding) => DoctorCheck::ok(
+            id,
+            format!(
+                "Model '{model}' is available (tools: {}, vision: {}).",
+                if binding.supports_tools() { "yes" } else { "no" },
+                if binding.supports_vision() { "yes" } else { "no" }
+            ),
+        ),
+    }
 }
 
 fn disk_check(runs: &Path, options: &DoctorOptions) -> DoctorCheck {

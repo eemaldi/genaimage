@@ -374,7 +374,10 @@ async fn doctor_and_config_use_the_server_and_support_origin_precedence() {
     command
         .env("GENAIMAGE_SERVER", &server.origin)
         .args(["doctor", "--json"]);
-    let healthy = report(cli_output(command).await, 0);
+    let output = cli_output(command).await;
+    let low_disk = serde_json::from_slice::<Value>(&output.stdout)
+        .is_ok_and(|value| doctor_checks(&value)["disk"]["status"] == "error");
+    let healthy = report(output, if low_disk { 6 } else { 0 });
     let checks = doctor_checks(&healthy);
     assert_eq!(
         checks

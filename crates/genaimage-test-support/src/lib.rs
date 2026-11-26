@@ -62,6 +62,8 @@ pub struct FakeComfyState {
     pub node_errors: Arc<Mutex<Value>>,
     pub health_unavailable: Arc<AtomicBool>,
     pub health_hangs: Arc<AtomicBool>,
+    /// Replaces the `/system_stats` body, for example to mimic another service.
+    pub health_override: Arc<Mutex<Option<Value>>>,
     pub health_calls: Arc<AtomicUsize>,
     pub hang_interrupt_response: Arc<AtomicBool>,
     pub hang_delete_response: Arc<AtomicBool>,
@@ -109,6 +111,7 @@ impl Default for FakeComfyState {
             node_errors: Arc::new(Mutex::new(json!({}))),
             health_unavailable: Default::default(),
             health_hangs: Default::default(),
+            health_override: Default::default(),
             health_calls: Default::default(),
             hang_interrupt_response: Default::default(),
             hang_delete_response: Default::default(),
@@ -176,6 +179,9 @@ async fn fake_system(State(state): State<FakeComfyState>) -> Response {
     }
     if state.health_unavailable.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if let Some(value) = state.health_override.lock().expect("health lock").clone() {
+        return Json(value).into_response();
     }
     Json(json!({ "system": { "os": "test", "comfyui_version": state.comfyui_version.lock().expect("version lock").clone() }, "devices": state.devices.lock().expect("devices lock").clone() })).into_response()
 }

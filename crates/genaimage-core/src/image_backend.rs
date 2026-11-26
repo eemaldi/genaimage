@@ -185,3 +185,43 @@ pub enum HistoryOutcome {
     /// Absence from the queue or an acknowledgement of a cancellation request is not evidence.
     Cancelled,
 }
+
+/// The first ComfyUI release whose interrupt endpoint honours a prompt ID.
+pub const MIN_TARGETED_INTERRUPT: (u64, u64, u64) = (0, 3, 57);
+
+/// Parses exactly `major.minor.patch` with an optional leading `v`. Anything
+/// else, such as a pre-release or a fourth part, is not a recognised release.
+pub fn parse_release(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
+    let release = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(release)
+}
+
+pub fn supports_targeted_interrupt(version: &str) -> bool {
+    parse_release(version).is_some_and(|release| release >= MIN_TARGETED_INTERRUPT)
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn only_exact_releases_from_0_3_57_support_targeted_interrupt() {
+        for (version, expected) in [
+            ("0.3.57", true),
+            ("v0.3.57", true),
+            ("1.0.0", true),
+            ("0.3.56", false),
+            ("0.3.57.1", false),
+            ("0.3.60rc1", false),
+            ("nightly", false),
+            ("", false),
+        ] {
+            assert_eq!(supports_targeted_interrupt(version), expected, "{version}");
+        }
+    }
+}

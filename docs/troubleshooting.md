@@ -12,9 +12,9 @@ failed. Fix the first failing check and run `doctor` again.
 | `server` | The GenAImage server answers. | `genaimage serve`; pass `--server` or set `GENAIMAGE_SERVER` for another address. |
 | `config` | Endpoint settings are valid and no saved setting awaits a restart. | Correct the setting on the Settings page, then restart `genaimage serve`. |
 | `comfyui.reachable` | ComfyUI answers `/system_stats` within two seconds. | Start ComfyUI and check `comfyui.base_url`. |
-| `comfyui.version` | ComfyUI is 0.3.57 or later (single-job cancellation). | Update ComfyUI. |
+| `comfyui.version` | ComfyUI reports an exact `major.minor.patch` release of 0.3.57 or later (single-job cancellation); pre-release or four-part versions are unrecognised and warn. | Update ComfyUI. |
 | `comfyui.object_info` | `/object_info` returns the node classes. | Check the ComfyUI console for failing custom nodes; wait for it to finish loading. |
-| `workflows.nodes` | Every node `class_type` of each workflow exists in ComfyUI. Output lists up to ten missing classes per workflow. | Install the custom nodes yourself, restart ComfyUI. |
+| `workflows.nodes` | Every node `class_type` of each workflow exists in ComfyUI. Output lists up to ten missing classes per workflow. Workflows that cannot be loaded, or lie beyond the first 200, are counted and warned about, never skipped silently. | Install the custom nodes yourself, restart ComfyUI. |
 | `llm.reachable` | The model listing answers. Skipped if `llm.base_url` is empty (the assistant is optional). | Start the LLM server; check `llm.base_url` and `llm.api_key`. |
 | `llm.text` | `llm.text_model` is served and supports tools. | Set `llm.text_model`; declare `tools = true` under `[llm.capabilities."<model>"]` if needed. |
 | `llm.vision` | `llm.vision_model` is served and accepts images. Skipped if unset. | Set `llm.vision_model`; declare `vision = true` under `[llm.capabilities."<model>"]` if needed. |
