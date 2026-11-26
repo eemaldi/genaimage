@@ -446,6 +446,10 @@ export function createApiClient(
       json('get', '/api/v1/health', options),
     doctor: (options: RequestOptions = {}) =>
       json('get', '/api/v1/doctor', options),
+    setupStatus: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/setup/status', options),
+    setupDetect: (options: RequestOptions = {}) =>
+      json('post', '/api/v1/setup/detect', options),
     llmModels: (options: RequestOptions = {}) =>
       json('get', '/api/v1/models/llm', options),
     checkpoints: (options: RequestOptions = {}) =>

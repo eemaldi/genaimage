@@ -8,6 +8,7 @@ export const sections = [
   { path: '/models', label: 'Models' },
   { path: '/diagnostics', label: 'Diagnostics' },
   { path: '/settings', label: 'Settings', key: 's' },
+  { path: '/setup', label: 'Setup' },
 ] as const;
 
 export const shortcuts = [

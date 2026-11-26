@@ -241,12 +241,22 @@ permitted.
 
 ### Setup wizard
 
-The portal's first-run setup wizard (`#/setup`) is being built in issue #63 and
-is not yet implemented. Its backend prerequisites exist: `GET /api/v1/setup/status`
-says whether setup is needed (no configuration file and no environment-supplied
-ComfyUI endpoint, or invalid endpoints), and `POST /api/v1/setup/detect` probes a
-fixed list of common local ports and Compose hosts. Hosts that are not
-allow-listed are reported with the setting to add, never probed. See the
+The portal's first-run setup wizard (`#/setup`) opens automatically on the
+dashboard when `GET /api/v1/setup/status` reports `needs_setup`. You can dismiss
+it (remembered per browser only, per set of blocking reasons) and reopen it from
+the Setup link in the navigation. Its steps are: detect services, test ComfyUI,
+choose the LLM endpoint and text and optional vision model from the installed
+models, verify a checkpoint, review and save, and apply changes. Test generation
+is planned and not yet implemented.
+
+Nothing is chosen for you and nothing is saved until you review every value. A
+step is marked done only when the server confirmed it. Saving uses the settings
+ETag (`If-Match`); the new configuration is not live until you restart
+`genaimage serve` (or the Compose container), and the wizard lists the pending
+`restart_required` keys. Endpoints owned by environment variables, as in Compose,
+are shown read-only. `POST /api/v1/setup/detect` probes a fixed list of common
+local ports and Compose hosts. Hosts that are not allow-listed are reported
+with the setting to add, never probed. See the
 [architecture](architecture.md#local-http-server).
 
 ### Environment overrides

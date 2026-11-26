@@ -18,6 +18,7 @@ const fake = vi.hoisted(() => ({
   putSettingsWithRevision: vi.fn<typeof api.putSettingsWithRevision>(),
   testSettings: vi.fn<typeof api.testSettings>(),
   listOutputs: vi.fn<typeof api.listOutputs>(),
+  setupStatus: vi.fn(() => Promise.reject(new Error('offline'))),
 }));
 vi.mock('../../lib/api/client', async (original) => ({
   ...(await original<typeof import('../../lib/api/client')>()),
