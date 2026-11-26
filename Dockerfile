@@ -5,7 +5,7 @@ RUN npm ci
 COPY apps/portal ./
 RUN npm run build
 
-FROM docker.io/library/rust:1.100-bookworm@sha256:30a9c647e188457aac6e0bd3f9d73ae725dc3f36e57a2808ba3dde653c7c6db8 AS build
+FROM docker.io/library/rust:1.100-bookworm@sha256:75d26c23c24cc6ea1cdabf0714a6bff8fd7bf3248716043fd7ae86dac7f41b94 AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
@@ -14,7 +14,7 @@ COPY --from=portal /src/apps/portal/dist apps/portal/dist
 RUN cargo build --release --locked -p genaimage \
     && mkdir -p /rootfs/data/config /rootfs/data/runs /rootfs/data/uploads
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:777e96cf322c46bc32aca926c263624c4dc8d7cf37e2fa65ba2c7e697318ebbb
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 COPY --from=build /src/target/release/genaimage /usr/local/bin/genaimage
 COPY --chown=65532:65532 --from=build /rootfs/data /data
 COPY workflows /usr/share/genaimage/workflows
