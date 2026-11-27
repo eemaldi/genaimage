@@ -109,16 +109,16 @@
   );
 
   onMount(() => {
-    void loadListing().then(() => focusAfterUpdate(listHeading));
+    void loadListing().then(() => focusAfterUpdate(() => listHeading));
   });
   onDestroy(() => {
     listController?.abort();
     cancelRender();
   });
 
-  async function focusAfterUpdate(element?: HTMLElement) {
+  async function focusAfterUpdate(target: () => HTMLElement | undefined) {
     await tick();
-    element?.focus();
+    target()?.focus();
   }
 
   const previewId = `${uid}-preview-action`;
@@ -190,7 +190,7 @@
     rendered = undefined;
     stale = false;
     mode = undefined;
-    await focusAfterUpdate(fillHeading);
+    await focusAfterUpdate(() => fillHeading);
   }
 
   async function back() {
@@ -203,7 +203,7 @@
     rendered = undefined;
     stale = false;
     mode = undefined;
-    await focusAfterUpdate(listHeading);
+    await focusAfterUpdate(() => listHeading);
   }
 
   /** Reloads the listing after the reviewed version is gone; the user must preview the reloaded text again. */
@@ -221,21 +221,21 @@
         selected = undefined;
         notice = message;
         problem = listing.state === 'failed' ? listing.problem : undefined;
-        await focusAfterUpdate(listHeading);
+        await focusAfterUpdate(() => listHeading);
         return;
       }
       const next = listing.templates.find(({ ref }) => ref === reviewed.ref);
       if (!next) {
         selected = undefined;
         notice = `${message} This template is no longer usable. Choose another template.`;
-        await focusAfterUpdate(listHeading);
+        await focusAfterUpdate(() => listHeading);
         return;
       }
       selected = next;
       entries = pruneEntries(next, entries);
       fieldErrors = {};
       notice = `${message} Review the reloaded text, then preview it again before inserting.`;
-      await focusAfterUpdate(fillHeading);
+      await focusAfterUpdate(() => fillHeading);
     } finally {
       refreshing = false;
     }
@@ -254,7 +254,7 @@
       );
       problem = undefined;
       await focusAfterUpdate(
-        document.getElementById(fieldId(missing[0])) ?? undefined,
+        () => document.getElementById(fieldId(missing[0])) ?? undefined,
       );
       return;
     }
@@ -325,7 +325,7 @@
         const first = template.variables.find(({ name }) =>
           Object.hasOwn(mapped.fields, name),
         );
-        await focusAfterUpdate(
+        await focusAfterUpdate(() =>
           first
             ? (document.getElementById(fieldId(first.name)) ?? undefined)
             : problemBox,
@@ -335,7 +335,7 @@
     }
     problem = problemFrom(failure, 'Could not render the template');
     notice = '';
-    await focusAfterUpdate(problemBox);
+    await focusAfterUpdate(() => problemBox);
   }
 
   function insertRendered() {

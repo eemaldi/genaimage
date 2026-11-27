@@ -354,3 +354,34 @@ test('a listing failure offers a retry', async () => {
   await user.click(screen.getByRole('button', { name: 'Try again' }));
   await screen.findByRole('button', { name: 'Use “Studio portrait”' });
 });
+
+test('closing the picker unmounts it cleanly and returns focus to the action', async () => {
+  const user = mount();
+  await openPicker(user);
+  const dialog = document.querySelector('dialog[open]') as HTMLDialogElement;
+  const errors: unknown[] = [];
+  const record = (event: ErrorEvent) => errors.push(event.error);
+  window.addEventListener('error', record);
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  // A native dialog reports its close after the picker is gone.
+  dialog.dispatchEvent(new Event('close'));
+  window.removeEventListener('error', record);
+  expect(errors).toEqual([]);
+  const trigger = screen.getByRole('button', {
+    name: 'Use a template for Prompt',
+  });
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(document.querySelector('dialog[open]')).toBeNull();
+});
+
+test('focus follows the step: the fill heading after choosing, the list heading after going back', async () => {
+  const user = mount();
+  await openPicker(user);
+  const fill = await choose(user, 'Studio portrait');
+  await waitFor(() => expect(document.activeElement).toBe(fill));
+  await user.click(screen.getByRole('button', { name: 'Back to templates' }));
+  const list = await screen.findByRole('heading', {
+    name: 'Choose a template',
+  });
+  await waitFor(() => expect(document.activeElement).toBe(list));
+});
