@@ -12,7 +12,8 @@ ComfyUI image generation, assisted by local LLMs. Read
   assistant: LLM model roles (`llm_roles.rs`), conversations, prompt assist,
   workflow suggestion, vision review and the tool runtime with its confirmation
   protocol (`assistant/`). Do not duplicate orchestration in operator surfaces.
-- `crates/genaimage-llm` implements the OpenAI-compatible `LlmProvider`.
+- `crates/genaimage-llm` implements the OpenAI-compatible `LlmProvider` and the
+  Ollama-native model list and pull client.
 - `crates/genaimage-comfyui` implements the core transport port using ComfyUI
   HTTP and WebSocket connections.
 - `crates/genaimage` is the scripted interface. Health, workflow, preset and
@@ -23,14 +24,15 @@ ComfyUI image generation, assisted by local LLMs. Read
 - The server binds to loopback only; inside a container with
   `GENAIMAGE_CONTAINER=1` it may bind `0.0.0.0` or `::`, and ports must be
   published on `127.0.0.1` only (`Dockerfile`, [setup](docs/setup.md#container)).
-  It currently serves health, workflows, runs,
-  outputs and their vision-review annotations, uploads, settings, live events,
-  the assistant API, an OpenAPI contract and the embedded Svelte portal in
-  `apps/portal`: dashboard, generate, jobs, gallery, workflows, run detail,
-  diagnostics, settings, and an assistant chat panel available on every page.
-  ComfyUI and the OpenAI-compatible local LLM service remain separate
-  processes. Docker Compose support is planned for local dependencies, not public
-  exposure.
+  It currently serves health, doctor, workflows, runs,
+  outputs and their vision-review annotations, uploads, settings, setup status
+  and detection, LLM model pulls and checkpoints, live events, the assistant
+  API, an OpenAPI contract and the embedded Svelte portal in `apps/portal`:
+  dashboard, generate, jobs, gallery, workflows, run detail, models,
+  diagnostics, settings, the setup wizard, and an assistant chat panel
+  available on every page. ComfyUI and the OpenAI-compatible local LLM service
+  (Ollama for model pulls) remain separate processes; `compose.yaml` runs all
+  three for local use only ([Compose](docs/compose.md)).
 - Outbound service endpoints default to loopback. Explicitly allow-listed
   private or Compose hosts are permitted, never public endpoints.
 - Use ComfyUI API-format JSON and strict `*.genaimage.json` workflow manifests.
@@ -101,6 +103,12 @@ dependency.
 - Before default Cargo builds, run `npm ci && npm run build` in `apps/portal`.
   Use `--no-default-features` for API-only builds.
 - Run the repository CI checks locally with `python3 scripts/ci_check.py`.
+- Pin container base images by multi-arch index digest, never a
+  single-platform manifest. Check Compose changes against the resolved
+  configuration (`scripts/check_compose_config.py`), because Compose merges
+  `ports` across files.
+- Diagnostics and setup checks call the runtime's own domain functions; a
+  looser copy hides failures as `ok`.
 - When rebasing, regenerate `docs/api/openapi.json` and
   `apps/portal/src/lib/api/schema.d.ts`; never merge them by hand.
 - To supervise an epic through subagents, use the `epic-supervision` skill.
