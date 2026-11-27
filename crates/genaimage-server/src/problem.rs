@@ -32,6 +32,7 @@ impl Problem {
                 manifest_path: None,
                 invalid_items: Vec::new(),
                 invalid_item_count: None,
+                current_sha256: None,
             }),
         }
     }
@@ -128,6 +129,11 @@ impl Problem {
     ) -> Self {
         self.details.invalid_item_count = Some(total);
         self.details.invalid_items = items;
+        self
+    }
+
+    pub(crate) fn with_current_sha256(mut self, sha256: String) -> Self {
+        self.details.current_sha256 = Some(sha256);
         self
     }
 

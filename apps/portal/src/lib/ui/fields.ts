@@ -1,7 +1,7 @@
 export type FieldProps = {
   id?: string;
   label: string;
-  hint?: string;
+  hint?: string | Array<string | null | undefined>;
   error?: string;
 };
 

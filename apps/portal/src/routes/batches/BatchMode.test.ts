@@ -19,11 +19,16 @@ import type { components } from '../../lib/api/schema';
 import type { Workflow, Parameter } from '../generate/model';
 import BatchMode from './BatchMode.svelte';
 import { loadPendingBatch } from './pending';
+import { mockNativeDialog } from '../../test/dialog';
+
+mockNativeDialog();
 
 const fake = vi.hoisted(() => ({
   previewBatch: vi.fn<typeof api.previewBatch>(),
   createBatch: vi.fn<typeof api.createBatch>(),
   health: vi.fn<typeof api.health>(),
+  listTemplates: vi.fn<typeof api.listTemplates>(),
+  renderTemplate: vi.fn<typeof api.renderTemplate>(),
 }));
 vi.mock('../../lib/api/client', async (original) => ({
   ...(await original<typeof import('../../lib/api/client')>()),
@@ -348,4 +353,46 @@ test('a corrupt stored request is discarded only after confirmation and unlocks 
     screen.queryByRole('button', { name: 'Discard stored request' }),
   ).toBeNull();
   confirm.mockRestore();
+});
+
+test('inserting a template clears the stale review and the next preview sends the inserted base value', async () => {
+  const sha = 'c'.repeat(64);
+  fake.listTemplates.mockResolvedValue({
+    templates: [
+      {
+        ref: 'user:studio',
+        scope: 'user',
+        pack_id: null,
+        id: 'studio',
+        title: 'Studio',
+        description: null,
+        variables: [],
+        sha256: sha,
+        text: 'a dog in a studio',
+      },
+    ],
+    diagnostics: [],
+  });
+  fake.renderTemplate.mockImplementation(async (body) => ({
+    ref: body.ref,
+    sha256: body.sha256,
+    text: 'a dog in a studio',
+  }));
+  await reviewSeeds();
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Use a template for prompt' }),
+  );
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Use “Studio”' }),
+  );
+  await userEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByText('Preview ready. Insert adds exactly this text.');
+  await userEvent.click(screen.getByLabelText('Replace the current text'));
+  await userEvent.click(screen.getByRole('button', { name: 'Insert' }));
+  expect(screen.queryByRole('heading', { name: 'Review batch' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Preview batch' }));
+  await screen.findByRole('heading', { name: 'Review batch' });
+  expect(fake.previewBatch.mock.lastCall?.[0].parameters?.prompt).toBe(
+    'a dog in a studio',
+  );
 });

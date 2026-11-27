@@ -122,7 +122,7 @@
     open = false;
   }}
   onclose={() => {
-    if (!dialog.open) open = false;
+    if (dialog && !dialog.open) open = false;
   }}
 >
   <div class="ui-dialog-header">

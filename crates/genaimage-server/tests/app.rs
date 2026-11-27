@@ -602,6 +602,38 @@ async fn settings_expose_only_llm_api_key_presence() {
 }
 
 #[tokio::test]
+async fn the_templates_path_survives_settings_rewrites_and_needs_a_restart() {
+    let api = ApiHarness::start().await;
+    let path = api.workspace().join("genaimage.toml");
+    let saved: SettingsResponse = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"paths.templates": "my-templates"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(saved.restart_required.contains(&"paths.templates".into()));
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("templates = \"my-templates\""));
+    let unrelated = api
+        .request(Method::PUT, SETTINGS)
+        .json(&json!({"comfyui.request_timeout_seconds": 2}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unrelated.status(), StatusCode::OK);
+    let current: SettingsResponse = api.get_json(SETTINGS).await;
+    assert!(current.restart_required.contains(&"paths.templates".into()));
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("templates = \"my-templates\""));
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn settings_stage_endpoint_even_with_empty_database_and_apply_timing_live() {
     let api = ApiHarness::start().await;
     let alternate = FakeComfyServer::start(FakeComfyState::default()).await;

@@ -11,6 +11,7 @@ mod runs;
 mod settings;
 mod setup;
 mod suggestions;
+mod templates;
 mod uploads;
 pub(crate) mod workflows;
 
@@ -118,6 +119,14 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(workflows::import_confirm))
         .routes(routes!(packs::list))
         .routes(routes!(packs::validate))
+        .routes(routes!(templates::list, templates::create))
+        .routes(routes!(templates::render))
+        .routes(routes!(
+            templates::get_user,
+            templates::replace,
+            templates::delete
+        ))
+        .routes(routes!(templates::get_pack))
         .routes(routes!(workflows::details))
         .routes(routes!(workflows::validate))
         .routes(routes!(workflows::thumbnail))

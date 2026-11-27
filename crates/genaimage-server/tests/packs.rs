@@ -63,10 +63,14 @@ async fn packs_list_their_contents_and_isolate_broken_packs() {
         &api,
         "demo",
         Some("demo-flow"),
-        &format!("templates = ['t/a.md', 'gone.md']\n{REQUIRES}"),
+        &format!("templates = ['t/a.toml', 'gone.md']\n{REQUIRES}"),
     );
     fs::create_dir_all(api.core.config().packs[0].join("demo/t")).unwrap();
-    fs::write(api.core.config().packs[0].join("demo/t/a.md"), "x").unwrap();
+    fs::write(
+        api.core.config().packs[0].join("demo/t/a.toml"),
+        "id = 'a'\ntitle = 'T'\ntext = 'x'\n",
+    )
+    .unwrap();
     let broken = api.core.config().packs[0].join("broken");
     fs::create_dir_all(&broken).unwrap();
     fs::write(
@@ -86,7 +90,7 @@ async fn packs_list_their_contents_and_isolate_broken_packs() {
         ("demo", "1.0.0", "Pack demo")
     );
     assert_eq!(pack.workflow_ids, ["demo-flow"]);
-    assert_eq!(pack.templates, ["t/a.md", "gone.md"]);
+    assert_eq!(pack.templates, ["t/a.toml", "gone.md"]);
     assert_eq!(pack.requires.node_classes, ["KSampler", "Absent"]);
     assert_eq!(pack.requires.models["loras"], ["style.safetensors"]);
     assert_eq!(pack.root, api.core.config().packs[0].display().to_string());
@@ -377,6 +381,59 @@ async fn doctor_reports_pack_problems_even_when_node_classes_are_unknown() {
     assert_eq!(check.status, doctor::DoctorStatus::Warning);
     assert!(check.items.iter().any(|item| item.contains("gone.md")));
     assert!(check.items.iter().all(|item| !item.contains("KSampler")));
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_pack_with_an_invalid_template_is_never_ok_in_validate_packs_or_doctor() {
+    let api = ApiHarness::start().await;
+    write_pack(
+        &api,
+        "badtpl",
+        None,
+        "templates = ['t/bad.toml', 't/notes.md']\n",
+    );
+    let dir = api.core.config().packs[0].join("badtpl/t");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("bad.toml"),
+        "id = 'bad'\ntitle = 'T'\ntext = '{{x}}'\n",
+    )
+    .unwrap();
+    fs::write(dir.join("notes.md"), "# not a template\n").unwrap();
+    write_pack(&api, "goodtpl", None, "templates = ['t/ok.toml']\n");
+    let dir = api.core.config().packs[0].join("goodtpl/t");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("ok.toml"),
+        "id = 'ok'\ntitle = 'T'\ntext = 'hello'\n",
+    )
+    .unwrap();
+
+    let result = validate(&api, "badtpl").await;
+    assert_eq!(result.status, PackValidationStatus::Missing);
+    assert_eq!(result.diagnostics.len(), 2, "{:?}", result.diagnostics);
+    assert!(result.diagnostics[0].starts_with("t/bad.toml: text: uses the undeclared placeholder"));
+    assert!(result.diagnostics[1].starts_with("t/notes.md: file: "));
+    let list: PackListResponse = api.get_json("/api/v1/packs").await;
+    let pack = list.packs.iter().find(|p| p.id == "badtpl").unwrap();
+    assert_eq!(pack.diagnostics, result.diagnostics);
+    let good = list.packs.iter().find(|p| p.id == "goodtpl").unwrap();
+    assert!(good.diagnostics.is_empty());
+    assert_eq!(
+        validate(&api, "goodtpl").await.status,
+        PackValidationStatus::Ok
+    );
+
+    let roles = LlmRoles::new(&api.core.config().llm, None);
+    let report = doctor::run(&api.core, &roles, &[], &DoctorOptions::default()).await;
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.id == doctor::PACKS_REQUIREMENTS)
+        .unwrap();
+    assert_eq!(check.status, doctor::DoctorStatus::Warning);
+    assert!(check.items.iter().any(|item| item.contains("t/bad.toml")));
     api.shutdown().await;
 }
 

@@ -7,6 +7,7 @@
   import Select from '../../lib/ui/Select.svelte';
   import Slider from '../../lib/ui/Slider.svelte';
   import PromptAssist from '../../lib/prompt-assist/PromptAssist.svelte';
+  import TemplateAction from '../../lib/templates/TemplateAction.svelte';
   import ImageField from './ImageField.svelte';
   import {
     bindingError,
@@ -63,6 +64,11 @@
   });
   let needed = $derived(parameter.required);
   let promptAssist = $derived(!preview && isPromptParameter(name, parameter));
+  let templated = $derived(
+    !preview &&
+      parameter.kind === 'string' &&
+      (isPromptParameter(name, parameter) || parameter.widget === 'textarea'),
+  );
   let negativePrompt = $derived(isNegativePromptParameter(name, parameter));
   let hint = $derived(
     [
@@ -333,6 +339,14 @@
       {positivePrompt}
       negative={negativePrompt}
       accept={(value) => edit(value)}
+    />
+  {/if}
+
+  {#if templated}
+    <TemplateAction
+      {name}
+      currentText={() => (typeof field.value === 'string' ? field.value : '')}
+      insert={(text) => edit(text)}
     />
   {/if}
 

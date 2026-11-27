@@ -1549,6 +1549,11 @@ async fn packs_validate_exits_six_for_every_status_except_ok() {
     write_pack("gone", "[requires]\nnode_classes = ['Absent']\n");
     write_pack("vague", "[requires.models]\nembeddings = ['e.pt']\n");
     write_pack("thin", "templates = ['gone.md']\n");
+    write_pack("badtpl", "templates = ['bad.toml']\n");
+    write(
+        &packs.join("badtpl/bad.toml"),
+        "id = 'bad'\ntitle = 'T'\ntext = '{{x}}'\n",
+    );
     *server.fake.object_info_override.lock().unwrap() = Some(json!({"KSampler": {}}));
     let status = |output: Output| {
         let code = output.status.code();
@@ -1567,6 +1572,14 @@ async fn packs_validate_exits_six_for_every_status_except_ok() {
     assert_eq!(thin.status.code(), Some(6));
     assert_eq!(body["status"], "missing");
     assert!(body["diagnostics"][0].as_str().unwrap().contains("gone.md"));
+    let bad = server.cli(&["--json", "packs", "validate", "badtpl"]).await;
+    let body: Value = serde_json::from_slice(&bad.stdout).unwrap();
+    assert_eq!(bad.status.code(), Some(6));
+    assert_eq!(body["status"], "missing");
+    assert!(body["diagnostics"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("bad.toml: text:"));
     server
         .fake
         .object_info_unavailable

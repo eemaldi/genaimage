@@ -24,8 +24,10 @@ use crate::{
     ReconcileRunResponse, ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery,
     RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch,
     SettingsResponse, SettingsTestResponse, SetupDetectResponse, SetupStatus, SubmitRunRequest,
-    UploadResponse, WorkflowDetails, WorkflowImportConfirmRequest, WorkflowImportProposal,
-    WorkflowImportRequest, WorkflowImportResponse, WorkflowListResponse, WorkflowValidationRequest,
+    Template, TemplateCreateRequest, TemplateListResponse, TemplateRenderRequest,
+    TemplateRenderResponse, TemplateReplaceRequest, UploadResponse, WorkflowDetails,
+    WorkflowImportConfirmRequest, WorkflowImportProposal, WorkflowImportRequest,
+    WorkflowImportResponse, WorkflowListResponse, WorkflowValidationRequest,
     WorkflowValidationResponse,
 };
 
@@ -185,6 +187,68 @@ impl Client {
     /// Checks a pack's requirements against ComfyUI. Never installs anything.
     pub async fn validate_pack(&self, id: &str) -> Result<PackValidationResponse, Error> {
         self.json(self.get(&["packs", id, "validate"])?).await
+    }
+
+    /// User and pack prompt templates, with diagnostics for unusable ones.
+    pub async fn templates(&self) -> Result<TemplateListResponse, Error> {
+        self.json(self.get(&["templates"])?).await
+    }
+
+    /// One template by ref: `user:<id>` or `pack:<pack_id>:<relative path>`.
+    pub async fn template(&self, reference: &str) -> Result<Template, Error> {
+        match reference.strip_prefix("user:") {
+            Some(id) => self.json(self.get(&["templates", "user", id])?).await,
+            None => match reference
+                .strip_prefix("pack:")
+                .and_then(|rest| rest.split_once(':'))
+            {
+                Some((pack_id, path)) => {
+                    self.json(self.get(&["templates", "pack", pack_id, path])?)
+                        .await
+                }
+                None => Err(Error::InvalidId(reference.into())),
+            },
+        }
+    }
+
+    /// Creates a user template. Never overwrites; an existing id is a 409 problem.
+    pub async fn create_template(&self, body: &TemplateCreateRequest) -> Result<Template, Error> {
+        self.json(self.request(Method::POST, &["templates"])?.json(body))
+            .await
+    }
+
+    /// Replaces a user template, pinned to the `sha256` the caller reviewed.
+    pub async fn replace_template(
+        &self,
+        id: &str,
+        body: &TemplateReplaceRequest,
+    ) -> Result<Template, Error> {
+        self.json(
+            self.request(Method::PUT, &["templates", "user", id])?
+                .json(body),
+        )
+        .await
+    }
+
+    /// Deletes a user template, pinned to the `sha256` the caller reviewed.
+    pub async fn delete_template(&self, id: &str, expected_sha256: &str) -> Result<(), Error> {
+        let request = self
+            .request(Method::DELETE, &["templates", "user", id])?
+            .query(&[("expected_sha256", expected_sha256)]);
+        self.send(request, false).await?;
+        Ok(())
+    }
+
+    /// Renders the reviewed template version. Rendering submits nothing.
+    pub async fn render_template(
+        &self,
+        body: &TemplateRenderRequest,
+    ) -> Result<TemplateRenderResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["templates", "render"])?
+                .json(body),
+        )
+        .await
     }
 
     pub async fn workflow(&self, id: &str) -> Result<WorkflowDetails, Error> {

@@ -14,6 +14,7 @@ contract is the OpenAPI 3.1 document, checked in at
 | Setup wizard | `GET /setup/status`, `POST /setup/detect` |
 | Models | `GET /models/llm`, `GET /models/checkpoints`, LLM pulls under `/models/llm/pulls` (see [models](models.md)) |
 | Workflows | `GET /workflows`, `GET /workflows/{id}`, `POST /workflows/{id}/validate`, `GET /workflows/{id}/thumbnail`, `POST /workflows/import`, `POST /workflows/import/confirm` (see [importing a workflow](workflow-manifest.md#importing-a-comfyui-workflow)) |
+| Prompt templates | `GET /templates`, `POST /templates`, `GET /templates/user/{id}`, `PUT`/`DELETE /templates/user/{id}`, `GET /templates/pack/{pack_id}/{path}`, `POST /templates/render` (see [templates](templates.md#api)) |
 | Uploads | `POST /uploads`, `GET /uploads/{id}` |
 | Runs | `GET`/`POST /runs`, `GET /runs/{id}`, `cancel`, `rerun`, `reconcile`, `events`, `manifest`, `resolved-workflow`; `POST /runs/reconcile` |
 | Batches | `POST /batches/preview`, `GET`/`POST /batches`, `GET /batches/{id}`, `POST /batches/{id}/resume`; runs gain `batch_id`/`batch_index` and `GET /runs?batch=` (see [batches](architecture.md#batches-api)) |
@@ -25,6 +26,9 @@ Rules that clients must keep, because the server enforces them:
 
 - Pin a submission to the reviewed `workflow_revision`; a stale revision returns
   409 (`urn:genaimage:problem:workflow-changed`).
+- Render a template only against the `sha256` you reviewed; a changed template
+  returns 409 (`urn:genaimage:problem:template-changed`). A render submits
+  nothing and the run record keeps the final prompt only.
 - Use one idempotency key per reviewed request and retry with the same key.
 - Use `POST /runs/{id}/rerun` for an identical re-run.
 - Preview a batch, show its item count and confirm it before submitting; a

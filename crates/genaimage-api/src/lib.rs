@@ -24,6 +24,9 @@ pub use settings::*;
 mod setup;
 pub use setup::*;
 
+mod templates;
+pub use templates::*;
+
 mod workflow_import;
 pub use workflow_import::*;
 
@@ -121,6 +124,9 @@ pub struct ProblemDetails {
     /// `batch-items-invalid`: how many items are invalid in total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalid_item_count: Option<usize>,
+    /// `template-changed`: the SHA-256 of the template as it is now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_sha256: Option<String>,
 }
 
 /// A workflow catalogue and non-fatal discovery errors.

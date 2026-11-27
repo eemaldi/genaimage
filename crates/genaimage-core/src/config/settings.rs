@@ -101,6 +101,7 @@ macro_rules! setting_fields {
             "paths.workflows" => workflows: path,
             "paths.runs" => runs: path,
             "paths.uploads" => uploads: path,
+            "paths.templates" => templates: path,
         }
     };
 }

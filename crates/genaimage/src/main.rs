@@ -10,6 +10,7 @@ mod pack_commands;
 mod run_commands;
 mod serve;
 mod server_commands;
+mod template_commands;
 
 use std::{collections::BTreeMap, path::PathBuf, process::ExitCode};
 
@@ -96,6 +97,11 @@ enum Command {
         #[command(subcommand)]
         command: PacksCommand,
     },
+    /// List prompt templates, or render one to prompt text.
+    Templates {
+        #[command(subcommand)]
+        command: TemplatesCommand,
+    },
     Presets {
         id: String,
     },
@@ -119,6 +125,20 @@ enum ConfigCommand {
     },
     /// Show settings from the running server.
     Show,
+}
+
+#[derive(Subcommand)]
+enum TemplatesCommand {
+    /// List user and pack templates with their variables and diagnostics.
+    List,
+    /// Render a template. Reads the template, then renders that exact version; nothing is submitted.
+    Render {
+        /// `user:<id>` or `pack:<pack_id>:<path>`.
+        reference: String,
+        /// A string value, as NAME=VALUE; repeat per variable. An empty value is a value.
+        #[arg(long = "var", value_name = "NAME=VALUE")]
+        variables: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]

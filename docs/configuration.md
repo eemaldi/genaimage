@@ -37,6 +37,7 @@ value set by an environment variable is read-only there and in the portal.
 | `paths.packs` | `GENAIMAGE_PACKS` (path list) | `["workflows/packs"]` in the workspace | Restart; file only in the settings API |
 | `paths.runs` | `GENAIMAGE_RUNS` | `$XDG_DATA_HOME/genaimage/workspaces/<hash>/runs` | Restart |
 | `paths.uploads` | `GENAIMAGE_UPLOADS` | `$XDG_DATA_HOME/genaimage/uploads` | Restart |
+| `paths.templates` | `GENAIMAGE_TEMPLATES` | `$XDG_DATA_HOME/genaimage/workspaces/<hash>/templates`; created on the first write | Restart |
 
 `XDG_DATA_HOME` defaults to `~/.local/share`. "Restart" means a saved change
 appears in `restart_required` until you restart `genaimage serve` (or the

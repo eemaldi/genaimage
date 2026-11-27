@@ -59,6 +59,7 @@ export const sections: { title: string; fields: Field[] }[] = [
       { key: 'paths.workflows', label: 'Workflows directory', kind: 'path' },
       { key: 'paths.runs', label: 'Runs directory', kind: 'path' },
       { key: 'paths.uploads', label: 'Uploads directory', kind: 'path' },
+      { key: 'paths.templates', label: 'Templates directory', kind: 'path' },
     ],
   },
   {
