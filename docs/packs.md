@@ -47,7 +47,7 @@ id = "core"
 version = "1.0.0"
 description = "Bundled starter workflows."
 workflows = ["text-to-image/workflow.genaimage.json"]
-templates = ["templates/portrait.md"]
+templates = ["templates/portrait.toml"]
 
 [requires]
 node_classes = ["KSampler", "SaveImage"]
@@ -65,7 +65,7 @@ Unknown fields are rejected at every level. `id` and `version` are required.
 | `version` | Non-blank text of at most 256 bytes. Always a string, never a number. |
 | `description` | Optional text of at most 2000 bytes. |
 | `workflows` | Manifest paths relative to the pack, each ending in `.genaimage.json`. At most 64. Only declared manifests are loaded. |
-| `templates` | Relative paths, at most 64. They are parsed and listed only; they are not interpreted yet. |
+| `templates` | Relative paths to [prompt template](templates.md) files, at most 64. They are read-only and are parsed strictly when `GET /api/v1/templates` lists them; a missing or escaping file is a pack diagnostic, an invalid one is reported in the template diagnostics. |
 | `requires.node_classes` | ComfyUI node classes the pack needs. At most 256. |
 | `requires.models` | A table from model folder to file names. At most 32 folders and 512 names in total. |
 
@@ -163,5 +163,7 @@ model part is skipped then. See [troubleshooting](troubleshooting.md#doctor-chec
 | `genaimage packs validate <ID>` | The validation. Exit `0` only for `ok`; exit `6` for `missing`, `unknown` and `unavailable`; exit `4` when the server answers with a problem, such as `404` for an unknown pack ID. |
 | `genaimage workflow refresh` | The refreshed workflow listing. |
 
-Core entry points: `Harness::discover_packs`, `Harness::list_pack_templates`,
+Pack templates are consumed by the template library; see [templates](templates.md#scopes).
+
+Core entry points: `Harness::discover_packs`, `Harness::list_templates`,
 `Harness::validate_pack` and `pack_requirements::check_requirements`.

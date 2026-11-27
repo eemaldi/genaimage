@@ -200,6 +200,14 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   `unavailable`; exit `4` for a server problem such as an unknown pack ID
   (`404`). The status is never `ok` while `diagnostics` is non-empty. See
   [packs](packs.md#requirement-validation).
+- **`templates list`** lists prompt templates. JSON is `{templates,
+  diagnostics}` as in [templates](templates.md#api).
+- **`templates render <REF> [--var NAME=VALUE]…`** reads the template, then
+  renders exactly that version through `POST /api/v1/templates/render`. JSON is
+  `{text, ref, sha256}`; without `--json` the rendered text is printed without
+  a trailing newline. Values are strings; `--var lighting=` supplies an empty
+  string. A missing, unknown or repeated variable is an error (exit `4` for a
+  server problem). Nothing is submitted or recorded.
 - **`workflow inspect <ID>`** shows a catalogue workflow, its declared
   bindings and outputs. JSON is `WorkflowDetails`: `{schema_version, id,
   version, revision, title, workflow, description, tags, category, thumbnail, parameters,

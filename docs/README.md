@@ -18,6 +18,7 @@
 | [CLI](cli.md) | Commands, options, JSON shapes, exit codes, shell completions. |
 | [API](api.md) | Endpoint overview and the [OpenAPI contract](api/openapi.json). |
 | [Workflow packs](packs.md) | `pack.toml`, pack roots, multi-root discovery, requirement validation. |
+| [Prompt templates](templates.md) | Template files, `{{name}}` placeholders and escaping, user and pack scopes, the API and its problems. |
 | [Workflow manifest](workflow-manifest.md) | Manifest v2 fields, presets, outputs, and its [JSON Schema](schemas/workflow-manifest.v2.json). |
 
 ## Contributing
