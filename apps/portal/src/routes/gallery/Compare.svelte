@@ -15,10 +15,13 @@
     open = $bindable(false),
     outputs,
     returnFocus,
+    labels,
   }: {
     open?: boolean;
     outputs: readonly Output[];
     returnFocus: () => void;
+    /** Optional headings by output ID, such as a sweep's values. */
+    labels?: ReadonlyMap<string, string>;
   } = $props();
   type Run = components['schemas']['RunResponse'];
   type Result = { run?: Run; problem?: ReturnType<typeof galleryProblem> };
@@ -67,7 +70,8 @@
     <thead
       ><tr
         ><th scope="col">Field</th>{#each outputs as output, i (output.id)}<th
-            scope="col">{i + 1}. {output.source_filename}</th
+            scope="col"
+            >{i + 1}. {labels?.get(output.id) ?? output.source_filename}</th
           >{/each}</tr
       ></thead
     >
@@ -100,7 +104,7 @@
     <div class="sides">
       {#each outputs as output, i (output.id)}
         <section aria-label={`Output ${i + 1}`}>
-          <h3>{i + 1}. {output.source_filename}</h3>
+          <h3>{i + 1}. {labels?.get(output.id) ?? output.source_filename}</h3>
           <Media {output} />
           <a href={outputMediaUrl(output.id)} download={output.source_filename}
             >Download original</a

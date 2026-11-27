@@ -615,6 +615,15 @@
         <dt>Re-run of</dt>
         <dd><a href={path(run.rerun_of)}>{run.rerun_of}</a></dd>
       </div>{/if}
+    {#if run.batch_id}<div>
+        <dt>Batch</dt>
+        <dd>
+          <a href={`#/batches/${encodeURIComponent(run.batch_id)}`}
+            >{run.batch_id}</a
+          >
+          (run {(run.batch_index ?? 0) + 1})
+        </dd>
+      </div>{/if}
   </dl>
   <h3>Recorded parameters</h3>
   {#if asObject(parameters)}

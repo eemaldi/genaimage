@@ -28,7 +28,7 @@ ComfyUI image generation, assisted by local LLMs. Read
   over a seed list or value grid), outputs and their vision-review annotations,
   uploads, settings, setup status and detection, LLM model pulls and
   checkpoints, live events, the assistant API, an OpenAPI contract and the embedded Svelte portal in `apps/portal`:
-  dashboard, generate, jobs, gallery, workflows, run detail, models,
+  dashboard, generate, jobs, gallery, workflows, run detail, batch mode and batch view, models,
   diagnostics, settings, the setup wizard, and an assistant chat panel
   available on every page. ComfyUI and the OpenAI-compatible local LLM service
   (Ollama for model pulls) remain separate processes; `compose.yaml` runs all

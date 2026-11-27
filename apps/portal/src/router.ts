@@ -11,6 +11,7 @@ import Diagnostics from './routes/diagnostics/Page.svelte';
 import Models from './routes/models/Page.svelte';
 import Settings from './routes/settings/Page.svelte';
 import Setup from './routes/setup/Page.svelte';
+import BatchDetail from './routes/batches/Detail.svelte';
 import RunDetail from './routes/runs/Detail.svelte';
 import NotFound from './routes/not-found/Page.svelte';
 
@@ -34,6 +35,7 @@ const routes: Route[] = [
   { pattern: '/settings', component: Settings },
   { pattern: '/setup', component: Setup },
   { pattern: '/runs/:id', component: RunDetail },
+  { pattern: '/batches/:id', component: BatchDetail },
 ];
 
 export function matchHash(hash: string): RouteProps & {

@@ -6,7 +6,7 @@ for the accepted target architecture.
 The loopback server serves health, doctor, workflows, runs, batches (pinned runs
 over a seed list or value grid), outputs, uploads, settings, setup, the
 assistant and live events. It embeds the Svelte portal by default, which
-includes the dashboard, generate, jobs, gallery, workflows, run detail, models,
+includes the dashboard, generate, jobs, gallery, workflows, run detail, batch mode and batch view, models,
 diagnostics, settings and setup wizard pages, and an assistant chat panel
 available on every page. See
 [setup](docs/setup.md) for source builds and

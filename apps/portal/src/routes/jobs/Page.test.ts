@@ -376,3 +376,36 @@ test('does not portray an unrecognised status as successful', async () => {
     within(screen.getByRole('list', { name: 'Runs' })).queryByText('Completed'),
   ).toBeNull();
 });
+
+test('the batch filter asks the server for that batch and rows link to it', async () => {
+  const member = {
+    ...original,
+    id: 'run-member',
+    batch_id: 'batch-7',
+    batch_index: 2,
+  };
+  await start(member, 'batch=batch-7');
+  expect(client.listRuns).toHaveBeenCalledWith(
+    expect.objectContaining({ batch: 'batch-7' }),
+    expect.anything(),
+  );
+  expect(screen.getByLabelText('Batch ID')).toHaveProperty('value', 'batch-7');
+  expect(
+    screen.getByRole('link', { name: 'Batch run 3' }).getAttribute('href'),
+  ).toBe('#/batches/batch-7');
+});
+
+test('an event for a run outside the batch filter is not added', async () => {
+  await start(
+    { ...original, batch_id: 'batch-7', batch_index: 0 },
+    'batch=batch-7',
+  );
+  client.listRuns.mockClear();
+  emit({
+    ...envelope,
+    type: 'run_queued',
+    run: { ...eventRun, id: 'run-other', batch_id: 'batch-8' },
+  } as never);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(client.listRuns).not.toHaveBeenCalled();
+});
