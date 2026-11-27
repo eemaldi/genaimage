@@ -2108,6 +2108,27 @@
             },
             "type": "array"
           },
+          "expected_graph_sha256": {
+            "description": "`workflow-graph-mismatch`: the SHA-256 of the normalised graph that was sent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`workflow-ambiguous` after an import: the workflow ID that was written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest_path": {
+            "description": "`workflow-ambiguous` after an import: the manifest that was written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "preview": {},
           "preview_token": {
             "type": [
@@ -2122,6 +2143,13 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "suggested_id": {
+            "description": "`workflow-exists`: an unused workflow ID to confirm with instead.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "type": "string"
@@ -11197,7 +11225,7 @@
     },
     "/api/v1/workflows/import/confirm": {
       "post": {
-        "description": "Write a confirmed import as a new user workflow: `<paths.workflows>/<id>/api-workflow.json` and `workflow.genaimage.json`, the manifest last. The manifest is validated strictly with the discovery rules and never corrected. An existing id, in the user root or any pack, is refused with 409 `urn:genaimage:problem:workflow-exists` and a `suggested_id` entry in `errors`. Repeating an identical confirmation returns 200 with the same result. The body is limited to 4 MiB.",
+        "description": "Write a confirmed import as a new user workflow: `<paths.workflows>/<id>/api-workflow.json` and `workflow.genaimage.json`, the manifest last. The manifest is validated strictly with the discovery rules and never corrected. An existing id, in the user root or any pack, is refused with 409 `urn:genaimage:problem:workflow-exists` and a `suggested_id` field. A graph that differs from `graph_sha256` is refused with 409 `urn:genaimage:problem:workflow-graph-mismatch` and an `expected_graph_sha256` field. When another manifest declares the written ID, the 409 `urn:genaimage:problem:workflow-ambiguous` carries `id` and `manifest_path`: the workflow was written and stays unavailable until the duplicate is removed or renamed. Repeating an identical confirmation returns 200 with the same result. The body is limited to 4 MiB.",
         "operationId": "workflows_import_confirm",
         "requestBody": {
           "content": {

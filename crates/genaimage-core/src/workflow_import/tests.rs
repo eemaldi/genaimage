@@ -388,3 +388,130 @@ fn only_safe_ids_pass() {
         assert!(!is_safe_workflow_id(id), "{id}");
     }
 }
+
+#[test]
+fn nodes_and_links_are_not_node_ids() {
+    for id in ["nodes", "links"] {
+        let issues = invalid(&json!({
+            "1": {"class_type": "Note", "inputs": {}},
+            id: {"class_type": "Note", "inputs": {}}
+        }));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, format!("graph.{id}"));
+        assert!(issues[0].reason.contains("API format"), "{issues:?}");
+    }
+}
+
+#[test]
+fn manifest_issue_lists_are_bounded() {
+    let graph = parse(TEXT_TO_IMAGE);
+    let canonical = canonical_graph_bytes(&graph);
+    let mut manifest = serde_json::to_value(propose(&graph, None).unwrap().manifest).unwrap();
+    let parameters = manifest["parameters"].as_object_mut().unwrap();
+    let template = parameters["steps"].clone();
+    for index in 0..(MAX_ISSUES + 7) {
+        let mut broken = template.clone();
+        broken["node"] = json!(format!("missing-{index}"));
+        parameters.insert(format!("extra_{index:02}"), broken);
+    }
+    let Err(ImportError::InvalidManifest(issues)) = validate_manifest(&manifest, &canonical) else {
+        panic!("expected InvalidManifest");
+    };
+    assert!(issues.len() > MAX_ISSUES);
+    assert_eq!(issues.len(), MAX_ISSUES + 1, "{issues:?}");
+    let last = issues.last().unwrap();
+    assert_eq!(last.reason, format!("and {} more", 7));
+}
+
+#[test]
+fn an_explicit_null_default_is_refused_not_dropped() {
+    let graph = parse(TEXT_TO_IMAGE);
+    let canonical = canonical_graph_bytes(&graph);
+    let mut manifest = serde_json::to_value(propose(&graph, None).unwrap().manifest).unwrap();
+    manifest["parameters"]["steps"]["default"] = Value::Null;
+    let Err(ImportError::InvalidManifest(issues)) = validate_manifest(&manifest, &canonical) else {
+        panic!("expected InvalidManifest");
+    };
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].field, "parameters.steps");
+    assert!(issues[0].reason.contains("null"), "{issues:?}");
+    manifest["parameters"]["steps"]
+        .as_object_mut()
+        .unwrap()
+        .remove("default");
+    assert!(validate_manifest(&manifest, &canonical).is_ok());
+}
+
+#[test]
+fn a_null_default_in_a_manifest_file_is_a_discovery_error() {
+    let graph = parse(TEXT_TO_IMAGE);
+    let mut manifest = serde_json::to_value(propose(&graph, None).unwrap().manifest).unwrap();
+    manifest["parameters"]["steps"]["default"] = Value::Null;
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join(GRAPH_FILE),
+        canonical_graph_bytes(&graph),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join(MANIFEST_FILE),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let error = LoadedWorkflow::load(&directory.path().join(MANIFEST_FILE))
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(error.contains("null"), "{error}");
+}
+
+#[test]
+fn rollback_removes_only_what_this_call_created() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path();
+    fs::write(path.join(GRAPH_FILE), b"existing graph").unwrap();
+    fs::write(path.join("notes.txt"), b"existing notes").unwrap();
+    let mut created = Vec::new();
+    let error = publish_new(path, GRAPH_FILE, b"new graph", &mut created).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    publish_new(path, MANIFEST_FILE, b"new manifest", &mut created).unwrap();
+    rollback(path, &created, false);
+    assert_eq!(fs::read(path.join(GRAPH_FILE)).unwrap(), b"existing graph");
+    assert_eq!(fs::read(path.join("notes.txt")).unwrap(), b"existing notes");
+    assert!(!path.join(MANIFEST_FILE).exists());
+    let mut names: Vec<_> = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["api-workflow.json", "notes.txt"]);
+    rollback(path, &[], true);
+    assert!(path.exists(), "a non-empty directory is never removed");
+}
+
+#[test]
+fn hard_link_failures_name_the_requirement_but_clashes_stay_plain() {
+    let target = Path::new("/w/x/workflow.genaimage.json");
+    let refused = link_error(io::Error::from(io::ErrorKind::Unsupported), target);
+    assert_eq!(refused.kind(), io::ErrorKind::Unsupported);
+    assert!(refused.to_string().contains("hard links"), "{refused}");
+    assert!(refused.to_string().contains("paths.workflows"), "{refused}");
+    let clash = link_error(io::Error::from(io::ErrorKind::AlreadyExists), target);
+    assert_eq!(clash.kind(), io::ErrorKind::AlreadyExists);
+    assert!(!clash.to_string().contains("hard links"));
+}
+
+#[test]
+fn only_this_schemes_temporaries_count_as_leftovers() {
+    let id = Uuid::new_v4();
+    assert!(is_stale_temporary(&format!(".{GRAPH_FILE}.{id}.tmp")));
+    assert!(is_stale_temporary(&format!(".{MANIFEST_FILE}.{id}.tmp")));
+    for name in [
+        "notes.tmp",
+        ".api-workflow.json.not-a-uuid.tmp",
+        &format!("{GRAPH_FILE}.{id}.tmp"),
+        &format!(".other.json.{id}.tmp"),
+    ] {
+        assert!(!is_stale_temporary(name), "{name}");
+    }
+}

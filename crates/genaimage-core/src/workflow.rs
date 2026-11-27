@@ -61,7 +61,11 @@ pub struct ParameterDefinition {
     pub required: bool,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "keep_explicit_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default: Option<Value>,
     #[serde(default)]
     pub allowed_values: Option<Vec<Value>>,
@@ -81,6 +85,14 @@ pub struct ParameterDefinition {
     pub advanced: Option<bool>,
     #[serde(default)]
     pub placeholder: Option<String>,
+}
+
+/// Keeps a JSON `null` as `Some(Value::Null)` instead of folding it into
+/// "absent", so validation can refuse it rather than drop it silently.
+fn keep_explicit_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -551,6 +563,14 @@ impl LoadedWorkflow {
                 continue;
             }
             if let Some(default) = &parameter.default {
+                if default.is_null() {
+                    issue(
+                        field,
+                        "default cannot be null; omit the field for a parameter without a default"
+                            .to_owned(),
+                    );
+                    continue;
+                }
                 if let Err(error) = parameter.validate_value(name, default) {
                     issue(field.clone(), workflow_message(error));
                     continue;

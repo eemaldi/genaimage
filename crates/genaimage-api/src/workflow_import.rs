@@ -71,7 +71,11 @@ pub struct WorkflowImportParameter {
     pub required: bool,
     #[serde(default)]
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "keep_explicit_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_values: Option<Vec<Value>>,
@@ -101,6 +105,13 @@ pub struct WorkflowImportOutput {
     pub node: String,
     #[serde(default = "image_kind")]
     pub kind: String,
+}
+
+/// Keeps a JSON `null` as `Some(Null)` so the server can refuse it explicitly.
+fn keep_explicit_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 fn image_kind() -> String {

@@ -206,10 +206,7 @@ fn import_error(error: ImportError) -> Problem {
             "Send the graph unchanged together with the graph_sha256 of its proposal, or request a new proposal.",
         )
         .with_type("urn:genaimage:problem:workflow-graph-mismatch")
-        .with_errors(vec![SettingError {
-            key: "expected_graph_sha256".into(),
-            reason: expected,
-        }]),
+        .with_expected_graph_sha256(expected),
         ImportError::InvalidManifest(found) => Problem::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("The manifest is invalid ({} problem(s)); nothing was written.", found.len()),
@@ -223,10 +220,7 @@ fn import_error(error: ImportError) -> Problem {
             format!("Choose another id, for example '{suggested_id}'. Existing workflows are never overwritten."),
         )
         .with_type("urn:genaimage:problem:workflow-exists")
-        .with_errors(vec![SettingError {
-            key: "suggested_id".into(),
-            reason: suggested_id,
-        }]),
+        .with_suggested_id(suggested_id),
         ImportError::Harness(error) => workflow_error(error),
     }
 }
@@ -281,7 +275,7 @@ pub(super) async fn import(
     post, path = "/workflows/import/confirm",
     operation_id = "workflows_import_confirm",
     tag = "workflows",
-    description = "Write a confirmed import as a new user workflow: `<paths.workflows>/<id>/api-workflow.json` and `workflow.genaimage.json`, the manifest last. The manifest is validated strictly with the discovery rules and never corrected. An existing id, in the user root or any pack, is refused with 409 `urn:genaimage:problem:workflow-exists` and a `suggested_id` entry in `errors`. Repeating an identical confirmation returns 200 with the same result. The body is limited to 4 MiB.",
+    description = "Write a confirmed import as a new user workflow: `<paths.workflows>/<id>/api-workflow.json` and `workflow.genaimage.json`, the manifest last. The manifest is validated strictly with the discovery rules and never corrected. An existing id, in the user root or any pack, is refused with 409 `urn:genaimage:problem:workflow-exists` and a `suggested_id` field. A graph that differs from `graph_sha256` is refused with 409 `urn:genaimage:problem:workflow-graph-mismatch` and an `expected_graph_sha256` field. When another manifest declares the written ID, the 409 `urn:genaimage:problem:workflow-ambiguous` carries `id` and `manifest_path`: the workflow was written and stays unavailable until the duplicate is removed or renamed. Repeating an identical confirmation returns 200 with the same result. The body is limited to 4 MiB.",
     request_body = genaimage_api::WorkflowImportConfirmRequest,
     responses(
         (status = 200, body = genaimage_api::WorkflowImportResponse),
@@ -326,7 +320,11 @@ pub(super) async fn import_confirm(
     {
         Some(workflow) => {
             if let Some(reason) = &workflow.unavailable_reason {
-                return Err(Problem::workflow_ambiguous(reason.clone()));
+                return Err(Problem::workflow_written_but_ambiguous(
+                    &imported.id,
+                    &imported.manifest_path.display().to_string(),
+                    reason,
+                ));
             }
         }
         None => {

@@ -49,6 +49,10 @@ async fn confirm(api: &ApiHarness, body: &Value) -> (StatusCode, Value) {
     post(api, "/api/v1/workflows/import/confirm", body).await
 }
 
+fn hex_sha(graph: &Value) -> String {
+    hex::encode(Sha256::digest(canonical_bytes(graph)))
+}
+
 fn root(api: &ApiHarness) -> PathBuf {
     api.core.config().workflows.clone()
 }
@@ -274,8 +278,8 @@ async fn an_existing_directory_with_other_content_is_never_touched() {
         b"precious notes"
     );
     assert!(!directory.join("workflow.genaimage.json").exists());
-    let suggestion = problem["errors"][0]["reason"].as_str().unwrap().to_owned();
-    assert_eq!(problem["errors"][0]["key"], "suggested_id");
+    assert!(problem.get("errors").is_none(), "{problem}");
+    let suggestion = problem["suggested_id"].as_str().unwrap().to_owned();
     assert_ne!(suggestion, proposal.manifest.id);
     let mut retry = confirm_body(&graph, &proposal);
     retry["manifest"]["id"] = json!(suggestion);
@@ -327,7 +331,8 @@ async fn an_id_declared_anywhere_is_refused_with_a_suggestion() {
         let (status, problem) = confirm(&api, &claim(id)).await;
         assert_eq!(status, StatusCode::CONFLICT, "{id}: {problem}");
         assert_eq!(problem["type"], "urn:genaimage:problem:workflow-exists");
-        assert_eq!(problem["errors"][0]["reason"], format!("{id}-2"));
+        assert_eq!(problem["suggested_id"], format!("{id}-2"));
+        assert!(problem.get("errors").is_none(), "{problem}");
         assert!(!user.join(id).exists(), "no second claimant may be created");
     }
     api.shutdown().await;
@@ -347,6 +352,8 @@ async fn a_hash_mismatch_is_rejected_and_nothing_is_written() {
         problem["type"],
         "urn:genaimage:problem:workflow-graph-mismatch"
     );
+    assert_eq!(problem["expected_graph_sha256"], hex_sha(&changed));
+    assert!(problem.get("errors").is_none(), "{problem}");
     body["graph"] = graph;
     body["graph_sha256"] = json!("00".repeat(32));
     assert_eq!(confirm(&api, &body).await.0, StatusCode::CONFLICT);
@@ -449,5 +456,244 @@ async fn an_unwritable_root_is_an_error_not_a_success() {
     fs::write(root(&api), b"a file where the root should be").unwrap();
     let (status, _) = confirm(&api, &confirm_body(&graph, &proposal)).await;
     assert!(status.is_server_error(), "{status}");
+    api.shutdown().await;
+}
+
+fn claim_in_a_pack(api: &ApiHarness, id: &str) {
+    let pack = api.core.config().packs[0].join("late-claimant");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(
+        pack.join("pack.toml"),
+        "id = 'late-claimant'\nversion = '1'\nworkflows = ['wf.genaimage.json']\n",
+    )
+    .unwrap();
+    fs::write(pack.join("api.json"), TEXT_TO_IMAGE).unwrap();
+    fs::write(
+        pack.join("wf.genaimage.json"),
+        format!(r#"{{"schema_version":2,"id":"{id}","version":"1","workflow":"api.json"}}"#),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_duplicate_claimant_after_the_write_says_the_workflow_was_written() {
+    let api = ApiHarness::start().await;
+    let graph = graph(TEXT_TO_IMAGE);
+    let proposal = propose(&api, &graph).await;
+    let body = confirm_body(&graph, &proposal);
+    let (status, first) = confirm(&api, &body).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    claim_in_a_pack(&api, &proposal.manifest.id);
+    // The retry of a confirmation whose outcome the client could not see.
+    let (status, problem) = confirm(&api, &body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{problem}");
+    assert_eq!(problem["type"], "urn:genaimage:problem:workflow-ambiguous");
+    assert_eq!(problem["id"], proposal.manifest.id.as_str());
+    assert_eq!(problem["manifest_path"], first["manifest_path"]);
+    let detail = problem["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&format!(
+            "was written at '{}'",
+            first["manifest_path"].as_str().unwrap()
+        )),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("unavailable until the duplicate is removed or renamed"),
+        "{detail}"
+    );
+    assert!(problem["recovery"]
+        .as_str()
+        .unwrap()
+        .contains("Do not confirm"));
+    assert!(problem.get("errors").is_none());
+    // The write is kept, and the retry created no orphan.
+    let directories: Vec<_> = fs::read_dir(root(&api))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name != "packs")
+        .collect();
+    assert_eq!(directories, std::slice::from_ref(&proposal.manifest.id));
+    assert!(root(&api)
+        .join(&proposal.manifest.id)
+        .join("workflow.genaimage.json")
+        .exists());
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_crash_leftover_with_only_the_identical_graph_is_completed() {
+    let api = ApiHarness::start().await;
+    let graph = graph(TEXT_TO_IMAGE);
+    let proposal = propose(&api, &graph).await;
+    let body = confirm_body(&graph, &proposal);
+    let directory = root(&api).join(&proposal.manifest.id);
+    fs::create_dir_all(&directory).unwrap();
+    let canonical = canonical_bytes(&graph);
+    fs::write(directory.join("api-workflow.json"), &canonical).unwrap();
+    let stale = directory.join(format!(
+        ".workflow.genaimage.json.{}.tmp",
+        "0a1b2c3d-0000-4000-8000-000000000001"
+    ));
+    fs::write(&stale, b"half a manifest").unwrap();
+    let futures: Vec<_> = (0..4).map(|_| confirm(&api, &body)).collect();
+    let results = futures_util::future::join_all(futures).await;
+    for (status, response) in &results {
+        assert_eq!(*status, StatusCode::OK, "{response}");
+        assert_eq!(response, &results[0].1);
+    }
+    assert!(directory.join("workflow.genaimage.json").exists());
+    assert_eq!(
+        fs::read(&stale).unwrap(),
+        b"half a manifest",
+        "foreign files are never touched"
+    );
+    assert_eq!(
+        fs::read(directory.join("api-workflow.json")).unwrap(),
+        canonical
+    );
+    let details: WorkflowDetails = api
+        .get_json(&format!("/api/v1/workflows/{}", proposal.manifest.id))
+        .await;
+    assert_eq!(
+        details.revision.as_deref(),
+        results[0].1["revision"].as_str()
+    );
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_leftover_directory_with_anything_else_stays_exists() {
+    let api = ApiHarness::start().await;
+    let graph = graph(TEXT_TO_IMAGE);
+    let proposal = propose(&api, &graph).await;
+    let directory = root(&api).join(&proposal.manifest.id);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("api-workflow.json"), canonical_bytes(&graph)).unwrap();
+    fs::write(directory.join("thumbnail.png"), b"user file").unwrap();
+    let (status, problem) = confirm(&api, &confirm_body(&graph, &proposal)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(problem["type"], "urn:genaimage:problem:workflow-exists");
+    assert!(!directory.join("workflow.genaimage.json").exists());
+    assert_eq!(
+        fs::read(directory.join("thumbnail.png")).unwrap(),
+        b"user file"
+    );
+    api.shutdown().await;
+}
+
+fn canonical_bytes(graph: &Value) -> Vec<u8> {
+    genaimage_core::workflow_import::canonical_graph_bytes(graph)
+}
+
+#[tokio::test]
+async fn concurrent_confirmations_with_different_manifests_have_one_winner() {
+    let api = ApiHarness::start().await;
+    let graph = graph(TEXT_TO_IMAGE);
+    let proposal = propose(&api, &graph).await;
+    let bodies: Vec<Value> = ["Alpha", "Beta", "Gamma", "Delta"]
+        .iter()
+        .map(|title| {
+            let mut body = confirm_body(&graph, &proposal);
+            body["manifest"]["title"] = json!(title);
+            body
+        })
+        .collect();
+    let results =
+        futures_util::future::join_all(bodies.iter().map(|body| confirm(&api, body))).await;
+    let winners: Vec<usize> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, (status, _))| *status == StatusCode::OK)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(winners.len(), 1, "{results:?}");
+    for (index, (status, problem)) in results.iter().enumerate() {
+        if index != winners[0] {
+            assert_eq!(*status, StatusCode::CONFLICT, "{problem}");
+            assert_eq!(problem["type"], "urn:genaimage:problem:workflow-exists");
+        }
+    }
+    let directory = root(&api).join(&proposal.manifest.id);
+    let on_disk: Value =
+        serde_json::from_slice(&fs::read(directory.join("workflow.genaimage.json")).unwrap())
+            .unwrap();
+    let title = ["Alpha", "Beta", "Gamma", "Delta"][winners[0]];
+    assert_eq!(on_disk["title"], title);
+    let written = fs::read_to_string(directory.join("workflow.genaimage.json")).unwrap();
+    assert!(
+        written.contains(&format!("\"title\": \"{title}\"")),
+        "{written}"
+    );
+    let names: Vec<_> = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn exact_numbers_survive_confirmation_and_inspection() {
+    let api = ApiHarness::start().await;
+    let source = r#"{
+      "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m.safetensors"}},
+      "2": {"class_type": "LoraLoader", "inputs": {"model": ["1", 0], "clip": ["1", 1], "lora_name": "l.safetensors", "strength_model": -0.0, "strength_clip": 1.0}},
+      "3": {"class_type": "KSampler", "inputs": {"seed": 18446744073709551615, "steps": 20, "cfg": 2.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["2", 0], "positive": ["4", 0], "negative": ["4", 0], "latent_image": ["5", 0]}},
+      "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "x", "clip": ["2", 1]}},
+      "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512, "batch_size": 1}},
+      "6": {"class_type": "SaveImage", "inputs": {"images": ["3", 0], "filename_prefix": "p"}}
+    }"#;
+    let graph = graph(source);
+    let proposal = propose(&api, &graph).await;
+    let (status, response) = confirm(&api, &confirm_body(&graph, &proposal)).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let id = response["id"].as_str().unwrap();
+    let directory = root(&api).join(id);
+    let written = fs::read_to_string(directory.join("api-workflow.json")).unwrap();
+    for literal in [
+        r#""seed":18446744073709551615"#,
+        r#""cfg":2.0"#,
+        r#""strength_model":-0.0"#,
+        r#""strength_clip":1.0"#,
+    ] {
+        assert!(written.contains(literal), "{literal} in {written}");
+    }
+    let manifest = fs::read_to_string(directory.join("workflow.genaimage.json")).unwrap();
+    for literal in [
+        r#""default": 18446744073709551615"#,
+        r#""default": 2.0"#,
+        r#""default": -0.0"#,
+    ] {
+        assert!(manifest.contains(literal), "{literal} in {manifest}");
+    }
+    let details: Value = api.get_json(&format!("/api/v1/workflows/{id}")).await;
+    let defaults: Vec<String> = ["seed", "cfg", "lora_strength_model"]
+        .iter()
+        .map(|name| details["parameters"][name]["default"].to_string())
+        .collect();
+    assert_eq!(
+        defaults,
+        ["18446744073709551615", "2.0", "-0.0"],
+        "{details}"
+    );
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_explicit_null_default_is_a_manifest_error() {
+    let api = ApiHarness::start().await;
+    let graph = graph(TEXT_TO_IMAGE);
+    let proposal = propose(&api, &graph).await;
+    let mut body = confirm_body(&graph, &proposal);
+    body["manifest"]["parameters"]["steps"]["default"] = Value::Null;
+    let (status, problem) = confirm(&api, &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(
+        problem["type"],
+        "urn:genaimage:problem:workflow-manifest-invalid"
+    );
+    assert_eq!(error_keys(&problem), ["parameters.steps"]);
+    nothing_written(&api);
     api.shutdown().await;
 }

@@ -200,10 +200,15 @@ input instead of being corrected.
 If several nodes would share a name, every one of them gets a `_<node id>`
 suffix (for example `lora_name_2` and `lora_name_3`). Connections
 (`[node, output]` inputs) are never bindable. Every other node is listed in
-`unknown_nodes`, including standard nodes such as `VAEDecode`; it keeps its
+`unknown_nodes`, including standard nodes such as `VAEDecode`. The list means
+"nodes without import rules", not "unsupported nodes": such a node keeps its
 workflow values and nothing is guessed. The proposal is deterministic: the same
 graph and name give the same bytes. The suggested `id` is a slug of `name` (or
-`imported-workflow`), made unique against existing workflows.
+`imported-workflow`), made unique against existing workflows. Each proposal and
+each confirmation runs a full workflow discovery to check the ID, so both cost
+a catalogue scan. `step` is written as a floating-point number, because that is
+the manifest's type for it. The graph's node IDs `nodes` and `links` are refused
+with 422 `workflow-import-invalid`, because UI-format exports use those keys.
 
 ### Confirmation rules
 
@@ -212,16 +217,31 @@ graph and name give the same bytes. The suggested `id` is a slug of `name` (or
   `urn:genaimage:problem:workflow-graph-mismatch`.
 - The manifest is validated with the same rules as discovery and returned as
   `errors` (422 `urn:genaimage:problem:workflow-manifest-invalid`), never
-  corrected. The `id` must be a safe slug (`[a-z0-9][a-z0-9_-]{0,63}`), `refresh`
+  corrected. At most 20 errors are listed, followed by an `and N more` entry.
+  The `id` must be a safe slug (`[a-z0-9][a-z0-9_-]{0,63}`), `refresh`
   and `import` are reserved, `workflow` must be `api-workflow.json` and
-  `thumbnail` must be absent.
+  `thumbnail` must be absent. A parameter `default` of `null` is refused
+  (omit the field instead); discovery refuses it in a manifest file as well.
 - Nothing is overwritten. An id already declared by the user root or any pack,
   including an invalid or duplicate claimant, or an existing directory of that
-  name, gives 409 `urn:genaimage:problem:workflow-exists`; `errors` contains
-  `suggested_id`.
-- Files are created with no-clobber writes and synced, the manifest last, so a
-  crash leaves no discoverable half-workflow. An identical repeat of a successful
-  confirmation returns 200 with the same result.
+  name, gives 409 `urn:genaimage:problem:workflow-exists` with a `suggested_id`
+  field. A graph that does not match `graph_sha256` gives 409
+  `workflow-graph-mismatch` with an `expected_graph_sha256` field.
+- Files are created with no-clobber hard links of synced temporary files, so
+  `paths.workflows` must be on a filesystem that supports hard links (a refusal
+  is a 5xx that says so). The graph is published first, then the directory is
+  synced, then the manifest, so a crash may leave an undiscoverable directory
+  that an identical retry completes. A directory that holds only the identical
+  graph, and perhaps stale `.*.tmp` files from this scheme, is completed by
+  publishing the manifest; those files are never deleted. Any other content
+  gives `workflow-exists`. An identical repeat of a successful confirmation
+  returns 200 with the same result.
+- If another manifest declares the written ID by the time the catalogue is
+  rebuilt, the answer is 409 `urn:genaimage:problem:workflow-ambiguous` with
+  `id` and `manifest_path`. The workflow **was written** and stays unavailable
+  until the duplicate is removed or renamed. It is not rolled back, and
+  confirming it again creates nothing new; it gives the same 409 until the
+  duplicate is gone, then 200.
 - The response is `{id, revision, manifest_path, source: "user"}`. The catalogue
   is rebuilt first, so the workflow is listed immediately.
 

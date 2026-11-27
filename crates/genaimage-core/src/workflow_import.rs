@@ -221,6 +221,10 @@ fn check_graph(graph: &Value) -> Result<&Map<String, Value>, ImportError> {
             problem = Some(format!(
                 "node IDs must be 1 to {MAX_ID_LENGTH} characters long"
             ));
+        } else if id == "nodes" || id == "links" {
+            problem = Some(format!(
+                "'{id}' cannot be a node ID because ComfyUI UI-format exports use it as a top-level key; export the workflow in API format, where node IDs are numbers"
+            ));
         } else if let Some(node) = node.as_object() {
             match (
                 node.get("class_type").and_then(Value::as_str),
@@ -746,11 +750,23 @@ pub fn propose(graph: &Value, name: Option<&str>) -> Result<ImportProposal, Impo
     })
 }
 
-fn manifest_issues(issues: Vec<ValidationIssue>) -> Vec<ImportIssue> {
+/// Keeps the first [`MAX_ISSUES`] issues and says how many were left out.
+fn cap_issues(mut issues: Vec<ImportIssue>) -> Vec<ImportIssue> {
+    if issues.len() > MAX_ISSUES {
+        let more = issues.len() - MAX_ISSUES;
+        issues.truncate(MAX_ISSUES);
+        issues.push(issue("manifest", format!("and {more} more")));
+    }
     issues
-        .into_iter()
-        .map(|item| issue(item.field, item.message))
-        .collect()
+}
+
+fn manifest_issues(issues: Vec<ValidationIssue>) -> Vec<ImportIssue> {
+    cap_issues(
+        issues
+            .into_iter()
+            .map(|item| issue(item.field, item.message))
+            .collect(),
+    )
 }
 
 /// Strictly validates a (possibly edited) manifest the way discovery would,
@@ -830,7 +846,8 @@ fn read_limited(mut file: fs::File, limit: usize) -> io::Result<Vec<u8>> {
 }
 
 /// Creates `directory/name` atomically and without clobbering: the content is
-/// written and synced to a temporary file, then hard-linked into place.
+/// written and synced to a temporary file, then hard-linked into place. A
+/// failure other than "already exists" names the hard-link requirement.
 fn publish_new(
     directory: &Path,
     name: &str,
@@ -849,9 +866,22 @@ fn publish_new(
     let target = directory.join(name);
     let linked = fs::hard_link(&temporary, &target);
     let _ = fs::remove_file(&temporary);
-    linked?;
+    linked.map_err(|error| link_error(error, &target))?;
     created.push(target);
     Ok(())
+}
+
+fn link_error(error: io::Error, target: &Path) -> io::Error {
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        return error;
+    }
+    io::Error::new(
+        error.kind(),
+        format!(
+            "cannot create '{}' with a hard link ({error}); importing needs hard links, so paths.workflows must be on a filesystem that supports them",
+            target.display()
+        ),
+    )
 }
 
 fn sync_directory(directory: &Path) -> io::Result<()> {
@@ -862,11 +892,89 @@ fn sync_directory(directory: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn rollback(directory: &Path, created: &[PathBuf]) {
+/// Creates `root` and any missing parents, then syncs the parent of every
+/// directory that was created so the new entries survive a crash.
+fn create_root(root: &Path) -> io::Result<()> {
+    let missing: Vec<&Path> = root
+        .ancestors()
+        .take_while(|path| !path.as_os_str().is_empty() && fs::symlink_metadata(path).is_err())
+        .collect();
+    fs::create_dir_all(root)?;
+    for path in missing.iter().rev() {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            sync_directory(parent)?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes only the files this call created, and the directory only when this
+/// call created it and nothing else is in it.
+fn rollback(directory: &Path, created: &[PathBuf], remove_directory: bool) {
     for path in created.iter().rev() {
         let _ = fs::remove_file(path);
     }
-    let _ = fs::remove_dir(directory);
+    if remove_directory {
+        let _ = fs::remove_dir(directory);
+    }
+}
+
+/// Publishes the graph, syncs, publishes the manifest, syncs: the manifest is
+/// the last file to appear, so no half-written workflow is discoverable.
+fn write_workflow(
+    directory: &Path,
+    graph: Option<&[u8]>,
+    manifest: &[u8],
+    created: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    if let Some(graph) = graph {
+        publish_new(directory, GRAPH_FILE, graph, created)?;
+        sync_directory(directory)?;
+    }
+    publish_new(directory, MANIFEST_FILE, manifest, created)?;
+    sync_directory(directory)
+}
+
+const MAX_LEFTOVER_ENTRIES: usize = 64;
+
+/// `.<file>.<uuid>.tmp`, the temporary name [`publish_new`] uses.
+fn is_stale_temporary(name: &str) -> bool {
+    [GRAPH_FILE, MANIFEST_FILE].iter().any(|file| {
+        name.strip_prefix('.')
+            .and_then(|rest| rest.strip_prefix(file))
+            .and_then(|rest| rest.strip_prefix('.'))
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+    })
+}
+
+/// A crash between publishing the graph and the manifest leaves the graph and
+/// maybe stale temporary files, nothing else.
+fn holds_only_graph_and_temporaries(directory: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return false;
+    };
+    let mut seen_graph = false;
+    for (index, entry) in entries.enumerate() {
+        let Ok(entry) = entry else { return false };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        let regular = fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_file());
+        if index >= MAX_LEFTOVER_ENTRIES || !regular {
+            return false;
+        }
+        if name == GRAPH_FILE {
+            seen_graph = true;
+        } else if !is_stale_temporary(name) {
+            return false;
+        }
+    }
+    seen_graph
 }
 
 impl Harness {
@@ -935,7 +1043,8 @@ impl Harness {
 
     /// Writes a confirmed import into a new `<paths.workflows>/<id>/` directory.
     /// Never overwrites. An identical repeat of an earlier confirmation succeeds
-    /// again with the same result.
+    /// again with the same result, and a directory that a crash left holding
+    /// only the identical graph is completed by publishing the manifest.
     pub fn confirm_workflow_import(
         &self,
         graph: &Value,
@@ -967,17 +1076,41 @@ impl Harness {
                 suggested_id: self.free_workflow_id(&parsed.id, taken),
             }
         };
+        let same = |name: &str, expected: &[u8]| {
+            safe_file::open_regular_beneath(&root, &directory, Path::new(name))
+                .and_then(|file| read_limited(file, expected.len()).ok())
+                .is_some_and(|bytes| bytes == expected)
+        };
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() => {
-                let same = |name: &str, expected: &[u8]| {
-                    safe_file::open_regular_beneath(&root, &directory, Path::new(name))
-                        .and_then(|file| read_limited(file, expected.len()).ok())
-                        .is_some_and(|bytes| bytes == expected)
-                };
                 if same(GRAPH_FILE, &canonical) && same(MANIFEST_FILE, &manifest_bytes) {
                     return self.imported(&parsed.id, &directory);
                 }
-                return Err(exists(&self.taken_workflow_ids()?));
+                if !same(GRAPH_FILE, &canonical) || !holds_only_graph_and_temporaries(&directory) {
+                    return Err(exists(&self.taken_workflow_ids()?));
+                }
+                let taken = self.taken_workflow_ids()?;
+                if taken.contains(&parsed.id) {
+                    return Err(exists(&taken));
+                }
+                let mut created = Vec::new();
+                return match write_workflow(&directory, None, &manifest_bytes, &mut created) {
+                    Ok(()) => self.imported(&parsed.id, &directory).inspect_err(|_| {
+                        rollback(&directory, &created, false);
+                    }),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        rollback(&directory, &created, false);
+                        if same(MANIFEST_FILE, &manifest_bytes) {
+                            self.imported(&parsed.id, &directory)
+                        } else {
+                            Err(exists(&self.taken_workflow_ids()?))
+                        }
+                    }
+                    Err(error) => {
+                        rollback(&directory, &created, false);
+                        Err(error.into())
+                    }
+                };
             }
             Ok(_) => return Err(exists(&self.taken_workflow_ids()?)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -988,7 +1121,7 @@ impl Harness {
             return Err(exists(&taken));
         }
 
-        fs::create_dir_all(&root)?;
+        create_root(&root)?;
         match fs::create_dir(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -997,16 +1130,14 @@ impl Harness {
             Err(error) => return Err(error.into()),
         }
         let mut created = Vec::new();
-        let written = publish_new(&directory, GRAPH_FILE, &canonical, &mut created)
-            .and_then(|()| publish_new(&directory, MANIFEST_FILE, &manifest_bytes, &mut created))
-            .and_then(|()| sync_directory(&directory))
+        let written = write_workflow(&directory, Some(&canonical), &manifest_bytes, &mut created)
             .and_then(|()| sync_directory(&root));
         if let Err(error) = written {
-            rollback(&directory, &created);
+            rollback(&directory, &created, true);
             return Err(error.into());
         }
         self.imported(&parsed.id, &directory).inspect_err(|_| {
-            rollback(&directory, &created);
+            rollback(&directory, &created, true);
         })
     }
 

@@ -100,6 +100,18 @@ pub struct ProblemDetails {
     pub preview: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_token: Option<String>,
+    /// `workflow-exists`: an unused workflow ID to confirm with instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_id: Option<String>,
+    /// `workflow-graph-mismatch`: the SHA-256 of the normalised graph that was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_graph_sha256: Option<String>,
+    /// `workflow-ambiguous` after an import: the workflow ID that was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// `workflow-ambiguous` after an import: the manifest that was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_path: Option<String>,
 }
 
 /// A workflow catalogue and non-fatal discovery errors.
