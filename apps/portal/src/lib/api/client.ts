@@ -351,12 +351,15 @@ export function createApiClient(
     url: string,
     init: RequestInit,
     read: (response: Response) => Promise<T>,
+    inspect?: (response: Response) => void,
   ): Promise<T> {
     const guidance =
       init.method === 'POST' &&
       (url === '/api/v1/runs' || /^\/api\/v1\/runs\/[^/]+\/rerun$/.test(url))
         ? 'The submission may have gone through. Check the run list and reconcile before submitting again.'
-        : 'Check that the local GenAImage server is running and up to date.';
+        : init.method === 'POST' && url === '/api/v1/models/llm/pulls'
+          ? 'The pull may have started. Check the list of pulls before starting it again.'
+          : 'Check that the local GenAImage server is running and up to date.';
     let response: Response;
     try {
       init.signal?.throwIfAborted();
@@ -365,6 +368,7 @@ export function createApiClient(
       preserveAbort(error, init.signal);
       throw new ApiNetworkError(guidance, error);
     }
+    inspect?.(response);
     if (!response.ok) {
       const contentType = response.headers
         .get('content-type')
@@ -442,6 +446,73 @@ export function createApiClient(
       json('get', '/api/v1/health', options),
     doctor: (options: RequestOptions = {}) =>
       json('get', '/api/v1/doctor', options),
+    llmModels: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/models/llm', options),
+    checkpoints: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/models/checkpoints', options),
+    listModelPulls: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/models/llm/pulls', options),
+    getModelPull: (id: string, options: RequestOptions = {}) =>
+      json('get', '/api/v1/models/llm/pulls/{id}', {
+        ...options,
+        path: { id },
+      }),
+    /** One POST, never retried. A 409 problem is thrown with the existing pull's ID in `location`. */
+    startModelPull: async (name: string, options: RequestOptions = {}) => {
+      const seen: { location?: string | null } = {};
+      try {
+        const pull = await request(
+          apiUrl('/api/v1/models/llm/pulls'),
+          {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json, application/problem+json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name }),
+            signal: options.signal,
+          },
+          (response) =>
+            response.json() as Promise<components['schemas']['ModelPull']>,
+          (response) => {
+            seen.location = response.headers.get('location');
+          },
+        );
+        return { pull, existingId: undefined };
+      } catch (error) {
+        const id = seen.location?.split('/').filter(Boolean).at(-1);
+        if (error instanceof ApiProblemError && error.status === 409 && id)
+          return { pull: undefined, existingId: decodeURIComponent(id) };
+        throw error;
+      }
+    },
+    cancelModelPull: (id: string, options: RequestOptions = {}) =>
+      request(
+        apiUrl('/api/v1/models/llm/pulls/{id}', { id }),
+        {
+          method: 'DELETE',
+          headers: { Accept: 'application/json, application/problem+json' },
+          signal: options.signal,
+        },
+        (response) =>
+          response.json() as Promise<components['schemas']['ModelPull']>,
+      ),
+    streamModelPull: (id: string, options: RequestOptions = {}) =>
+      request(
+        apiUrl('/api/v1/models/llm/pulls/{id}/events', { id }),
+        {
+          method: 'GET',
+          headers: { Accept: 'text/event-stream, application/problem+json' },
+          signal: options.signal,
+        },
+        async (response) => {
+          const { readSseJson } = await import('./sse');
+          return readSseJson<components['schemas']['ModelPull']>(
+            response,
+            options.signal,
+          );
+        },
+      ),
     promptAssist: (body: PromptAssistRequest, options?: RequestOptions) =>
       json('post', '/api/v1/assistant/prompt', { ...options, body }),
     suggestWorkflow: (body: SuggestWorkflowRequest, options?: RequestOptions) =>
