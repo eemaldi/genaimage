@@ -392,7 +392,7 @@ test('inserting a template clears the stale review and the next preview sends th
   expect(screen.queryByRole('heading', { name: 'Review batch' })).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: 'Preview batch' }));
   await screen.findByRole('heading', { name: 'Review batch' });
-  expect(fake.previewBatch.mock.calls.at(-1)?.[0].parameters.prompt).toBe(
+  expect(fake.previewBatch.mock.lastCall?.[0].parameters?.prompt).toBe(
     'a dog in a studio',
   );
 });
