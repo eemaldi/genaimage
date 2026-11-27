@@ -31,7 +31,12 @@ sleep 20
 gh pr checks "$url" --watch
 gh pr merge "$url" --merge
 
-state=$(gh issue view "$issue" --repo "$repo" --json state --jq .state)
+# GitHub closes linked issues a few seconds after the merge.
+for _ in 1 2 3 4 5 6; do
+  state=$(gh issue view "$issue" --repo "$repo" --json state --jq .state)
+  [ "$state" = "CLOSED" ] && break
+  sleep 5
+done
 echo "Issue #$issue is $state."
 if [ "$state" != "CLOSED" ]; then
   echo "Close it with a comment if it should not stay open." >&2

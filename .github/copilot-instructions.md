@@ -5,13 +5,15 @@ Read the repository-root [AGENTS.md](../AGENTS.md) and
 They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
-loopback server currently serves health, workflows, runs, outputs and their
-vision-review annotations, uploads, settings, live events, the assistant API,
-an OpenAPI contract and the embedded Svelte portal (dashboard, generate, jobs,
-gallery, workflows, run detail, diagnostics, settings and an assistant chat
-panel on every page). Keep generation orchestration, run state, provenance and the assistant
+loopback server currently serves health, doctor, workflows, runs, outputs and
+their vision-review annotations, uploads, settings, setup, LLM model pulls and
+checkpoints, live events, the assistant API, an OpenAPI contract and the
+embedded Svelte portal (dashboard, generate, jobs, gallery, workflows, run
+detail, models, diagnostics, settings, setup wizard and an assistant chat panel
+on every page). `compose.yaml` runs GenAImage, ComfyUI and Ollama for local use
+only. Keep generation orchestration, run state, provenance and the assistant
 (model roles, conversations, tool runtime and confirmations) in the core, the
-OpenAI-compatible LLM provider in `genaimage-llm`, and ComfyUI
+OpenAI-compatible LLM provider and Ollama pull client in `genaimage-llm`, and ComfyUI
 transport in its adapter. CLI client commands use `genaimage-api`; only the isolated
 `serve` module wires the core, adapter and server. Local `config init` uses core
 configuration and error types without opening a harness.

@@ -95,33 +95,33 @@ this file.
 Use the user's pool if they gave one. Otherwise use only these models, for
 developers and reviewers alike:
 
-| Difficulty | Model | Claude Code `model` | GitHub Copilot model ID | Reasoning |
+| Difficulty | Model | Claude Code `model` | GitHub Copilot model ID | Effort |
 | --- | --- | --- | --- | --- |
-| Easy | Haiku 5.5 | `haiku` | `claude-haiku-5.5` | Normal |
-| Medium | Sonnet 5.5 | `sonnet` | `claude-sonnet-5.5` | Normal |
-| Hard and very hard | No single model. Break the task down. | — | — | — |
+| Easy | Haiku 5.5 | `haiku` | `claude-haiku-5.5` | `medium` |
+| Medium | Haiku 5.5 | `haiku` | `claude-haiku-5.5` | `high` |
+| Hard | Sonnet 5.5 | `sonnet` | `claude-sonnet-5.5` | `medium` |
+| Very hard | Sonnet 5.5 | `sonnet` | `claude-sonnet-5.5` | `high` |
 
-Normal reasoning is the `medium` effort level. Set the model and the effort
-explicitly on every dispatch, so that a subagent does not inherit yours. Use a
-long-context tier when the client offers one for the model.
+Set the model and the effort explicitly on every dispatch, so that a subagent
+does not inherit yours. Use a long-context tier when the client offers one for
+the model.
 
-You must not give a hard or very hard task to a single subagent. Break it into
-simpler components that are Easy or Medium. Give each component its own
-subagent, with a clear contract between components. Run each component's tasks
-in order on the same branch, or on separate branches if they are truly
-independent. Here are splits that worked:
+Split large issues into components with a clear contract between them, and
+give each component its own subagent. Run the components in order on the same
+branch, or on separate branches if they are truly independent. Here are splits
+that worked:
 
 - Backend prerequisite, then UI.
 - A form's widgets, then review and submit.
 - Core and server, then the client and portal.
 
-Give anything that touches run submission, reconciliation, idempotency,
-provenance or numeric exactness to Sonnet 5.5, never Haiku 5.5. Review it with
-Sonnet 5.5.
+Treat anything that touches run submission, reconciliation, idempotency,
+provenance or numeric exactness as at least Hard, so Sonnet 5.5 develops and
+reviews it.
 
-Reviewers work at the developer's difficulty or above, which in practice means
-Sonnet 5.5 with Normal reasoning. If a reviewer is asked to review a whole split
-feature, point it at the integrated branch.
+Reviewers work at the developer's difficulty or above, and never below Hard.
+If a reviewer is asked to review a whole split feature, point it at the
+integrated branch.
 
 ## 3. Write the developer prompt
 
@@ -145,6 +145,9 @@ Every developer prompt contains the following:
     specifies. For GitHub Copilot it is
     `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
   - Push the branch, but do not open a PR or merge.
+- **Environment:** subagent shells lack `~/.cargo/bin` on `PATH` and have no
+  `$TMPDIR`. Give the `export PATH` line and the scratchpad path for logs and
+  temporary files, and forbid writing into `$HOME` or the repository.
 - **Final reply:** SHAs, a summary, any public helpers or contracts that later
   issues will use, the exact validation results, the JS size, any caveats, and
   learnings about tools and processes, plus opinions, for the session memory.
@@ -193,7 +196,10 @@ stopped requiring tool support, so tool callers must call `check_request`.
    "supervisor note to evaluate" rather than ordering it. In epic 7, this
    settled base64 image content, a distinct `awaiting_confirmation` event and
    preview tokens before any client depended on the old form.
-8. Overrule a High finding only when the path fails closed. Write down why,
+8. Look at visible output yourself before shipping: screenshots, generated
+   images, rendered pages. In epic 8 this caught a portal spacing bug and an
+   unhelpful screenshot that review had passed.
+9. Overrule a High finding only when the path fails closed. Write down why,
    and record the issue as a follow-up in the PR. Example: a race between a
    preview check and the claim, where `submit_run` re-validates the pinned
    revision and nothing can be submitted wrongly.
@@ -213,7 +219,8 @@ stopped requiring tool support, so tool callers must call `check_request`.
    - merges with `--merge` only if every check passes;
    - reports the issue state and the new `origin/main`.
 
-   Close the issue with a comment if GitHub has not.
+   It rechecks the issue for 30 seconds, because GitHub closes it after the
+   merge. Close it with a comment if it is still open (expected with `Refs`).
 3. Record in the session memory that `main` has moved and what the merge changed
    (migration numbers, shared modules, generated files). Send a heads-up to
    running developers. The next subagent on each open branch rebases first.
@@ -242,6 +249,11 @@ subagent that has not reported and can no longer be found as lost.
    finish the remaining task.
 3. For a lost review, start a fresh reviewer with the earlier decisions.
 
+Usage limits also end background subagents mid-task; their uncommitted work
+survives in the worktree. If the permission classifier refuses a subagent's
+force-push, do not push on its behalf: tell the user, and let a fresh developer
+rebuild the branch (`git reset` plus rebase, then `--force-with-lease`).
+
 ## 8. Close the epic
 
 1. Check that every sub-issue is closed.
@@ -249,7 +261,8 @@ subagent that has not reported and can no longer be found as lost.
    on `origin/main`, in a detached worktree
    (`git worktree add --detach <repo>.worktrees/epic<N>-final origin/main`).
    Run them yourself with `bash` and log to files, not in a synchronous
-   subagent, so an interruption doesn't lose the results.
+   subagent, so an interruption doesn't lose the results. `perf_check.py`
+   needs `~/.cargo/bin` on `PATH`.
 3. Comment on the epic with the PRs, the final checks, the budgets, the key
    decisions and the follow-ups. Do this even if someone else closed the epic
    first, then close it if it is still open.
@@ -329,6 +342,19 @@ abandoned. If a session ended without it, do it at the start of the next one.
     bounded item counts with unbounded item sizes.
   - **Weak tests:** expectations copied from the observed output, assertions
     on event names only, and timeouts that don't cover the whole test.
+- Epic 8 (setup, models and distribution) added these:
+  - **Atomicity:** a slot reserved before an `.await` needs an RAII guard, and
+    a spawned driver needs a panic guard that settles it as failed.
+  - **False success:** a boolean "saved" instead of a signature of what was
+    saved; a success callback bound to current UI choices instead of what the
+    run actually used; a diagnostic that mirrors runtime logic loosely.
+  - **Untrusted typed responses:** validate the expected set (for example all
+    doctor check ids exactly once) before showing aggregates.
+  - **Weak tests:** a tolerance that does not assert that nothing else
+    changed.
+- When the user wants the product running on their own machine, make that a
+  separate work item with its own PR. On a real AMD GPU it found a missing
+  `libatomic1` and multi-GPU selection issues that CI on CPU cannot.
 - Ask the reviewer of a confirmation or submission UI to check persisted
   states after a reload, not just the live stream. Both epic 7 UI rounds found
   bugs that appeared only after a reload.
