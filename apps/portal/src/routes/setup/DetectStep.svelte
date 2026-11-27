@@ -112,8 +112,8 @@
       <legend>{title}</legend>
       {#if !editable[kind]}
         <p>
-          The endpoint <code>{configured[kind]}</code> is set by the environment{#if variables[kind]}
-            variable <code>{variables[kind]}</code>{/if} and cannot be changed here.
+          The endpoint <code>{configured[kind]}</code> is set by the environment{#if variables[kind]}&#32;variable
+            <code>{variables[kind]}</code>{/if} and cannot be changed here.
         </p>
       {/if}
       <ul class="setup-list">

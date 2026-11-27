@@ -208,6 +208,7 @@ test('Compose shows env-owned endpoints read-only and offers no endpoint choice'
   expect(await screen.findAllByText(/GENAIMAGE_COMFYUI_URL/)).not.toHaveLength(
     0,
   );
+  expect(document.body.textContent).toContain('environment variable');
   expect(screen.queryByRole('radio')).toBeNull();
   expect(screen.getAllByText(/cannot be changed here/).length).toBeGreaterThan(
     0,

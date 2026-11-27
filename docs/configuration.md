@@ -65,12 +65,16 @@ Notes on individual keys:
 | `GENAIMAGE_CLAIM_LEGACY_STATE` | `1` explicitly binds a verified legacy database once; unset it afterwards. |
 | `RUST_LOG` | Verbosity of the structured server logs on stderr. |
 
+`claim_legacy_state` is returned by `GET /api/v1/settings` as read-only and is set only through `GENAIMAGE_CLAIM_LEGACY_STATE`.
+
 The retired `GENAIMAGE_PROFILE` and `GENAIMAGE_LLM_MODEL` are rejected with
 migration guidance.
 
 ## Outbound endpoints and allow-lists
 
-The server binds to loopback only. Outbound endpoints (`comfyui.base_url`,
+The server binds to loopback only; `0.0.0.0` or `::` is allowed only inside a
+container with `GENAIMAGE_CONTAINER=1`, with ports published on `127.0.0.1`
+only. Outbound endpoints (`comfyui.base_url`,
 `llm.base_url`) may be loopback by default. A private IP address or a Compose
 service name must be listed exactly in that service's `allowed_hosts` (comma
 separated in the environment; an empty value clears the list). Allow-listing

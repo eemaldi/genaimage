@@ -202,8 +202,8 @@
       />
     {:else}
       <p>
-        The model roles are set by the environment{#if envVariable(settings, 'llm.text_model')}
-          variable <code>{envVariable(settings, 'llm.text_model')}</code>{/if}
+        The model roles are set by the environment{#if envVariable(settings, 'llm.text_model')}&#32;variable
+          <code>{envVariable(settings, 'llm.text_model')}</code>{/if}
         and cannot be changed here.
       </p>
       <ul>
