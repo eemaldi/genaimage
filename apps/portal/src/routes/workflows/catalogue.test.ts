@@ -607,17 +607,15 @@ it('does not present an unknown or diagnosed pack check as success', async () =>
   ).toBeTruthy();
 });
 
-it('replaces the listing on refresh and ignores an older load that finishes later', async () => {
-  let finishLoad!: (value: { workflows: Summary[]; diagnostics: [] }) => void;
+it('replaces the listing on refresh and keeps focus on Refresh', async () => {
   let finishRefresh!: (value: {
     workflows: Summary[];
     diagnostics: [];
   }) => void;
-  vi.spyOn(api, 'listWorkflows').mockReturnValue(
-    new Promise((done) => {
-      finishLoad = done;
-    }),
-  );
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [sourced({ id: 'initial', name: 'Initial workflow' })],
+    diagnostics: [],
+  });
   vi.spyOn(api, 'refreshWorkflows').mockReturnValue(
     new Promise((done) => {
       finishRefresh = done;
@@ -627,10 +625,12 @@ it('replaces the listing on refresh and ignores an older load that finishes late
   window.location.hash = '#/workflows';
   const user = userEvent.setup();
   render(App);
+  await screen.findByRole('link', { name: 'Initial workflow' });
   await user.click(screen.getByRole('button', { name: 'Refresh' }));
   expect(
     screen.getByRole('button', { name: 'Refresh' }).hasAttribute('disabled'),
   ).toBe(true);
+  expect(screen.getByRole('link', { name: 'Initial workflow' })).toBeTruthy();
   finishRefresh({
     workflows: [sourced({ id: 'fresh', name: 'Fresh workflow' })],
     diagnostics: [],
@@ -638,16 +638,10 @@ it('replaces the listing on refresh and ignores an older load that finishes late
   expect(
     await screen.findByRole('link', { name: 'Fresh workflow' }),
   ).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'Initial workflow' })).toBeNull();
   const refreshButton = screen.getByRole('button', { name: 'Refresh' });
   expect(refreshButton.hasAttribute('disabled')).toBe(false);
   expect(document.activeElement).toBe(refreshButton);
-  finishLoad({
-    workflows: [sourced({ id: 'stale', name: 'Stale workflow' })],
-    diagnostics: [],
-  });
-  await tick();
-  expect(screen.queryByRole('link', { name: 'Stale workflow' })).toBeNull();
-  expect(screen.getByRole('link', { name: 'Fresh workflow' })).toBeTruthy();
 });
 
 it('shows the claimants of an ambiguous workflow on the detail page instead of a generic error', async () => {
@@ -691,4 +685,76 @@ it('shows the source of a workflow on its detail page', async () => {
   window.location.hash = '#/workflows/one%20%26%20two';
   render(App);
   expect(await screen.findByText('Source: core')).toBeTruthy();
+});
+
+it('lists an unavailable duplicate without a link or thumbnail', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [
+      summaries[0],
+      {
+        id: 'dup',
+        name: 'Duplicate',
+        version: '1',
+        revision: 'dup-revision',
+        source: 'user',
+        available: false,
+        unavailable_reason:
+          "workflow id 'dup' is also declared by pack:core; none of them can be used until the duplicates are removed or renamed",
+        thumbnail_url: '/declared',
+      },
+    ],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue({ packs: [], diagnostics: [] });
+  window.location.hash = '#/workflows';
+  render(App);
+  const card = (await screen.findByText('Duplicate')).closest('li')!;
+  expect(within(card).queryByRole('link')).toBeNull();
+  expect(within(card).queryByRole('img')).toBeNull();
+  expect(
+    within(card).getByText('No thumbnail (unavailable workflow)'),
+  ).toBeTruthy();
+  expect(within(card).getByText('Unavailable')).toBeTruthy();
+  expect(within(card).getByText(/also declared by pack:core/)).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Portrait' })).toBeTruthy();
+});
+
+it('disables Refresh while the initial load is in flight', async () => {
+  let resolve!: (value: { workflows: Summary[]; diagnostics: [] }) => void;
+  vi.spyOn(api, 'listWorkflows').mockReturnValue(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  vi.spyOn(api, 'listPacks').mockResolvedValue({ packs: [], diagnostics: [] });
+  render(Page, { params: {}, query: new URLSearchParams() });
+  const refresh = screen.getByRole('button', {
+    name: 'Refresh',
+  }) as HTMLButtonElement;
+  expect(refresh.disabled).toBe(true);
+  resolve({ workflows: summaries, diagnostics: [] });
+  await waitFor(() => expect(refresh.disabled).toBe(false));
+  expect(screen.getByRole('link', { name: 'Portrait' })).toBeTruthy();
+});
+
+it('names the source on details and still shows details when the catalogue lookup fails', async () => {
+  vi.spyOn(api, 'getWorkflow').mockResolvedValue(detail);
+  vi.spyOn(api, 'validateWorkflow').mockResolvedValue(result);
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: summaries,
+    diagnostics: [],
+  });
+  window.location.hash = '#/workflows/one%20%26%20two';
+  render(App);
+  await screen.findByRole('heading', { name: 'Portrait' });
+  expect(screen.getByText('Source: Your workflows')).toBeTruthy();
+  cleanup();
+
+  vi.mocked(api.listWorkflows).mockRejectedValue(new ApiProblemError(issue));
+  render(App);
+  await screen.findByRole('heading', { name: 'Portrait' });
+  expect(screen.queryByText(/^Source:/)).toBeNull();
+  expect(
+    screen.getByRole('button', { name: 'Use this workflow' }),
+  ).toBeTruthy();
 });

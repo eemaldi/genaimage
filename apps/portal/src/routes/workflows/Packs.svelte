@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { keepFocusAcross } from '../../lib/ui/focus';
   import { SvelteMap } from 'svelte/reactivity';
   import { api } from '../../lib/api/client';
@@ -24,17 +24,25 @@
   let loading = $state(true);
   let problem = $state<Problem>();
   const checks = new SvelteMap<string, Check>();
+  const checkControllers = new SvelteMap<string, AbortController>();
   let loadSeq = 0;
-  const checkSeq = new SvelteMap<string, number>();
   const lifetime = new AbortController();
-  onDestroy(() => lifetime.abort());
+  onDestroy(() => {
+    lifetime.abort();
+    abortChecks();
+  });
+
+  function abortChecks() {
+    for (const controller of checkControllers.values()) controller.abort();
+    checkControllers.clear();
+    checks.clear();
+  }
 
   async function loadPacks() {
     const seq = ++loadSeq;
     loading = true;
     problem = undefined;
-    checks.clear();
-    checkSeq.clear();
+    abortChecks();
     try {
       const listing = await api.listPacks({ signal: lifetime.signal });
       if (seq !== loadSeq) return;
@@ -50,31 +58,31 @@
 
   $effect(() => {
     void generation;
-    void loadPacks();
+    untrack(() => {
+      void loadPacks();
+    });
   });
 
-  function setCheck(id: string, check: Check) {
-    checks.set(id, check);
-  }
-
   async function checkRequirements(id: string, button: HTMLButtonElement) {
-    const seq = (checkSeq.get(id) ?? 0) + 1;
+    checkControllers.get(id)?.abort();
+    const controller = new AbortController();
+    checkControllers.set(id, controller);
     const restoreFocus = keepFocusAcross(button);
-    checkSeq.set(id, seq);
-    setCheck(id, { state: 'checking' });
+    checks.set(id, { state: 'checking' });
     try {
       const response = await api.validatePack(id, {
-        signal: lifetime.signal,
+        signal: controller.signal,
       });
-      if (checkSeq.get(id) === seq)
-        setCheck(id, { state: 'done', view: validationView(response) });
+      if (!controller.signal.aborted)
+        checks.set(id, { state: 'done', view: validationView(response) });
     } catch (error) {
-      if (checkSeq.get(id) === seq && !lifetime.signal.aborted)
-        setCheck(id, {
+      if (!controller.signal.aborted)
+        checks.set(id, {
           state: 'failed',
           problem: workflowProblem(error, 'Could not check requirements'),
         });
     } finally {
+      if (checkControllers.get(id) === controller) checkControllers.delete(id);
       await restoreFocus();
     }
   }
@@ -272,6 +280,11 @@
   .verdict-missing,
   .verdict-unknown {
     border-inline-start-color: var(--danger);
+  }
+  dd,
+  .pack li,
+  .verdict li {
+    overflow-wrap: anywhere;
   }
   .verdict h4,
   .verdict h5 {

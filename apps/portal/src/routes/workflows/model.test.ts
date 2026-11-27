@@ -50,6 +50,15 @@ describe('pack validation verdicts', () => {
     expect(view.diagnostics).toEqual(['Declared workflow is missing: a.json']);
   });
 
+  it('says when a pack declares nothing rather than implying a check ran', () => {
+    const view = validationView(validation({ node_classes: [], models: [] }));
+    expect(view.verdict).toBe('ok');
+    expect(view.title).toBe('Requirements confirmed');
+    expect(view.headline).toBe(
+      'This pack declares no node classes or models, so there was nothing to check.',
+    );
+  });
+
   it('reports a missing item or status as missing', () => {
     expect(
       validationView(

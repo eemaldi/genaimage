@@ -57,9 +57,15 @@ function verdictOf(validation: PackValidation): Verdict {
   return explicitOk ? 'ok' : 'unknown';
 }
 
-function headlineOf(verdict: Verdict, status: string): string {
+function headlineOf(
+  verdict: Verdict,
+  status: string,
+  declared: boolean,
+): string {
   if (verdict === 'ok')
-    return 'Every declared node class and model is available in ComfyUI.';
+    return declared
+      ? 'Every declared node class and model is available in ComfyUI.'
+      : 'This pack declares no node classes or models, so there was nothing to check.';
   if (verdict === 'missing')
     return 'Something this pack needs is missing. Install it in ComfyUI yourself, then check again.';
   if (status === 'unavailable')
@@ -79,22 +85,24 @@ export function validationView(validation: PackValidation): ValidationView {
   const reason = KNOWN_STATUSES.includes(status)
     ? (validation.reason ?? null)
     : `Unexpected status "${status}" from GenAImage.`;
+  const nodes = (validation.node_classes ?? []).map((item) => ({
+    name: item.class,
+    label: itemLabel(item.status),
+  }));
+  const models = (validation.models ?? []).map((item) => ({
+    folder: item.folder,
+    name: item.name,
+    label: itemLabel(item.status),
+    loader: item.loader ?? null,
+    reason: item.reason ?? null,
+  }));
   return {
     verdict,
     title: TITLES[verdict],
-    headline: headlineOf(verdict, status),
+    headline: headlineOf(verdict, status, nodes.length + models.length > 0),
     reason,
-    nodes: (validation.node_classes ?? []).map((item) => ({
-      name: item.class,
-      label: itemLabel(item.status),
-    })),
-    models: (validation.models ?? []).map((item) => ({
-      folder: item.folder,
-      name: item.name,
-      label: itemLabel(item.status),
-      loader: item.loader ?? null,
-      reason: item.reason ?? null,
-    })),
+    nodes,
+    models,
     diagnostics: validation.diagnostics ?? [],
   };
 }

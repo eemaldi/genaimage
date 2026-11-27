@@ -149,7 +149,7 @@
 <div class="heading">
   <h1>Workflows</h1>
   <Button
-    disabled={refreshing}
+    disabled={loading || refreshing}
     onclick={(event) => refresh(event.currentTarget)}>Refresh</Button
   >
 </div>
@@ -232,7 +232,7 @@
           <li class="card">
             <div class="thumbnail">
               {#if !available}
-                <span>Thumbnail unavailable</span>
+                <span>No thumbnail (unavailable workflow)</span>
               {:else if item.thumbnail_url && !brokenImages.has(item.id)}
                 <img
                   src={workflowThumbnailUrl(item.id)}
@@ -356,6 +356,7 @@
   .reason {
     color: var(--danger);
     margin: 0;
+    overflow-wrap: anywhere;
   }
   .tags {
     display: flex;
