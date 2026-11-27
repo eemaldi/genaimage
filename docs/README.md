@@ -29,5 +29,3 @@
 | [Testing](testing.md) | Test strategy, assistant scenarios, opt-in live LLM tests. |
 | [Performance](performance.md) | Budgets and how they are measured. |
 | [Releasing](releasing.md) | Dry runs, cutting and recovering a release. |
-
-<!-- Screenshots (component B): images live in docs/images/<name>.png and are referenced from the README. -->

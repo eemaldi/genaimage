@@ -13,7 +13,7 @@ GenAImage never installs, bundles or substitutes them, and downloads a model
 only when you ask. The server binds to loopback only and is not authenticated;
 do not expose it.
 
-<!-- Screenshot (component B): dashboard, docs/images/dashboard.png -->
+![Dashboard showing service health and recent runs](docs/images/dashboard.png)
 
 ## Quick start: Docker Compose
 
@@ -39,7 +39,9 @@ is needed (also at `#/setup`). The stack contains no models, so you choose them:
 3. Select the LLM in the wizard, or set `GENAIMAGE_LLM_TEXT_MODEL` in `.env`.
 4. Run the wizard's test generation, then open Generate.
 
-<!-- Screenshots (component B): setup wizard docs/images/setup-wizard.png; models docs/images/models.png -->
+![Setup wizard, first step: detect services](docs/images/setup-wizard.png)
+
+![Models page listing LLM models and ComfyUI checkpoints](docs/images/models.png)
 
 ## Quick start: binary with existing ComfyUI and Ollama
 
@@ -78,7 +80,11 @@ genaimage run text-to-image --preset fast \
   --set positive_prompt='"an approved, specific visual description"' --wait
 ```
 
-<!-- Screenshots (component B): generate docs/images/generate.png; run detail with an image docs/images/run-detail.png; diagnostics docs/images/diagnostics.png -->
+![Generate page with a workflow form](docs/images/generate.png)
+
+![Run detail with provenance and a generated image](docs/images/run-detail.png)
+
+![Diagnostics checks](docs/images/diagnostics.png)
 
 ## Documentation
 
