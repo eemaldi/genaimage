@@ -646,16 +646,16 @@ test('dismissal is remembered per set of blocking reasons only as a convenience'
   ).toBe(false);
 });
 
-test('a confirmed test run is bound to the endpoint it ran on', async () => {
-  sessionStorage.clear();
-  const applied = (over: Record<string, unknown> = {}) =>
-    status({
-      needs_setup: false,
-      reasons: [],
-      config_file_exists: true,
-      restart_required: ['llm.base_url'],
-      ...over,
-    });
+const applied = (over: Record<string, unknown> = {}) =>
+  status({
+    needs_setup: false,
+    reasons: [],
+    config_file_exists: true,
+    restart_required: ['llm.base_url'],
+    ...over,
+  });
+
+function mockTestRun(ranWith: string) {
   const param = () => ({
     kind: 'string',
     node: '1',
@@ -685,7 +685,7 @@ test('a confirmed test run is bound to the endpoint it ran on', async () => {
     id: 'run-1',
     workflow_id: 'text-to-image',
     status: 'completed',
-    parameters: { checkpoint: 'sdxl.safetensors' },
+    parameters: { checkpoint: ranWith },
     created_at: '2026-11-24T12:00:00.000Z',
     updated_at: '2026-11-24T12:00:00.000Z',
     prompt_id: 'p',
@@ -701,7 +701,9 @@ test('a confirmed test run is bound to the endpoint it ran on', async () => {
     etag: '"rev-2"',
     settings: snapshot(false, { restart_required: ['llm.base_url'] }).settings,
   });
-  const user = await open();
+}
+
+async function runTestGeneration(user: ReturnType<typeof userEvent.setup>) {
   await toReview(user);
   fake.setupStatus.mockResolvedValue(applied());
   await save(user);
@@ -713,6 +715,13 @@ test('a confirmed test run is bound to the endpoint it ran on', async () => {
   await user.click(
     await screen.findByRole('button', { name: 'Run test generation' }),
   );
+}
+
+test('a confirmed test run is bound to the endpoint it ran on', async () => {
+  sessionStorage.clear();
+  mockTestRun('sdxl.safetensors');
+  const user = await open();
+  await runTestGeneration(user);
   await screen.findByText(/finished and the server confirmed/);
   fake.setupStatus.mockResolvedValue(
     applied({
@@ -723,5 +732,18 @@ test('a confirmed test run is bound to the endpoint it ran on', async () => {
   await waitFor(() =>
     expect(screen.queryByText(/finished and the server confirmed/)).toBeNull(),
   );
+  expect(stepItem('Test generation').textContent).not.toContain('Done');
+});
+
+test('a run that used another checkpoint is not Done and is flagged', async () => {
+  sessionStorage.clear();
+  mockTestRun('other.safetensors');
+  const user = await open();
+  await runTestGeneration(user);
+  const notice = await screen.findByText(/A test run finished with checkpoint/);
+  expect(notice.textContent).toMatch(
+    /finished with checkpoint\s+other\.safetensors, not your current\s+choice\s+sdxl\.safetensors/,
+  );
+  expect(screen.queryByText(/finished and the server confirmed/)).toBeNull();
   expect(stepItem('Test generation').textContent).not.toContain('Done');
 });
