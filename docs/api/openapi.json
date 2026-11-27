@@ -758,6 +758,380 @@
         ],
         "type": "object"
       },
+      "BatchCounts": {
+        "properties": {
+          "failed": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "not_submitted": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outcome_unknown": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "submitted": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "submitted",
+          "failed",
+          "not_submitted",
+          "outcome_unknown"
+        ],
+        "type": "object"
+      },
+      "BatchItemProblem": {
+        "description": "An item rejected by validation, with every problem found in it.",
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowParameterError"
+            },
+            "type": "array"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "BatchItemResponse": {
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parameters": {
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStatus",
+                "description": "The run's own status. Success is shown only once the backend confirmed outputs."
+              }
+            ]
+          },
+          "submission": {
+            "$ref": "#/components/schemas/BatchItemSubmission"
+          },
+          "sweep_values": {
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "index",
+          "parameters",
+          "sweep_values",
+          "submission"
+        ],
+        "type": "object"
+      },
+      "BatchItemSubmission": {
+        "enum": [
+          "pending",
+          "submitted",
+          "failed",
+          "not_submitted",
+          "outcome_unknown"
+        ],
+        "type": "string"
+      },
+      "BatchListResponse": {
+        "description": "Batches newest first, and an opaque token for the next page, if any.",
+        "properties": {
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/BatchSummaryResponse"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "batches"
+        ],
+        "type": "object"
+      },
+      "BatchPreviewItem": {
+        "description": "One item as it would be submitted. Nothing has been sent.",
+        "properties": {
+          "effective_parameters": {
+            "additionalProperties": {},
+            "description": "The values the run will record: preset, explicit values and workflow defaults.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inherited_inputs": {
+            "description": "Graph inputs left untouched by binding, not submitted values.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowInheritedInput"
+            },
+            "type": "array"
+          },
+          "parameters": {
+            "additionalProperties": {},
+            "description": "Exactly what the item's run request carries: shared values plus swept values.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "sweep_values": {
+            "additionalProperties": {},
+            "description": "The swept values alone.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "index",
+          "parameters",
+          "sweep_values",
+          "effective_parameters"
+        ],
+        "type": "object"
+      },
+      "BatchPreviewResponse": {
+        "properties": {
+          "item_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BatchPreviewItem"
+            },
+            "type": "array"
+          },
+          "max_items": {
+            "description": "Echo of the request's `max_items`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_items_cap": {
+            "description": "The server limit on items per batch.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workflow_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_count",
+          "max_items",
+          "max_items_cap",
+          "workflow_revision",
+          "items"
+        ],
+        "type": "object"
+      },
+      "BatchResponse": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/BatchCounts"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "item_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BatchItemResponse"
+            },
+            "type": "array"
+          },
+          "max_items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parameters": {
+            "additionalProperties": {},
+            "description": "The values shared by every item.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "preset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/BatchState"
+          },
+          "sweep": {
+            "$ref": "#/components/schemas/BatchSweep"
+          },
+          "workflow": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "workflow",
+          "workflow_revision",
+          "item_count",
+          "state",
+          "counts",
+          "parameters",
+          "sweep",
+          "max_items",
+          "items"
+        ],
+        "type": "object"
+      },
+      "BatchState": {
+        "description": "State of the submission driver and its outcome, not of the runs. It never\nreports success while an item is unknown or unsent.",
+        "enum": [
+          "submitting",
+          "interrupted",
+          "submitted",
+          "partial",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "BatchSummaryResponse": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/BatchCounts"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "item_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BatchState"
+          },
+          "workflow": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "workflow",
+          "workflow_revision",
+          "item_count",
+          "state",
+          "counts"
+        ],
+        "type": "object"
+      },
+      "BatchSweep": {
+        "description": "Exactly one of `seeds` or `grid`.",
+        "oneOf": [
+          {
+            "description": "An explicit seed list. The server never generates seeds.",
+            "properties": {
+              "seeds": {
+                "$ref": "#/components/schemas/SeedSweep",
+                "description": "An explicit seed list. The server never generates seeds."
+              }
+            },
+            "required": [
+              "seeds"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Parameter name to its values. Items are the cartesian product: names are\nsorted by byte order and the last name varies fastest.",
+            "properties": {
+              "grid": {
+                "additionalProperties": {
+                  "items": {},
+                  "type": "array"
+                },
+                "description": "Parameter name to its values. Items are the cartesian product: names are\nsorted by byte order and the last name varies fastest.",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "grid"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "BinaryData": {
         "format": "binary",
         "type": "string"
@@ -1278,6 +1652,20 @@
       },
       "EventRun": {
         "properties": {
+          "batch_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "batch_index": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "client_id": {
             "type": "string"
           },
@@ -2122,6 +2510,21 @@
               "null"
             ]
           },
+          "invalid_item_count": {
+            "description": "`batch-items-invalid`: how many items are invalid in total.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "invalid_items": {
+            "description": "`batch-items-invalid`: the invalid items (at most 20) with every problem in each.",
+            "items": {
+              "$ref": "#/components/schemas/BatchItemProblem"
+            },
+            "type": "array"
+          },
           "manifest_path": {
             "description": "`workflow-ambiguous` after an import: the manifest that was written.",
             "type": [
@@ -2553,6 +2956,22 @@
       "RunResponse": {
         "description": "Current snapshot of a run, including its effective parameters.",
         "properties": {
+          "batch_id": {
+            "description": "The batch that created this run; absent for runs submitted on their own.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "batch_index": {
+            "description": "The run's position in its batch, starting at 0.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "completed_at": {
             "format": "date-time",
             "type": [
@@ -2638,6 +3057,25 @@
           "cancelled"
         ],
         "type": "string"
+      },
+      "SeedSweep": {
+        "additionalProperties": false,
+        "properties": {
+          "parameter": {
+            "description": "A workflow parameter of kind `seed`.",
+            "type": "string"
+          },
+          "values": {
+            "description": "Distinct, exact integers up to 2^64 - 1.",
+            "items": {},
+            "type": "array"
+          }
+        },
+        "required": [
+          "parameter",
+          "values"
+        ],
+        "type": "object"
       },
       "SendAssistantMessageRequest": {
         "additionalProperties": false,
@@ -2979,6 +3417,49 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "SubmitBatchRequest": {
+        "additionalProperties": false,
+        "description": "A pinned batch of runs: a base set of explicit values plus one sweep. Each\nitem becomes an ordinary run. Used by both preview and submission.",
+        "properties": {
+          "max_items": {
+            "description": "The largest item count the caller accepts. The request is rejected, never\ntruncated, if the sweep expands to more items than this or than the\nserver limit.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parameters": {
+            "additionalProperties": {},
+            "description": "Values shared by every item. A swept parameter must not appear here.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "preset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sweep": {
+            "$ref": "#/components/schemas/BatchSweep"
+          },
+          "workflow": {
+            "description": "Manifest ID, not a local path.",
+            "type": "string"
+          },
+          "workflow_revision": {
+            "description": "Revision from the reviewed workflow. Required: batches are always pinned.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow",
+          "workflow_revision",
+          "sweep",
+          "max_items"
         ],
         "type": "object"
       },
@@ -5438,6 +5919,810 @@
         },
         "tags": [
           "assistant"
+        ]
+      }
+    },
+    "/api/v1/batches": {
+      "get": {
+        "description": "List batches, newest first, with their state and item counts.",
+        "operationId": "batches_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workflow",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to 50; maximum 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
+        ]
+      },
+      "head": {
+        "description": "List batches, newest first, with their state and item counts.",
+        "operationId": "batches_list_head",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workflow",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to 50; maximum 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
+        ]
+      },
+      "post": {
+        "description": "Validate every item against the pinned revision, then record the batch and its items atomically and return 202 with the batch. Items are submitted afterwards, one at a time, each as an ordinary run keyed `{batch id}:{index}`. A failed item does not stop later ones. An ambiguous item becomes `outcome_unknown` and is reconciled, never resubmitted. Repeating the same key and body returns 200 with the batch and resumes items that have no run; a different body with the same key is a 409. The key space is separate from the runs API.",
+        "operationId": "batches_submit",
+        "parameters": [
+          {
+            "description": "Required unique key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResponse"
+                }
+              }
+            },
+            "description": "Idempotent replay (current state)",
+            "headers": {
+              "Location": {
+                "description": "Batch URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResponse"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "Location": {
+                "description": "Batch URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid sweep, batch too large or invalid items"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
+        ]
+      }
+    },
+    "/api/v1/batches/preview": {
+      "post": {
+        "description": "Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index).",
+        "operationId": "batches_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchPreviewResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow revision mismatch or workflow ID declared by several manifests"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid sweep, batch too large or invalid items"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
+        ]
+      }
+    },
+    "/api/v1/batches/{id}": {
+      "get": {
+        "description": "Read a batch. Each item shows its submission state and, once it has a run, that run's status. A run is shown as completed only once ComfyUI confirmed its outputs.",
+        "operationId": "batches_get_batch",
+        "parameters": [
+          {
+            "description": "Batch ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
+        ]
+      },
+      "head": {
+        "description": "Read a batch. Each item shows its submission state and, once it has a run, that run's status. A run is shown as completed only once ComfyUI confirmed its outputs.",
+        "operationId": "batches_get_batch_head",
+        "parameters": [
+          {
+            "description": "Batch ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
+        ]
+      }
+    },
+    "/api/v1/batches/{id}/resume": {
+      "post": {
+        "description": "Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones that never reached ComfyUI. Items that already have a run, including `outcome_unknown` ones, are never submitted again. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same.",
+        "operationId": "batches_resume",
+        "parameters": [
+          {
+            "description": "Batch ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResponse"
+                }
+              }
+            },
+            "description": "Nothing to resume or a driver is already running",
+            "headers": {
+              "Location": {
+                "description": "Batch URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResponse"
+                }
+              }
+            },
+            "description": "Resumed",
+            "headers": {
+              "Location": {
+                "description": "Batch URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "batches"
         ]
       }
     },
@@ -8268,6 +9553,15 @@
             }
           },
           {
+            "description": "Only runs created by this batch.",
+            "in": "query",
+            "name": "batch",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Inclusive RFC 3339 instant.",
             "in": "query",
             "name": "created_from",
@@ -8407,6 +9701,15 @@
           {
             "in": "query",
             "name": "workflow",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only runs created by this batch.",
+            "in": "query",
+            "name": "batch",
             "required": false,
             "schema": {
               "type": "string"

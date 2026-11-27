@@ -394,6 +394,33 @@ pub(super) async fn details(
     Ok(Json(details))
 }
 
+/// Describes the graph value an unbound input keeps, as a literal or a connection.
+pub(super) fn inherited_input(
+    parameter: String,
+    node: String,
+    input: String,
+    value: &serde_json::Value,
+) -> WorkflowInheritedInput {
+    let connection = value.as_array().and_then(|parts| match parts.as_slice() {
+        [node, output] => Some((node.as_str()?, output.as_u64()?)),
+        _ => None,
+    });
+    WorkflowInheritedInput {
+        parameter,
+        node,
+        input,
+        source: match connection {
+            Some((node, output)) => WorkflowInheritedSource::Connection {
+                node: node.to_owned(),
+                output,
+            },
+            None => WorkflowInheritedSource::Literal {
+                json: value.to_string(),
+            },
+        },
+    }
+}
+
 #[utoipa::path(
     post, path = "/workflows/{id}/validate",
     operation_id = "workflows_validate",
@@ -466,24 +493,12 @@ pub(super) async fn validate(
             )
         })?
         .map(|(name, definition, value)| {
-            let connection = value.as_array().and_then(|parts| match parts.as_slice() {
-                [node, output] => Some((node.as_str()?, output.as_u64()?)),
-                _ => None,
-            });
-            WorkflowInheritedInput {
-                parameter: name.to_owned(),
-                node: definition.node.clone(),
-                input: definition.input.clone(),
-                source: match connection {
-                    Some((node, output)) => WorkflowInheritedSource::Connection {
-                        node: node.to_owned(),
-                        output,
-                    },
-                    None => WorkflowInheritedSource::Literal {
-                        json: value.to_string(),
-                    },
-                },
-            }
+            inherited_input(
+                name.to_owned(),
+                definition.node.clone(),
+                definition.input.clone(),
+                value,
+            )
         })
         .collect();
     let node_check = match tokio::time::timeout(

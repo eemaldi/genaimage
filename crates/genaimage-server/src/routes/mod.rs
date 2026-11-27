@@ -1,3 +1,4 @@
+mod batches;
 pub(crate) mod conversations;
 mod doctor;
 mod events;
@@ -120,6 +121,10 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(workflows::details))
         .routes(routes!(workflows::validate))
         .routes(routes!(workflows::thumbnail))
+        .routes(routes!(batches::list, batches::submit))
+        .routes(routes!(batches::preview))
+        .routes(routes!(batches::get_batch))
+        .routes(routes!(batches::resume))
         .routes(routes!(runs::list, runs::submit))
         .routes(routes!(runs::reconcile_all))
         .routes(routes!(runs::get_run))

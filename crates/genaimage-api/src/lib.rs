@@ -6,6 +6,9 @@ pub mod client;
 mod assistant;
 pub use assistant::*;
 
+mod batches;
+pub use batches::*;
+
 mod doctor;
 pub use doctor::*;
 
@@ -112,6 +115,12 @@ pub struct ProblemDetails {
     /// `workflow-ambiguous` after an import: the manifest that was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_path: Option<String>,
+    /// `batch-items-invalid`: the invalid items (at most 20) with every problem in each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalid_items: Vec<BatchItemProblem>,
+    /// `batch-items-invalid`: how many items are invalid in total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid_item_count: Option<usize>,
 }
 
 /// A workflow catalogue and non-fatal discovery errors.

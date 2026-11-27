@@ -68,6 +68,10 @@ pub struct EventRun {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_warnings: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_index: Option<u32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

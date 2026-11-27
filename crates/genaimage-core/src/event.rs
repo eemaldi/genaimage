@@ -128,6 +128,7 @@ pub(crate) enum RunLockKind {
     Reconcile,
     Cancel,
     SubmitKey,
+    BatchKey,
 }
 
 type RunLockKey = (PathBuf, String, RunLockKind);

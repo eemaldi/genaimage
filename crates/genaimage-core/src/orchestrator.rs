@@ -22,8 +22,8 @@ use crate::{
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse, UploadResponse},
     media,
     persistence::{
-        database_matches_settings, NewRun, OutputRecord, RunEvent, RunRecord, RunRepository,
-        RunStatus, SubmissionReservation,
+        database_matches_settings, BatchLink, NewRun, OutputRecord, RunEvent, RunRecord,
+        RunRepository, RunStatus, SubmissionReservation,
     },
     uploads::{detected_type, UploadMetadata, UploadStore},
     workflow::{
@@ -32,6 +32,9 @@ use crate::{
     },
     Event, EventBus, HarnessError, LlmProvider, Result,
 };
+
+mod batches;
+pub use batches::{BatchCreation, BatchDriver, RunObserver};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunRequest {
@@ -842,6 +845,7 @@ impl Harness {
             .submit_inner(
                 SubmissionRequest::New(request),
                 None,
+                None,
                 &CancellationToken::new(),
             )
             .await?
@@ -869,7 +873,7 @@ impl Harness {
         request: RunRequest,
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
-        self.submit_keyed_request(key, SubmissionRequest::New(request), deadline)
+        self.submit_keyed_request(key, SubmissionRequest::New(request), None, deadline)
             .await
     }
 
@@ -893,7 +897,7 @@ impl Harness {
         id: String,
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
-        self.submit_keyed_request(key, SubmissionRequest::Rerun(id), deadline)
+        self.submit_keyed_request(key, SubmissionRequest::Rerun(id), None, deadline)
             .await
     }
 
@@ -901,6 +905,7 @@ impl Harness {
         &self,
         key: String,
         request: SubmissionRequest,
+        batch: Option<BatchLink>,
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
         let fingerprint = match &request {
@@ -927,7 +932,7 @@ impl Harness {
                 replayed: true,
             });
         }
-        self.submit_inner(request, Some((key, fingerprint)), deadline)
+        self.submit_inner(request, Some((key, fingerprint)), batch, deadline)
             .await
     }
 
@@ -1226,6 +1231,7 @@ impl Harness {
         &self,
         submission: SubmissionRequest,
         keyed: Option<(String, String)>,
+        batch: Option<BatchLink>,
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
         let repository = self.repository.as_async();
@@ -1380,7 +1386,7 @@ impl Harness {
         };
         let (run, (preflight, resolved_checksum)) = if let Some((key, fingerprint)) = keyed {
             let run = match repository
-                .reserve_submission(key, fingerprint, new_run)
+                .reserve_submission(key, fingerprint, new_run, batch)
                 .await?
             {
                 SubmissionReservation::Existing(run) => {
@@ -2493,5 +2499,7 @@ fn visit_files(
     ancestors.pop();
 }
 
+#[cfg(test)]
+mod batch_tests;
 #[cfg(test)]
 mod tests;

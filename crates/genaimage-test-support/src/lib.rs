@@ -50,6 +50,10 @@ pub struct FakeComfyState {
     pub redirect_submit_response: Arc<AtomicBool>,
     pub prompt_calls: Arc<AtomicUsize>,
     pub submitted_graph: Arc<Mutex<Option<Value>>>,
+    /// Every submitted graph, in order, including failed submissions.
+    pub submitted_graphs: Arc<Mutex<Vec<Value>>>,
+    /// Answers the Nth (1-based) `/prompt` call with a 500 after recording it; 0 disables.
+    pub fail_submit_on_call: Arc<AtomicUsize>,
     pub upload_calls: Arc<AtomicUsize>,
     pub uploaded_image: Arc<Mutex<Option<Bytes>>>,
     pub reject_upload: Arc<AtomicBool>,
@@ -98,6 +102,8 @@ impl Default for FakeComfyState {
             redirect_submit_response: Default::default(),
             prompt_calls: Default::default(),
             submitted_graph: Default::default(),
+            submitted_graphs: Default::default(),
+            fail_submit_on_call: Default::default(),
             upload_calls: Default::default(),
             uploaded_image: Default::default(),
             reject_upload: Default::default(),
@@ -263,8 +269,13 @@ async fn fake_upload(State(state): State<FakeComfyState>, mut multipart: Multipa
 }
 
 async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value>) -> Response {
-    state.prompt_calls.fetch_add(1, Ordering::SeqCst);
+    let call = state.prompt_calls.fetch_add(1, Ordering::SeqCst) + 1;
     *state.submitted_graph.lock().expect("graph lock") = Some(body["prompt"].clone());
+    state
+        .submitted_graphs
+        .lock()
+        .expect("graphs lock")
+        .push(body["prompt"].clone());
     let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
     if !state.defer_prompt_admission.load(Ordering::SeqCst) {
         *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
@@ -276,7 +287,9 @@ async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value
     if state.redirect_submit_response.load(Ordering::SeqCst) {
         return Redirect::temporary("/prompt").into_response();
     }
-    if state.fail_submit_response.load(Ordering::SeqCst) {
+    if state.fail_submit_response.load(Ordering::SeqCst)
+        || state.fail_submit_on_call.load(Ordering::SeqCst) == call
+    {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "deliberate fake failure" })),

@@ -1,5 +1,11 @@
 mod annotations;
+mod batches;
 mod media;
+
+pub use batches::{
+    BatchItemState, BatchPage, BatchRecord, BatchState, NewBatch, NewBatchItem, StoredBatchItem,
+};
+pub(crate) use batches::{BatchLink, BatchReservation};
 
 use std::{
     path::Path,
@@ -13,7 +19,7 @@ use serde_json::Value;
 
 use crate::{workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,6 +104,11 @@ pub struct RunRecord {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_warnings: Option<Value>,
+    /// The batch this run belongs to. Batch fields never enter submission fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_index: Option<u32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -168,6 +179,7 @@ pub struct NewRun {
 pub struct RunListQuery {
     pub status: Option<RunStatus>,
     pub workflow: Option<String>,
+    pub batch: Option<String>,
     pub created_from: Option<DateTime<Utc>>,
     pub created_to: Option<DateTime<Utc>>,
     pub cursor: Option<String>,
@@ -340,12 +352,20 @@ impl RunRepository {
         key: &str,
         fingerprint: &str,
         run: &NewRun,
+        batch: Option<&BatchLink>,
     ) -> Result<SubmissionReservation> {
         self.guarded(|connection| {
             if let Some(run) = find_submission(connection, key, fingerprint)? {
                 return Ok(SubmissionReservation::Existing(run));
             }
-            let run = insert_run(connection, run, true)?;
+            insert_run(connection, run, true)?;
+            if let Some(link) = batch {
+                connection.execute(
+                    "UPDATE runs SET batch_id = ?2, batch_index = ?3 WHERE id = ?1",
+                    params![run.id, link.batch_id, link.index],
+                )?;
+            }
+            let run = load_run(connection, &run.id)?;
             connection.execute(
                 "INSERT INTO run_submission_keys (key, fingerprint, run_id) VALUES (?1, ?2, ?3)",
                 params![key, fingerprint, run.id],
@@ -389,6 +409,7 @@ impl RunRepository {
             sql.push_str(
                 " AND (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR workflow_id = ?2)
                 AND (?3 IS NULL OR created_at >= ?3) AND (?6 IS NULL OR created_at <= ?6)
+                AND (?8 IS NULL OR batch_id = ?8)
                 ORDER BY created_at DESC, id DESC LIMIT ?7",
             );
             let mut statement = connection.prepare(&sql)?;
@@ -402,6 +423,7 @@ impl RunRepository {
                         cursor.as_ref().map(|cursor| &cursor.1),
                         query.created_to.map(|time| time.to_rfc3339()),
                         (limit + 1) as i64,
+                        query.batch,
                     ],
                     |row| Ok((map_run(row)?, row.get::<_, String>("created_at")?)),
                 )?
@@ -1016,6 +1038,33 @@ const MIGRATION_13: &str = r#"
         BEFORE DELETE ON assistant_tool_call_audit
         BEGIN SELECT RAISE(ABORT, 'assistant tool audit records are append-only'); END;
 "#;
+const MIGRATION_14: &str = r#"
+    CREATE TABLE IF NOT EXISTS batches (
+        id TEXT PRIMARY KEY,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        fingerprint TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        workflow_revision TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        item_count INTEGER NOT NULL CHECK (item_count > 0),
+        state TEXT NOT NULL CHECK (state IN ('submitting', 'interrupted', 'finished')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS batches_created_id_idx ON batches(created_at, id);
+    CREATE TABLE IF NOT EXISTS batch_items (
+        batch_id TEXT NOT NULL REFERENCES batches(id),
+        item_index INTEGER NOT NULL CHECK (item_index >= 0),
+        parameters_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'failed', 'not_submitted')),
+        error TEXT,
+        PRIMARY KEY (batch_id, item_index)
+    ) WITHOUT ROWID;
+    ALTER TABLE runs ADD COLUMN batch_id TEXT;
+    ALTER TABLE runs ADD COLUMN batch_index INTEGER;
+    CREATE UNIQUE INDEX IF NOT EXISTS runs_batch_item_idx
+        ON runs(batch_id, batch_index) WHERE batch_id IS NOT NULL;
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -1030,10 +1079,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_11,
     MIGRATION_12,
     MIGRATION_13,
+    MIGRATION_14,
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 12] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 14] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
@@ -1045,10 +1095,13 @@ const EXPECTED_TABLES: [(&str, i64, &str); 12] = [
     ("assistant_message_terminal_states", 13, "SELECT message_id, status FROM assistant_message_terminal_states LIMIT 0"),
     ("output_annotations", 12, "SELECT id, output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response FROM output_annotations LIMIT 0"),
     ("assistant_tool_confirmations", 13, "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json, json_schema, source_message_id, user_message_id, model_step, status, decision, effective_arguments_json, decision_reason, created_at, decided_at FROM assistant_tool_confirmations LIMIT 0"),
+    ("batches", 14, "SELECT id, idempotency_key, fingerprint, workflow_id, workflow_revision, request_json, item_count, state, created_at, updated_at FROM batches LIMIT 0"),
+    ("batch_items", 14, "SELECT batch_id, item_index, parameters_json, state, error FROM batch_items LIMIT 0"),
     ("assistant_tool_call_audit", 13, "SELECT id, conversation_id, confirmation_id, tool_call_id, tool_name, proposed_arguments_json, validation_outcome, decision, invocation_ok, created_at FROM assistant_tool_call_audit LIMIT 0"),
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
+    (14, "SELECT batch_id, batch_index FROM runs LIMIT 0"),
     (10, "SELECT resolved_workflow_sha256 FROM runs LIMIT 0"),
     (
         8,
@@ -1328,8 +1381,9 @@ impl AsyncRunRepository {
         key: String,
         fingerprint: String,
         run: NewRun,
+        batch: Option<BatchLink>,
     ) -> Result<SubmissionReservation> {
-        self.call(move |repo| repo.reserve_submission(&key, &fingerprint, &run))
+        self.call(move |repo| repo.reserve_submission(&key, &fingerprint, &run, batch.as_ref()))
             .await
     }
 
@@ -1500,6 +1554,8 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         output_dir: row.get("output_dir")?,
         manifest_path: row.get("manifest_path")?,
         error: row.get("error")?,
+        batch_id: row.get("batch_id")?,
+        batch_index: row.get("batch_index")?,
         node_warnings: row
             .get::<_, Option<String>>("node_warnings_json")?
             .map(|value| {
@@ -1625,6 +1681,124 @@ mod submission_tests {
     }
 
     #[test]
+    fn migration_from_version_13_adds_batches_and_leaves_runs_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        for migration in MIGRATIONS.iter().take(13) {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO runs (id, prompt_id, client_id, workflow_id, workflow_version,
+                    workflow_sha256, generation_mode, status, parameters_json, output_dir,
+                    created_at, updated_at, error)
+                 VALUES ('run-old', 'prompt-old', 'client', 'wf', '1', 'hash', 'generic',
+                    'completed', '{\"seed\":18446744073709551615}', 'runs/old',
+                    '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:01+00:00', 'kept')",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", 13_i64)
+            .unwrap();
+        let before: Vec<(String, String, String)> = connection
+            .prepare("SELECT id, status, parameters_json FROM runs")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        drop(connection);
+        assert!(database_matches_settings(&path, "w", "b", "e").is_ok());
+
+        let repository = RunRepository::open(&path).unwrap();
+        let old = repository.get("run-old").unwrap();
+        assert_eq!((old.batch_id.clone(), old.batch_index), (None, None));
+        assert_eq!(old.error.as_deref(), Some("kept"));
+        let connection = Connection::open(&path).unwrap();
+        let after: Vec<(String, String, String)> = connection
+            .prepare("SELECT id, status, parameters_json FROM runs")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(before, after);
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 14);
+        connection
+            .prepare("SELECT id, idempotency_key, fingerprint, workflow_id, workflow_revision, request_json, item_count, state FROM batches")
+            .unwrap();
+        connection
+            .prepare("SELECT batch_id, item_index, parameters_json, state, error FROM batch_items")
+            .unwrap();
+
+        // The upgraded database accepts batches, and one item can only ever own one run.
+        let batch = NewBatch {
+            id: "batch-1".into(),
+            idempotency_key: "key".into(),
+            fingerprint: "fp".into(),
+            workflow_id: "wf".into(),
+            workflow_revision: "rev".into(),
+            request: serde_json::json!({}),
+            items: vec![NewBatchItem {
+                parameters: serde_json::json!({"seed": 1}),
+            }],
+        };
+        assert!(matches!(
+            repository.reserve_batch(&batch).unwrap(),
+            BatchReservation::New(_)
+        ));
+        assert!(matches!(
+            repository.reserve_batch(&batch).unwrap(),
+            BatchReservation::Existing(_)
+        ));
+        let run = |id: &str| NewRun {
+            id: id.into(),
+            prompt_id: format!("prompt-{id}"),
+            client_id: "client".into(),
+            workflow_id: "wf".into(),
+            workflow_version: "1".into(),
+            workflow_sha256: "hash".into(),
+            workflow_manifest_sha256: None,
+            rerun_of: None,
+            generation_mode: GenerationMode::Generic,
+            status: RunStatus::Submitting,
+            parameters: serde_json::json!({}),
+            output_dir: format!("runs/{id}"),
+        };
+        let link = || BatchLink {
+            batch_id: "batch-1".into(),
+            index: 0,
+        };
+        repository
+            .reserve_submission("item-a", "fp", &run("a"), Some(&link()))
+            .unwrap();
+        assert!(repository
+            .reserve_submission("item-b", "fp", &run("b"), Some(&link()))
+            .is_err());
+        assert_eq!(
+            repository.get("a").unwrap().batch_id.as_deref(),
+            Some("batch-1")
+        );
+        let page = repository
+            .list_page(RunListQuery {
+                batch: Some("batch-1".into()),
+                ..RunListQuery::default()
+            })
+            .unwrap();
+        assert_eq!(page.runs.len(), 1);
+        assert_eq!(
+            repository.list(10).unwrap().len(),
+            2,
+            "run-old is still listed"
+        );
+    }
+
+    #[test]
     fn competing_connections_reserve_one_run_and_reopening_preserves_the_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.sqlite3");
@@ -1651,6 +1825,7 @@ mod submission_tests {
                         parameters: serde_json::json!({}),
                         output_dir: format!("runs/{id}"),
                     },
+                    None,
                 )
                 .unwrap()
         };

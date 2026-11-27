@@ -110,7 +110,7 @@ pub(super) async fn rerun(
     submit_and_monitor(state, harness, submission, StatusCode::CREATED).await
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Result<String, Problem> {
+pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, Problem> {
     let mut keys = headers.get_all("idempotency-key").iter();
     let key = keys
         .next()
@@ -189,6 +189,7 @@ pub(super) async fn list(
         .list_page(genaimage_core::persistence::RunListQuery {
             status: query.status.map(core_status),
             workflow: query.workflow,
+            batch: query.batch,
             created_from: query.created_from,
             created_to: query.created_to,
             limit: query.limit,
@@ -401,7 +402,7 @@ fn reconcile_response(result: ReconcileResult) -> api::ReconcileRunResponse {
     }
 }
 
-async fn run_mutation<T: Send + 'static>(
+pub(super) async fn run_mutation<T: Send + 'static>(
     state: &AppState,
     operation: impl std::future::Future<Output = genaimage_core::Result<T>> + Send + 'static,
 ) -> Result<T, Problem> {
@@ -417,7 +418,7 @@ async fn run_mutation<T: Send + 'static>(
         .map_err(problem)
 }
 
-fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem> {
+pub(super) fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem> {
     query.map(|Query(query)| query).map_err(|error| {
         Problem::new(
             error.status(),
@@ -427,12 +428,12 @@ fn parse_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, Problem>
     })
 }
 
-fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
+pub(super) fn parse_id(id: Result<Path<String>, PathRejection>) -> Result<String, Problem> {
     id.map(|Path(id)| id)
         .map_err(|error| Problem::invalid_path(error, "Use a run ID returned by the runs API."))
 }
 
-fn problem(error: HarnessError) -> Problem {
+pub(super) fn problem(error: HarnessError) -> Problem {
     let (status, recovery) = match &error {
         HarnessError::ShuttingDown => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -445,6 +446,33 @@ fn problem(error: HarnessError) -> Problem {
         HarnessError::RunNotFound { .. } => (
             StatusCode::NOT_FOUND,
             "Use a run ID returned by the runs API.",
+        ),
+        HarnessError::InvalidBatchRequest(detail) => return Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            detail.clone(),
+            "Correct the shared parameters or the sweep, then preview the batch again.",
+        ).with_type("urn:genaimage:problem:batch-invalid"),
+        HarnessError::BatchTooLarge(detail) => return Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            detail.clone(),
+            format!("Sweep fewer values, or raise max_items up to the server limit of {} items.", genaimage_core::batch::BATCH_ITEM_CAP),
+        ).with_type("urn:genaimage:problem:batch-too-large"),
+        HarnessError::BatchItemsInvalid { total, items } => return Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            error.to_string(),
+            "Fix the listed items, then preview and submit the batch again. Nothing was submitted.",
+        )
+        .with_type("urn:genaimage:problem:batch-items-invalid")
+        .with_invalid_items(*total, items.iter().map(|item| api::BatchItemProblem {
+            index: item.index,
+            errors: item.errors.iter().map(|error| api::WorkflowParameterError {
+                parameter: error.parameter.clone(),
+                reason: error.reason.clone(),
+            }).collect(),
+        }).collect()),
+        HarnessError::BatchNotFound { .. } => (
+            StatusCode::NOT_FOUND,
+            "Use a batch ID returned by the batches API.",
         ),
         HarnessError::WorkflowChanged => return Problem::workflow_changed(),
         HarnessError::WorkflowAmbiguous(detail) => {
@@ -519,6 +547,8 @@ fn run_response(run: RunRecord) -> api::RunResponse {
         parameters: run.parameters,
         error: run.error,
         node_warnings: run.node_warnings,
+        batch_id: run.batch_id,
+        batch_index: run.batch_index,
         created_at: run.created_at,
         updated_at: run.updated_at,
         completed_at: run.completed_at,
@@ -527,7 +557,7 @@ fn run_response(run: RunRecord) -> api::RunResponse {
 
 macro_rules! status_conversions {
     ($($status:ident),+ $(,)?) => {
-        fn api_status(status: RunStatus) -> api::RunStatus {
+        pub(super) fn api_status(status: RunStatus) -> api::RunStatus {
             match status { $(RunStatus::$status => api::RunStatus::$status),+ }
         }
 

@@ -59,6 +59,12 @@ pub struct RunResponse {
     /// Node diagnostics from an accepted submission, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_warnings: Option<Value>,
+    /// The batch that created this run; absent for runs submitted on their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    /// The run's position in its batch, starting at 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_index: Option<u32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -71,6 +77,8 @@ pub struct RunResponse {
 pub struct RunListQuery {
     pub status: Option<RunStatus>,
     pub workflow: Option<String>,
+    /// Only runs created by this batch.
+    pub batch: Option<String>,
     /// Inclusive RFC 3339 instant.
     pub created_from: Option<DateTime<Utc>>,
     /// Inclusive RFC 3339 instant.
