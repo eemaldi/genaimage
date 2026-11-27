@@ -90,7 +90,8 @@ export function createRunList(
   function matches(run: Run) {
     return (
       (!query?.status || query.status === run.status) &&
-      (!query?.workflow || query.workflow === run.workflow_id)
+      (!query?.workflow || query.workflow === run.workflow_id) &&
+      (!query?.batch || query.batch === run.batch_id)
     );
   }
 

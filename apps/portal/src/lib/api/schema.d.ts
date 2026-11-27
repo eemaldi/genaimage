@@ -162,6 +162,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List batches, newest first, with their state and item counts. */
+        get: operations["batches_list"];
+        put?: never;
+        /** @description Validate every item against the pinned revision, then record the batch and its items atomically and return 202 with the batch. Items are submitted afterwards, one at a time, each as an ordinary run keyed `{batch id}:{index}`. A failed item does not stop later ones. An ambiguous item becomes `outcome_unknown` and is reconciled, never resubmitted. Repeating the same key and body returns 200 with the batch and resumes items that have no run; a different body with the same key is a 409. The key space is separate from the runs API. */
+        post: operations["batches_submit"];
+        delete?: never;
+        options?: never;
+        /** @description List batches, newest first, with their state and item counts. */
+        head: operations["batches_list_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/batches/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index). Graph inputs that binding leaves untouched are listed once as `inherited_inputs`, because every item shares them. A preview whose values would exceed 16 MiB is rejected as `batch-too-large`. */
+        post: operations["batches_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/batches/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read a batch. Each item shows its submission state and, once it has a run, that run's status. A run is shown as completed only once ComfyUI confirmed its outputs. */
+        get: operations["batches_get_batch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Read a batch. Each item shows its submission state and, once it has a run, that run's status. A run is shown as completed only once ComfyUI confirmed its outputs. */
+        head: operations["batches_get_batch_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/batches/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones without a `run_id`, which were rejected before any prompt was sent. Items that already have a run are never submitted again: that includes `outcome_unknown` ones and `failed` ones with a `run_id`, which failed during preparation and are final. A running driver keeps the settings it started with. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same. */
+        post: operations["batches_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/doctor": {
         parameters: {
             query?: never;
@@ -1051,6 +1122,117 @@ export interface components {
         BackendHealth: {
             system: unknown;
         };
+        BatchCounts: {
+            failed: number;
+            not_submitted: number;
+            outcome_unknown: number;
+            pending: number;
+            submitted: number;
+        };
+        BatchGrid: {
+            [key: string]: unknown[];
+        };
+        /** @description An item rejected by validation, with every problem found in it. */
+        BatchItemProblem: {
+            errors: components["schemas"]["WorkflowParameterError"][];
+            index: number;
+        };
+        BatchItemResponse: {
+            error?: string | null;
+            index: number;
+            parameters: {
+                [key: string]: unknown;
+            };
+            run_id?: string | null;
+            run_status?: null | components["schemas"]["RunStatus"];
+            submission: components["schemas"]["BatchItemSubmission"];
+            sweep_values: {
+                [key: string]: unknown;
+            };
+        };
+        /** @enum {string} */
+        BatchItemSubmission: "pending" | "submitted" | "failed" | "not_submitted" | "outcome_unknown";
+        /** @description Batches newest first, and an opaque token for the next page, if any. */
+        BatchListResponse: {
+            batches: components["schemas"]["BatchSummaryResponse"][];
+            next_cursor?: string | null;
+        };
+        /** @description One item as it would be submitted. Nothing has been sent. */
+        BatchPreviewItem: {
+            /** @description The values the run will record: preset, explicit values and workflow defaults. */
+            effective_parameters: {
+                [key: string]: unknown;
+            };
+            index: number;
+            /** @description Exactly what the item's run request carries: shared values plus swept values. */
+            parameters: {
+                [key: string]: unknown;
+            };
+            /** @description The swept values alone. */
+            sweep_values: {
+                [key: string]: unknown;
+            };
+        };
+        BatchPreviewResponse: {
+            /**
+             * @description Graph inputs left untouched by binding, not submitted values. Every item
+             *     sets the same parameters, so they are the same for all items.
+             */
+            inherited_inputs?: components["schemas"]["WorkflowInheritedInput"][];
+            item_count: number;
+            items: components["schemas"]["BatchPreviewItem"][];
+            /** @description Echo of the request's `max_items`. */
+            max_items: number;
+            /** @description The server limit on items per batch. */
+            max_items_cap: number;
+            workflow_revision: string;
+        };
+        BatchResponse: {
+            counts: components["schemas"]["BatchCounts"];
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            item_count: number;
+            items: components["schemas"]["BatchItemResponse"][];
+            max_items: number;
+            /** @description The values shared by every item. */
+            parameters: {
+                [key: string]: unknown;
+            };
+            preset?: string | null;
+            state: components["schemas"]["BatchState"];
+            sweep: components["schemas"]["BatchSweep"];
+            workflow: string;
+            workflow_revision: string;
+        };
+        /**
+         * @description State of the submission driver and its outcome, not of the runs. It never
+         *     reports success while an item is unknown or unsent.
+         * @enum {string}
+         */
+        BatchState: "submitting" | "interrupted" | "submitted" | "partial" | "failed";
+        BatchSummaryResponse: {
+            counts: components["schemas"]["BatchCounts"];
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            item_count: number;
+            state: components["schemas"]["BatchState"];
+            workflow: string;
+            workflow_revision: string;
+        };
+        /** @description Exactly one of `seeds` or `grid`. */
+        BatchSweep: {
+            /** @description An explicit seed list. The server never generates seeds. */
+            seeds: components["schemas"]["SeedSweep"];
+        } | {
+            /**
+             * @description Parameter name to its values. Items are the cartesian product: names are
+             *     sorted by byte order and the last name varies fastest. A name must be
+             *     listed once; the server rejects a repeated name with `batch-invalid`.
+             */
+            grid: components["schemas"]["BatchGrid"];
+        };
         /** Format: binary */
         BinaryData: string;
         /** @enum {string} */
@@ -1186,6 +1368,9 @@ export interface components {
             source_type: string;
         };
         EventRun: {
+            batch_id?: string | null;
+            /** Format: int32 */
+            batch_index?: number | null;
             client_id: string;
             /** Format: date-time */
             completed_at?: string | null;
@@ -1431,6 +1616,10 @@ export interface components {
             expected_graph_sha256?: string | null;
             /** @description `workflow-ambiguous` after an import: the workflow ID that was written. */
             id?: string | null;
+            /** @description `batch-items-invalid`: how many items are invalid in total. */
+            invalid_item_count?: number | null;
+            /** @description `batch-items-invalid`: the invalid items (at most 20) with every problem in each. */
+            invalid_items?: components["schemas"]["BatchItemProblem"][];
             /** @description `workflow-ambiguous` after an import: the manifest that was written. */
             manifest_path?: string | null;
             preview?: unknown;
@@ -1557,6 +1746,13 @@ export interface components {
         };
         /** @description Current snapshot of a run, including its effective parameters. */
         RunResponse: {
+            /** @description The batch that created this run; absent for runs submitted on their own. */
+            batch_id?: string | null;
+            /**
+             * Format: int32
+             * @description The run's position in its batch, starting at 0.
+             */
+            batch_index?: number | null;
             /** Format: date-time */
             completed_at?: string | null;
             /** Format: date-time */
@@ -1583,6 +1779,12 @@ export interface components {
          * @enum {string}
          */
         RunStatus: "created" | "submitting" | "unknown_submission" | "queued" | "running" | "completed" | "failed" | "cancelling" | "cancelled";
+        SeedSweep: {
+            /** @description A workflow parameter of kind `seed`. */
+            parameter: string;
+            /** @description Distinct, exact integers up to 2^64 - 1. */
+            values: unknown[];
+        };
         SendAssistantMessageRequest: {
             content: components["schemas"]["AssistantChatContent"][];
         };
@@ -1681,6 +1883,28 @@ export interface components {
         StartModelPullRequest: {
             /** @description `[namespace/]name[:tag]`, for example `llama3.2:3b`. At most 255 bytes. */
             name: string;
+        };
+        /**
+         * @description A pinned batch of runs: a base set of explicit values plus one sweep. Each
+         *     item becomes an ordinary run. Used by both preview and submission.
+         */
+        SubmitBatchRequest: {
+            /**
+             * @description The largest item count the caller accepts. The request is rejected, never
+             *     truncated, if the sweep expands to more items than this or than the
+             *     server limit.
+             */
+            max_items: number;
+            /** @description Values shared by every item. A swept parameter must not appear here. */
+            parameters?: {
+                [key: string]: unknown;
+            };
+            preset?: string | null;
+            sweep: components["schemas"]["BatchSweep"];
+            /** @description Manifest ID, not a local path. */
+            workflow: string;
+            /** @description Revision from the reviewed workflow. Required: batches are always pinned. */
+            workflow_revision: string;
         };
         /** @description Explicit bindings for a workflow configured in the local workspace. */
         SubmitRunRequest: {
@@ -3152,6 +3376,712 @@ export interface operations {
                 };
             };
             /** @description Text role unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    batches_list: {
+        parameters: {
+            query?: {
+                workflow?: string;
+                cursor?: string;
+                /** @description Defaults to 50; maximum 200. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    batches_submit: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required unique key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Idempotent replay (current state) */
+            200: {
+                headers: {
+                    /** @description Batch URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    /** @description Batch URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Invalid sweep, batch too large or invalid items */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    batches_list_head: {
+        parameters: {
+            query?: {
+                workflow?: string;
+                cursor?: string;
+                /** @description Defaults to 50; maximum 200. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    batches_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitBatchRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchPreviewResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Workflow revision mismatch or workflow ID declared by several manifests */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Invalid sweep, batch too large or invalid items */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    batches_get_batch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Batch ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    batches_get_batch_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Batch ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    batches_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Batch ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Nothing to resume or a driver is already running */
+            200: {
+                headers: {
+                    /** @description Batch URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            /** @description Resumed */
+            202: {
+                headers: {
+                    /** @description Batch URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5696,6 +6626,8 @@ export interface operations {
             query?: {
                 status?: components["schemas"]["RunStatus"];
                 workflow?: string;
+                /** @description Only runs created by this batch. */
+                batch?: string;
                 /** @description Inclusive RFC 3339 instant. */
                 created_from?: string;
                 /** @description Inclusive RFC 3339 instant. */
@@ -5927,6 +6859,8 @@ export interface operations {
             query?: {
                 status?: components["schemas"]["RunStatus"];
                 workflow?: string;
+                /** @description Only runs created by this batch. */
+                batch?: string;
                 /** @description Inclusive RFC 3339 instant. */
                 created_from?: string;
                 /** @description Inclusive RFC 3339 instant. */

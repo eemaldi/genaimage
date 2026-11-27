@@ -136,6 +136,8 @@ export type ThumbnailSize = Params<
   'get'
 >['query']['size'];
 export type SubmitRunRequest = JsonBody<Operation<'/api/v1/runs', 'post'>>;
+export type SubmitBatchRequest = JsonBody<Operation<'/api/v1/batches', 'post'>>;
+export type BatchQuery = Params<'/api/v1/batches', 'get'>['query'];
 export type WorkflowValidationRequest = JsonBody<
   Operation<'/api/v1/workflows/{id}/validate', 'post'>
 >;
@@ -201,7 +203,7 @@ class ExactNumberReadError extends Error {
   }
 }
 
-function requireExactNumberReads() {
+export function requireExactNumberReads() {
   let source: string | undefined;
   JSON.parse('2.0', (_key, value: unknown, context?: { source?: string }) => {
     source = context?.source;
@@ -363,11 +365,13 @@ export function createApiClient(
       init.method === 'POST' &&
       (url === '/api/v1/runs' || /^\/api\/v1\/runs\/[^/]+\/rerun$/.test(url))
         ? 'The submission may have gone through. Check the run list and reconcile before submitting again.'
-        : init.method === 'POST' && url === '/api/v1/workflows/import/confirm'
-          ? 'The workflow may have been written. Send the same confirmation again: an identical repeat is safe.'
-          : init.method === 'POST' && url === '/api/v1/models/llm/pulls'
-            ? 'The pull may have started. Check the list of pulls before starting it again.'
-            : 'Check that the local GenAImage server is running and up to date.';
+        : init.method === 'POST' && url === '/api/v1/batches'
+          ? 'The batch may have been recorded. Retry with the same key or check Jobs before submitting again.'
+          : init.method === 'POST' && url === '/api/v1/workflows/import/confirm'
+            ? 'The workflow may have been written. Send the same confirmation again: an identical repeat is safe.'
+            : init.method === 'POST' && url === '/api/v1/models/llm/pulls'
+              ? 'The pull may have started. Check the list of pulls before starting it again.'
+              : 'Check that the local GenAImage server is running and up to date.';
     let response: Response;
     try {
       init.signal?.throwIfAborted();
@@ -747,6 +751,53 @@ export function createApiClient(
         header: { 'Idempotency-Key': idempotencyKey },
       });
     },
+    /** Read-only. Numbers keep their wire spelling, so `2.0` and big seeds stay exact. */
+    previewBatch: async (
+      body: SubmitBatchRequest,
+      options?: RequestOptions,
+    ) => {
+      requireExactNumberReads();
+      return json(
+        'post',
+        '/api/v1/batches/preview',
+        { ...options, body },
+        (response) => readExactIntegers(response, true),
+      ) as Promise<components['schemas']['BatchPreviewResponse']>;
+    },
+    /** One POST per reviewed request: a retry re-sends the identical body with the same key. */
+    createBatch: async (
+      body: SubmitBatchRequest,
+      idempotencyKey: string,
+      options?: RequestOptions,
+    ) => {
+      requireExactNumberReads();
+      return json(
+        'post',
+        '/api/v1/batches',
+        {
+          ...options,
+          body,
+          header: { 'Idempotency-Key': idempotencyKey },
+        },
+        (response) => readExactIntegers(response, true),
+      ) as Promise<components['schemas']['BatchResponse']>;
+    },
+    listBatches: (query?: BatchQuery, options?: RequestOptions) =>
+      json('get', '/api/v1/batches', { ...options, query }),
+    getBatch: (id: string, options?: RequestOptions) =>
+      json(
+        'get',
+        '/api/v1/batches/{id}',
+        { ...options, path: { id } },
+        (response) => readExactIntegers(response, true),
+      ) as Promise<components['schemas']['BatchResponse']>,
+    resumeBatch: (id: string, options?: RequestOptions) =>
+      json(
+        'post',
+        '/api/v1/batches/{id}/resume',
+        { ...options, path: { id } },
+        (response) => readExactIntegers(response, true),
+      ) as Promise<components['schemas']['BatchResponse']>,
     rerunRun: (id: string, idempotencyKey: string, options?: RequestOptions) =>
       json('post', '/api/v1/runs/{id}/rerun', {
         ...options,

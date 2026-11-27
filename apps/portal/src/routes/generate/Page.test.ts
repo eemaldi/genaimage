@@ -1382,3 +1382,41 @@ test('blocks review of whole-valued floats if revivers cannot read the original 
     'GET',
   ]);
 });
+
+test('batch mode is a separate lazily loaded mode and the single form stays', async () => {
+  mount();
+  await screen.findByRole('heading', { name: 'Portrait workflow' });
+  expect(screen.queryByRole('heading', { name: 'Batch run' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Batch or sweep' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Batch run' }),
+  ).toBeTruthy();
+  expect(
+    screen
+      .getByRole('button', { name: 'Batch or sweep' })
+      .getAttribute('aria-pressed'),
+  ).toBe('true');
+  await userEvent.click(screen.getByRole('button', { name: 'Single run' }));
+  expect(screen.queryByRole('heading', { name: 'Batch run' })).toBeNull();
+  expect(
+    screen.getByRole('button', { name: 'Review parameters' }),
+  ).toBeTruthy();
+});
+
+test('a pending batch reopens batch mode after a reload', async () => {
+  const { savePendingBatch } = await import('../batches/pending');
+  savePendingBatch({
+    key: 'key-1',
+    itemCount: 2,
+    body: {
+      workflow: 'portrait',
+      workflow_revision: 'portrait-rev-1',
+      parameters: {},
+      sweep: { seeds: { parameter: 'Seed', values: [seed, 7] } },
+      max_items: 2,
+    },
+  });
+  mount();
+  expect(await screen.findByText('Pending batch submission')).toBeTruthy();
+  expect(screen.getByText(`${seed}, 7`)).toBeTruthy();
+});

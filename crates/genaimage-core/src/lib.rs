@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod assistant;
+pub mod batch;
 pub mod config;
 pub mod doctor;
 pub mod error;

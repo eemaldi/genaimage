@@ -34,21 +34,33 @@
   ];
   let filter = $derived(query.get('status') ?? '');
   let workflow = $derived(query.get('workflow') ?? '');
+  let batch = $derived(query.get('batch') ?? '');
+  let batchesView = $derived(query.get('view') === 'batches');
+  const batchList = () => import('../batches/BatchList.svelte');
   let cursor = $derived(query.get('cursor') ?? undefined);
   let statusInput = $derived(isRunStatus(filter) ? filter : '');
   let workflowInput = $derived(workflow);
+  let batchInput = $derived(batch);
   $effect(() => {
+    if (batchesView) return;
     void list.refresh({
       status: isRunStatus(filter) ? filter : undefined,
       workflow: workflow || undefined,
+      batch: batch || undefined,
       cursor,
     });
   });
 
-  function jobsHref(status: string, workflowId: string, page?: string) {
+  function jobsHref(
+    status: string,
+    workflowId: string,
+    page?: string,
+    batchId = batch,
+  ) {
     const params = new SvelteURLSearchParams();
     if (status) params.set('status', status);
     if (workflowId) params.set('workflow', workflowId);
+    if (batchId) params.set('batch', batchId);
     if (page) params.set('cursor', page);
     return `#/jobs${params.size ? `?${params}` : ''}`;
   }
@@ -254,121 +266,161 @@
 
 <h1 tabindex="-1" bind:this={heading}>Jobs</h1>
 <p>Monitor runs, request cancellation and check uncertain submissions.</p>
-<form
-  class="filters"
-  onsubmit={(event) => {
-    event.preventDefault();
-    navigateHash(jobsHref(statusInput, workflowInput.trim()));
-  }}
->
-  <Select label="Status" bind:value={statusInput} {options} />
-  <Input label="Workflow ID" bind:value={workflowInput} />
-  <Button type="submit">Apply filters</Button>
-  {#if filter || workflow}<a href="#/jobs">Clear filters</a>{/if}
-</form>
+<nav class="views" aria-label="Jobs views">
+  <a href="#/jobs" aria-current={batchesView ? undefined : 'page'}>Runs</a>
+  <a href="#/jobs?view=batches" aria-current={batchesView ? 'page' : undefined}
+    >Batches</a
+  >
+</nav>
+{#if batchesView}
+  {#await batchList()}
+    <p role="status">Loading batches…</p>
+  {:then { default: BatchList }}
+    <BatchList {query} />
+  {:catch}
+    <ProblemDetails
+      problem={{
+        title: 'Could not load batches',
+        recovery: 'Reload the page to try again.',
+      }}
+    />
+  {/await}
+{:else}
+  <form
+    class="filters"
+    onsubmit={(event) => {
+      event.preventDefault();
+      navigateHash(
+        jobsHref(
+          statusInput,
+          workflowInput.trim(),
+          undefined,
+          batchInput.trim(),
+        ),
+      );
+    }}
+  >
+    <Select label="Status" bind:value={statusInput} {options} />
+    <Input label="Workflow ID" bind:value={workflowInput} />
+    <Input label="Batch ID" bind:value={batchInput} />
+    <Button type="submit">Apply filters</Button>
+    {#if filter || workflow || batch}<a href="#/jobs">Clear filters</a>{/if}
+  </form>
 
-<p class="muted" role="status">
-  {#if $connection === 'open'}Live updates connected.
-  {:else}Live updates are not connected.
+  <p class="muted" role="status">
+    {#if $connection === 'open'}Live updates connected.
+    {:else}Live updates are not connected.
+    {/if}
+    {#if $list.loading}
+      Loading runs…{/if}
+  </p>
+  {#if $list.error}
+    <ProblemDetails problem={problem($list.error, 'Could not load runs')} />
+    <Button onclick={() => list.refresh()}>Reload runs</Button>
   {/if}
-  {#if $list.loading}
-    Loading runs…{/if}
-</p>
-{#if $list.error}
-  <ProblemDetails problem={problem($list.error, 'Could not load runs')} />
-  <Button onclick={() => list.refresh()}>Reload runs</Button>
-{/if}
-{#if notice}
-  <div class="notice">
-    <p role="status">
-      {notice.message}
-      {#if notice.newId}<a href={runHref(notice.newId)}>View new run</a>{/if}
-    </p>
-    {#if notice.problem}<ProblemDetails problem={notice.problem} />{/if}
-  </div>
-{/if}
+  {#if notice}
+    <div class="notice">
+      <p role="status">
+        {notice.message}
+        {#if notice.newId}<a href={runHref(notice.newId)}>View new run</a>{/if}
+      </p>
+      {#if notice.problem}<ProblemDetails problem={notice.problem} />{/if}
+    </div>
+  {/if}
 
-{#if $list.rows.length}
-  <ul class="runs" aria-label="Runs">
-    {#each $list.rows as { run, node, progress } (run.id)}
-      <li>
-        <div class="row-heading">
-          <a href={runHref(run.id)}>{run.id}</a>
-          <StatusBadge status={run.status} />
-        </div>
-        <dl>
-          <div>
-            <dt>Workflow</dt>
-            <dd>{run.workflow_id}</dd>
+  {#if $list.rows.length}
+    <ul class="runs" aria-label="Runs">
+      {#each $list.rows as { run, node, progress } (run.id)}
+        <li>
+          <div class="row-heading">
+            <a href={runHref(run.id)}>{run.id}</a>
+            <StatusBadge status={run.status} />
+            {#if run.batch_id}
+              <a href={`#/batches/${encodeURIComponent(run.batch_id)}`}
+                >Batch run {(run.batch_index ?? 0) + 1}</a
+              >
+            {/if}
           </div>
-          <div>
-            <dt>Created</dt>
-            <dd>
-              <time datetime={run.created_at}>{time(run.created_at)}</time>
-            </dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>
-              <time datetime={run.updated_at}>{time(run.updated_at)}</time>
-            </dd>
-          </div>
-          {#if run.status === 'running'}
+          <dl>
             <div>
-              <dt>Executing node</dt>
-              <dd>{node ?? 'Not reported'}</dd>
+              <dt>Workflow</dt>
+              <dd>{run.workflow_id}</dd>
             </div>
             <div>
-              <dt>Progress</dt>
+              <dt>Created</dt>
               <dd>
-                {#if progress}
-                  <progress
-                    aria-label="Node progress"
-                    value={progress.value}
-                    max={progress.max}
-                  ></progress>
-                  {progress.value} of {progress.max}
-                {:else}Not reported{/if}
+                <time datetime={run.created_at}>{time(run.created_at)}</time>
               </dd>
             </div>
-          {/if}
-        </dl>
-        {#if canCancel(run.status)}
-          <Button onclick={() => confirm(run)} disabled={busy.has(run.id)}
-            >Cancel run</Button
-          >
-        {:else if run.status === 'unknown_submission'}
-          <p>
-            ComfyUI may or may not have accepted this submission. GenAImage will
-            not resubmit it blindly.
-          </p>
-          <Button onclick={() => reconcile(run)} disabled={busy.has(run.id)}
-            >Reconcile</Button
-          >
-          {#if grants.get(run.id) === revision(run) && !attempted.has(run.id)}
-            <p>
-              ComfyUI could still accept the original prompt very late.
-              Submitting again could duplicate it.
-            </p>
-            <Button
-              onclick={() => confirm(run, true)}
-              disabled={busy.has(run.id)}>Submit as new run</Button
+            <div>
+              <dt>Updated</dt>
+              <dd>
+                <time datetime={run.updated_at}>{time(run.updated_at)}</time>
+              </dd>
+            </div>
+            {#if run.status === 'running'}
+              <div>
+                <dt>Executing node</dt>
+                <dd>{node ?? 'Not reported'}</dd>
+              </div>
+              <div>
+                <dt>Progress</dt>
+                <dd>
+                  {#if progress}
+                    <progress
+                      aria-label="Node progress"
+                      value={progress.value}
+                      max={progress.max}
+                    ></progress>
+                    {progress.value} of {progress.max}
+                  {:else}Not reported{/if}
+                </dd>
+              </div>
+            {/if}
+          </dl>
+          {#if canCancel(run.status)}
+            <Button onclick={() => confirm(run)} disabled={busy.has(run.id)}
+              >Cancel run</Button
             >
+          {:else if run.status === 'unknown_submission'}
+            <p>
+              ComfyUI may or may not have accepted this submission. GenAImage
+              will not resubmit it blindly.
+            </p>
+            <Button onclick={() => reconcile(run)} disabled={busy.has(run.id)}
+              >Reconcile</Button
+            >
+            {#if grants.get(run.id) === revision(run) && !attempted.has(run.id)}
+              <p>
+                ComfyUI could still accept the original prompt very late.
+                Submitting again could duplicate it.
+              </p>
+              <Button
+                onclick={() => confirm(run, true)}
+                disabled={busy.has(run.id)}
+                >{run.batch_id
+                  ? 'Submit as new run outside this batch'
+                  : 'Submit as new run'}</Button
+              >
+              {#if run.batch_id}
+                <p>The new run will not appear in this batch.</p>
+              {/if}
+            {/if}
           {/if}
-        {/if}
-      </li>
-    {/each}
-  </ul>
-{:else if !$list.loading && !$list.error}
-  <p>No runs match these filters on this page.</p>
-{/if}
-{#if cursor || $list.next}
-  <nav class="row-heading" aria-label="Run pages">
-    {#if cursor}<a href={jobsHref(filter, workflow)}>Newest runs</a>{/if}
-    {#if $list.next}<a href={jobsHref(filter, workflow, $list.next)}
-        >Older runs</a
-      >{/if}
-  </nav>
+        </li>
+      {/each}
+    </ul>
+  {:else if !$list.loading && !$list.error}
+    <p>No runs match these filters on this page.</p>
+  {/if}
+  {#if cursor || $list.next}
+    <nav class="row-heading" aria-label="Run pages">
+      {#if cursor}<a href={jobsHref(filter, workflow)}>Newest runs</a>{/if}
+      {#if $list.next}<a href={jobsHref(filter, workflow, $list.next)}
+          >Older runs</a
+        >{/if}
+    </nav>
+  {/if}
 {/if}
 
 <Dialog
@@ -407,6 +459,11 @@
   }
   .filters {
     align-items: end;
+  }
+  .views {
+    display: flex;
+    gap: var(--space-3);
+    margin-block: var(--space-3);
   }
   .runs {
     list-style: none;

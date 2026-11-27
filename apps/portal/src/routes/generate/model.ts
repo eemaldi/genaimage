@@ -179,18 +179,6 @@ function randomBelow(count: bigint): bigint {
   return value;
 }
 
-// Find the first integer satisfying a monotone predicate on the supported range.
-function firstInteger(test: (value: number) => boolean): bigint {
-  let low = minInteger;
-  let high = maxInteger + 1n;
-  while (low < high) {
-    const middle = low + (high - low) / 2n;
-    if (test(Number(middle))) high = middle;
-    else low = middle + 1n;
-  }
-  return low;
-}
-
 export function randomSeed(parameter: Parameter): number | bigint | undefined {
   if (parameter.allowed_values) {
     const options = [...new Set(parameter.allowed_values.map(scalar))].filter(
@@ -202,18 +190,17 @@ export function randomSeed(parameter: Parameter): number | bigint | undefined {
       ? options[Number(randomBelow(BigInt(options.length)))]
       : undefined;
   }
-  // Rust compares as_f64() against the bounds, including integers that round to an endpoint.
   const { minimum, maximum } = parameter;
-  const first =
-    minimum == null
-      ? minInteger
-      : firstInteger((rounded) => rounded >= minimum);
-  const pastLast =
-    maximum == null
-      ? maxInteger + 1n
-      : firstInteger((rounded) => rounded > maximum);
-  if (first < pastLast)
-    return compactInteger(first + randomBelow(pastLast - first));
+  const declaredLow = minimum == null ? 0n : BigInt(Math.ceil(minimum));
+  const declaredHigh =
+    maximum == null ? maxInteger : BigInt(Math.floor(maximum));
+  const low = declaredLow > 0n ? declaredLow : 0n;
+  const high = declaredHigh < maxInteger ? declaredHigh : maxInteger;
+  if (low > high)
+    throw new RangeError(
+      `The bounds ${minimum ?? 'none'} to ${maximum ?? 'none'} leave no seed between 0 and ${maxInteger}.`,
+    );
+  return compactInteger(low + randomBelow(high - low + 1n));
 }
 
 export function workflowHref(id: string): string {

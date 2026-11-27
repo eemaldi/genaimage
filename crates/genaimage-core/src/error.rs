@@ -44,6 +44,17 @@ pub enum HarnessError {
     Database(String),
     #[error("run '{run_id}' was not found")]
     RunNotFound { run_id: String },
+    #[error("batch '{batch_id}' was not found")]
+    BatchNotFound { batch_id: String },
+    #[error("{0}")]
+    InvalidBatchRequest(String),
+    #[error("{0}")]
+    BatchTooLarge(String),
+    #[error("{total} batch items are invalid; nothing was submitted")]
+    BatchItemsInvalid {
+        total: usize,
+        items: Vec<crate::batch::BatchItemIssue>,
+    },
     #[error("assistant conversation '{conversation_id}' was not found")]
     ConversationNotFound { conversation_id: String },
     #[error("{0}")]

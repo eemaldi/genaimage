@@ -42,6 +42,16 @@ pub async fn serve_on_listener(
         return Err(io::Error::new(io::ErrorKind::InvalidInput,
             "--portal-dev-url points to the GenAImage server port; use the separate Vite port (normally 5173)."));
     }
+    // A batch left mid-submission by an earlier process is never resumed
+    // automatically: its unsent items are marked, and the client resumes it.
+    match state.harness().interrupt_unfinished_batches().await {
+        Ok(0) => {}
+        Ok(count) => tracing::warn!(
+            count,
+            "Marked batches interrupted by a restart; resume them to submit their unsent items"
+        ),
+        Err(error) => tracing::warn!(%error, "Could not check for interrupted batches"),
+    }
     tracing::info!(%address, "GenAImage server listening");
     let app = build_app(state.clone(), address.port());
     serve_connections(listener, app, state, signal, drain_timeout).await;

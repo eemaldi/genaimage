@@ -11,6 +11,7 @@
   import Submission, { type SubmissionControls } from './Submission.svelte';
   import { workflowHref } from './model';
   import { workflowProblem } from '../workflows/errors';
+  import { hasPendingBatch } from '../batches/pending';
 
   let { query }: { query: URLSearchParams } = $props();
   let id = $derived(query.get('workflow') ?? '');
@@ -21,6 +22,10 @@
     problem: Problem;
     attempt: number;
   }>();
+  let mode = $derived<'single' | 'batch'>(
+    hasPendingBatch(id) ? 'batch' : 'single',
+  );
+  const batchMode = () => import('../batches/BatchMode.svelte');
   let queryKey = $derived(query.toString());
   let replacement = $derived(
     reload?.queryKey === queryKey ? reload : undefined,
@@ -76,12 +81,46 @@
     <p role="status">Loading {id ? 'workflow' : 'workflows'}…</p>
   {:then result}
     {#if 'workflow' in result && controls}
-      {#key `${queryKey}:${result.attempt}`}<Form
-          workflow={result.workflow}
-          query={replacement?.query ?? query}
-          {reloadWorkflow}
-          {...controls}
-        />{/key}
+      <div class="modes" role="group" aria-label="Run mode">
+        <Button
+          aria-pressed={mode === 'single'}
+          variant={mode === 'single' ? 'primary' : 'secondary'}
+          onclick={() => (mode = 'single')}>Single run</Button
+        >
+        <Button
+          aria-pressed={mode === 'batch'}
+          variant={mode === 'batch' ? 'primary' : 'secondary'}
+          onclick={() => (mode = 'batch')}>Batch or sweep</Button
+        >
+      </div>
+      {#key `${queryKey}:${result.attempt}`}
+        <div hidden={mode !== 'single'}>
+          <Form
+            workflow={result.workflow}
+            query={replacement?.query ?? query}
+            {reloadWorkflow}
+            {...controls}
+          />
+        </div>
+        {#if mode === 'batch'}
+          {#await batchMode()}
+            <p role="status">Loading batch mode…</p>
+          {:then { default: BatchMode }}
+            <BatchMode
+              workflow={result.workflow}
+              query={replacement?.query ?? query}
+              {reloadWorkflow}
+            />
+          {:catch}
+            <ProblemDetails
+              problem={{
+                title: 'Could not load batch mode',
+                recovery: 'Reload the page to try again.',
+              }}
+            />
+          {/await}
+        {/if}
+      {/key}
     {:else if 'catalogue' in result}
       {@const offered = result.catalogue.workflows.filter(
         (item) => item.available === true,
@@ -146,6 +185,11 @@
 {/if}
 
 <style>
+  .modes {
+    display: flex;
+    gap: var(--space-2);
+    margin-block: var(--space-3);
+  }
   form {
     display: grid;
     gap: 1rem;

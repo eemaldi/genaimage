@@ -447,8 +447,19 @@
     if (!errors.size) {
       for (const [name, field] of entries) {
         if (field.seedMode !== 'random') continue;
-        const value =
-          chosenSeeds.get(name) ?? randomSeed(workflow.parameters[name]);
+        let value: FieldState['value'];
+        try {
+          value =
+            chosenSeeds.get(name) ?? randomSeed(workflow.parameters[name]);
+        } catch (failure) {
+          errors.set(
+            name,
+            failure instanceof Error
+              ? failure.message
+              : 'Could not draw a random seed.',
+          );
+          continue;
+        }
         if (value === undefined)
           errors.set(name, 'This workflow has no valid seed to randomise.');
         else values.set(name, value);

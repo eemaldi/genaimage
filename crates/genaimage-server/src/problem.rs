@@ -30,6 +30,8 @@ impl Problem {
                 expected_graph_sha256: None,
                 id: None,
                 manifest_path: None,
+                invalid_items: Vec::new(),
+                invalid_item_count: None,
             }),
         }
     }
@@ -116,6 +118,16 @@ impl Problem {
 
     pub(crate) fn with_expected_graph_sha256(mut self, sha256: String) -> Self {
         self.details.expected_graph_sha256 = Some(sha256);
+        self
+    }
+
+    pub(crate) fn with_invalid_items(
+        mut self,
+        total: usize,
+        items: Vec<genaimage_api::BatchItemProblem>,
+    ) -> Self {
+        self.details.invalid_item_count = Some(total);
+        self.details.invalid_items = items;
         self
     }
 

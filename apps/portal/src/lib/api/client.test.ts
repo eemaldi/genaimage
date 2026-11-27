@@ -4,7 +4,9 @@ import {
   ApiNetworkError,
   ApiProblemError,
   ApiResponseError,
+  BindingFloat,
   createApiClient,
+  type SubmitBatchRequest,
   outputMediaUrl,
   outputThumbnailUrl,
   workflowThumbnailUrl,
@@ -350,6 +352,54 @@ describe('portal API client', () => {
       await expect(createApiClient(fetcher).health()).rejects.toMatchObject({
         status: 409,
       });
+    });
+  });
+
+  describe('batch numbers', () => {
+    const body = {
+      workflow: 'portrait',
+      workflow_revision: 'rev-1',
+      parameters: { cfg: new BindingFloat(2), bias: new BindingFloat(-0) },
+      sweep: {
+        seeds: { parameter: 'seed', values: [18446744073709551615n, 7] },
+      },
+      max_items: 2,
+    } as unknown as SubmitBatchRequest;
+    const wire = `{"workflow":"portrait","workflow_revision":"rev-1","parameters":{"cfg":2.0,"bias":-0.0},"sweep":{"seeds":{"parameter":"seed","values":[18446744073709551615,7]}},"max_items":2}`;
+
+    it('sends the reviewed batch with its idempotency key and exact bytes', async () => {
+      const fetcher = mockFetch().mockResolvedValue(
+        new Response(
+          '{"id":"batch-1","parameters":{"cfg":2.0},"items":[{"index":0,"parameters":{"seed":18446744073709551615}}]}',
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+      const created = await createApiClient(fetcher).createBatch(body, 'key-1');
+      const [url, init] = fetcher.mock.calls[0];
+      expect(url).toBe('/api/v1/batches');
+      expect(init?.method).toBe('POST');
+      expect((init?.headers as Headers).get('Idempotency-Key')).toBe('key-1');
+      expect(init?.body).toBe(wire);
+      expect(created.id).toBe('batch-1');
+      expect(created.items[0].parameters.seed).toBe(18446744073709551615n);
+      expect(created.parameters.cfg).toBeInstanceOf(BindingFloat);
+    });
+
+    it('reads a preview with exact seeds and decimal floats', async () => {
+      const fetcher = mockFetch().mockResolvedValue(
+        new Response(
+          '{"item_count":1,"max_items":2,"max_items_cap":256,"workflow_revision":"rev-1","items":[{"index":0,"sweep_values":{"seed":18446744073709551615},"parameters":{"cfg":2.0,"seed":18446744073709551615},"effective_parameters":{"cfg":2.0}}]}',
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+      const preview = await createApiClient(fetcher).previewBatch(body);
+      expect(fetcher.mock.calls[0][0]).toBe('/api/v1/batches/preview');
+      const [item] = preview.items;
+      expect(item.sweep_values.seed).toBe(18446744073709551615n);
+      expect(item.parameters.seed).toBe(18446744073709551615n);
+      expect(item.parameters.cfg).toBeInstanceOf(BindingFloat);
+      expect((item.parameters.cfg as BindingFloat).value).toBe(2);
+      expect(String(item.parameters.cfg)).toBe('2.0');
     });
   });
 });
