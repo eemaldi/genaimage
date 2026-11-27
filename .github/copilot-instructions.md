@@ -5,9 +5,9 @@ Read the repository-root [AGENTS.md](../AGENTS.md) and
 They contain the shared project direction, guardrails and conventions.
 
 GenAImage is a thin, fast local harness with a shared Rust core and CLI. The
-loopback server currently serves health, doctor, workflows, runs, outputs and
-their vision-review annotations, uploads, settings, setup, LLM model pulls and
-checkpoints, live events, the assistant API, an OpenAPI contract and the
+loopback server currently serves health, doctor, workflows, runs, batches,
+outputs and their vision-review annotations, uploads, settings, setup, LLM
+model pulls and checkpoints, live events, the assistant API, an OpenAPI contract and the
 embedded Svelte portal (dashboard, generate, jobs, gallery, workflows, run
 detail, models, diagnostics, settings, setup wizard and an assistant chat panel
 on every page). `compose.yaml` runs GenAImage, ComfyUI and Ollama for local use

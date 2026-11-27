@@ -573,10 +573,10 @@ path; the batch only groups them. Nothing is random, truncated or substituted.
 
 | Method and path (under `/api/v1`) | Behaviour |
 | --- | --- |
-| `POST /batches/preview` | Expand and validate without submitting or contacting ComfyUI. Returns `item_count`, `max_items`, `max_items_cap`, `workflow_revision` and every item's exact values. |
+| `POST /batches/preview` | Expand and validate without submitting or contacting ComfyUI. Returns `item_count`, `max_items`, `max_items_cap`, `workflow_revision`, the `inherited_inputs` that every item shares (listed once) and every item's exact values. |
 | `POST /batches` | Validate, record the batch and its items atomically, and return 202 with the batch and `Location`. Requires `Idempotency-Key`. |
-| `GET /batches` | List batches newest first (`workflow`, `cursor`, `limit` of 1–200, default 50) with state and item counts. |
-| `GET /batches/{id}` | Return the batch with every item's submission state and run status. |
+| `GET /batches` | List batches newest first (`workflow`, `cursor`, `limit` of 1–200, default 50) with state and item counts, using a fixed number of queries per page. It never recovers submissions (see below). |
+| `GET /batches/{id}` | Return the batch with every item's submission state and run status. It also settles a run whose submission owner died as `unknown_submission`, as `GET /runs/{id}` does. |
 | `POST /batches/{id}/resume` | Submit the items that have no run (see below). 202 if a driver started, otherwise 200 with the current state. |
 | `GET /runs?batch={id}` | List the runs of one batch. `RunResponse` and run events carry `batch_id` and `batch_index` (absent for ordinary runs). |
 
@@ -610,11 +610,18 @@ Rules, all enforced before anything is recorded or sent (HTTP 422 unless noted):
   overridden. Sweep parameters must be defined by the workflow.
 - The serialised parameters of all items together must not exceed 4 MiB
   (`urn:genaimage:problem:batch-too-large`), which bounds the preview, the
-  stored batch and its responses.
+  stored batch and its responses. The preview repeats every item's parameters,
+  swept values and effective parameters, so those together must not exceed
+  16 MiB either; a longer one is rejected as `batch-too-large` instead of
+  returned, and submission applies the same limit.
 - Every list is non-empty and has no repeated value. Numbers compare exactly
-  (decimal arithmetic, never `f64`), so `2` and `2.0` are duplicates, and the
+  and numerically (decimal arithmetic, never `f64`), so `2` and `2.0` are
+  duplicates ("values at positions 0 and 1 are numerically equal"), and the
   accepted spelling is preserved: `2.0`, `-0.0` and seeds up to 2^64 - 1 reach
   ComfyUI unchanged.
+- A grid lists each parameter once. A name repeated in the JSON object is
+  rejected with `urn:genaimage:problem:batch-invalid`, never merged, so a later
+  list cannot silently replace an earlier one.
 - The item count is the product of the list lengths. It must not exceed
   `max_items` or the server limit of 256 (`max_items_cap`); otherwise
   `urn:genaimage:problem:batch-too-large`. Nothing is truncated.
@@ -644,7 +651,7 @@ unique index allows one run per `(batch_id, batch_index)`.
 | --- | --- |
 | `pending` | Not yet attempted, or being submitted now. |
 | `submitted` | A run exists and ComfyUI acknowledged it. `run_status` is the run's own status; `completed` appears only once the backend confirmed outputs. |
-| `failed` | Rejected before ComfyUI was contacted (`error` says why), possibly with a run recorded as `failed` before it was sent. |
+| `failed` | No prompt was sent for the item (`error` says why). Without a `run_id` it was rejected before a run was recorded, and resume retries it. With a `run_id` the run failed while it was being prepared, which is final: resume never retries it. |
 | `not_submitted` | Never attempted, with the reason in `error`: a restart, shutdown, a panic in the driver or a workflow revision change. |
 | `outcome_unknown` | The run is `unknown_submission`: ComfyUI may have accepted it. Reconcile it; it is never resubmitted. |
 
@@ -653,28 +660,43 @@ The batch `state` reports the driver and never overstates success: `submitting`,
 acknowledged run; run outcomes are separate), `partial` (some failed or unknown)
 and `failed` (none accepted). A failed item does not stop later ones. A change
 that affects every item (the workflow revision, an ambiguous workflow ID, a
-shutdown) stops the driver, and the remaining items become `not_submitted`.
+shutdown, or ComfyUI not answering the per-item node check) stops the driver,
+and the remaining items become `not_submitted` with the reason ("ComfyUI
+unreachable; resume when it is back"). A failure of one item alone, such as a
+node only it needs being missing, fails only that item.
 
 **Driver and recovery.** The server creates the batch row, its items and a
 driver claim (an OS file lock, like run submission) together, then spawns a
 tracked task that submits the items one at a time in index order and returns 202
-without waiting. The task is wrapped so that, even after an error or a panic,
-every item without a run is settled as `not_submitted` and none stays pending or
-becomes successful. On a graceful shutdown the driver finishes the
-item in flight and leaves the rest `not_submitted`; if the shutdown deadline
-expires first, the item in flight is recorded as `unknown_submission`. On start, the server marks batches left `submitting` by a
-dead process as `interrupted` with their unsent items `not_submitted`, unless
-another live process holds the batch's claim; it never resumes them.
+without waiting. Creating the batch and starting its driver happen inside one
+tracked task, so a client that disconnects cannot leave a batch without a
+driver. A running driver keeps the settings, and the harness, it started with
+until it finishes or is resumed; a settings change applies to the next resume.
+The task is wrapped so that, even after an error or a panic, every item without
+a run is settled as `not_submitted` and none stays pending or becomes
+successful. On a graceful shutdown the driver finishes the item in flight and
+leaves the rest `not_submitted`; if the shutdown deadline expires first, the
+item in flight is recorded as `unknown_submission`. On start, the server marks
+batches left `submitting` by a dead process as `interrupted` with their unsent
+items `not_submitted`, unless another live process holds the batch's claim; it
+never resumes them.
 
 To resume, re-`POST /batches` with the same key and body (it replays with 200
 and resumes), or call `POST /batches/{id}/resume`, which needs no key and is
 what a client holding only the batch ID should use. Resuming submits every item
-that has no run (`pending`, `not_submitted`, and `failed` items that never
-reached ComfyUI). Items with a run replay through their item key and are never
-sent again, so a crash between the send and the bookkeeping cannot duplicate a
+that has no run (`pending`, `not_submitted`, and `failed` items without a
+`run_id`, which were rejected before any prompt was sent). Items with a run,
+including `failed` ones with a `run_id` (final) and `outcome_unknown` ones,
+replay through their item key and are never sent again, so a crash between the send and the bookkeeping cannot duplicate a
 prompt. A resume while a driver is running starts nothing. The pinned revision
 is checked for every item, so resuming after the workflow changed leaves the
 rest `not_submitted`.
+
+`GET /batches` reads the stored state in a fixed number of queries per page and
+never runs recovery, so a run whose submission owner died still shows as
+`pending` there until the batch is read with `GET /batches/{id}`, which settles
+it as `unknown_submission`. That settlement is the same one a read of the run
+makes.
 
 Live progress arrives as the usual run events, which carry `batch_id` and
 `batch_index`; there is no separate batch event. Items that fail without a run

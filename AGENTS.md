@@ -24,10 +24,10 @@ ComfyUI image generation, assisted by local LLMs. Read
 - The server binds to loopback only; inside a container with
   `GENAIMAGE_CONTAINER=1` it may bind `0.0.0.0` or `::`, and ports must be
   published on `127.0.0.1` only (`Dockerfile`, [setup](docs/setup.md#container)).
-  It currently serves health, doctor, workflows, runs,
-  outputs and their vision-review annotations, uploads, settings, setup status
-  and detection, LLM model pulls and checkpoints, live events, the assistant
-  API, an OpenAPI contract and the embedded Svelte portal in `apps/portal`:
+  It currently serves health, doctor, workflows, runs, batches (pinned runs
+  over a seed list or value grid), outputs and their vision-review annotations,
+  uploads, settings, setup status and detection, LLM model pulls and
+  checkpoints, live events, the assistant API, an OpenAPI contract and the embedded Svelte portal in `apps/portal`:
   dashboard, generate, jobs, gallery, workflows, run detail, models,
   diagnostics, settings, the setup wizard, and an assistant chat panel
   available on every page. ComfyUI and the OpenAI-compatible local LLM service

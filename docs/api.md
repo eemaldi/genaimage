@@ -30,6 +30,11 @@ Rules that clients must keep, because the server enforces them:
 - Preview a batch, show its item count and confirm it before submitting; a
   batch is always pinned to a `workflow_revision` and states an explicit
   `max_items`. Never truncate a rejected sweep to fit.
+- `GET /batches/{id}` is not purely a read: like `GET /runs/{id}`, it settles a
+  run whose submission owner died as `unknown_submission`. `GET /batches` never
+  does, so such a run shows as `pending` in the list until the batch is read.
+  Preview lists the `inherited_inputs` once for the whole batch, because every
+  item shares them.
 - Mutating browser requests need a same-origin `Origin`; there is no CORS.
 
 Regenerate the contract and portal types after an API change:
