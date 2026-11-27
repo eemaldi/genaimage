@@ -151,6 +151,9 @@ export type SettingsPatch = JsonBody<Operation<'/api/v1/settings', 'put'>>;
 export type PromptAssistRequest = JsonBody<
   Operation<'/api/v1/assistant/prompt', 'post'>
 >;
+export type TemplateRenderRequest = JsonBody<
+  Operation<'/api/v1/templates/render', 'post'>
+>;
 export type SuggestWorkflowRequest = JsonBody<
   Operation<'/api/v1/assistant/suggest', 'post'>
 >;
@@ -531,6 +534,11 @@ export function createApiClient(
       ),
     promptAssist: (body: PromptAssistRequest, options?: RequestOptions) =>
       json('post', '/api/v1/assistant/prompt', { ...options, body }),
+    listTemplates: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/templates', options),
+    /** Read-only: renders the reviewed version (`sha256`) and records nothing. */
+    renderTemplate: (body: TemplateRenderRequest, options?: RequestOptions) =>
+      json('post', '/api/v1/templates/render', { ...options, body }),
     suggestWorkflow: (body: SuggestWorkflowRequest, options?: RequestOptions) =>
       json(
         'post',

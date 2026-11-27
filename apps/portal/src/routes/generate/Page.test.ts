@@ -49,6 +49,8 @@ const fake = vi.hoisted(() => ({
   getRun: vi.fn<typeof api.getRun>(),
   listRuns: vi.fn<typeof api.listRuns>(),
   listOutputs: vi.fn<typeof api.listOutputs>(),
+  listTemplates: vi.fn<typeof api.listTemplates>(),
+  renderTemplate: vi.fn<typeof api.renderTemplate>(),
 }));
 vi.mock('../../lib/api/client', async (original) => ({
   ...(await original<typeof import('../../lib/api/client')>()),
@@ -1419,4 +1421,55 @@ test('a pending batch reopens batch mode after a reload', async () => {
   mount();
   expect(await screen.findByText('Pending batch submission')).toBeTruthy();
   expect(screen.getByText(`${seed}, 7`)).toBeTruthy();
+});
+
+test('an inserted template render is what the review shows for submission', async () => {
+  const sha = 'b'.repeat(64);
+  fake.listTemplates.mockResolvedValue({
+    templates: [
+      {
+        ref: 'user:portrait-studio',
+        scope: 'user',
+        pack_id: null,
+        id: 'portrait-studio',
+        title: 'Studio portrait',
+        description: null,
+        variables: [
+          { name: 'subject', description: null, required: true, default: null },
+        ],
+        sha256: sha,
+        text: 'A {{subject}} in a studio',
+      },
+    ],
+    diagnostics: [],
+  });
+  fake.renderTemplate.mockImplementation(async (body) => ({
+    ref: body.ref,
+    sha256: body.sha256,
+    text: 'A cat in a studio',
+  }));
+  const user = await load();
+  await user.click(
+    screen.getByRole('button', { name: 'Use a template for Prompt' }),
+  );
+  await user.click(
+    await screen.findByRole('button', { name: 'Use “Studio portrait”' }),
+  );
+  await user.type(
+    screen.getByLabelText('subject (required)', { exact: true }),
+    'cat',
+  );
+  await user.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByText('A cat in a studio');
+  expect(control('Prompt').value).toBe('');
+  await user.click(screen.getByLabelText('Replace the current text'));
+  await user.click(screen.getByRole('button', { name: 'Insert' }));
+  expect(control('Prompt').value).toBe('A cat in a studio');
+  await user.click(reviewButton());
+  await screen.findByRole('region', { name: 'Review parameters' });
+  expect(review().textContent).toContain('A cat in a studio');
+  expect(fake.renderTemplate).toHaveBeenCalledWith(
+    { ref: 'user:portrait-studio', sha256: sha, variables: { subject: 'cat' } },
+    expect.anything(),
+  );
 });
