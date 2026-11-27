@@ -190,7 +190,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index). */
+        /** @description Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index). Graph inputs that binding leaves untouched are listed once as `inherited_inputs`, because every item shares them. A preview whose values would exceed 16 MiB is rejected as `batch-too-large`. */
         post: operations["batches_preview"];
         delete?: never;
         options?: never;
@@ -225,7 +225,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones that never reached ComfyUI. Items that already have a run, including `outcome_unknown` ones, are never submitted again. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same. */
+        /** @description Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones without a `run_id`, which were rejected before any prompt was sent. Items that already have a run are never submitted again: that includes `outcome_unknown` ones and `failed` ones with a `run_id`, which failed during preparation and are final. A running driver keeps the settings it started with. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same. */
         post: operations["batches_resume"];
         delete?: never;
         options?: never;
@@ -1129,6 +1129,9 @@ export interface components {
             pending: number;
             submitted: number;
         };
+        BatchGrid: {
+            [key: string]: unknown[];
+        };
         /** @description An item rejected by validation, with every problem found in it. */
         BatchItemProblem: {
             errors: components["schemas"]["WorkflowParameterError"][];
@@ -1161,8 +1164,6 @@ export interface components {
                 [key: string]: unknown;
             };
             index: number;
-            /** @description Graph inputs left untouched by binding, not submitted values. */
-            inherited_inputs?: components["schemas"]["WorkflowInheritedInput"][];
             /** @description Exactly what the item's run request carries: shared values plus swept values. */
             parameters: {
                 [key: string]: unknown;
@@ -1173,6 +1174,11 @@ export interface components {
             };
         };
         BatchPreviewResponse: {
+            /**
+             * @description Graph inputs left untouched by binding, not submitted values. Every item
+             *     sets the same parameters, so they are the same for all items.
+             */
+            inherited_inputs?: components["schemas"]["WorkflowInheritedInput"][];
             item_count: number;
             items: components["schemas"]["BatchPreviewItem"][];
             /** @description Echo of the request's `max_items`. */
@@ -1222,11 +1228,10 @@ export interface components {
         } | {
             /**
              * @description Parameter name to its values. Items are the cartesian product: names are
-             *     sorted by byte order and the last name varies fastest.
+             *     sorted by byte order and the last name varies fastest. A name must be
+             *     listed once; the server rejects a repeated name with `batch-invalid`.
              */
-            grid: {
-                [key: string]: unknown[];
-            };
+            grid: components["schemas"]["BatchGrid"];
         };
         /** Format: binary */
         BinaryData: string;

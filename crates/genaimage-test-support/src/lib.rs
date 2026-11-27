@@ -27,7 +27,7 @@ use std::{
     collections::BTreeMap,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -80,6 +80,10 @@ pub struct FakeComfyState {
     pub object_info_unavailable: Arc<AtomicBool>,
     pub object_info_hangs: Arc<AtomicBool>,
     pub object_info_override: Arc<Mutex<Option<Value>>>,
+    /// Delays the next `/object_info` answer by this many milliseconds, then resets to 0.
+    pub object_info_delay_ms: Arc<AtomicU64>,
+    /// While set, `/prompt` records the call and waits before answering.
+    pub hold_prompts: Arc<AtomicBool>,
     pub queue_override: Arc<Mutex<Option<Value>>>,
     pub fail_next_history: Arc<AtomicBool>,
     pub history_overrides: Arc<Mutex<BTreeMap<String, Value>>>,
@@ -130,6 +134,8 @@ impl Default for FakeComfyState {
             object_info_unavailable: Default::default(),
             object_info_hangs: Default::default(),
             object_info_override: Default::default(),
+            object_info_delay_ms: Default::default(),
+            hold_prompts: Default::default(),
             queue_override: Default::default(),
             fail_next_history: Default::default(),
             history_overrides: Default::default(),
@@ -196,6 +202,10 @@ async fn fake_system(State(state): State<FakeComfyState>) -> Response {
 
 async fn fake_object_info(State(state): State<FakeComfyState>) -> Response {
     state.object_info_calls.fetch_add(1, Ordering::SeqCst);
+    let delay = state.object_info_delay_ms.swap(0, Ordering::SeqCst);
+    if delay > 0 {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
     if state.object_info_hangs.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -279,6 +289,9 @@ async fn fake_prompt(State(state): State<FakeComfyState>, Json(body): Json<Value
     let prompt_id = body["prompt_id"].as_str().expect("prompt ID").to_owned();
     if !state.defer_prompt_admission.load(Ordering::SeqCst) {
         *state.prompt_id.lock().expect("prompt lock") = Some(prompt_id.clone());
+    }
+    while state.hold_prompts.load(Ordering::SeqCst) && !*state.shutdown.borrow() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     if state.hang_submit_response.load(Ordering::SeqCst) {
         let _ = state.shutdown.subscribe().wait_for(|closed| *closed).await;

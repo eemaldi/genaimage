@@ -99,6 +99,14 @@ pub struct BatchPage {
     pub next_cursor: Option<String>,
 }
 
+/// An item as the batch list needs it: what the driver recorded, and the run's
+/// status and whether it never reached preflight, if the item has a run.
+pub(crate) struct ItemSummary {
+    pub batch_id: String,
+    pub stored: BatchItemState,
+    pub run: Option<(RunStatus, bool)>,
+}
+
 pub(crate) struct BatchLink {
     pub batch_id: String,
     pub index: u32,
@@ -239,47 +247,41 @@ impl RunRepository {
         })
     }
 
-    /// One light row per item with a run: (batch, index, status, never sent).
-    pub(crate) fn batch_run_summaries(
-        &self,
-        ids: &[String],
-    ) -> Result<Vec<(String, u32, RunStatus, bool)>> {
+    /// One light row per item of the given batches, in one query, with its
+    /// run's status and whether that run never reached preflight, if it has a run.
+    pub(crate) fn batch_item_summaries(&self, ids: &[String]) -> Result<Vec<ItemSummary>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; ids.len()].join(",");
         self.guarded_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT batch_id, batch_index, status, preflight_sha256 IS NULL FROM runs WHERE batch_id = ?1",
-            )?;
-            let mut rows = Vec::new();
-            for id in ids {
-                let found = statement
-                    .query_map([id], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, u32>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, bool>(3)?,
-                        ))
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                for (batch, index, status, never_sent) in found {
-                    rows.push((batch, index, RunStatus::parse(&status)?, never_sent));
-                }
-            }
-            Ok(rows)
-        })
-    }
-
-    pub(crate) fn batch_item_states(&self, id: &str) -> Result<Vec<(u32, BatchItemState)>> {
-        self.guarded_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT item_index, state FROM batch_items WHERE batch_id = ?1 ORDER BY item_index",
-            )?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT i.batch_id, i.state, r.status, r.preflight_sha256 IS NULL
+                 FROM batch_items i
+                 LEFT JOIN runs r ON r.batch_id = i.batch_id AND r.batch_index = i.item_index
+                 WHERE i.batch_id IN ({marks})"
+            ))?;
             let rows = statement
-                .query_map([id], |row| {
-                    Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                .query_map(rusqlite::params_from_iter(ids), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             rows.into_iter()
-                .map(|(index, state)| Ok((index, BatchItemState::parse(&state)?)))
+                .map(|(batch_id, stored, status, never_sent)| {
+                    Ok(ItemSummary {
+                        batch_id,
+                        stored: BatchItemState::parse(&stored)?,
+                        run: match status {
+                            Some(status) => Some((RunStatus::parse(&status)?, never_sent)),
+                            None => None,
+                        },
+                    })
+                })
                 .collect()
         })
     }
@@ -462,16 +464,8 @@ impl AsyncRunRepository {
         self.call(move |repo| repo.batch_items(&id)).await
     }
 
-    pub(crate) async fn batch_run_summaries(
-        &self,
-        ids: Vec<String>,
-    ) -> Result<Vec<(String, u32, RunStatus, bool)>> {
-        self.call(move |repo| repo.batch_run_summaries(&ids)).await
-    }
-
-    pub(crate) async fn batch_item_states(&self, id: &str) -> Result<Vec<(u32, BatchItemState)>> {
-        let id = id.to_owned();
-        self.call(move |repo| repo.batch_item_states(&id)).await
+    pub(crate) async fn batch_item_summaries(&self, ids: Vec<String>) -> Result<Vec<ItemSummary>> {
+        self.call(move |repo| repo.batch_item_summaries(&ids)).await
     }
 
     pub async fn list_batches(

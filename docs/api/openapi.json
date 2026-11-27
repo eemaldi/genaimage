@@ -790,6 +790,13 @@
         ],
         "type": "object"
       },
+      "BatchGrid": {
+        "additionalProperties": {
+          "items": {},
+          "type": "array"
+        },
+        "type": "object"
+      },
       "BatchItemProblem": {
         "description": "An item rejected by validation, with every problem found in it.",
         "properties": {
@@ -911,13 +918,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "inherited_inputs": {
-            "description": "Graph inputs left untouched by binding, not submitted values.",
-            "items": {
-              "$ref": "#/components/schemas/WorkflowInheritedInput"
-            },
-            "type": "array"
-          },
           "parameters": {
             "additionalProperties": {},
             "description": "Exactly what the item's run request carries: shared values plus swept values.",
@@ -945,6 +945,13 @@
       },
       "BatchPreviewResponse": {
         "properties": {
+          "inherited_inputs": {
+            "description": "Graph inputs left untouched by binding, not submitted values. Every item\nsets the same parameters, so they are the same for all items.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowInheritedInput"
+            },
+            "type": "array"
+          },
           "item_count": {
             "minimum": 0,
             "type": "integer"
@@ -1111,18 +1118,11 @@
             "type": "object"
           },
           {
-            "description": "Parameter name to its values. Items are the cartesian product: names are\nsorted by byte order and the last name varies fastest.",
+            "description": "Parameter name to its values. Items are the cartesian product: names are\nsorted by byte order and the last name varies fastest. A name must be\nlisted once; the server rejects a repeated name with `batch-invalid`.",
             "properties": {
               "grid": {
-                "additionalProperties": {
-                  "items": {},
-                  "type": "array"
-                },
-                "description": "Parameter name to its values. Items are the cartesian product: names are\nsorted by byte order and the last name varies fastest.",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/BatchGrid",
+                "description": "Parameter name to its values. Items are the cartesian product: names are\nsorted by byte order and the last name varies fastest. A name must be\nlisted once; the server rejects a repeated name with `batch-invalid`."
               }
             },
             "required": [
@@ -6290,7 +6290,7 @@
     },
     "/api/v1/batches/preview": {
       "post": {
-        "description": "Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index).",
+        "description": "Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index). Graph inputs that binding leaves untouched are listed once as `inherited_inputs`, because every item shares them. A preview whose values would exceed 16 MiB is rejected as `batch-too-large`.",
         "operationId": "batches_preview",
         "requestBody": {
           "content": {
@@ -6590,7 +6590,7 @@
     },
     "/api/v1/batches/{id}/resume": {
       "post": {
-        "description": "Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones that never reached ComfyUI. Items that already have a run, including `outcome_unknown` ones, are never submitted again. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same.",
+        "description": "Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones without a `run_id`, which were rejected before any prompt was sent. Items that already have a run are never submitted again: that includes `outcome_unknown` ones and `failed` ones with a `run_id`, which failed during preparation and are final. A running driver keeps the settings it started with. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same.",
         "operationId": "batches_resume",
         "parameters": [
           {

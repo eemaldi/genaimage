@@ -18,6 +18,9 @@ pub const BATCH_ITEM_CAP: usize = 256;
 /// Bounds the serialised parameters of all items together, so a long shared
 /// value cannot multiply into a huge preview, record or response.
 pub const BATCH_PARAMETER_BYTES_CAP: usize = 4 * 1024 * 1024;
+/// Bounds a preview, which repeats every item's values: the parameters, swept
+/// values and effective parameters of all items, plus the inherited inputs.
+pub const BATCH_PREVIEW_BYTES_CAP: usize = 16 * 1024 * 1024;
 /// Bounds the invalid items listed in one rejection.
 pub const MAX_REPORTED_INVALID_ITEMS: usize = 20;
 
@@ -77,13 +80,15 @@ pub struct PlannedItem {
     pub sweep_values: BTreeMap<String, Value>,
     /// Preset, explicit values and workflow defaults, as the run will record them.
     pub effective_parameters: BTreeMap<String, Value>,
-    pub inherited_inputs: Vec<InheritedInput>,
 }
 
 #[derive(Clone, Debug)]
 pub struct BatchPlan {
     pub workflow_revision: String,
     pub max_items: usize,
+    /// Graph inputs that binding leaves untouched. Every item sets the same
+    /// parameters, so they are identical across items.
+    pub inherited_inputs: Vec<InheritedInput>,
     pub items: Vec<PlannedItem>,
 }
 
@@ -146,8 +151,13 @@ impl BatchRequest {
                         ))
                     })?;
                     if same {
+                        let how = if value.is_number() {
+                            "numerically equal"
+                        } else {
+                            "identical"
+                        };
                         return Err(invalid(format!(
-                            "Sweep parameter '{name}' repeats a value at positions {earlier} and {later}."
+                            "Sweep parameter '{name}' repeats a value: the values at positions {earlier} and {later} are {how}."
                         )));
                     }
                 }

@@ -137,7 +137,7 @@ async fn preview_expands_a_grid_in_sorted_order_with_exact_values() {
         text(&preview.items[3].effective_parameters),
         format!(r#"{{"cfg":2.5,{seed},"steps":20}}"#)
     );
-    assert!(preview.items[3].inherited_inputs.is_empty());
+    assert!(preview.inherited_inputs.is_empty());
     // A preview is read-only: nothing was submitted, recorded or even checked against ComfyUI.
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
     assert_eq!(api.fake.object_info_calls.load(Ordering::SeqCst), 0);
@@ -153,8 +153,8 @@ async fn preview_shows_inherited_inputs_and_preset_values() {
     let mut body = request(
         &api,
         json!({}),
-        json!({"seeds": {"parameter": "seed", "values": [1]}}),
-        1,
+        json!({"seeds": {"parameter": "seed", "values": [1, 2]}}),
+        2,
     )
     .await;
     body["preset"] = json!("fast");
@@ -166,12 +166,15 @@ async fn preview_shows_inherited_inputs_and_preset_values() {
     let item = &preview.items[0];
     assert_eq!(text(&item.parameters), r#"{"seed":1}"#);
     assert_eq!(text(&item.effective_parameters), r#"{"seed":1,"steps":10}"#);
-    assert_eq!(item.inherited_inputs.len(), 1);
-    assert_eq!(item.inherited_inputs[0].parameter, "cfg");
+    // Inherited inputs are shared by every item, so they appear once on the batch.
+    assert_eq!(preview.items.len(), 2);
+    assert_eq!(preview.inherited_inputs.len(), 1);
+    assert_eq!(preview.inherited_inputs[0].parameter, "cfg");
     assert_eq!(
-        text(&item.inherited_inputs[0].source),
+        text(&preview.inherited_inputs[0].source),
         r#"{"kind":"literal","json":"7"}"#
     );
+    assert!(!text(item).contains("inherited_inputs"));
     api.shutdown().await;
 }
 
@@ -225,7 +228,7 @@ async fn limits_overlap_and_duplicates_are_rejected_never_truncated() {
         (
             json!({}),
             json!({"grid": {"cfg": [2, 2.0], "seed": [1]}}),
-            "positions 0 and 1",
+            "positions 0 and 1 are numerically equal",
         ),
         (
             json!({"seed": 1}),
@@ -246,6 +249,30 @@ async fn limits_overlap_and_duplicates_are_rejected_never_truncated() {
         )
         .await;
         assert!(problem.detail.contains(needle), "{}", problem.detail);
+    }
+
+    // A grid that names a parameter twice is rejected, never merged: the later
+    // list must not silently replace the earlier one.
+    let repeated = format!(
+        r#"{{"workflow":"contract-workflow","workflow_revision":{},"max_items":10,
+            "sweep":{{"grid":{{"steps":[1,2],"seed":[1],"steps":[3]}}}}}}"#,
+        revision(&api).await
+    );
+    for path in [preview.as_str(), BATCHES] {
+        let mut builder = api
+            .request(Method::POST, path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(repeated.clone());
+        if path == BATCHES {
+            builder = builder.header("Idempotency-Key", "repeated");
+        }
+        let problem = ApiHarness::assert_typed_problem(
+            builder.send().await.unwrap(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:genaimage:problem:batch-invalid",
+        )
+        .await;
+        assert!(problem.detail.contains("'steps'"), "{}", problem.detail);
     }
 
     // Malformed shapes never reach validation: max_items and the pinned revision are required.
@@ -736,5 +763,183 @@ async fn starting_a_server_marks_an_abandoned_batch_interrupted_and_resume_submi
     let again = post(&api, &format!("{BATCHES}/{id}/resume"), None, &json!({})).await;
     assert_eq!(again.status(), StatusCode::OK);
     assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn negative_zero_survives_the_request_storage_the_prompt_and_every_read() {
+    let api = ApiHarness::start().await;
+    install_batch_workflow(&api);
+    let body = format!(
+        r#"{{"workflow":"contract-workflow","workflow_revision":{},"max_items":2,
+            "parameters":{{"seed":1,"steps":4}},"sweep":{{"grid":{{"cfg":[-0.0,2.50]}}}}}}"#,
+        revision(&api).await
+    );
+    let send = |path: String, key: Option<&'static str>| {
+        let mut builder = api
+            .request(Method::POST, &path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body.clone());
+        if let Some(key) = key {
+            builder = builder.header("Idempotency-Key", key);
+        }
+        async move { builder.send().await.unwrap() }
+    };
+    let preview: Value = send(format!("{BATCHES}/preview"), None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&preview["items"][0]["parameters"]["cfg"]),
+        "-0.0",
+        "{preview}"
+    );
+    assert_eq!(text(&preview["items"][1]["parameters"]["cfg"]), "2.50");
+
+    let created = batch(
+        send(BATCHES.to_owned(), Some("negative-zero")).await,
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let done = settled(&api, &created.id).await;
+    assert_eq!(done.state, BatchState::Submitted);
+    let cfgs = |batch: &BatchResponse| -> Vec<String> {
+        batch
+            .items
+            .iter()
+            .map(|item| text(&item.parameters["cfg"]))
+            .collect()
+    };
+    assert_eq!(cfgs(&done), ["-0.0", "2.50"]);
+    // The stored request, the replay and a plain read all agree.
+    assert_eq!(text(&done.sweep), r#"{"grid":{"cfg":[-0.0,2.50]}}"#);
+    let replay = batch(
+        send(BATCHES.to_owned(), Some("negative-zero")).await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(cfgs(&replay), ["-0.0", "2.50"]);
+    let read: BatchResponse = api.get_json(&format!("{BATCHES}/{}", created.id)).await;
+    assert_eq!(cfgs(&read), ["-0.0", "2.50"]);
+
+    // ComfyUI received the same spelling, and so did the recorded run.
+    let sent: Vec<String> = api
+        .fake
+        .submitted_graphs
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|graph| text(&graph["3"]["inputs"]["cfg"]))
+        .collect();
+    assert_eq!(sent, ["-0.0", "2.50"]);
+    let run: RunResponse = api
+        .get_json(&format!(
+            "/api/v1/runs/{}",
+            done.items[0].run_id.as_ref().unwrap()
+        ))
+        .await;
+    assert_eq!(text(&run.parameters["cfg"]), "-0.0");
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_client_that_disconnects_while_the_batch_is_created_still_gets_it_driven() {
+    let api = ApiHarness::start().await;
+    install_batch_workflow(&api);
+    let body = request(
+        &api,
+        json!({"seed": 1}),
+        json!({"grid": {"steps": [1, 2]}}),
+        2,
+    )
+    .await;
+    // The node check of the creation is slow, and the client gives up during it.
+    api.fake.object_info_delay_ms.store(400, Ordering::SeqCst);
+    let outcome = api
+        .request(Method::POST, BATCHES)
+        .header("Idempotency-Key", "gone")
+        .timeout(Duration::from_millis(100))
+        .json(&body)
+        .send()
+        .await;
+    assert!(outcome.unwrap_err().is_timeout());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let id = loop {
+        let listed: BatchListResponse = api.get_json(BATCHES).await;
+        if let Some(created) = listed.batches.first() {
+            break created.id.clone();
+        }
+        assert!(Instant::now() < deadline, "the batch was never created");
+        sleep(Duration::from_millis(10)).await;
+    };
+    // Nobody received the batch, yet its driver ran: it is not stuck submitting.
+    let done = settled(&api, &id).await;
+    assert_eq!(done.state, BatchState::Submitted);
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 2);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn resume_and_replay_while_a_driver_runs_start_no_second_driver() {
+    let api = ApiHarness::start().await;
+    install_batch_workflow(&api);
+    let body = request(
+        &api,
+        json!({"seed": 1}),
+        json!({"grid": {"steps": [1, 2, 3]}}),
+        3,
+    )
+    .await;
+    // The first prompt is in flight, so the driver holds its claim.
+    api.fake.hold_prompts.store(true, Ordering::SeqCst);
+    let created = batch(submit(&api, "busy", &body).await, StatusCode::ACCEPTED).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while api.fake.prompt_calls.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the driver never sent an item");
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let resume_path = format!("{BATCHES}/{}/resume", created.id);
+    let empty = json!({});
+    let (first, second, third, fourth) = tokio::join!(
+        post(&api, &resume_path, None, &empty),
+        submit(&api, "busy", &body),
+        post(&api, &resume_path, None, &empty),
+        submit(&api, "busy", &body),
+    );
+    for response in [first, second, third, fourth] {
+        let current = batch(response, StatusCode::OK).await;
+        assert_eq!(current.id, created.id);
+        assert_eq!(current.state, BatchState::Submitting);
+    }
+    sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        api.fake.prompt_calls.load(Ordering::SeqCst),
+        1,
+        "only the first driver sends"
+    );
+
+    api.fake.hold_prompts.store(false, Ordering::SeqCst);
+    let done = settled(&api, &created.id).await;
+    assert_eq!(done.state, BatchState::Submitted);
+    let sent: Vec<String> = api
+        .fake
+        .submitted_graphs
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|graph| text(&graph["3"]["inputs"]["steps"]))
+        .collect();
+    assert_eq!(sent, ["1", "2", "3"]);
+    let mut run_ids: Vec<_> = done
+        .items
+        .iter()
+        .filter_map(|item| item.run_id.clone())
+        .collect();
+    run_ids.sort();
+    run_ids.dedup();
+    assert_eq!(run_ids.len(), 3);
     api.shutdown().await;
 }

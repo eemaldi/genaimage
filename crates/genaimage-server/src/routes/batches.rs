@@ -15,7 +15,7 @@ use genaimage_core::{
         BatchCounts, BatchItemView, BatchRequest, BatchSummary, BatchSweep, ItemSubmission,
         SeedSweep, BATCH_ITEM_CAP,
     },
-    orchestrator::{BatchCreation, BatchDriver, RunObserver},
+    orchestrator::{BatchCreation, RunObserver},
     Harness,
 };
 
@@ -29,7 +29,7 @@ use crate::{AppState, Problem};
     post, path = "/batches/preview",
     operation_id = "batches_preview",
     tag = "batches",
-    description = "Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index).",
+    description = "Expand a batch and validate every item against the pinned workflow revision without submitting anything or contacting ComfyUI. A grid is the cartesian product with parameter names sorted and the last name varying fastest. The server limit on items is `max_items_cap`. An invalid item rejects the whole batch (422 `urn:genaimage:problem:batch-items-invalid`, listing at most 20 items by index). Graph inputs that binding leaves untouched are listed once as `inherited_inputs`, because every item shares them. A preview whose values would exceed 16 MiB is rejected as `batch-too-large`.",
     request_body = api::SubmitBatchRequest,
     responses(
         (status = 200, body = api::BatchPreviewResponse),
@@ -61,6 +61,11 @@ pub(super) async fn preview(
         max_items: plan.max_items,
         max_items_cap: BATCH_ITEM_CAP,
         workflow_revision: plan.workflow_revision,
+        inherited_inputs: plan
+            .inherited_inputs
+            .into_iter()
+            .map(|input| inherited_input(input.parameter, input.node, input.input, &input.value))
+            .collect(),
         items: plan
             .items
             .into_iter()
@@ -69,13 +74,6 @@ pub(super) async fn preview(
                 parameters: item.parameters,
                 sweep_values: item.sweep_values,
                 effective_parameters: item.effective_parameters,
-                inherited_inputs: item
-                    .inherited_inputs
-                    .into_iter()
-                    .map(|input| {
-                        inherited_input(input.parameter, input.node, input.input, &input.value)
-                    })
-                    .collect(),
             })
             .collect(),
     }))
@@ -113,27 +111,27 @@ pub(super) async fn submit(
     let key = idempotency_key(&headers)?;
     let request = core_request(body)?;
     let harness = state.harness();
-    let creation = {
-        let harness = harness.clone();
-        run_mutation(
-            &state,
-            async move { harness.create_batch(key, request).await },
-        )
+    let started = {
+        let (task_state, harness) = (state.clone(), harness.clone());
+        run_mutation(&state, async move {
+            let creation = harness.create_batch(key, request).await?;
+            Ok(start_driver(&task_state, harness, creation).await)
+        })
         .await?
     };
-    let created = if creation.replayed {
+    let status = if started.replayed {
         StatusCode::OK
     } else {
         StatusCode::ACCEPTED
     };
-    respond(&state, harness, creation, created).await
+    Ok(respond(status, started))
 }
 
 #[utoipa::path(
     post, path = "/batches/{id}/resume",
     operation_id = "batches_resume",
     tag = "batches",
-    description = "Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones that never reached ComfyUI. Items that already have a run, including `outcome_unknown` ones, are never submitted again. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same.",
+    description = "Submit the items that have no run: pending, `not_submitted` (for example after a restart) and `failed` ones without a `run_id`, which were rejected before any prompt was sent. Items that already have a run are never submitted again: that includes `outcome_unknown` ones and `failed` ones with a `run_id`, which failed during preparation and are final. A running driver keeps the settings it started with. Returns 202 when a driver started, or 200 with the current state when nothing needed submitting or a driver is already running. Re-posting the original key and body does the same.",
     params(("id" = String, Path, description = "Batch ID")),
     responses(
         (status = 202, description = "Resumed", body = api::BatchResponse, headers(("Location" = String, description = "Batch URL"))),
@@ -154,16 +152,20 @@ pub(super) async fn resume(
 ) -> Result<impl IntoResponse, Problem> {
     let id = batch_id(id)?;
     let harness = state.harness();
-    let creation = {
-        let harness = harness.clone();
-        run_mutation(&state, async move { harness.resume_batch(&id).await }).await?
+    let started = {
+        let (task_state, harness) = (state.clone(), harness.clone());
+        run_mutation(&state, async move {
+            let creation = harness.resume_batch(&id).await?;
+            Ok(start_driver(&task_state, harness, creation).await)
+        })
+        .await?
     };
-    let created = if creation.driver.is_some() {
+    let status = if started.driver_started {
         StatusCode::ACCEPTED
     } else {
         StatusCode::OK
     };
-    respond(&state, harness, creation, created).await
+    Ok(respond(status, started))
 }
 
 #[utoipa::path(
@@ -260,6 +262,16 @@ fn core_request(
             "Send application/json with workflow, workflow_revision, parameters, a sweep (seeds or grid) and max_items.",
         )
     })?;
+    if let api::BatchSweep::Grid(grid) = &body.sweep {
+        if let Some(name) = grid.repeated.first() {
+            return Err(Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Sweep parameter '{name}' is listed more than once in the grid."),
+                "List each parameter once in the grid, with all its values in one list, then preview the batch again.",
+            )
+            .with_type("urn:genaimage:problem:batch-invalid"));
+        }
+    }
     Ok(BatchRequest {
         workflow: body.workflow,
         workflow_revision: body.workflow_revision,
@@ -270,34 +282,42 @@ fn core_request(
                 parameter: sweep.parameter,
                 values: sweep.values,
             }),
-            api::BatchSweep::Grid(grid) => BatchSweep::Grid(grid),
+            api::BatchSweep::Grid(grid) => BatchSweep::Grid(grid.axes),
         },
         max_items: body.max_items,
     })
 }
 
-/// Starts the driver on a tracked task and answers with the batch as recorded.
-async fn respond(
+/// A batch as recorded, with whether its key was replayed and whether a driver
+/// was started for it.
+struct StartedBatch {
+    batch: genaimage_core::batch::BatchView,
+    replayed: bool,
+    driver_started: bool,
+}
+
+/// Hands the driver to a tracked task. Callers run this inside the tracked
+/// mutation task, so a client that disconnects cannot drop a driver, and with
+/// it the batch's claim, between creating the batch and starting it.
+async fn start_driver(
     state: &AppState,
     harness: Arc<Harness>,
     creation: BatchCreation,
-    created: StatusCode,
-) -> Result<impl IntoResponse, Problem> {
-    let BatchCreation { batch, driver, .. } = creation;
-    let location = format!("/api/v1/batches/{}", batch.record.id);
-    if let Some(driver) = driver {
-        start_driver(state, harness, driver).await;
-    }
-    Ok((
-        created,
-        [(header::LOCATION, location)],
-        Json(batch_response(batch)),
-    ))
-}
-
-async fn start_driver(state: &AppState, harness: Arc<Harness>, driver: BatchDriver) {
+) -> StartedBatch {
+    let BatchCreation {
+        batch,
+        replayed,
+        driver,
+    } = creation;
+    let Some(driver) = driver else {
+        return StartedBatch {
+            batch,
+            replayed,
+            driver_started: false,
+        };
+    };
     let observer: RunObserver = {
-        let (state, harness) = (state.clone(), harness);
+        let (state, harness) = (state.clone(), harness.clone());
         Arc::new(move |run| state.ensure_run_monitor(harness.clone(), run.id.clone()))
     };
     let (stop, deadline) = (
@@ -314,14 +334,41 @@ async fn start_driver(state: &AppState, harness: Arc<Harness>, driver: BatchDriv
             driver.run(stop, deadline, observer).await;
         }
     });
-    if spawned.is_none() {
-        let driver = slot.lock().expect("driver slot").take();
-        if let Some(driver) = driver {
-            let _ = driver
+    if spawned.is_some() {
+        return StartedBatch {
+            batch,
+            replayed,
+            driver_started: true,
+        };
+    }
+    let driver = slot.lock().expect("driver slot").take();
+    let batch = match driver {
+        Some(driver) => {
+            let id = batch.record.id.clone();
+            let settled = driver
                 .abandon("The server was shutting down before this item was submitted.")
                 .await;
+            match settled {
+                Ok(()) => harness.get_batch(&id).await.unwrap_or(batch),
+                Err(_) => batch,
+            }
         }
+        None => batch,
+    };
+    StartedBatch {
+        batch,
+        replayed,
+        driver_started: false,
     }
+}
+
+fn respond(status: StatusCode, started: StartedBatch) -> impl IntoResponse {
+    let location = format!("/api/v1/batches/{}", started.batch.record.id);
+    (
+        status,
+        [(header::LOCATION, location)],
+        Json(batch_response(started.batch)),
+    )
 }
 
 fn batch_response(batch: genaimage_core::batch::BatchView) -> api::BatchResponse {
@@ -340,7 +387,10 @@ fn batch_response(batch: genaimage_core::batch::BatchView) -> api::BatchResponse
                 parameter: sweep.parameter,
                 values: sweep.values,
             }),
-            BatchSweep::Grid(grid) => api::BatchSweep::Grid(grid),
+            BatchSweep::Grid(grid) => api::BatchSweep::Grid(api::BatchGrid {
+                axes: grid,
+                repeated: Vec::new(),
+            }),
         },
         max_items: batch.request.max_items,
         items: batch.items.into_iter().map(item_response).collect(),

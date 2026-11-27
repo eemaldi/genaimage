@@ -10,7 +10,8 @@ use crate::{
     batch::{
         item_submission, item_view, summarise, BatchCounts, BatchItemIssue, BatchItemView,
         BatchListEntry, BatchPlan, BatchRequest, BatchSweep, BatchView, InheritedInput,
-        PlannedItem, BATCH_PARAMETER_BYTES_CAP, MAX_REPORTED_INVALID_ITEMS,
+        ItemSubmission, PlannedItem, BATCH_PARAMETER_BYTES_CAP, BATCH_PREVIEW_BYTES_CAP,
+        MAX_REPORTED_INVALID_ITEMS,
     },
     persistence::{BatchRecord, BatchReservation, NewBatch, NewBatchItem},
 };
@@ -34,6 +35,12 @@ pub struct BatchDriver {
     harness: Harness,
     id: String,
     _claim: File,
+}
+
+fn preview_too_large(bytes: usize) -> HarnessError {
+    HarnessError::BatchTooLarge(format!(
+        "The preview would carry at least {bytes} bytes of values, above the limit of {BATCH_PREVIEW_BYTES_CAP}. Shorten the shared values or the workflow defaults, or sweep fewer items."
+    ))
 }
 
 const INTERRUPTED_BY_RESTART: &str =
@@ -162,6 +169,8 @@ impl Harness {
             )));
         }
         let mut items = Vec::new();
+        let mut inherited_inputs = Vec::new();
+        let mut preview_bytes = 0_usize;
         let (mut invalid, mut reported) = (0, Vec::new());
         for (index, (parameters, sweep_values)) in expanded.into_iter().enumerate() {
             let (errors, _) = self
@@ -177,21 +186,32 @@ impl Harness {
             let effective_parameters = loaded
                 .bind(request.preset.as_deref(), &parameters)?
                 .parameters;
-            let inherited_inputs = loaded
-                .inherited_inputs(request.preset.as_deref(), &parameters)?
-                .map(|(name, definition, value)| InheritedInput {
-                    parameter: name.to_owned(),
-                    node: definition.node.clone(),
-                    input: definition.input.clone(),
-                    value: value.clone(),
-                })
-                .collect();
+            for values in [&parameters, &sweep_values, &effective_parameters] {
+                preview_bytes = preview_bytes.saturating_add(serde_json::to_vec(values)?.len());
+            }
+            if preview_bytes > BATCH_PREVIEW_BYTES_CAP {
+                return Err(preview_too_large(preview_bytes));
+            }
+            if index == 0 {
+                inherited_inputs = loaded
+                    .inherited_inputs(request.preset.as_deref(), &parameters)?
+                    .map(|(name, definition, value)| InheritedInput {
+                        parameter: name.to_owned(),
+                        node: definition.node.clone(),
+                        input: definition.input.clone(),
+                        value: value.clone(),
+                    })
+                    .collect();
+                for input in &inherited_inputs {
+                    preview_bytes =
+                        preview_bytes.saturating_add(serde_json::to_vec(&input.value)?.len());
+                }
+            }
             items.push(PlannedItem {
                 index,
                 parameters,
                 sweep_values,
                 effective_parameters,
-                inherited_inputs,
             });
         }
         if invalid > 0 {
@@ -203,6 +223,7 @@ impl Harness {
         let plan = BatchPlan {
             workflow_revision: loaded.revision(),
             max_items: request.max_items,
+            inherited_inputs,
             items,
         };
         Ok((loaded, plan))
@@ -330,6 +351,9 @@ impl Harness {
         })
     }
 
+    /// Lists a page of batches with two queries, whatever the page size. It
+    /// never recovers submissions: a run whose submission owner died shows as
+    /// pending here until the batch is read with `get_batch`.
     pub async fn list_batches(
         &self,
         workflow: Option<String>,
@@ -338,30 +362,28 @@ impl Harness {
     ) -> Result<(Vec<BatchListEntry>, Option<String>)> {
         let repository = self.repository.as_async();
         let page = repository.list_batches(workflow, cursor, limit).await?;
-        let ids: Vec<String> = page.batches.iter().map(|batch| batch.id.clone()).collect();
-        let runs = repository.batch_run_summaries(ids).await?;
-        let mut entries = Vec::new();
-        for record in page.batches {
-            let submissions: Vec<_> = repository
-                .batch_item_states(&record.id)
-                .await?
-                .into_iter()
-                .map(|(index, stored)| {
-                    let run = runs
-                        .iter()
-                        .find(|(batch, run_index, ..)| *batch == record.id && *run_index == index)
-                        .map(|(_, _, status, never_sent)| (*status, *never_sent));
-                    item_submission(stored, run)
-                })
-                .collect();
-            let mut counts = BatchCounts::default();
-            submissions.iter().for_each(|item| counts.add(*item));
-            entries.push(BatchListEntry {
-                state: summarise(record.state, submissions),
-                record,
-                counts,
-            });
+        let ids = page.batches.iter().map(|batch| batch.id.clone()).collect();
+        let mut submissions: BTreeMap<String, Vec<ItemSubmission>> = BTreeMap::new();
+        for item in repository.batch_item_summaries(ids).await? {
+            submissions
+                .entry(item.batch_id)
+                .or_default()
+                .push(item_submission(item.stored, item.run));
         }
+        let entries = page
+            .batches
+            .into_iter()
+            .map(|record| {
+                let submissions = submissions.remove(&record.id).unwrap_or_default();
+                let mut counts = BatchCounts::default();
+                submissions.iter().for_each(|item| counts.add(*item));
+                BatchListEntry {
+                    state: summarise(record.state, submissions),
+                    record,
+                    counts,
+                }
+            })
+            .collect();
         Ok((entries, page.next_cursor))
     }
 
@@ -384,7 +406,10 @@ impl Harness {
     }
 
     /// Submits each pending item once through the keyed run path. Returns the
-    /// reason the rest cannot be submitted when a failure affects every item.
+    /// reason the rest cannot be submitted when a failure affects every item,
+    /// such as a changed workflow, a shutdown or an unreachable ComfyUI. A
+    /// failure of one item alone, such as a node it needs being missing, fails
+    /// only that item.
     async fn drive_batch(
         &self,
         id: &str,
@@ -440,6 +465,13 @@ impl Harness {
                     | HarnessError::WorkflowAmbiguous(_)
                     | HarnessError::WorkflowDiscoveryIncomplete { .. }),
                 ) => return Ok(Some(error.to_string())),
+                // No prompt was sent, and the next item would meet the same
+                // outage, so stop instead of failing every remaining item.
+                Err(error @ (HarnessError::ComfyUi(_) | HarnessError::Backend { .. })) => {
+                    return Ok(Some(format!(
+                        "ComfyUI unreachable; resume when it is back ({error})"
+                    )))
+                }
                 Err(error) => {
                     repository
                         .fail_batch_item(id, index, error.to_string())

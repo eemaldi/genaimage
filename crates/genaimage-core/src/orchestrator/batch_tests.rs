@@ -23,6 +23,14 @@ struct Gate {
     release: Semaphore,
 }
 
+#[derive(Clone, Copy)]
+enum ObjectInfoFault {
+    /// ComfyUI answers, but lacks the node the item needs: that item alone is invalid.
+    MissingNode,
+    /// ComfyUI does not answer: every remaining item would meet the same outage.
+    Unreachable,
+}
+
 #[derive(Default)]
 struct Script {
     /// Every prompt sent, in order, whether or not the response was lost.
@@ -30,9 +38,10 @@ struct Script {
     /// 1-based submit calls whose response is lost after the prompt was recorded.
     lose_response_on: BTreeSet<usize>,
     panic_on_submit: Option<usize>,
-    /// 1-based `object_info` calls; call 1 is the batch's one-off node check.
     object_info_calls: usize,
-    object_info_fails_on: BTreeSet<usize>,
+    /// Answers the first `object_info` call made once this many prompts have
+    /// been sent, so a fault lands on a named item whatever other calls happen.
+    object_info_fault: Option<(usize, ObjectInfoFault)>,
     submit_gate: Option<(usize, Arc<Gate>)>,
 }
 
@@ -53,14 +62,19 @@ impl ImageBackend for ScriptBackend {
     async fn object_info(&self) -> Result<Value> {
         let mut script = self.0.lock().unwrap();
         script.object_info_calls += 1;
-        if script
-            .object_info_fails_on
-            .contains(&script.object_info_calls)
+        let sent = script.prompts.len();
+        match script
+            .object_info_fault
+            .take_if(|(after, _)| *after == sent)
         {
-            return Err(HarnessError::Backend {
-                backend: "scripted backend".into(),
-                message: "object_info unavailable".into(),
-            });
+            Some((_, ObjectInfoFault::MissingNode)) => return Ok(json!({"SaveImage": {}})),
+            Some((_, ObjectInfoFault::Unreachable)) => {
+                return Err(HarnessError::Backend {
+                    backend: "scripted backend".into(),
+                    message: "connection refused".into(),
+                })
+            }
+            None => {}
         }
         Ok(json!({"KSampler": {}, "SaveImage": {}}))
     }
@@ -368,13 +382,8 @@ async fn one_invalid_item_submits_nothing_and_lists_each_invalid_index() {
 #[tokio::test]
 async fn a_failed_item_does_not_stop_later_items_and_is_reported_per_item() {
     let fixture = Fixture::new();
-    // Call 1 is the batch's node check; calls 2, 3 and 4 belong to items 0, 1 and 2.
-    fixture
-        .script
-        .lock()
-        .unwrap()
-        .object_info_fails_on
-        .insert(3);
+    // Once item 0 is sent, ComfyUI lacks a node: only the next item's check fails.
+    fixture.script.lock().unwrap().object_info_fault = Some((1, ObjectInfoFault::MissingNode));
     let batch = fixture
         .run_batch(
             "partial",
@@ -395,7 +404,7 @@ async fn a_failed_item_does_not_stop_later_items_and_is_reported_per_item() {
         .error
         .as_deref()
         .unwrap()
-        .contains("object_info unavailable"));
+        .contains("does not provide required node types: KSampler"));
     assert_eq!(batch.items[1].run_status, None);
     assert_eq!(fixture.submitted_calls(), 2);
 
@@ -935,7 +944,7 @@ async fn previews_show_effective_parameters_and_inherited_inputs_per_item() {
             ("steps".to_owned(), json!(10))
         ])
     );
-    let inherited: Vec<(&str, &Value)> = first
+    let inherited: Vec<(&str, &Value)> = plan
         .inherited_inputs
         .iter()
         .map(|input| (input.parameter.as_str(), &input.value))
@@ -944,4 +953,185 @@ async fn previews_show_effective_parameters_and_inherited_inputs_per_item() {
         inherited,
         [("cfg", &json!(7)), ("prefix", &json!("genaimage"))]
     );
+}
+
+#[tokio::test]
+async fn an_unreachable_comfyui_stops_the_driver_and_resume_sends_each_item_once() {
+    let fixture = Fixture::new();
+    // Once item 0 is sent, ComfyUI stops answering the per-item node check.
+    fixture.script.lock().unwrap().object_info_fault = Some((1, ObjectInfoFault::Unreachable));
+    let batch = fixture
+        .run_batch(
+            "outage",
+            fixture.request(json!({"seed": 1}), json!({"grid": {"steps": [1, 2, 3]}})),
+        )
+        .await;
+    assert_eq!(
+        submissions(&batch),
+        [
+            ItemSubmission::Submitted,
+            ItemSubmission::NotSubmitted,
+            ItemSubmission::NotSubmitted
+        ]
+    );
+    assert_eq!(batch.state, BatchSummary::Interrupted);
+    for item in &batch.items[1..] {
+        let error = item.error.as_deref().unwrap();
+        assert!(
+            error.contains("ComfyUI unreachable; resume when it is back"),
+            "{error}"
+        );
+        assert_eq!(item.run_id, None);
+    }
+    assert_eq!(fixture.submitted_calls(), 1);
+    // The outage was met once, not once per item.
+    assert_eq!(fixture.script.lock().unwrap().object_info_calls, 3);
+
+    let resumed = fixture
+        .harness
+        .resume_batch(&batch.record.id)
+        .await
+        .unwrap();
+    resumed
+        .driver
+        .unwrap()
+        .run(
+            CancellationToken::new(),
+            CancellationToken::new(),
+            Fixture::observer(),
+        )
+        .await;
+    let batch = fixture.harness.get_batch(&batch.record.id).await.unwrap();
+    assert_eq!(batch.state, BatchSummary::Submitted);
+    assert_eq!(sent_steps(&fixture), [json!(1), json!(2), json!(3)]);
+}
+
+#[tokio::test]
+async fn an_abandoned_driver_records_its_items_unsent_and_frees_the_claim() {
+    let fixture = Fixture::new();
+    let creation = fixture
+        .harness
+        .create_batch(
+            "shutdown".into(),
+            fixture.request(json!({"seed": 1}), json!({"grid": {"steps": [1, 2]}})),
+        )
+        .await
+        .unwrap();
+    let id = creation.batch.record.id.clone();
+    // The server began shutting down before the driver could be started.
+    creation
+        .driver
+        .unwrap()
+        .abandon("The server was shutting down before this item was submitted.")
+        .await
+        .unwrap();
+    let batch = fixture.harness.get_batch(&id).await.unwrap();
+    assert_eq!(batch.state, BatchSummary::Interrupted);
+    assert_eq!(
+        submissions(&batch),
+        [ItemSubmission::NotSubmitted, ItemSubmission::NotSubmitted]
+    );
+    assert!(batch.items.iter().all(|item| item
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("shutting down"))));
+    assert_eq!(fixture.submitted_calls(), 0);
+
+    // The claim was released, so a later resume can drive the batch.
+    let resumed = fixture.harness.resume_batch(&id).await.unwrap();
+    resumed
+        .driver
+        .expect("the claim is free")
+        .run(
+            CancellationToken::new(),
+            CancellationToken::new(),
+            Fixture::observer(),
+        )
+        .await;
+    let batch = fixture.harness.get_batch(&id).await.unwrap();
+    assert_eq!(batch.state, BatchSummary::Submitted);
+    assert_eq!(sent_steps(&fixture), [json!(1), json!(2)]);
+}
+
+#[tokio::test]
+async fn a_preview_that_would_exceed_its_size_cap_is_rejected_not_returned() {
+    let fixture = Fixture::new();
+    // A long workflow default is small in the request but repeats in every item's
+    // effective parameters.
+    let manifest = fixture
+        .harness
+        .config()
+        .workflows
+        .join("contract.genaimage.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    value["parameters"]["prefix"]["default"] = json!("x".repeat(100_000));
+    fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+    let values: Vec<u32> = (0..256).collect();
+    let request = BatchRequest {
+        max_items: 256,
+        ..fixture.request(json!({"steps": 5}), seeds(json!(values)))
+    };
+    let error = fixture.harness.preview_batch(&request).await.unwrap_err();
+    assert!(
+        matches!(&error, HarnessError::BatchTooLarge(message) if message.contains("preview")),
+        "{error}"
+    );
+    // The same request is also refused at submission, so what is previewed is what is accepted.
+    assert!(matches!(
+        fixture.harness.create_batch("big".into(), request).await,
+        Err(HarnessError::BatchTooLarge(_))
+    ));
+    let few = fixture.request(json!({"steps": 5}), seeds(json!([1, 2, 3])));
+    assert_eq!(
+        fixture
+            .harness
+            .preview_batch(&few)
+            .await
+            .unwrap()
+            .items
+            .len(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn the_list_agrees_with_a_read_for_every_item_state_on_one_page() {
+    let fixture = Fixture::new();
+    let all_sent = fixture
+        .run_batch(
+            "all",
+            fixture.request(json!({"seed": 1}), json!({"grid": {"steps": [1, 2]}})),
+        )
+        .await;
+    // One item whose response is lost (unknown), one missing a node (failed), one sent.
+    fixture.script.lock().unwrap().lose_response_on = BTreeSet::from([4]);
+    fixture.script.lock().unwrap().object_info_fault = Some((3, ObjectInfoFault::MissingNode));
+    let mixed = fixture
+        .run_batch(
+            "mixed",
+            fixture.request(json!({"seed": 1}), json!({"grid": {"steps": [3, 4, 5]}})),
+        )
+        .await;
+    assert_eq!(
+        submissions(&mixed),
+        [
+            ItemSubmission::Submitted,
+            ItemSubmission::Failed,
+            ItemSubmission::OutcomeUnknown
+        ]
+    );
+    let (entries, next) = fixture
+        .harness
+        .list_batches(None, None, None)
+        .await
+        .unwrap();
+    assert!(next.is_none());
+    assert_eq!(entries.len(), 2);
+    for read in [&all_sent, &mixed] {
+        let listed = entries
+            .iter()
+            .find(|entry| entry.record.id == read.record.id)
+            .unwrap();
+        assert_eq!((listed.state, listed.counts), (read.state, read.counts));
+    }
 }

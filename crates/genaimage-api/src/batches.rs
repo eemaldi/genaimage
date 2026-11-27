@@ -1,7 +1,10 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{MapAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use serde_json::Value;
 use utoipa::ToSchema;
 
@@ -35,8 +38,62 @@ pub enum BatchSweep {
     /// An explicit seed list. The server never generates seeds.
     Seeds(SeedSweep),
     /// Parameter name to its values. Items are the cartesian product: names are
-    /// sorted by byte order and the last name varies fastest.
-    Grid(BTreeMap<String, Vec<Value>>),
+    /// sorted by byte order and the last name varies fastest. A name must be
+    /// listed once; the server rejects a repeated name with `batch-invalid`.
+    Grid(BatchGrid),
+}
+
+/// The lists of a grid sweep, keyed by parameter name. A name that the request
+/// listed more than once is recorded in `repeated` so the server can reject it,
+/// instead of one list silently replacing another.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(transparent)]
+pub struct BatchGrid {
+    pub axes: BTreeMap<String, Vec<Value>>,
+    #[serde(skip)]
+    pub repeated: Vec<String>,
+}
+
+impl utoipa::PartialSchema for BatchGrid {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, SchemaType, Type};
+        let values =
+            ArrayBuilder::new().items(ObjectBuilder::new().schema_type(SchemaType::AnyValue));
+        ObjectBuilder::new()
+            .schema_type(Type::Object)
+            .additional_properties(Some(values))
+            .into()
+    }
+}
+
+impl ToSchema for BatchGrid {}
+
+impl<'de> Deserialize<'de> for BatchGrid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Axes;
+
+        impl<'de> Visitor<'de> for Axes {
+            type Value = BatchGrid;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object of parameter names to lists of values")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<BatchGrid, A::Error> {
+                let mut grid = BatchGrid::default();
+                while let Some((name, values)) = map.next_entry::<String, Vec<Value>>()? {
+                    if grid.axes.insert(name.clone(), values).is_some()
+                        && !grid.repeated.contains(&name)
+                    {
+                        grid.repeated.push(name);
+                    }
+                }
+                Ok(grid)
+            }
+        }
+
+        deserializer.deserialize_map(Axes)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -58,9 +115,6 @@ pub struct BatchPreviewItem {
     pub sweep_values: BTreeMap<String, Value>,
     /// The values the run will record: preset, explicit values and workflow defaults.
     pub effective_parameters: BTreeMap<String, Value>,
-    /// Graph inputs left untouched by binding, not submitted values.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inherited_inputs: Vec<WorkflowInheritedInput>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -71,6 +125,10 @@ pub struct BatchPreviewResponse {
     /// The server limit on items per batch.
     pub max_items_cap: usize,
     pub workflow_revision: String,
+    /// Graph inputs left untouched by binding, not submitted values. Every item
+    /// sets the same parameters, so they are the same for all items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherited_inputs: Vec<WorkflowInheritedInput>,
     pub items: Vec<BatchPreviewItem>,
 }
 
@@ -96,7 +154,10 @@ pub enum BatchState {
 pub enum BatchItemSubmission {
     Pending,
     Submitted,
-    /// Rejected before ComfyUI was contacted. Resuming retries it.
+    /// No prompt was sent for it, and `error` says why. Without a `run_id` the
+    /// item was rejected before a run was recorded, and resuming retries it.
+    /// With a `run_id` it failed while the run was being prepared, which is
+    /// final: resuming never retries it.
     Failed,
     /// Never attempted. Resuming submits it.
     NotSubmitted,
