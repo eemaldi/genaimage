@@ -10,6 +10,7 @@
   import Form from './Form.svelte';
   import Submission, { type SubmissionControls } from './Submission.svelte';
   import { workflowHref } from './model';
+  import { workflowProblem } from '../workflows/errors';
 
   let { query }: { query: URLSearchParams } = $props();
   let id = $derived(query.get('workflow') ?? '');
@@ -57,7 +58,7 @@
   }
   function loadProblem(error: unknown): Problem {
     return error instanceof ApiProblemError
-      ? error.problem
+      ? workflowProblem(error)
       : {
           title: id
             ? 'Could not load the workflow'
@@ -82,7 +83,10 @@
           {...controls}
         />{/key}
     {:else if 'catalogue' in result}
-      {#if result.catalogue.workflows.length}
+      {@const offered = result.catalogue.workflows.filter(
+        (item) => item.available === true,
+      )}
+      {#if offered.length}
         <form
           onsubmit={(event) => {
             event.preventDefault();
@@ -94,7 +98,7 @@
             bind:value={picked}
             options={[
               { value: '', label: 'Choose a workflow' },
-              ...result.catalogue.workflows.map(({ id, name }) => ({
+              ...offered.map(({ id, name }) => ({
                 value: id,
                 label: `${name} (${id})`,
               })),
@@ -106,7 +110,11 @@
           >
         </form>
       {:else}
-        <p>No workflows are available. Check the local workflow manifests.</p>
+        <p>
+          No workflows are available. Check the local workflow manifests and the <a
+            href="#/workflows">workflow catalogue</a
+          > for details.
+        </p>
       {/if}
       {#if result.catalogue.diagnostics.length}
         <p>
