@@ -236,6 +236,13 @@ with 422 `workflow-import-invalid`, because UI-format exports use those keys.
   publishing the manifest; those files are never deleted. Any other content
   gives `workflow-exists`. An identical repeat of a successful confirmation
   returns 200 with the same result.
+- Once the graph is published it is never removed, because another call (or
+  process) may already depend on it; a failure afterwards removes only a
+  manifest this call linked. If the manifest link finds one already there, the
+  call lost a race: an identical manifest replays as 200, a different one is
+  `workflow-exists`, and every file stays in place. An in-process lock
+  serialises confirmations; the no-clobber links make this safe across
+  processes too.
 - If another manifest declares the written ID by the time the catalogue is
   rebuilt, the answer is 409 `urn:genaimage:problem:workflow-ambiguous` with
   `id` and `manifest_path`. The workflow **was written** and stays unavailable

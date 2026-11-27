@@ -515,3 +515,131 @@ fn only_this_schemes_temporaries_count_as_leftovers() {
         assert!(!is_stale_temporary(name), "{name}");
     }
 }
+
+struct NoBackend;
+
+fn unused<T>() -> crate::Result<T> {
+    Err(HarnessError::UnsupportedOperation(
+        "not used by import tests".to_owned(),
+    ))
+}
+
+#[crate::async_trait]
+impl crate::ImageBackend for NoBackend {
+    fn name(&self) -> &str {
+        "none"
+    }
+    fn base_url(&self) -> &str {
+        "fake://local"
+    }
+    async fn health(&self) -> crate::Result<crate::image_backend::BackendHealth> {
+        unused()
+    }
+    async fn object_info(&self) -> crate::Result<Value> {
+        unused()
+    }
+    async fn queue(&self) -> crate::Result<crate::image_backend::QueueSnapshot> {
+        unused()
+    }
+    async fn submit(
+        &self,
+        _: &Value,
+        _: &str,
+        _: &str,
+    ) -> crate::Result<crate::image_backend::PromptResponse> {
+        unused()
+    }
+    async fn history(&self, _: &str) -> crate::Result<crate::image_backend::HistorySnapshot> {
+        unused()
+    }
+    async fn delete_queued(&self, _: &str) -> crate::Result<Value> {
+        unused()
+    }
+    async fn interrupt(&self, _: &str) -> crate::Result<Value> {
+        unused()
+    }
+    async fn upload_image(&self, _: &Path) -> crate::Result<crate::image_backend::UploadResponse> {
+        unused()
+    }
+    async fn download_output(
+        &self,
+        _: &crate::image_backend::OutputReference,
+    ) -> crate::Result<Vec<u8>> {
+        unused()
+    }
+    async fn monitor_events(&self, _: &str) -> crate::Result<crate::image_backend::EventMonitor> {
+        unused()
+    }
+}
+
+/// Call A has published the graph and is about to link its manifest; call B
+/// completes the directory first. A's `AlreadyExists` must lose the race
+/// without removing anything B depends on.
+#[test]
+fn a_fresh_import_that_loses_the_manifest_race_removes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let config =
+        crate::HarnessConfig::load_with(
+            directory.path(),
+            None,
+            directory.path(),
+            |key| match key {
+                "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => {
+                    Some(directory.path().display().to_string())
+                }
+                _ => None,
+            },
+        )
+        .unwrap();
+    let harness = Harness::new(config, std::sync::Arc::new(NoBackend)).unwrap();
+    let root = harness.config().workflows.clone();
+    let graph = parse(TEXT_TO_IMAGE);
+    let proposal = propose(&graph, None).unwrap();
+    let manifest = serde_json::to_value(&proposal.manifest).unwrap();
+    let canonical = canonical_graph_bytes(&graph);
+    let (parsed, ours) = validate_manifest(&manifest, &canonical).unwrap();
+    let workflow_directory = root.join(&parsed.id);
+
+    let mut different = manifest.clone();
+    different["title"] = json!("Someone else's title");
+    let (_, theirs) = validate_manifest(&different, &canonical).unwrap();
+    assert_ne!(ours, theirs);
+
+    for (b_manifest, b_bytes, a_wins_replay) in
+        [(&manifest, &ours, true), (&different, &theirs, false)]
+    {
+        let _ = fs::remove_dir_all(&workflow_directory);
+        create_root(&root).unwrap();
+        fs::create_dir(&workflow_directory).unwrap();
+        let mut a_created = Vec::new();
+        publish_new(&workflow_directory, GRAPH_FILE, &canonical, &mut a_created).unwrap();
+
+        let b = harness
+            .confirm_workflow_import(&graph, &proposal.graph_sha256, b_manifest)
+            .unwrap();
+        assert_eq!(b.id, parsed.id);
+
+        let a = harness.publish_manifest(&root, &workflow_directory, &parsed.id, &ours);
+        match (a_wins_replay, a) {
+            (true, Ok(replayed)) => assert_eq!(replayed.revision, b.revision),
+            (false, Err(ImportError::Exists { id, .. })) => assert_eq!(id, parsed.id),
+            (_, other) => panic!("unexpected result for A: {other:?}"),
+        }
+        assert_eq!(
+            fs::read(workflow_directory.join(GRAPH_FILE)).unwrap(),
+            canonical
+        );
+        assert_eq!(
+            fs::read(workflow_directory.join(MANIFEST_FILE)).unwrap(),
+            *b_bytes
+        );
+        LoadedWorkflow::load(&workflow_directory.join(MANIFEST_FILE)).unwrap();
+        assert_eq!(
+            harness
+                .imported(&parsed.id, &workflow_directory)
+                .unwrap()
+                .revision,
+            b.revision
+        );
+    }
+}

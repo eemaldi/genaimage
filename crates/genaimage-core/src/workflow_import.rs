@@ -40,6 +40,8 @@ const MAX_ISSUES: usize = 20;
 const MAX_TITLE_CHARS: usize = 100;
 const DEFAULT_SLUG: &str = "imported-workflow";
 
+/// Serialises confirmations within this process only; other processes are
+/// kept apart by the no-clobber links and the rollback rule, not by this lock.
 static CONFIRM_LOCK: Mutex<()> = Mutex::new(());
 
 /// One problem with the submitted graph or manifest.
@@ -977,6 +979,12 @@ fn holds_only_graph_and_temporaries(directory: &Path) -> bool {
     seen_graph
 }
 
+fn holds_identical(root: &Path, directory: &Path, name: &str, expected: &[u8]) -> bool {
+    safe_file::open_regular_beneath(root, directory, Path::new(name))
+        .and_then(|file| read_limited(file, expected.len()).ok())
+        .is_some_and(|bytes| bytes == expected)
+}
+
 impl Harness {
     /// Every workflow ID claimed by the user root or any pack, including
     /// invalid and duplicate claimants. Fails when a directory cannot be
@@ -1070,75 +1078,92 @@ impl Harness {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = self.config().workflows.clone();
         let directory = root.join(&parsed.id);
-        let exists = |taken: &BTreeSet<String>| -> ImportError {
-            ImportError::Exists {
-                id: parsed.id.clone(),
-                suggested_id: self.free_workflow_id(&parsed.id, taken),
-            }
-        };
-        let same = |name: &str, expected: &[u8]| {
-            safe_file::open_regular_beneath(&root, &directory, Path::new(name))
-                .and_then(|file| read_limited(file, expected.len()).ok())
-                .is_some_and(|bytes| bytes == expected)
-        };
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() => {
-                if same(GRAPH_FILE, &canonical) && same(MANIFEST_FILE, &manifest_bytes) {
+                if holds_identical(&root, &directory, GRAPH_FILE, &canonical)
+                    && holds_identical(&root, &directory, MANIFEST_FILE, &manifest_bytes)
+                {
                     return self.imported(&parsed.id, &directory);
                 }
-                if !same(GRAPH_FILE, &canonical) || !holds_only_graph_and_temporaries(&directory) {
-                    return Err(exists(&self.taken_workflow_ids()?));
+                if !holds_identical(&root, &directory, GRAPH_FILE, &canonical)
+                    || !holds_only_graph_and_temporaries(&directory)
+                {
+                    return Err(self.exists(&parsed.id, &self.taken_workflow_ids()?));
                 }
                 let taken = self.taken_workflow_ids()?;
                 if taken.contains(&parsed.id) {
-                    return Err(exists(&taken));
+                    return Err(self.exists(&parsed.id, &taken));
                 }
-                let mut created = Vec::new();
-                return match write_workflow(&directory, None, &manifest_bytes, &mut created) {
-                    Ok(()) => self.imported(&parsed.id, &directory).inspect_err(|_| {
-                        rollback(&directory, &created, false);
-                    }),
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        rollback(&directory, &created, false);
-                        if same(MANIFEST_FILE, &manifest_bytes) {
-                            self.imported(&parsed.id, &directory)
-                        } else {
-                            Err(exists(&self.taken_workflow_ids()?))
-                        }
-                    }
-                    Err(error) => {
-                        rollback(&directory, &created, false);
-                        Err(error.into())
-                    }
-                };
+                return self.publish_manifest(&root, &directory, &parsed.id, &manifest_bytes);
             }
-            Ok(_) => return Err(exists(&self.taken_workflow_ids()?)),
+            Ok(_) => return Err(self.exists(&parsed.id, &self.taken_workflow_ids()?)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
         let taken = self.taken_workflow_ids()?;
         if taken.contains(&parsed.id) {
-            return Err(exists(&taken));
+            return Err(self.exists(&parsed.id, &taken));
         }
 
         create_root(&root)?;
         match fs::create_dir(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(exists(&taken));
+                return Err(self.exists(&parsed.id, &taken));
             }
             Err(error) => return Err(error.into()),
         }
         let mut created = Vec::new();
-        let written = write_workflow(&directory, Some(&canonical), &manifest_bytes, &mut created)
-            .and_then(|()| sync_directory(&root));
-        if let Err(error) = written {
+        if let Err(error) = publish_new(&directory, GRAPH_FILE, &canonical, &mut created) {
+            // Nothing was linked, so only our temporary file and the empty
+            // directory we just created are removed.
             rollback(&directory, &created, true);
             return Err(error.into());
         }
-        self.imported(&parsed.id, &directory).inspect_err(|_| {
-            rollback(&directory, &created, true);
-        })
+        // From here the graph stays whatever happens: another call may already
+        // have adopted it, and an identical retry completes a leftover.
+        sync_directory(&directory)?;
+        sync_directory(&root)?;
+        self.publish_manifest(&root, &directory, &parsed.id, &manifest_bytes)
+    }
+
+    fn exists(&self, id: &str, taken: &BTreeSet<String>) -> ImportError {
+        ImportError::Exists {
+            id: id.to_owned(),
+            suggested_id: self.free_workflow_id(id, taken),
+        }
+    }
+
+    /// Links the manifest into a directory that already holds the identical
+    /// graph. `AlreadyExists` means another call won the race: the same
+    /// manifest replays as success, a different one is `workflow-exists`, and
+    /// nothing is removed either way. Only a manifest this call linked is rolled
+    /// back, never the graph or the directory.
+    fn publish_manifest(
+        &self,
+        root: &Path,
+        directory: &Path,
+        id: &str,
+        manifest_bytes: &[u8],
+    ) -> Result<ImportedWorkflow, ImportError> {
+        let mut created = Vec::new();
+        match write_workflow(directory, None, manifest_bytes, &mut created) {
+            Ok(()) => self.imported(id, directory).inspect_err(|_| {
+                rollback(directory, &created, false);
+            }),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                rollback(directory, &created, false);
+                if holds_identical(root, directory, MANIFEST_FILE, manifest_bytes) {
+                    self.imported(id, directory)
+                } else {
+                    Err(self.exists(id, &self.taken_workflow_ids()?))
+                }
+            }
+            Err(error) => {
+                rollback(directory, &created, false);
+                Err(error.into())
+            }
+        }
     }
 
     /// Loads what is on disk with the discovery loader, so a reported success
