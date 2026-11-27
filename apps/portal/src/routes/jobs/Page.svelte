@@ -397,8 +397,14 @@
               </p>
               <Button
                 onclick={() => confirm(run, true)}
-                disabled={busy.has(run.id)}>Submit as new run</Button
+                disabled={busy.has(run.id)}
+                >{run.batch_id
+                  ? 'Submit as new run outside this batch'
+                  : 'Submit as new run'}</Button
               >
+              {#if run.batch_id}
+                <p>The new run will not appear in this batch.</p>
+              {/if}
             {/if}
           {/if}
         </li>

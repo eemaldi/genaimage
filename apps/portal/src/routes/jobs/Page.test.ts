@@ -266,6 +266,31 @@ test('requires a not-found outcome and explicit review before creating a new run
   );
 });
 
+test('a batch run offers its re-run as outside the batch', async () => {
+  const unknown = {
+    ...original,
+    batch_id: 'batch-7',
+    status: 'unknown_submission' as const,
+  };
+  await start(unknown);
+  client.reconcileRun.mockResolvedValueOnce({
+    ...unknown,
+    outcome: 'not_found',
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Reconcile' }));
+  expect(
+    await screen.findByRole('button', {
+      name: 'Submit as new run outside this batch',
+    }),
+  ).toBeTruthy();
+  expect(
+    screen.getByText('The new run will not appear in this batch.'),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: 'Submit as new run' }),
+  ).toBeNull();
+});
+
 function rerunProblem(status: number, type = 'about:blank') {
   return new ApiProblemError({
     status,
