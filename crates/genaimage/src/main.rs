@@ -6,6 +6,7 @@ mod healthcheck;
 mod model_commands;
 mod open;
 mod output;
+mod pack_commands;
 mod run_commands;
 mod serve;
 mod server_commands;
@@ -90,6 +91,11 @@ enum Command {
         #[command(subcommand)]
         command: WorkflowCommand,
     },
+    /// List workflow packs and check their declared requirements.
+    Packs {
+        #[command(subcommand)]
+        command: PacksCommand,
+    },
     Presets {
         id: String,
     },
@@ -116,8 +122,18 @@ enum ConfigCommand {
 }
 
 #[derive(Subcommand)]
+enum PacksCommand {
+    /// List packs with their workflows, templates, requirements and diagnostics.
+    List,
+    /// Check a pack's node classes and models against ComfyUI; never installs anything.
+    Validate { id: String },
+}
+
+#[derive(Subcommand)]
 enum WorkflowCommand {
     List,
+    /// Rebuild the workflow catalogue, including every pack, and list it.
+    Refresh,
     Validate {
         id: String,
         #[arg(long)]

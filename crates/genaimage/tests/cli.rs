@@ -1477,3 +1477,58 @@ mod models {
         server.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn packs_and_refresh_print_stable_json_and_never_report_unchecked_packs_as_ok() {
+    let server = Server::start().await;
+    let pack = server.workflows.join("packs/demo");
+    write(
+        &pack.join("pack.toml"),
+        "id = 'demo'\nversion = '2.0.0'\nworkflows = ['wf.genaimage.json']\n[requires]\nnode_classes = ['KSampler', 'Absent']\n[requires.models]\nloras = ['style.safetensors']\n",
+    );
+    install_contract_workflow(&pack);
+    fs::rename(
+        pack.join("contract.genaimage.json"),
+        pack.join("wf.genaimage.json"),
+    )
+    .unwrap();
+    *server.fake.object_info_override.lock().unwrap() = Some(json!({
+        "KSampler": {},
+        "LoraLoader": {"input": {"required": {"lora_name": [["style.safetensors"]]}}}
+    }));
+    let client = Client::with_base_url(&server.origin).unwrap();
+
+    let refreshed = report(server.cli(&["--json", "workflow", "refresh"]).await, 0);
+    assert_eq!(refreshed["workflows"][0]["id"], "contract-workflow");
+    assert_eq!(refreshed["workflows"][0]["source"], "pack:demo");
+
+    let listing = report(server.cli(&["--json", "packs", "list"]).await, 0);
+    assert_eq!(
+        listing,
+        serde_json::to_value(client.packs().await.unwrap()).unwrap()
+    );
+    assert_eq!(listing["packs"][0]["id"], "demo");
+    assert_eq!(listing["packs"][0]["version"], "2.0.0");
+    assert_eq!(
+        listing["packs"][0]["workflow_ids"],
+        json!(["contract-workflow"])
+    );
+    assert_eq!(listing["diagnostics"], json!([]));
+
+    let validation = report(
+        server.cli(&["--json", "packs", "validate", "demo"]).await,
+        6,
+    );
+    assert_eq!(validation["status"], "missing");
+    assert_eq!(
+        validation["node_classes"][1],
+        json!({"class": "Absent", "status": "missing"})
+    );
+    assert_eq!(
+        validation["models"][0],
+        json!({"folder": "loras", "name": "style.safetensors", "status": "available", "loader": "LoraLoader.lora_name", "reason": null})
+    );
+
+    let absent = server.cli(&["--json", "packs", "validate", "nope"]).await;
+    assert_ne!(absent.status.code(), Some(0));
+}

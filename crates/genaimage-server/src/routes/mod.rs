@@ -4,6 +4,7 @@ mod events;
 mod health;
 pub(crate) mod models;
 mod outputs;
+mod packs;
 pub(crate) mod prompt;
 mod runs;
 mod settings;
@@ -111,6 +112,9 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(conversations::delete))
         .routes(routes!(prompt::assist))
         .routes(routes!(workflows::list))
+        .routes(routes!(workflows::refresh))
+        .routes(routes!(packs::list))
+        .routes(routes!(packs::validate))
         .routes(routes!(workflows::details))
         .routes(routes!(workflows::validate))
         .routes(routes!(workflows::thumbnail))

@@ -116,10 +116,18 @@ pub struct WorkflowSummary {
     pub category: Option<String>,
     pub thumbnail_url: Option<String>,
     pub version: String,
+    /// `user` for the writable workflow root, or `pack:<id>` for a workflow pack.
+    #[serde(default = "user_source")]
+    #[schema(required = true)]
+    pub source: String,
     /// Opaque revision of the API graph and manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(required = true, value_type = String)]
     pub revision: Option<String>,
+}
+
+fn user_source() -> String {
+    "user".to_owned()
 }
 
 /// A manifest that could not be loaded during discovery.
@@ -272,6 +280,9 @@ pub enum WorkflowNodeCheckStatus {
 
 mod outputs;
 pub use outputs::*;
+
+mod packs;
+pub use packs::*;
 
 mod runs;
 pub use runs::*;

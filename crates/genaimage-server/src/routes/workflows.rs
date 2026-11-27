@@ -87,6 +87,32 @@ async fn load(
 pub(super) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<WorkflowListResponse>, Problem> {
+    listing(state).await
+}
+
+#[utoipa::path(
+    post, path = "/workflows/refresh",
+    operation_id = "workflows_refresh",
+    tag = "workflows",
+    description = "Force a rebuild of the workflow catalogue, including every pack, and return the listing. The ID `refresh` is reserved.",
+    responses(
+        (status = 200, body = genaimage_api::WorkflowListResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn refresh(
+    State(state): State<AppState>,
+) -> Result<Json<WorkflowListResponse>, Problem> {
+    listing(state).await
+}
+
+async fn listing(state: AppState) -> Result<Json<WorkflowListResponse>, Problem> {
     let discovery = state
         .workflow_index
         .list(state.harness())
@@ -97,11 +123,12 @@ pub(super) async fn list(
             .workflows
             .into_iter()
             .map(|workflow| {
+                let source = workflow.source;
                 let manifest = workflow.manifest;
                 let thumbnail_url = manifest
                     .thumbnail
                     .as_ref()
-                    .filter(|_| !matches!(manifest.id.as_str(), "." | ".."))
+                    .filter(|_| !matches!(manifest.id.as_str(), "." | ".." | "refresh"))
                     .map(|_| {
                         format!(
                             "/api/v1/workflows/{}/thumbnail",
@@ -116,6 +143,7 @@ pub(super) async fn list(
                     category: manifest.category,
                     thumbnail_url,
                     version: manifest.version,
+                    source: source.to_string(),
                     revision: Some(workflow.revision),
                 }
             })
@@ -338,11 +366,13 @@ pub(super) async fn thumbnail(
         .get(harness.clone())
         .await
         .map_err(internal_error)?;
-    let root = harness.config().workflows.clone();
+    let roots: Vec<_> = std::iter::once(harness.config().workflows.clone())
+        .chain(harness.config().packs.iter().cloned())
+        .collect();
     let search_id = id.clone();
     let image = tokio::task::spawn_blocking(move || {
         let source = index.source(&search_id)?;
-        Ok::<_, HarnessError>(source.map(|source| read_thumbnail(&source, &root)))
+        Ok::<_, HarnessError>(source.map(|source| read_thumbnail(&source, &roots)))
     })
     .await
     .map_err(internal_error)?
@@ -358,7 +388,10 @@ pub(super) async fn thumbnail(
     Ok(([(header::CONTENT_TYPE, content_type)], bytes))
 }
 
-fn read_thumbnail(workflow: &ThumbnailSource, root: &Path) -> Option<(&'static str, Vec<u8>)> {
+fn read_thumbnail(
+    workflow: &ThumbnailSource,
+    roots: &[std::path::PathBuf],
+) -> Option<(&'static str, Vec<u8>)> {
     let relative = Path::new(workflow.thumbnail.as_deref()?);
     if relative.as_os_str().is_empty()
         || !relative
@@ -377,6 +410,10 @@ fn read_thumbnail(workflow: &ThumbnailSource, root: &Path) -> Option<(&'static s
         _ => return None,
     };
     let directory = workflow.manifest_path.parent()?;
+    let root = roots
+        .iter()
+        .filter(|root| directory.starts_with(root))
+        .max_by_key(|root| root.components().count())?;
     let file = genaimage_core::safe_file::open_regular_beneath(root, directory, relative)?;
     let mut bytes = Vec::new();
     file.take(MAX_THUMBNAIL_BYTES + 1)
@@ -415,7 +452,7 @@ mod tests {
             manifest_path: loaded.manifest_path.clone(),
             thumbnail: loaded.manifest.thumbnail.clone(),
         };
-        let (mime, bytes) = read_thumbnail(&source, &root).unwrap();
+        let (mime, bytes) = read_thumbnail(&source, std::slice::from_ref(&root)).unwrap();
         assert_eq!(mime, "image/png");
         assert_eq!(bytes, b"inside");
     }
@@ -444,6 +481,6 @@ mod tests {
             manifest_path: loaded.manifest_path.clone(),
             thumbnail: loaded.manifest.thumbnail.clone(),
         };
-        assert!(read_thumbnail(&source, &root).is_none());
+        assert!(read_thumbnail(&source, std::slice::from_ref(&root)).is_none());
     }
 }

@@ -20,11 +20,12 @@ use url::{Host, Url};
 
 use crate::{
     DoctorReport, HealthResponse, OutputAnnotationListResponse, OutputAnnotationResponse,
-    OutputListQuery, OutputListResponse, ProblemDetails, ReconcileRunResponse,
-    ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery, RunEventsResponse,
-    RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse,
-    SettingsTestResponse, SetupDetectResponse, SetupStatus, SubmitRunRequest, UploadResponse,
-    WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest, WorkflowValidationResponse,
+    OutputListQuery, OutputListResponse, PackListResponse, PackValidationResponse, ProblemDetails,
+    ReconcileRunResponse, ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery,
+    RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch,
+    SettingsResponse, SettingsTestResponse, SetupDetectResponse, SetupStatus, SubmitRunRequest,
+    UploadResponse, WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest,
+    WorkflowValidationResponse,
 };
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:3000";
@@ -143,6 +144,21 @@ impl Client {
 
     pub async fn workflows(&self) -> Result<WorkflowListResponse, Error> {
         self.json(self.get(&["workflows"])?).await
+    }
+
+    /// Forces a workflow catalogue rebuild, including every pack, and returns the listing.
+    pub async fn refresh_workflows(&self) -> Result<WorkflowListResponse, Error> {
+        self.json(self.request(Method::POST, &["workflows", "refresh"])?)
+            .await
+    }
+
+    pub async fn packs(&self) -> Result<PackListResponse, Error> {
+        self.json(self.get(&["packs"])?).await
+    }
+
+    /// Checks a pack's requirements against ComfyUI. Never installs anything.
+    pub async fn validate_pack(&self, id: &str) -> Result<PackValidationResponse, Error> {
+        self.json(self.get(&["packs", id, "validate"])?).await
     }
 
     pub async fn workflow(&self, id: &str) -> Result<WorkflowDetails, Error> {

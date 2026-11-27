@@ -431,6 +431,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/packs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List workflow packs with their declared workflows, templates and requirements, plus discovery diagnostics. */
+        get: operations["packs_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description List workflow packs with their declared workflows, templates and requirements, plus discovery diagnostics. */
+        head: operations["packs_list_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/packs/{id}/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything. */
+        get: operations["packs_validate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything. */
+        head: operations["packs_validate_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs": {
         parameters: {
             query?: never;
@@ -711,6 +747,23 @@ export interface paths {
         options?: never;
         /** @description List workflows and discovery diagnostics. */
         head: operations["workflows_list_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflows/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Force a rebuild of the workflow catalogue, including every pack, and return the listing. The ID `refresh` is reserved. */
+        post: operations["workflows_refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -1010,7 +1063,7 @@ export interface components {
             /**
              * @description Stable identifier, one of `server`, `config`, `comfyui.reachable`,
              *     `comfyui.version`, `comfyui.object_info`, `workflows.nodes`,
-             *     `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.
+             *     `packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.
              */
             id: string;
             /** @description Bounded detail lines, such as missing node classes per workflow. */
@@ -1271,6 +1324,63 @@ export interface components {
             tags: string[];
             workflow_id: string;
         };
+        /** @description Workflow packs found below `paths.packs`, and discovery problems. */
+        PackListResponse: {
+            /** @description Broken packs and unreadable declared files; a broken pack never hides the others. */
+            diagnostics: components["schemas"]["WorkflowDiagnostic"][];
+            packs: components["schemas"]["PackSummary"][];
+        };
+        PackModelCheck: {
+            folder: string;
+            /** @description The loader input used for the check, as `Class.input`. */
+            loader?: string | null;
+            name: string;
+            /** @description Why the status is `unknown`. */
+            reason?: string | null;
+            status: components["schemas"]["PackRequirementStatus"];
+        };
+        PackNodeCheck: {
+            class: string;
+            status: components["schemas"]["PackRequirementStatus"];
+        };
+        /** @enum {string} */
+        PackRequirementStatus: "available" | "missing" | "unknown";
+        /** @description Declared requirements, checked but never installed. */
+        PackRequirements: {
+            /** @description Model folder to file names. */
+            models: {
+                [key: string]: string[];
+            };
+            node_classes: string[];
+        };
+        /** @description One valid pack with its declared contents. */
+        PackSummary: {
+            description: string;
+            /** @description Declared files that are missing or unreadable. */
+            diagnostics: string[];
+            /** @description The pack directory. */
+            directory: string;
+            id: string;
+            requires: components["schemas"]["PackRequirements"];
+            /** @description The configured pack root that contains this pack. */
+            root: string;
+            /** @description Template paths relative to the pack. Listed only. */
+            templates: string[];
+            version: string;
+            /** @description IDs of the workflows the pack declares and that could be read. */
+            workflow_ids: string[];
+        };
+        /** @description Result of checking one pack against ComfyUI `/object_info`. */
+        PackValidationResponse: {
+            models: components["schemas"]["PackModelCheck"][];
+            node_classes: components["schemas"]["PackNodeCheck"][];
+            pack_id: string;
+            /** @description Why the status is `unavailable`. */
+            reason?: string | null;
+            status: components["schemas"]["PackValidationStatus"];
+        };
+        /** @enum {string} */
+        PackValidationStatus: "ok" | "missing" | "unknown" | "unavailable";
         /** @description RFC 9457 problem details with a GenAImage recovery hint. */
         ProblemDetails: {
             detail: string;
@@ -1688,6 +1798,8 @@ export interface components {
             name: string;
             /** @description Opaque revision of the API graph and manifest. */
             revision: string;
+            /** @description `user` for the writable workflow root, or `pack:<id>` for a workflow pack. */
+            source: string;
             tags?: string[] | null;
             thumbnail_url?: string | null;
             version: string;
@@ -5088,6 +5200,324 @@ export interface operations {
             };
         };
     };
+    packs_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    packs_list_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    packs_validate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pack ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackValidationResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    packs_validate_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pack ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     runs_list: {
         parameters: {
             query?: {
@@ -7655,6 +8085,88 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    workflows_refresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };

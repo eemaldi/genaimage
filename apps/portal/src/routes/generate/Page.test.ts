@@ -264,6 +264,7 @@ test('offers an explicit picker and follows a changed workflow query', async () 
         name: 'Portrait copy',
         version: '1',
         revision: workflow.revision,
+        source: 'user',
       },
     ],
     diagnostics: [],

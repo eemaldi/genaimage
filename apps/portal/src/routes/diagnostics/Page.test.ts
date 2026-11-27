@@ -51,14 +51,14 @@ afterEach(() => {
   fake.doctor.mockReset();
 });
 
-test('renders all 12 checks, with fixes only for non-ok checks', async () => {
+test('renders all 13 checks, with fixes only for non-ok checks', async () => {
   const data = report();
   fake.doctor.mockResolvedValue(data);
   render(Page, props);
   await screen.findByRole('heading', {
-    name: '3 of 12 checks OK · 3 errors · 3 warnings · 3 skipped',
+    name: '4 of 13 checks OK · 3 errors · 3 warnings · 3 skipped',
   });
-  expect(document.querySelectorAll('[data-check]')).toHaveLength(12);
+  expect(document.querySelectorAll('[data-check]')).toHaveLength(13);
   for (const check of data.checks) {
     const item = document.querySelector<HTMLElement>(
       `[data-check="${check.id}"]`,
@@ -153,7 +153,7 @@ test('a failed re-run marks the old report outdated, not current', async () => {
   await screen.findByText('New server');
   expect(screen.queryByText(/Outdated/)).toBeNull();
   expect(screen.getByRole('status').textContent).toContain(
-    'Diagnostics finished: 3 of 12 checks OK',
+    'Diagnostics finished: 4 of 13 checks OK',
   );
 });
 

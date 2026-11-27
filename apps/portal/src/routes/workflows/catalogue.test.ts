@@ -23,6 +23,7 @@ const summaries: Summary[] = [
     name: 'Portrait',
     version: '1',
     revision: 'portrait-revision',
+    source: 'user',
     description: 'Human subject',
     tags: ['people', 'photo'],
     category: 'Image',
@@ -33,6 +34,7 @@ const summaries: Summary[] = [
     name: 'Landscape',
     version: '2',
     revision: 'landscape-revision',
+    source: 'user',
     description: 'Outdoor scene',
     tags: ['nature'],
     category: 'Image',
@@ -42,6 +44,7 @@ const summaries: Summary[] = [
     name: 'Motion',
     version: '1',
     revision: 'motion-revision',
+    source: 'user',
     description: 'Moving scene',
     tags: ['people'],
     category: 'Video',
@@ -154,7 +157,13 @@ it('filters from a shareable hash, searches descriptions and tags, and handles b
 it('searches fallback titles by ID', async () => {
   vi.spyOn(api, 'listWorkflows').mockResolvedValue({
     workflows: [
-      { id: 'nameless-workflow', name: '', version: '1', revision: 'nameless' },
+      {
+        id: 'nameless-workflow',
+        name: '',
+        version: '1',
+        revision: 'nameless',
+        source: 'user',
+      },
     ],
     diagnostics: [],
   });
@@ -350,6 +359,7 @@ it('renders 100 fake workflows within the jsdom regression budget', async () => 
     name: `Workflow ${index}`,
     version: '1',
     revision: `revision-${index}`,
+    source: 'user',
     tags: ['example'],
   }));
   let resolve!: (value: { workflows: Summary[]; diagnostics: [] }) => void;
