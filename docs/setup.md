@@ -27,7 +27,8 @@ Stop with Ctrl+C (SIGINT) or SIGTERM to let in-flight requests finish.
 Health, events, workflows, runs, outputs, uploads, settings and assistant conversations are available.
 The [OpenAPI 3.1 contract](api/openapi.json) is also served at
 `GET /api/v1/openapi.json`. Open `http://127.0.0.1:3000/` for the embedded
-portal. The assistant page is planned.
+portal, which includes the setup wizard, the models and diagnostics pages
+and an assistant chat panel on every page.
 
 Requests must use `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
 or the configured loopback bind IP as the Host, with the actual listener port.
@@ -140,7 +141,7 @@ files; explicit and current-directory selections do not inspect an unselected
 workspace file.
 
 The file contains `[server]`, `[comfyui]`, `[llm]` and `[paths]` sections;
-see `genaimage.example.toml`. The `serve` command uses `[server]`. The settings
+see `genaimage.example.toml` and the [configuration reference](configuration.md). The `serve` command uses `[server]`. The settings
 connectivity test can check an explicitly configured LLM URL, but it does not
 start a service or select a model.
 The server bind host is restricted to loopback regardless of outbound settings.
@@ -283,45 +284,13 @@ session. A successful technical run is not creative approval.
 
 ### Environment overrides
 
-`GENAIMAGE_CONTAINER=1` is not a setting: it only lets `server.host` be
-`0.0.0.0` or `::` (see [Container](#container)).
+Every key has a `GENAIMAGE_*` variable that overrides the file; see the
+[configuration reference](configuration.md). `GENAIMAGE_CONTAINER=1` is not a
+setting: it only lets `server.host` be `0.0.0.0` or `::` (see
+[Container](#container)).
 
-Environment values take precedence over the selected file. Host lists are
-comma-separated; an empty value clears the list.
-
-| Setting | Environment variable |
-| --- | --- |
-| `server.host`, `server.port` | `GENAIMAGE_SERVER_HOST`, `GENAIMAGE_SERVER_PORT` |
-| `server.max_upload_bytes` | `GENAIMAGE_SERVER_MAX_UPLOAD_BYTES` |
-| `comfyui.base_url` | `GENAIMAGE_COMFYUI_URL` |
-| `comfyui.request_timeout_seconds` | `GENAIMAGE_COMFYUI_REQUEST_TIMEOUT_SECONDS` |
-| `comfyui.websocket_reconnect_seconds` | `GENAIMAGE_COMFYUI_WEBSOCKET_RECONNECT_SECONDS` |
-| `comfyui.allowed_hosts` | `GENAIMAGE_COMFYUI_ALLOWED_HOSTS` |
-| `llm.base_url` | `GENAIMAGE_LLM_URL` |
-| `llm.api_key` | `GENAIMAGE_LLM_API_KEY` |
-| `llm.text_model`, `llm.vision_model` | `GENAIMAGE_LLM_TEXT_MODEL`, `GENAIMAGE_LLM_VISION_MODEL` |
-| `llm.allowed_hosts` | `GENAIMAGE_LLM_ALLOWED_HOSTS` |
-| `llm.connect_timeout_secs` | `GENAIMAGE_LLM_CONNECT_TIMEOUT_SECS` |
-| `llm.request_timeout_secs` | `GENAIMAGE_LLM_REQUEST_TIMEOUT_SECS` |
-| `llm.idle_timeout_secs` | `GENAIMAGE_LLM_IDLE_TIMEOUT_SECS` |
-| `paths.state_database`, `paths.workflows` | `GENAIMAGE_STATE_DATABASE`, `GENAIMAGE_WORKFLOWS` |
-| `paths.runs`, `paths.uploads` | `GENAIMAGE_RUNS`, `GENAIMAGE_UPLOADS` |
-| One-time legacy state claim | `GENAIMAGE_CLAIM_LEGACY_STATE=1` |
-
-Loopback endpoints are allowed. A private IP or Compose service name must be
-listed exactly in that service's `allowed_hosts`, for example:
-
-```toml
-[comfyui]
-base_url = "http://comfyui:8188"
-allowed_hosts = ["comfyui"]
-
-[llm]
-base_url = "http://ollama:11434/v1"
-allowed_hosts = ["ollama"]
-text_model = "your-explicit-text-model"
-vision_model = "your-explicit-vision-model"
-```
+Allow-list rules for private and Compose hosts are in the
+[configuration reference](configuration.md#outbound-endpoints-and-allow-lists).
 
 Allow-listing never permits public addresses. The ComfyUI adapter resolves all
 addresses on the first network operation (with a bounded DNS lookup), rejects

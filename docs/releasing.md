@@ -52,11 +52,15 @@ change the tag and digest in the `Dockerfile` together, then run a dry run.
 
 Publishing is not atomic: the image, attestations and GitHub Release are
 separate steps. If a tag run fails part-way, re-run the failed jobs from the
-workflow run. Re-runs are safe:
+workflow run, and re-run failed jobs only ("Re-run failed jobs", not "Re-run
+all jobs"), so that a version tag, once published, stays immutable. Re-runs are
+safe:
 
 - The `release` job uploads to the existing release for that tag with
   `--clobber` instead of creating a second one, and never touches another tag.
 - Image tags are immutable by version. Never retag a different digest under an
   existing version; if the image is wrong, fix forward with a new version.
 - Archives are rebuilt on re-run, so their checksums can change; the new
-  `SHA256SUMS` and attestations replace the old ones in that release.
+  `SHA256SUMS` replaces the old one in that release, and the attestations
+  from a re-run are added to the existing ones and do not replace them.
+  Verify against the `SHA256SUMS` and archives currently attached to the release.

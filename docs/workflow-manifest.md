@@ -92,6 +92,7 @@ existing run database, new records still store `generic` in its historical
 | `input` | Existing key in that node's `inputs` object |
 | `kind` | `string`, `integer`, `number`, `boolean`, `seed`, or `image_upload` |
 | `required` | The harness must receive a value or a default |
+| `description` | Optional string describing the parameter |
 | `default` | Optional explicit default |
 | `allowed_values` | Optional JSON value allow-list |
 | `minimum` / `maximum` | Optional numeric range |

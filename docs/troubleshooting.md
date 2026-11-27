@@ -18,12 +18,16 @@ failed. Fix the first failing check and run `doctor` again.
 | `llm.reachable` | The model listing answers. Skipped if `llm.base_url` is empty (the assistant is optional). | Start the LLM server; check `llm.base_url` and `llm.api_key`. |
 | `llm.text` | `llm.text_model` is served and supports tools. | Set `llm.text_model`; declare `tools = true` under `[llm.capabilities."<model>"]` if needed. |
 | `llm.vision` | `llm.vision_model` is served and accepts images. Skipped if unset. | Set `llm.vision_model`; declare `vision = true` under `[llm.capabilities."<model>"]` if needed. |
-| `gpu` | ComfyUI reports a GPU device in `/system_stats`. | Install a GPU build of PyTorch; do not start ComfyUI with `--cpu`. |
+| `gpu` | ComfyUI reports a GPU device in `/system_stats`. A CPU-only ComfyUI, such as the default Compose stack, is a warning, not an error. | Install a GPU build of PyTorch and do not start ComfyUI with `--cpu`; under Compose pick an accelerator ([Compose](compose.md#accelerators)). |
 | `disk` | Free space for `paths.runs`: warning under 5 GiB, error under 512 MiB. | Free space or move `paths.runs` to a larger disk. |
 | `ports` | The server, ComfyUI and the LLM use different addresses, and the ComfyUI address answers like ComfyUI. | Give each service its own port. |
 
+The portal shows the same report on the Diagnostics page (`#/diagnostics`).
 Doctor only contacts the endpoints in your configuration and never prints the
 LLM API key.
+
+The sections below cover the most common causes. Exit code `6` from `doctor`
+means at least one check is an `error`; warnings and skipped checks exit `0`.
 
 ## `doctor` cannot connect
 
@@ -102,3 +106,37 @@ using that ID. See the [CLI reference](cli.md).
 The obsolete `paths.characters` setting is rejected. Remove it; this does not
 change the state database or existing run manifests. See the [setup guide](setup.md)
 for migrating old profiles and data paths.
+
+## HTTP 421 (misdirected request)
+
+The server accepts only a loopback `Host` that carries its real listener port.
+Opening it through a remapped port, a reverse proxy or a non-loopback name
+returns 421. Under Compose the host and container ports must be equal; set
+`GENAIMAGE_PORT` (it sets both sides) instead of remapping `8190:<other>`, and
+publish on `127.0.0.1` only. See [setup](setup.md#container).
+
+## Compose and ROCm
+
+- **ComfyUI exits with `COMFYUI_REQUIRE_GPU=1 but torch sees no GPU`.** The GPU
+  variants never fall back to the CPU. Check `docker compose logs comfyui`, the
+  `COMPOSE_FILE` line in `.env` and that `/dev/kfd` and `/dev/dri` exist (AMD)
+  or the NVIDIA Container Toolkit is installed.
+- **`libatomic` errors in the ComfyUI container.** The repository's ComfyUI
+  image installs `libatomic1`; rebuild with `docker compose build comfyui`
+  rather than using an older or third-party image.
+- **ROCm permission errors on `/dev/kfd`.** Set `VIDEO_GID` and `RENDER_GID` in
+  `.env` to the numeric IDs from `getent group video render`; the defaults (44
+  and 992) are not the same on every host.
+- **Two GPUs (an integrated and a discrete card).** ComfyUI uses `cuda:0`, and
+  the `gpu` check lists both devices. Compare `vram_total` in
+  `curl -s http://127.0.0.1:8188/system_stats`. To hide one, pass
+  `HIP_VISIBLE_DEVICES` through your own override file; Compose does not
+  forward `.env` values into containers by itself.
+- **A model variable stays empty or cannot be changed.** An empty
+  `GENAIMAGE_LLM_TEXT_MODEL=` in `.env` is still "set", which locks the setting
+  to empty and makes it read-only in the portal. Remove the line or comment it
+  out instead, then `docker compose up -d --wait genaimage`.
+- **The portal says a model or checkpoint is missing.** Nothing is downloaded
+  for you. See [models](models.md) and the Models page (`#/models`).
+- **A saved setting has no effect.** Most settings apply after a restart; see
+  the [configuration reference](configuration.md#keys).
