@@ -6,6 +6,7 @@
   import type { Problem } from '../../lib/ui/ProblemDetails.svelte';
   import type { RouteProps } from '../../router';
   import { workflowProblem } from './errors';
+  import { sourceLabel } from './model';
 
   let { params, query }: RouteProps = $props();
   const backLink = $derived.by(() => {
@@ -16,7 +17,9 @@
   const workflowId = $derived(params.id);
   type Details = components['schemas']['WorkflowDetails'];
   type Validation = components['schemas']['WorkflowValidationResponse'];
+  type Summary = components['schemas']['WorkflowSummary'];
   let workflow = $state.raw<Details>();
+  let sources = $state.raw<Summary[]>([]);
   let validation = $state.raw<Validation>();
   let problem = $state<Problem>();
   let validationProblem = $state<Problem>();
@@ -27,11 +30,19 @@
     const id = workflowId;
     const controller = new AbortController();
     workflow = undefined;
+    sources = [];
     validation = undefined;
     problem = undefined;
     validationProblem = undefined;
     loading = true;
     validating = false;
+    api
+      .listWorkflows({ signal: controller.signal })
+      .then((listing) => {
+        if (!controller.signal.aborted)
+          sources = (listing.workflows ?? []).filter((item) => item.id === id);
+      })
+      .catch(() => undefined);
     async function load() {
       try {
         const result = await api.getWorkflow(id, { signal: controller.signal });
@@ -100,6 +111,9 @@
     Workflow ID: <code>{workflow.id}</code> · Version:
     <code>{workflow.version}</code>
   </p>
+  {#if sources.length}
+    <p>Source: {sources.map((item) => sourceLabel(item.source)).join(', ')}</p>
+  {/if}
   <div class="action">
     <Button variant="primary" onclick={() => useWorkflow(params.id)}
       >Use this workflow</Button

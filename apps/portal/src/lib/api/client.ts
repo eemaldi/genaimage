@@ -666,6 +666,15 @@ export function createApiClient(
       ),
     listWorkflows: (options: RequestOptions = {}) =>
       json('get', '/api/v1/workflows', options),
+    refreshWorkflows: (options: RequestOptions = {}) =>
+      json('post', '/api/v1/workflows/refresh', options),
+    listPacks: (options: RequestOptions = {}) =>
+      json('get', '/api/v1/packs', options),
+    validatePack: (id: string, options: RequestOptions = {}) =>
+      json('get', '/api/v1/packs/{id}/validate', {
+        ...options,
+        path: { id },
+      }),
     getWorkflow: (
       id: string,
       options?: RequestOptions & { exactBindings?: boolean },

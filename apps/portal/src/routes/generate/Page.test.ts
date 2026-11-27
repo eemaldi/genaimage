@@ -194,6 +194,7 @@ beforeEach(() => {
   history.replaceState(null, '', '/');
   sessionStorage.clear();
   fake.getWorkflow.mockResolvedValue(workflow);
+  fake.listWorkflows.mockResolvedValue({ workflows: [], diagnostics: [] });
   fake.health.mockResolvedValue({
     self: 'ok',
     image_backend: 'ok',

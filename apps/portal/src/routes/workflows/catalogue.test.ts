@@ -391,3 +391,304 @@ it('renders 100 fake workflows within the jsdom regression budget', async () => 
   expect(elapsed).toBeLessThan(1500);
   console.info(`100-workflow jsdom render: ${elapsed.toFixed(1)} ms`);
 });
+
+const sourced = (overrides: Partial<Summary>): Summary => ({
+  id: 'text-to-image',
+  name: 'Text to image',
+  version: '1',
+  revision: 'revision',
+  source: 'user',
+  available: true,
+  unavailable_reason: null,
+  ...overrides,
+});
+const emptyPacks = { packs: [], diagnostics: [] };
+const pack = (overrides: Record<string, unknown>) => ({
+  id: 'core',
+  version: '1.0.0',
+  description: 'Bundled starter workflows.',
+  root: '/packs',
+  directory: '/packs/core',
+  workflow_ids: ['text-to-image'],
+  templates: [],
+  requires: {
+    node_classes: ['KSampler'],
+    models: { checkpoints: ['sd15.safetensors'] },
+  },
+  diagnostics: [],
+  ...overrides,
+});
+
+it('labels each workflow source and filters by pack from the URL', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [
+      sourced({ id: 'mine', name: 'My portrait' }),
+      sourced({ id: 'core-one', name: 'Core one', source: 'pack:core' }),
+      sourced({ id: 'extra-one', name: 'Extra one', source: 'pack:extra' }),
+    ],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue(emptyPacks);
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  const mine = (
+    await screen.findByRole('link', { name: 'My portrait' })
+  ).closest('li')!;
+  expect(within(mine).getByText('Your workflows')).toBeTruthy();
+  const core = screen.getByRole('link', { name: 'Core one' }).closest('li')!;
+  expect(within(core).getByText('core')).toBeTruthy();
+
+  await user.selectOptions(screen.getByLabelText('Source'), 'pack:core');
+  expect(
+    new URLSearchParams(window.location.hash.split('?')[1]).get('pack'),
+  ).toBe('pack:core');
+  expect(screen.getByRole('link', { name: 'Core one' })).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'My portrait' })).toBeNull();
+  expect(screen.queryByRole('link', { name: 'Extra one' })).toBeNull();
+});
+
+it('restores a pack filter from a shared link', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [
+      sourced({ id: 'core-one', name: 'Core one', source: 'pack:core' }),
+      sourced({ id: 'extra-one', name: 'Extra one', source: 'pack:extra' }),
+    ],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue(emptyPacks);
+  window.location.hash = '#/workflows?pack=pack%3Aextra';
+  render(App);
+  expect(await screen.findByRole('link', { name: 'Extra one' })).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'Core one' })).toBeNull();
+  expect((screen.getByLabelText('Source') as HTMLSelectElement).value).toBe(
+    'pack:extra',
+  );
+});
+
+it('keeps duplicate claimants separate, unlinked and explained', async () => {
+  const reason =
+    "workflow id 'shared' is ambiguous: declared by user at a.json, pack:core at b.json";
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [
+      sourced({
+        id: 'shared',
+        name: 'First copy',
+        available: false,
+        unavailable_reason: reason,
+      }),
+      sourced({
+        id: 'shared',
+        name: 'Second copy',
+        source: 'pack:core',
+        available: false,
+        unavailable_reason: reason,
+      }),
+    ],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue(emptyPacks);
+  window.location.hash = '#/workflows';
+  const { container } = render(App);
+  expect(await screen.findByText('First copy')).toBeTruthy();
+  expect(screen.getByText('Second copy')).toBeTruthy();
+  expect(screen.getAllByText('Unavailable')).toHaveLength(2);
+  expect(screen.getAllByText(reason)).toHaveLength(2);
+  expect(container.querySelectorAll('.card')).toHaveLength(2);
+  expect(
+    container.querySelectorAll('a[href*="workflows/shared"]'),
+  ).toHaveLength(0);
+  for (const card of container.querySelectorAll('.card')) {
+    expect(within(card as HTMLElement).queryAllByRole('link')).toHaveLength(0);
+  }
+});
+
+it('lists packs and reports each requirement check with explicit wording', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue({
+    packs: [
+      pack({}),
+      pack({
+        id: 'extra',
+        version: '2.1.0',
+        description: '',
+        requires: { node_classes: ['SaveImage'], models: {} },
+        diagnostics: ['Declared workflow is missing: gone.genaimage.json'],
+      }),
+    ],
+    diagnostics: [{ path: 'packs/broken', error: 'pack.toml is invalid' }],
+  });
+  vi.spyOn(api, 'validatePack').mockImplementation(async (id) =>
+    id === 'core'
+      ? {
+          pack_id: 'core',
+          status: 'ok',
+          reason: null,
+          node_classes: [{ class: 'KSampler', status: 'available' }],
+          models: [
+            {
+              folder: 'checkpoints',
+              name: 'sd15.safetensors',
+              status: 'available',
+              loader: 'CheckpointLoaderSimple.ckpt_name',
+              reason: null,
+            },
+          ],
+          diagnostics: [],
+        }
+      : {
+          pack_id: 'extra',
+          status: 'missing',
+          reason: null,
+          node_classes: [{ class: 'SaveImage', status: 'missing' }],
+          models: [],
+          diagnostics: [],
+        },
+  );
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  expect(await screen.findByRole('heading', { name: 'Packs' })).toBeTruthy();
+  expect(screen.getByText(/GenAImage never installs anything/)).toBeTruthy();
+  expect(await screen.findByText('version 1.0.0')).toBeTruthy();
+  expect(screen.getByText('pack.toml is invalid')).toBeTruthy();
+  expect(
+    screen.getByText('Declared workflow is missing: gone.genaimage.json'),
+  ).toBeTruthy();
+  expect(screen.getByText('checkpoints: sd15.safetensors')).toBeTruthy();
+
+  await user.click(
+    screen.getByRole('button', { name: 'Check requirements for core' }),
+  );
+  expect(await screen.findByText('Requirements confirmed')).toBeTruthy();
+  expect(screen.getByText('KSampler: Available')).toBeTruthy();
+
+  await user.click(
+    screen.getByRole('button', { name: 'Check requirements for extra' }),
+  );
+  expect(await screen.findByText('Requirements missing')).toBeTruthy();
+  expect(screen.getByText('SaveImage: Missing')).toBeTruthy();
+  expect(screen.getAllByText('Requirements confirmed')).toHaveLength(1);
+});
+
+it('does not present an unknown or diagnosed pack check as success', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue({
+    packs: [pack({})],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'validatePack').mockResolvedValue({
+    pack_id: 'core',
+    status: 'ok',
+    reason: null,
+    node_classes: [{ class: 'KSampler', status: 'unknown' }],
+    models: [],
+    diagnostics: ['Declared workflow is missing: a.json'],
+  });
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  await user.click(
+    await screen.findByRole('button', { name: 'Check requirements for core' }),
+  );
+  expect(await screen.findByText('Requirements not confirmed')).toBeTruthy();
+  expect(screen.queryByText('Requirements confirmed')).toBeNull();
+  expect(screen.getByText('KSampler: Unknown')).toBeTruthy();
+  expect(
+    screen.getByText('Declared workflow is missing: a.json', {
+      selector: 'li',
+    }),
+  ).toBeTruthy();
+});
+
+it('replaces the listing on refresh and ignores an older load that finishes later', async () => {
+  let finishLoad!: (value: { workflows: Summary[]; diagnostics: [] }) => void;
+  let finishRefresh!: (value: {
+    workflows: Summary[];
+    diagnostics: [];
+  }) => void;
+  vi.spyOn(api, 'listWorkflows').mockReturnValue(
+    new Promise((done) => {
+      finishLoad = done;
+    }),
+  );
+  vi.spyOn(api, 'refreshWorkflows').mockReturnValue(
+    new Promise((done) => {
+      finishRefresh = done;
+    }),
+  );
+  vi.spyOn(api, 'listPacks').mockResolvedValue(emptyPacks);
+  window.location.hash = '#/workflows';
+  const user = userEvent.setup();
+  render(App);
+  await user.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect(
+    screen.getByRole('button', { name: 'Refresh' }).hasAttribute('disabled'),
+  ).toBe(true);
+  finishRefresh({
+    workflows: [sourced({ id: 'fresh', name: 'Fresh workflow' })],
+    diagnostics: [],
+  });
+  expect(
+    await screen.findByRole('link', { name: 'Fresh workflow' }),
+  ).toBeTruthy();
+  const refreshButton = screen.getByRole('button', { name: 'Refresh' });
+  expect(refreshButton.hasAttribute('disabled')).toBe(false);
+  expect(document.activeElement).toBe(refreshButton);
+  finishLoad({
+    workflows: [sourced({ id: 'stale', name: 'Stale workflow' })],
+    diagnostics: [],
+  });
+  await tick();
+  expect(screen.queryByRole('link', { name: 'Stale workflow' })).toBeNull();
+  expect(screen.getByRole('link', { name: 'Fresh workflow' })).toBeTruthy();
+});
+
+it('shows the claimants of an ambiguous workflow on the detail page instead of a generic error', async () => {
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [],
+    diagnostics: [],
+  });
+  vi.spyOn(api, 'listPacks').mockResolvedValue(emptyPacks);
+  vi.spyOn(api, 'getWorkflow').mockRejectedValue(
+    new ApiProblemError({
+      type: 'urn:genaimage:problem:workflow-ambiguous',
+      title: 'Conflict',
+      status: 409,
+      detail:
+        "workflow id 'shared' is ambiguous: declared by user at a.json, pack:core at b.json",
+      recovery: 'Remove or rename the duplicate workflow.',
+    }),
+  );
+  vi.spyOn(api, 'validateWorkflow');
+  window.location.hash = '#/workflows/shared';
+  render(App);
+  expect(
+    await screen.findByText('This workflow ID is declared more than once'),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/declared by user at a.json, pack:core at b.json/),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: 'Use this workflow' }),
+  ).toBeNull();
+  expect(api.validateWorkflow).not.toHaveBeenCalled();
+});
+
+it('shows the source of a workflow on its detail page', async () => {
+  vi.spyOn(api, 'getWorkflow').mockResolvedValue(detail);
+  vi.spyOn(api, 'validateWorkflow').mockResolvedValue(result);
+  vi.spyOn(api, 'listWorkflows').mockResolvedValue({
+    workflows: [sourced({ id: 'one & two', source: 'pack:core' })],
+    diagnostics: [],
+  });
+  window.location.hash = '#/workflows/one%20%26%20two';
+  render(App);
+  expect(await screen.findByText('Source: core')).toBeTruthy();
+});
