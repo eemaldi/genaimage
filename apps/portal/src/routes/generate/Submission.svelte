@@ -23,10 +23,12 @@
   let {
     workflowId,
     reloadWorkflow,
+    onConfirmed,
     children,
   }: {
     workflowId: string;
     reloadWorkflow: (problem: Problem) => void;
+    onConfirmed?: (runId: string) => void;
     children: Snippet<[SubmissionControls]>;
   } = $props();
   const uid = $props.id();
@@ -230,7 +232,10 @@
   </section>
 {/if}
 {@render children({ editingLocked, accepted, submit, resetSubmission })}
-{#if run}{#key run.id}<RunProgress initial={run} />{/key}{/if}
+{#if run}{#key run.id}<RunProgress
+      initial={run}
+      onconfirmed={onConfirmed}
+    />{/key}{/if}
 
 <style>
   .review {

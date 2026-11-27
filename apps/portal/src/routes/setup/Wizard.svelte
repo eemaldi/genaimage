@@ -46,6 +46,7 @@
   let heading = $state<HTMLElement>();
   let statusFresh = $state(true);
   let activeComfyui = $state<string>();
+  let testRun = $state<{ runId: string; checkpoint?: string }>();
   const request = latest();
   const statusRequest = latest();
 
@@ -68,6 +69,11 @@
   let comfyChanged = $derived(
     !!status &&
       (!!choices.comfyuiUrl || restartKeys.includes('comfyui.base_url')),
+  );
+  let confirmedTestRun = $derived(
+    testRun && testRun.checkpoint === choices.checkpoint
+      ? testRun.runId
+      : undefined,
   );
   let comfyVerified = $derived(evidence.comfyui?.url === comfyUrl);
   let llmDone = $derived(llmVerified(evidence, choices, llmUrl));
@@ -105,7 +111,7 @@
         if (restartUnconfirmed) return 'Restart state unconfirmed';
         return savedCurrent ? 'Done' : 'Not started';
       case 'test':
-        return 'Not available yet';
+        return confirmedTestRun ? 'Done' : 'Not run';
     }
   }
 
@@ -147,6 +153,8 @@
       if (!live()) return false;
       status = next;
       statusFresh = true;
+      if (!next.restart_required.includes('comfyui.base_url'))
+        activeComfyui = next.comfyui.configured_url;
       problem = undefined;
       return true;
     } catch (error) {
@@ -346,6 +354,10 @@
           configFileExists: status.config_file_exists,
           restartPending,
         }}
+        confirmedRunId={confirmedTestRun}
+        refresh={refreshStatus}
+        onConfirmed={(runId) =>
+          (testRun = { runId, checkpoint: choices.checkpoint })}
       />
     {/if}
   </section>

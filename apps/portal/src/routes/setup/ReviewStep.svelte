@@ -51,7 +51,7 @@
   let outcome = $state('');
 
   async function save() {
-    if (saving) return;
+    if (saving || blocked) return;
     saving = true;
     problem = undefined;
     outcome = '';

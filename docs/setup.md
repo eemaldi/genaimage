@@ -246,8 +246,8 @@ dashboard when `GET /api/v1/setup/status` reports `needs_setup`. You can dismiss
 it (remembered per browser only, per set of blocking reasons) and reopen it from
 the Setup link in the navigation. Its steps are: detect services, test ComfyUI,
 choose the LLM endpoint and text and optional vision model from the installed
-models, verify a checkpoint, review and save, and apply changes. Test generation
-is planned and not yet implemented.
+models, verify a checkpoint, review and save, apply changes, and run a test
+generation.
 
 Nothing is chosen for you and nothing is saved until you review every value.
 A step is marked done only when the server confirmed it for your current
@@ -268,6 +268,18 @@ Compose, are shown read-only and never written. `POST /api/v1/setup/detect`
 probes a fixed list of common local ports and Compose hosts. Hosts that are not
 allow-listed are reported with the setting to add, never probed. See the
 [architecture](architecture.md#local-http-server).
+
+The test generation step runs the `text-to-image` starter workflow once. It
+refuses to run until a checkpoint is chosen, the running server is confirmed to
+use the ComfyUI URL you chose (restart after saving, then use "Check again") and
+the workflow exists; each unmet check explains its fix. It lists every value it
+will send, including inherited workflow defaults, an editable test prompt and an
+exact seed, and asks the server to validate them. "Run test generation" then
+submits that reviewed request once, pinned to the workflow revision and with one
+idempotency key that is kept until the outcome is definitive, so a reload or an
+uncertain submission offers a retry with the same key and never a new one. The
+step is "Done" only after the server confirms the run produced outputs in this
+session. A successful technical run is not creative approval.
 
 ### Environment overrides
 
