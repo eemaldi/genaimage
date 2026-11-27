@@ -38,6 +38,7 @@
   let settings = $state<Settings>();
   let etag = $state('');
   let problem = $state<Problem>();
+  let saveBlock = $state<'unknown' | 'conflict'>();
   let loading = $state(true);
   let step = $state<StepId>('detect');
   let choices = $state<Choices>({ llmSkipped: false });
@@ -125,6 +126,7 @@
       if (!nextStatus.restart_required.includes('comfyui.base_url'))
         activeComfyui = nextStatus.comfyui.configured_url;
       problem = undefined;
+      saveBlock = undefined;
       return true;
     } catch (error) {
       if (isAbort(error) || !live()) return;
@@ -158,8 +160,8 @@
     }
   }
 
-  async function reloadSettings() {
-    await loadServerState();
+  async function reloadSettings(): Promise<boolean> {
+    return (await loadServerState()) === true;
   }
 
   async function onSaved(snapshot: {
@@ -323,6 +325,8 @@
         {unverified}
         {onSaved}
         reload={reloadSettings}
+        blocked={saveBlock}
+        onBlock={(reason) => (saveBlock = reason)}
       />
     {:else if step === 'apply'}
       <ApplyStep

@@ -551,6 +551,65 @@ test('an unknown save outcome is not reported as nothing saved', async () => {
   expect(stepItem('Review and save').textContent).toContain('Not saved');
 });
 
+const saveButton = () =>
+  screen.getByRole('button', {
+    name: /Save configuration|Save again/,
+  }) as HTMLButtonElement;
+const reloadButton = () =>
+  screen.getByRole('button', { name: 'Reload current settings' });
+
+test('an unknown outcome blocks Save until a reload succeeds', async () => {
+  fake.putSettingsWithRevision.mockRejectedValue(new Error('connection reset'));
+  const user = await open();
+  await toReview(user);
+  await save(user);
+  await screen.findByText('The outcome of the save is unknown');
+  expect(saveButton().disabled).toBe(true);
+
+  fake.getSettingsWithRevision.mockRejectedValue(new Error('offline'));
+  await user.click(reloadButton());
+  await screen.findByText('The setup state could not be loaded');
+  expect(saveButton().disabled).toBe(true);
+  expect(screen.getByText('The outcome of the save is unknown')).toBeTruthy();
+  expect(reloadButton()).toBeTruthy();
+
+  fake.getSettingsWithRevision.mockResolvedValue(snapshot());
+  await user.click(reloadButton());
+  await waitFor(() => expect(saveButton().disabled).toBe(false));
+  expect(screen.queryByText('The outcome of the save is unknown')).toBeNull();
+});
+
+test('going back and forward keeps Save blocked until a reload', async () => {
+  fake.putSettingsWithRevision.mockRejectedValue(new Error('connection reset'));
+  const user = await open();
+  await toReview(user);
+  await save(user);
+  await screen.findByText('The outcome of the save is unknown');
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await next(user);
+  await screen.findByRole('heading', { name: '5. Review and save' });
+  expect(saveButton().disabled).toBe(true);
+  await user.click(reloadButton());
+  await waitFor(() => expect(saveButton().disabled).toBe(false));
+});
+
+test('a 412 conflict blocks Save, also after going back, until a reload', async () => {
+  fake.putSettingsWithRevision.mockRejectedValue(
+    problem(412, 'Precondition failed'),
+  );
+  const user = await open();
+  await toReview(user);
+  await save(user);
+  await screen.findByText('Precondition failed');
+  expect(saveButton().disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await next(user);
+  await screen.findByRole('heading', { name: '5. Review and save' });
+  expect(saveButton().disabled).toBe(true);
+  await user.click(reloadButton());
+  await waitFor(() => expect(saveButton().disabled).toBe(false));
+});
+
 test('dismissal storage that throws is tolerated', () => {
   const broken = vi
     .spyOn(Storage.prototype, 'getItem')
