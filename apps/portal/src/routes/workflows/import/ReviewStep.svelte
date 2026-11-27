@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from '../../../lib/ui/Button.svelte';
   import Input from '../../../lib/ui/Input.svelte';
   import Select from '../../../lib/ui/Select.svelte';
   import Detected from './Detected.svelte';
@@ -16,15 +17,41 @@
     errors,
     serverErrors,
     showErrors,
+    conflicts,
+    notes,
+    fixPresets,
   }: {
     draft: ManifestDraft;
     proposal: Proposal;
     errors: DraftErrors;
     serverErrors: Record<string, string>;
     showErrors: boolean;
+    conflicts: { preset: string; parameter: string }[];
+    notes: string[];
+    fixPresets: () => void;
   } = $props();
   const shown = <T,>(value: T) => (showErrors ? value : undefined);
 </script>
+
+{#if notes.length}
+  <p role="status">
+    The importer proposed preset values for parameters it did not define, so
+    they were left out: {notes.join('; ')}.
+  </p>
+{/if}
+{#if conflicts.length}
+  <div class="conflicts" role="status">
+    <ul>
+      {#each conflicts as item, at (at)}
+        <li>
+          Preset {item.preset} uses {item.parameter}. Expose {item.parameter} again
+          or remove it from the preset.
+        </li>
+      {/each}
+    </ul>
+    <Button onclick={fixPresets}>Fix in step 3</Button>
+  </div>
+{/if}
 
 <fieldset>
   <legend>Workflow details</legend>
@@ -146,7 +173,11 @@
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    align-items: start;
     gap: 0.6rem;
+  }
+  .conflicts {
+    color: var(--danger);
   }
   .binding {
     margin: 0 0 0.4rem;

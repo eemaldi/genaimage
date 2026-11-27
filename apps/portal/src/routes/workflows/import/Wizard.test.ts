@@ -2,6 +2,7 @@ import {
   cleanup,
   render,
   screen,
+  fireEvent,
   waitFor,
   within,
 } from '@testing-library/svelte';
@@ -444,4 +445,141 @@ it('does not guard navigation once the workflow is saved', async () => {
   navigateHash('#/jobs');
   expect(confirm).not.toHaveBeenCalled();
   expect(window.location.hash).toBe('#/jobs');
+});
+
+const sourceGraph =
+  '{"3":{"class_type":"KSampler","inputs":{"a":0.10,"b":1e3,"c":-0.0,"d":18446744073709551615,"e":0.12345678901234567890}}}';
+const sourceProposal = `{
+  "graph_sha256": "sha-2",
+  "manifest": {
+    "schema_version": 2, "id": "src", "version": "1", "title": "Src",
+    "workflow": "api-workflow.json",
+    "parameters": {
+      "a": {"node": "3", "input": "a", "kind": "number", "required": true,
+        "default": 0.10, "minimum": 1e3, "maximum": 0.12345678901234567890,
+        "description": "A", "options": [0.10, 1e3]},
+      "c": {"node": "3", "input": "c", "kind": "number", "required": true,
+        "default": -0.0, "description": "C"}
+    },
+    "presets": {},
+    "outputs": []
+  },
+  "recognised": [], "unknown_nodes": [], "unbound_inputs": [], "warnings": []
+}`;
+
+it('keeps every number exactly as written in the file and the response', async () => {
+  const user = await start(json(sourceProposal), file(sourceGraph));
+  await screen.findByRole('heading', { name: '2. Review parameters' });
+  expect(calls[0].body).toContain(
+    '"inputs":{"a":0.10,"b":1e3,"c":-0.0,"d":18446744073709551615,"e":0.12345678901234567890}',
+  );
+  await toSave(user);
+  replies[confirmUrl] = [
+    json('{"id":"src","revision":"r","manifest_path":"/p","source":"user"}'),
+  ];
+  await user.click(screen.getByRole('button', { name: 'Save workflow' }));
+  await screen.findByRole('link', { name: 'Generate with this workflow' });
+  expect(confirmCalls()[0].body).toBe(
+    '{"graph":{"3":{"class_type":"KSampler","inputs":{"a":0.10,"b":1e3,"c":-0.0,"d":18446744073709551615,"e":0.12345678901234567890}}},' +
+      '"graph_sha256":"sha-2","manifest":{"schema_version":2,"id":"src","version":"1","title":"Src","workflow":"api-workflow.json",' +
+      '"parameters":{"a":{"node":"3","input":"a","kind":"number","required":true,"description":"A","default":0.10,"minimum":1e3,"maximum":0.12345678901234567890,"options":[0.10,1e3]},' +
+      '"c":{"node":"3","input":"c","kind":"number","required":true,"description":"C","default":-0.0}},' +
+      '"presets":{},"outputs":[]}}',
+  );
+});
+
+it('explains a preset that uses an un-exposed parameter and lets the user go to Presets', async () => {
+  const withPreset = proposalText().replace(
+    '"presets": {}',
+    '"presets": {"fast": {"cfg": 3.5}}',
+  );
+  const user = await start(json(withPreset));
+  await screen.findByRole('heading', { name: '2. Review parameters' });
+  await user.click(screen.getByLabelText('Expose cfg in the form'));
+  expect(
+    screen.getByText(
+      'Preset fast uses cfg. Expose cfg again or remove it from the preset.',
+    ),
+  ).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await screen.findByRole('heading', { name: '3. Presets' });
+  const select = screen.getByLabelText('Parameter 1') as HTMLSelectElement;
+  expect(select.selectedOptions[0].textContent).toBe('cfg (not exposed)');
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(
+    await screen.findByText(/cfg is not exposed. Expose it again in step 2/),
+  ).toBeTruthy();
+});
+
+it('clears the server errors and the retry offer once the draft changes', async () => {
+  const user = await start();
+  await toSave(user);
+  replies[confirmUrl] = [
+    problem(422, 'workflow-manifest-invalid', {
+      errors: [
+        { key: 'parameters.cfg', reason: 'first reason' },
+        { key: 'parameters.cfg', reason: 'second reason' },
+      ],
+    }),
+  ];
+  await user.click(screen.getByRole('button', { name: 'Save workflow' }));
+  await user.click(
+    (await screen.findAllByRole('button', { name: 'Fix in step 2' }))[0],
+  );
+  expect(screen.getByText('first reason second reason')).toBeTruthy();
+  await user.type(screen.getByLabelText('Title'), '!');
+  await waitFor(() => expect(screen.queryByText(/first reason/)).toBeNull());
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await user.click(await screen.findByRole('button', { name: 'Continue' }));
+  await user.click(await screen.findByRole('button', { name: 'Continue' }));
+  await screen.findByRole('button', { name: 'Save workflow' });
+  expect(screen.queryByText(/Problem workflow-manifest-invalid/)).toBeNull();
+});
+
+it('locks editing while a save is uncertain', async () => {
+  const user = await start();
+  await toSave(user);
+  replies[confirmUrl] = [new TypeError('network down')];
+  await user.click(screen.getByRole('button', { name: 'Save workflow' }));
+  await screen.findByRole('button', { name: 'Send the same save again' });
+  expect(
+    (screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(
+    screen
+      .getByRole('link', { name: 'workflow catalogue' })
+      .getAttribute('href'),
+  ).toBe('#/workflows');
+  await user.click(screen.getByRole('button', { name: 'Start over' }));
+  expect(window.confirm).toHaveBeenCalledWith(
+    expect.stringContaining('may have been written'),
+  );
+  await screen.findByRole('heading', { name: '1. Choose a file' });
+});
+
+it('stops reporting analysis when a second file fails early', async () => {
+  let release!: (response: Response) => void;
+  replies[importUrl] = [new Promise<Response>((done) => (release = done))];
+  const user = userEvent.setup();
+  render(Wizard);
+  const input = screen.getByLabelText('Workflow JSON file');
+  await user.upload(input, file(graphText, 'first.json'));
+  await screen.findByText('Analysing the workflow…');
+  await user.upload(input, file('{nope'));
+  await screen.findByText(/not valid JSON/);
+  expect(screen.queryByText('Analysing the workflow…')).toBeNull();
+  release(json(proposalText()));
+  await new Promise((done) => setTimeout(done, 20));
+  expect(screen.queryByRole('button', { name: /Continue with/ })).toBeNull();
+});
+
+it('uses the first of several dropped files and says so', async () => {
+  replies[importUrl] = [json(proposalText())];
+  render(Wizard);
+  const zone = screen.getByRole('group', { name: 'Workflow file' });
+  const files = [file(graphText, 'one.json'), file(graphText, 'two.json')];
+  await fireEvent.drop(zone, { dataTransfer: { files } });
+  await screen.findByRole('heading', { name: '2. Review parameters' });
+  expect(calls).toHaveLength(1);
 });

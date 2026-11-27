@@ -114,6 +114,7 @@ function numberOrUndefined(source: string): Exact | undefined {
 export function draftFromProposal(proposal: Proposal): {
   draft: ManifestDraft;
   origin: Origin;
+  unknownPresetValues: string[];
 } {
   const manifest = proposal.manifest;
   let uid = 0;
@@ -149,6 +150,7 @@ export function draftFromProposal(proposal: Proposal): {
   });
   const byOriginal = new Map(parameters.map((item) => [item.original, item]));
   let presetUid = 0;
+  const unknownPresetValues: string[] = [];
   const presets = Object.entries(
     isRecord(manifest.presets) ? manifest.presets : {},
   ).map(([name, values]): PresetDraft => {
@@ -158,6 +160,7 @@ export function draftFromProposal(proposal: Proposal): {
       values: Object.entries(isRecord(values) ? values : {}).flatMap(
         ([parameter, value]) => {
           const target = byOriginal.get(parameter);
+          if (!target) unknownPresetValues.push(`${name}: ${parameter}`);
           return target
             ? [
                 {
@@ -181,6 +184,7 @@ export function draftFromProposal(proposal: Proposal): {
       presets,
     },
     origin: { base: manifest, sources },
+    unknownPresetValues,
   };
 }
 
@@ -245,6 +249,56 @@ export function idError(id: string): string | undefined {
     return `"${id}" is reserved. Choose another identifier.`;
 }
 
+function unexposedReason(
+  draft: ManifestDraft,
+  entry: { parameter: number },
+): string {
+  const named = draft.parameters.find((item) => item.uid === entry.parameter);
+  return named
+    ? `${named.key} is not exposed. Expose it again in step 2 or remove this value.`
+    : 'Choose an exposed parameter.';
+}
+
+/** Preset values that use a parameter the user has since un-exposed. */
+export function presetConflicts(
+  draft: ManifestDraft,
+): { preset: string; parameter: string }[] {
+  const exposed = new Set(
+    draft.parameters.filter((item) => item.exposed).map((item) => item.uid),
+  );
+  return draft.presets.flatMap((preset) =>
+    preset.values.flatMap((entry) => {
+      const named = draft.parameters.find(
+        (item) => item.uid === entry.parameter,
+      );
+      return named && !exposed.has(named.uid)
+        ? [{ preset: preset.name || 'Unnamed preset', parameter: named.key }]
+        : [];
+    }),
+  );
+}
+
+function defaultOptionError(item: ParameterDraft): string | undefined {
+  if (!item.options.trim() || item.defaultText === '') return;
+  if (item.kind === 'boolean' || item.kind === 'image_upload') return;
+  const spelled = optionValues(item).map((entry) => valueText(entry.value));
+  if (spelled.includes(item.defaultText)) return;
+  const numeric = numericKinds.includes(item.kind);
+  const defaultValue = numeric ? parseExactNumber(item.defaultText) : undefined;
+  const sameNumber =
+    defaultValue !== undefined &&
+    optionValues(item).some(
+      (entry) =>
+        entry.value !== undefined &&
+        typeof entry.value !== 'string' &&
+        typeof entry.value !== 'boolean' &&
+        approximate(entry.value) === approximate(defaultValue),
+    );
+  return sameNumber
+    ? `Options are compared exactly; write ${item.defaultText} to match the workflow value.`
+    : `The workflow value ${item.defaultText} is not among the options. Add it, or leave the options empty.`;
+}
+
 export function validateDraft(draft: ManifestDraft): DraftErrors {
   const errors: DraftErrors = {
     parameters: new Map(),
@@ -276,6 +330,10 @@ export function validateDraft(draft: ManifestDraft): DraftErrors {
     if (item.options.trim()) {
       const bad = optionValues(item).find((entry) => entry.error);
       if (bad) found.options = `${bad.error} Check each option line.`;
+      else {
+        const missing = defaultOptionError(item);
+        if (missing) found.options = missing;
+      }
     }
     if (
       found.key ||
@@ -302,7 +360,7 @@ export function validateDraft(draft: ManifestDraft): DraftErrors {
     const used = new Set<number>();
     for (const entry of preset.values) {
       const target = exposed.get(entry.parameter);
-      if (!target) found.values.set(entry.uid, 'Choose an exposed parameter.');
+      if (!target) found.values.set(entry.uid, unexposedReason(draft, entry));
       else if (used.has(entry.parameter))
         found.values.set(entry.uid, 'This parameter is set twice.');
       else {
@@ -323,6 +381,15 @@ export function hasErrors(errors: DraftErrors): boolean {
     errors.version ||
     errors.parameters.size ||
     errors.presets.size
+  );
+}
+
+export function hasNonPresetErrors(errors: DraftErrors): boolean {
+  return !!(
+    errors.id ||
+    errors.title ||
+    errors.version ||
+    errors.parameters.size
   );
 }
 

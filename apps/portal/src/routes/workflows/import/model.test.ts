@@ -162,3 +162,33 @@ it('groups nodes by class and maps manifest errors to steps', () => {
   expect(locateError('presets.fast', draft).step).toBe('presets');
   expect(locateError('thumbnail', draft).step).toBe('save');
 });
+
+it('compares options with the default by exact text and explains a spelling mismatch', () => {
+  const text = proposalText.replace(
+    '"default": 2.0, "minimum"',
+    '"default": 7.0, "minimum"',
+  );
+  const { draft } = draftFromProposal(parseProposal(parseBindingJson(text)));
+  const cfg = draft.parameters.find((item) => item.original === 'cfg')!;
+  cfg.options = '7\n8';
+  expect(validateDraft(draft).parameters.get(cfg.uid)?.options).toBe(
+    'Options are compared exactly; write 7.0 to match the workflow value.',
+  );
+  cfg.options = '7.0\n8';
+  expect(validateDraft(draft).parameters.get(cfg.uid)).toBeUndefined();
+  cfg.options = '9\n8';
+  expect(validateDraft(draft).parameters.get(cfg.uid)?.options).toContain(
+    'is not among the options',
+  );
+});
+
+it('reports preset values for unknown parameters instead of dropping them', () => {
+  const text = proposalText.replace(
+    '"presets": {"fast": {"cfg": 2.0}}',
+    '"presets": {"fast": {"cfg": 2.0, "ghost": 1}}',
+  );
+  const { unknownPresetValues } = draftFromProposal(
+    parseProposal(parseBindingJson(text)),
+  );
+  expect(unknownPresetValues).toEqual(['fast: ghost']);
+});

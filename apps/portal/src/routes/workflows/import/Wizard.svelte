@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import {
     api,
     ApiProblemError,
-    parseBindingJson,
+    parseAssistantJson,
     supportsExactNumberWrites,
     type WorkflowImportConfirmRequest,
   } from '../../../lib/api/client';
@@ -24,10 +24,12 @@
     draftFromProposal,
     fileStem,
     hasErrors,
+    hasNonPresetErrors,
     isProblemType,
     locateError,
     maxGraphBytes,
     parseProposal,
+    presetConflicts,
     problemOf,
     problemTypes,
     steps,
@@ -56,6 +58,10 @@
   let attempt = $state.raw<Attempt>();
   let saving = $state(false);
   let saveProblem = $state<ProblemWithExtras>();
+  let uncertain = $state(false);
+  let unknownPresetValues = $state<string[]>([]);
+  let problemBox = $state<HTMLElement>();
+  let blockedBox = $state<HTMLElement>();
   let result = $state.raw<Confirmed>();
   let writtenButUnavailable = $state<ProblemWithExtras>();
   let heading = $state<HTMLElement>();
@@ -79,10 +85,9 @@
   let mismatch = $derived(
     isProblemType(saveProblem, problemTypes.graphMismatch),
   );
-  let uncertain = $derived(
-    !!saveProblem &&
-      !saveProblem.status &&
-      !isProblemType(saveProblem, problemTypes.exists),
+  let conflicts = $derived(draft ? presetConflicts(draft) : []);
+  let draftSignature = $derived(
+    draft ? JSON.stringify($state.snapshot(draft)) : '',
   );
   let mappedErrors = $derived(
     draft
@@ -92,6 +97,19 @@
         }))
       : [],
   );
+
+  function clearAttemptState() {
+    saveProblem = undefined;
+    uncertain = false;
+    serverErrors = {};
+  }
+
+  $effect(() => {
+    void draftSignature;
+    untrack(() => {
+      if (!saving) clearAttemptState();
+    });
+  });
 
   async function go(next: StepId) {
     step = next;
@@ -116,6 +134,7 @@
     importController?.abort();
     const controller = (importController = new AbortController());
     const seq = ++importSeq;
+    importing = false;
     importProblem = undefined;
     selectedName = file.name;
     if (file.size > maxGraphBytes) {
@@ -138,7 +157,7 @@
       if (seq !== importSeq) return;
       let graph: unknown;
       try {
-        graph = parseBindingJson(text);
+        graph = parseAssistantJson(text);
       } catch (error) {
         if (error instanceof SyntaxError)
           return fail(
@@ -164,6 +183,7 @@
       );
       if (seq !== importSeq) return;
       const next = draftFromProposal(response);
+      unknownPresetValues = next.unknownPresetValues;
       imported = {
         graph: graph as Json,
         proposal: response,
@@ -172,8 +192,7 @@
       draft = next.draft;
       origin = next.origin;
       attempt = undefined;
-      saveProblem = undefined;
-      serverErrors = {};
+      clearAttemptState();
       showErrors = false;
       await go('review');
     } catch (error) {
@@ -186,16 +205,22 @@
 
   function next() {
     if (!draft || !errors) return;
-    if (step === 'review' || step === 'presets') {
-      if (hasErrors(errors)) {
-        showErrors = true;
-        blocked = true;
-        return;
-      }
+    const stops =
+      step === 'review'
+        ? hasNonPresetErrors(errors)
+        : step === 'presets' && hasErrors(errors);
+    if (stops) {
+      showErrors = true;
+      blocked = true;
+      void tick().then(() => blockedBox?.focus());
+      return;
     }
     const target = steps[index + 1]?.id;
     if (!target) return;
-    if (target === 'save') attempt = freeze();
+    if (target === 'save') {
+      clearAttemptState();
+      attempt = freeze();
+    }
     void go(target);
   }
 
@@ -225,8 +250,7 @@
     }
     const restoreFocus = button ? keepFocusAcross(button) : undefined;
     saving = true;
-    saveProblem = undefined;
-    serverErrors = {};
+    clearAttemptState();
     try {
       const response = (await api.confirmWorkflowImport(attempt.body)) as
         Partial<Confirmed> | undefined;
@@ -248,11 +272,21 @@
         return;
       }
       saveProblem = problemOf(error, 'The workflow could not be saved');
+      uncertain =
+        !saveProblem.status && !isProblemType(saveProblem, problemTypes.exists);
       if (isProblemType(saveProblem, problemTypes.manifestInvalid)) {
+        const grouped: Record<string, string[]> = {};
+        for (const { key, reason } of saveProblem.errors ?? [])
+          (grouped[key] ??= []).push(reason);
         serverErrors = Object.fromEntries(
-          (saveProblem.errors ?? []).map(({ key, reason }) => [key, reason]),
+          Object.entries(grouped).map(([key, reasons]) => [
+            key,
+            reasons.join(' '),
+          ]),
         );
       }
+      await tick();
+      problemBox?.focus();
     } finally {
       saving = false;
       await restoreFocus?.();
@@ -262,8 +296,8 @@
   function useSuggested(id: string, button: HTMLElement) {
     if (!draft || saving) return;
     draft.id = id;
+    clearAttemptState();
     attempt = freeze();
-    saveProblem = undefined;
     void save(button);
   }
 
@@ -276,8 +310,8 @@
     attempt = undefined;
     result = undefined;
     writtenButUnavailable = undefined;
-    saveProblem = undefined;
-    serverErrors = {};
+    clearAttemptState();
+    unknownPresetValues = [];
     importProblem = undefined;
     selectedName = undefined;
     showErrors = false;
@@ -352,7 +386,7 @@
       {importing ? 'Analysing the workflow…' : ''}
     </p>
     {#if importProblem}<ProblemDetails problem={importProblem} />{/if}
-    {#if imported && draft}
+    {#if imported && draft && !importProblem && !importing}
       <p>
         <Button variant="primary" onclick={() => go('review')}
           >Continue with {imported.fileName}</Button
@@ -367,6 +401,9 @@
         {errors}
         {serverErrors}
         {showErrors}
+        {conflicts}
+        notes={unknownPresetValues}
+        fixPresets={() => go('presets')}
       />
     {:else if step === 'presets'}
       <PresetsStep bind:draft {errors} {serverErrors} {showErrors} />
@@ -419,7 +456,34 @@
       {/if}
 
       {#if saveProblem}
-        <ProblemDetails problem={{ ...saveProblem, errors: undefined }} />
+        <div tabindex="-1" bind:this={problemBox} class="problem-box">
+          <ProblemDetails problem={{ ...saveProblem, errors: undefined }} />
+        </div>
+        {#if uncertain}
+          <div role="status" class="ui-problem">
+            <p>
+              The server may already have written this workflow. Editing is
+              locked so a changed save cannot create a duplicate. Send the same
+              save again, or check the
+              <a href="#/workflows" target="_blank" rel="noopener"
+                >workflow catalogue</a
+              > first. Starting over discards this import; an earlier save may still
+              have been written.
+            </p>
+            <p>
+              <Button
+                onclick={() => {
+                  if (
+                    window.confirm(
+                      'The earlier save may have been written. Check the workflow catalogue first. Start over and discard this import?',
+                    )
+                  )
+                    reset();
+                }}>Start over</Button
+              >
+            </p>
+          </div>
+        {/if}
         {#if mappedErrors.length}
           <ul class="mapped">
             {#each mappedErrors as item, at (at)}
@@ -460,7 +524,7 @@
 </section>
 
 {#if blocked}
-  <p role="alert">
+  <p role="alert" tabindex="-1" bind:this={blockedBox}>
     Some fields need attention. Fix the highlighted fields to continue.
   </p>
 {/if}
@@ -468,7 +532,7 @@
 {#if step !== 'file' && draft && !finished}
   <p class="actions">
     <Button
-      disabled={saving}
+      disabled={saving || uncertain}
       onclick={() => go(steps[Math.max(0, index - 1)].id)}>Back</Button
     >
     {#if step === 'save'}
@@ -504,6 +568,9 @@
   .actions {
     display: flex;
     gap: 0.6rem;
+  }
+  .problem-box:focus {
+    outline: none;
   }
   .mapped {
     padding-inline-start: 1.2rem;

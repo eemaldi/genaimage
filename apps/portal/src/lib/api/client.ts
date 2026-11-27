@@ -676,7 +676,7 @@ export function createApiClient(
       json('get', '/api/v1/workflows', options),
     refreshWorkflows: (options: RequestOptions = {}) =>
       json('post', '/api/v1/workflows/refresh', options),
-    /** Read-only analysis. The response keeps every number's exact spelling. */
+    /** Read-only analysis. Every number in the response keeps its source text. */
     importWorkflow: (
       body: WorkflowImportRequest,
       options: RequestOptions = {},
@@ -685,7 +685,7 @@ export function createApiClient(
         'post',
         '/api/v1/workflows/import',
         { ...options, body },
-        (response) => readExactIntegers(response, true),
+        readAssistantJson,
       ) as Promise<unknown>,
     /** One write. An identical repeat replays 200, so a retry re-sends the same body. */
     confirmWorkflowImport: (

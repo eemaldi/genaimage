@@ -39,7 +39,17 @@
     });
   }
   const kindOf = (uid: number) =>
-    exposed.find((item) => item.uid === uid)?.kind ?? 'string';
+    draft.parameters.find((item) => item.uid === uid)?.kind;
+  const missing = (uid: number) =>
+    draft.parameters.find((item) => item.uid === uid && !item.exposed);
+  const parameterOptions = (uid: number) => [
+    ...(missing(uid)
+      ? [{ value: String(uid), label: `${missing(uid)!.key} (not exposed)` }]
+      : []),
+    ...exposed
+      .filter((item) => item.kind !== 'image_upload')
+      .map((item) => ({ value: String(item.uid), label: item.key })),
+  ];
 </script>
 
 <p>
@@ -69,9 +79,7 @@
               entry.text = '';
             }
           }
-          options={exposed
-            .filter((item) => item.kind !== 'image_upload')
-            .map((item) => ({ value: String(item.uid), label: item.key }))}
+          options={parameterOptions(entry.parameter)}
         />
         {#if kindOf(entry.parameter) === 'boolean'}
           <Select

@@ -11,9 +11,14 @@
   } = $props();
   let over = $state(false);
   let input = $state<HTMLInputElement>();
+  let notice = $state('');
 
   function pick(files: FileList | null | undefined) {
     const file = files?.[0];
+    notice =
+      files && files.length > 1
+        ? `Only one file is imported at a time. Using ${file?.name}; the other ${files.length - 1} ignored.`
+        : '';
     if (file) choose(file);
   }
 </script>
@@ -55,6 +60,7 @@
       event.currentTarget.value = '';
     }}
   />
+  {#if notice}<p role="status">{notice}</p>{/if}
   {#if fileName}<p>Selected: <code>{fileName}</code></p>{/if}
 </div>
 
