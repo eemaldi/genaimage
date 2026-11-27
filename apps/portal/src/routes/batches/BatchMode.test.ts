@@ -285,3 +285,67 @@ test('swept parameters are left out of the shared values', async () => {
   const body = fake.previewBatch.mock.calls[0][0];
   expect(Object.keys(body.parameters ?? {})).not.toContain('seed');
 });
+
+test('an empty random seed range is reported and the list is not changed', async () => {
+  const impossible = {
+    ...workflow,
+    parameters: {
+      ...workflow.parameters,
+      seed: parameter('seed', { minimum: 5, maximum: 4 }),
+    },
+  };
+  render(BatchMode, {
+    workflow: impossible,
+    query: new URLSearchParams(),
+    reloadWorkflow,
+  });
+  await set(/Seeds for seed/, '5');
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Add random seeds' }),
+  );
+  expect(screen.getByText(/leave no seed between 0 and/)).toBeTruthy();
+  expect(
+    (screen.getByLabelText(/Seeds for seed/) as HTMLTextAreaElement).value,
+  ).toBe('5');
+});
+
+test('a corrupt stored request is discarded only after confirmation and unlocks the form', async () => {
+  const corrupt = 'genaimage.batch.pending.v1:portrait:corrupt-key';
+  const other = 'genaimage.batch.pending.v1:other:kept-key';
+  sessionStorage.setItem(
+    corrupt,
+    JSON.stringify({ body: '{"workflow":"portrait"', itemCount: 2 }),
+  );
+  sessionStorage.setItem(
+    other,
+    JSON.stringify({ body: '{"workflow":"other"}', itemCount: 1 }),
+  );
+  view();
+  const discard = await screen.findByRole('button', {
+    name: 'Discard stored request',
+  });
+  expect(
+    screen.getByRole('link', { name: 'Batches in Jobs' }).getAttribute('href'),
+  ).toBe('#/jobs?view=batches');
+  const formFieldset = () =>
+    screen
+      .getByRole('button', { name: 'Preview batch' })
+      .closest('fieldset') as HTMLFieldSetElement;
+  expect(formFieldset().disabled).toBe(true);
+
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+  await userEvent.click(discard);
+  expect(sessionStorage.getItem(corrupt)).not.toBeNull();
+  expect(formFieldset().disabled).toBe(true);
+
+  confirm.mockReturnValueOnce(true);
+  await userEvent.click(discard);
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(sessionStorage.getItem(corrupt)).toBeNull();
+  expect(sessionStorage.getItem(other)).not.toBeNull();
+  expect(formFieldset().disabled).toBe(false);
+  expect(
+    screen.queryByRole('button', { name: 'Discard stored request' }),
+  ).toBeNull();
+  confirm.mockRestore();
+});

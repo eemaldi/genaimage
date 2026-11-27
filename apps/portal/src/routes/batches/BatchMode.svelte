@@ -30,6 +30,8 @@
   } from '../generate/model';
   import {
     clearPendingBatch,
+    CorruptPendingBatch,
+    discardCorruptPendingBatch,
     loadPendingBatch,
     savePendingBatch,
     type PendingBatch,
@@ -63,6 +65,7 @@
     } catch (failure) {
       return {
         problem: problemOf(failure, 'Could not restore a pending batch'),
+        slot: failure instanceof CorruptPendingBatch ? failure.slot : undefined,
       };
     }
   });
@@ -90,6 +93,9 @@
   let review = $state.raw<Review>();
   let pending = $state.raw<PendingBatch | undefined>(recovered.pending);
   let problem = $state<Problem | undefined>(recovered.problem);
+  let unreadable = $state.raw<{ slot?: string } | undefined>(
+    recovered.problem ? { slot: recovered.slot } : undefined,
+  );
   let formErrors = $state.raw<string[]>([]);
   let working = $state(false);
   let controller: AbortController | undefined;
@@ -97,7 +103,7 @@
   let reviewHeading = $state<HTMLElement>();
   onDestroy(() => controller?.abort());
 
-  let locked = $derived(working || !!pending || !!recovered.problem);
+  let locked = $derived(working || !!pending || !!unreadable);
   let swept = $derived(
     sweepKind === 'seeds' ? (seedName ? [seedName] : []) : [...chosen].sort(),
   );
@@ -154,6 +160,32 @@
     invalidate();
   }
 
+  function drawSeed(name: string): { seed?: Scalar; error?: string } {
+    try {
+      return { seed: randomSeed(workflow.parameters[name]) };
+    } catch (failure) {
+      return {
+        error:
+          failure instanceof Error
+            ? failure.message
+            : 'Could not draw a random seed.',
+      };
+    }
+  }
+
+  function discardStored() {
+    if (
+      !unreadable?.slot ||
+      !window.confirm(
+        'Discard the stored batch request? It may already have been sent, so check Batches in Jobs first. Only this browser’s copy is removed.',
+      )
+    )
+      return;
+    discardCorruptPendingBatch(unreadable.slot);
+    unreadable = undefined;
+    problem = undefined;
+  }
+
   function addRandomSeeds() {
     const wanted = Number(randomCount);
     if (
@@ -166,12 +198,21 @@
       seedStatus = `Enter a whole number from 1 to ${maxRandomSeeds}.`;
       return;
     }
-    const added = randomSeeds(
-      workflow.parameters[seedName],
-      wanted,
-      randomSeed,
-      parsed.get(seedName)?.values ?? [],
-    );
+    let added: Scalar[];
+    try {
+      added = randomSeeds(
+        workflow.parameters[seedName],
+        wanted,
+        randomSeed,
+        parsed.get(seedName)?.values ?? [],
+      );
+    } catch (failure) {
+      seedStatus =
+        failure instanceof Error
+          ? failure.message
+          : 'Could not draw random seeds.';
+      return;
+    }
     if (!added.length) {
       seedStatus = 'No further valid seeds could be generated.';
       return;
@@ -236,11 +277,12 @@
       const error = baseError(name, field);
       if (error) errors.push(`${name}: ${error}`);
       else if (field.seedMode === 'random') {
-        const seed = randomSeed(workflow.parameters[name]);
-        if (seed === undefined)
+        const drawn = drawSeed(name);
+        if ('error' in drawn) errors.push(`${name}: ${drawn.error}`);
+        else if (drawn.seed === undefined)
           errors.push(`${name}: This workflow has no valid seed to randomise.`);
         else {
-          values.set(name, seed);
+          values.set(name, drawn.seed);
           random.add(name);
         }
       } else if (field.value !== undefined) values.set(name, field.value);
@@ -443,6 +485,17 @@
   an ordinary run, and you confirm every item before anything is sent.
 </p>
 {#if problem}<ProblemDetails {problem} />{/if}
+{#if unreadable?.slot}
+  <section class="panel" aria-labelledby={`${uid}-stored`}>
+    <h3 id={`${uid}-stored`}>Stored batch request</h3>
+    <p>
+      The batch request saved in this browser cannot be restored, so the form
+      stays locked. It may already have been sent. Check
+      <a href="#/jobs?view=batches">Batches in Jobs</a> before you discard it.
+    </p>
+    <Button onclick={discardStored}>Discard stored request</Button>
+  </section>
+{/if}
 {#if pending}
   <section class="panel" aria-labelledby={`${uid}-pending`}>
     <h3 id={`${uid}-pending`}>Pending batch submission</h3>
