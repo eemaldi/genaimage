@@ -46,7 +46,11 @@
   let heading = $state<HTMLElement>();
   let statusFresh = $state(true);
   let activeComfyui = $state<string>();
-  let testRun = $state<{ runId: string; checkpoint?: string }>();
+  let testRun = $state<{
+    runId: string;
+    checkpoint?: string;
+    endpoint?: string;
+  }>();
   const request = latest();
   const statusRequest = latest();
 
@@ -71,7 +75,12 @@
       (!!choices.comfyuiUrl || restartKeys.includes('comfyui.base_url')),
   );
   let confirmedTestRun = $derived(
-    testRun && testRun.checkpoint === choices.checkpoint
+    testRun &&
+      testRun.checkpoint !== undefined &&
+      testRun.checkpoint === choices.checkpoint &&
+      testRun.endpoint !== undefined &&
+      testRun.endpoint === comfyUrl &&
+      testRun.endpoint === activeComfyui
       ? testRun.runId
       : undefined,
   );
@@ -356,8 +365,16 @@
         }}
         confirmedRunId={confirmedTestRun}
         refresh={refreshStatus}
-        onConfirmed={(runId) =>
-          (testRun = { runId, checkpoint: choices.checkpoint })}
+        finishedRun={testRun}
+        onConfirmed={(runId, run) => {
+          const used = (run.parameters as Record<string, unknown> | null)
+            ?.checkpoint;
+          testRun = {
+            runId,
+            checkpoint: typeof used === 'string' ? used : undefined,
+            endpoint: activeComfyui,
+          };
+        }}
       />
     {/if}
   </section>

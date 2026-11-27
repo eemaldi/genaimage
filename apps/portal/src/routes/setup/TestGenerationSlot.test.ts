@@ -8,7 +8,12 @@ import {
 import userEvent from '@testing-library/user-event';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { ApiProblemError, BindingFloat, type api } from '../../lib/api/client';
+import {
+  ApiProblemError,
+  BindingFloat,
+  stringifyBindingJson,
+  type api,
+} from '../../lib/api/client';
 import type { ConnectionStatus, ResyncSignal } from '../../lib/api/events';
 import type { components } from '../../lib/api/schema';
 import type { Parameter, Workflow } from '../generate/model';
@@ -107,7 +112,8 @@ const live: TestGenerationState = {
   restartPending: false,
 };
 const refresh = vi.fn<() => Promise<boolean>>();
-const onConfirmed = vi.fn<(runId: string) => void>();
+const onConfirmed =
+  vi.fn<(runId: string, run: components['schemas']['RunResponse']) => void>();
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -137,10 +143,12 @@ afterEach(() => cleanup());
 function mount(
   state: Partial<TestGenerationState> = {},
   confirmedRunId?: string,
+  finishedRun?: { runId: string; checkpoint?: string },
 ) {
   return render(TestGenerationSlot, {
     state: { ...live, ...state },
     confirmedRunId,
+    finishedRun,
     refresh,
     onConfirmed,
   });
@@ -309,7 +317,12 @@ test('success is reported only after the backend confirms outputs', async () => 
   const second = await reviewed();
   await second.click(await runButton());
   await screen.findByText('Run completed with outputs.');
-  await waitFor(() => expect(onConfirmed).toHaveBeenCalledWith('run-1'));
+  await waitFor(() =>
+    expect(onConfirmed).toHaveBeenCalledWith(
+      'run-1',
+      expect.objectContaining({ id: 'run-1' }),
+    ),
+  );
 });
 
 test('a failed run is shown as failed and never confirmed', async () => {
@@ -329,6 +342,81 @@ test('a confirmed run links to its details', async () => {
   mount({}, 'run-9');
   const link = await screen.findByRole('link', { name: 'View the run' });
   expect(link.getAttribute('href')).toBe('#/runs/run-9');
+});
+
+test('a restored pending run with another checkpoint warns, retries unchanged and is not the current choice', async () => {
+  fake.createRun.mockReturnValueOnce(new Promise(() => {}));
+  const user = await reviewed();
+  await user.click(await runButton());
+  await waitFor(() => expect(fake.createRun).toHaveBeenCalledTimes(1));
+  const [body, key] = fake.createRun.mock.calls[0];
+  cleanup();
+  mount({ checkpoint: 'flux.safetensors' });
+  await screen.findByRole('heading', { name: 'Pending submission' });
+  await waitFor(() =>
+    expect(document.querySelector('[data-restored-mismatch]')).toBeTruthy(),
+  );
+  expect(
+    document.querySelector('[data-restored-mismatch]')?.textContent,
+  ).toContain('sdxl.safetensors');
+  fake.createRun.mockResolvedValueOnce(run);
+  await user.click(
+    screen.getByRole('button', { name: 'Retry with the same key' }),
+  );
+  expect(fake.createRun.mock.calls[1][1]).toBe(key);
+  expect(stringifyBindingJson(fake.createRun.mock.calls[1][0])).toBe(
+    stringifyBindingJson(body),
+  );
+});
+
+test('no mismatch notice when the pending checkpoint is the current choice', async () => {
+  fake.createRun.mockReturnValueOnce(new Promise(() => {}));
+  const user = await reviewed();
+  await user.click(await runButton());
+  await waitFor(() => expect(fake.createRun).toHaveBeenCalledTimes(1));
+  cleanup();
+  mount();
+  await screen.findByRole('heading', { name: 'Pending submission' });
+  expect(document.querySelector('[data-restored-mismatch]')).toBeNull();
+});
+
+test('a finished run with another checkpoint is reported and not confirmed', async () => {
+  mount({ checkpoint: 'flux.safetensors' }, undefined, {
+    runId: 'run-3',
+    checkpoint: 'sdxl.safetensors',
+  });
+  const notice = await screen.findByText(/A test run finished with checkpoint/);
+  expect(notice.textContent).toContain('sdxl.safetensors');
+  expect(notice.textContent).toContain('flux.safetensors');
+  expect(document.querySelector('[data-confirmed]')).toBeNull();
+});
+
+test('a definitive 409 discards the review, reloads the workflow and needs re-validation for a new key', async () => {
+  fake.createRun.mockRejectedValueOnce(
+    new ApiProblemError({
+      title: 'Workflow changed',
+      status: 409,
+      type: 'urn:genaimage:problem:workflow-changed',
+    } as never),
+  );
+  const user = await reviewed();
+  fake.getWorkflow.mockClear();
+  fake.getWorkflow.mockRejectedValue(new TypeError('offline'));
+  await user.click(await runButton());
+  await waitFor(() => expect(fake.getWorkflow).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('button', { name: 'Run test generation' }),
+    ).toBeNull(),
+  );
+  expect(fake.createRun).toHaveBeenCalledTimes(1);
+  fake.createRun.mockResolvedValueOnce(run);
+  await user.click(await validate());
+  await user.click(await runButton());
+  await waitFor(() => expect(fake.createRun).toHaveBeenCalledTimes(2));
+  expect(fake.createRun.mock.calls[1][1]).not.toBe(
+    fake.createRun.mock.calls[0][1],
+  );
 });
 
 test('Save does nothing while the review step is blocked', async () => {

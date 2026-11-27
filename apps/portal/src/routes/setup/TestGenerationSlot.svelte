@@ -5,6 +5,7 @@
   import ProblemDetails, {
     type Problem,
   } from '../../lib/ui/ProblemDetails.svelte';
+  import type { components } from '../../lib/api/schema';
   import type { Workflow } from '../generate/model';
   import { loadPending } from '../generate/pending';
   import Submission from '../generate/Submission.svelte';
@@ -15,15 +16,18 @@
   let {
     state: setup,
     confirmedRunId,
+    finishedRun,
     refresh,
     onConfirmed,
   }: {
     state: TestGenerationState;
     confirmedRunId?: string;
+    finishedRun?: { runId: string; checkpoint?: string };
     refresh: () => Promise<boolean>;
-    onConfirmed: (runId: string) => void;
+    onConfirmed: (runId: string, run: Run) => void;
   } = $props();
 
+  type Run = components['schemas']['RunResponse'];
   type Loaded =
     | { kind: 'loading' }
     | { kind: 'ready'; workflow: Workflow }
@@ -161,6 +165,18 @@
       outputs. <a href={`#/runs/${encodeURIComponent(confirmedRunId)}`}
         >View the run</a
       >. That only shows the setup works; it is not creative approval.
+    </p>
+  {/if}
+
+  {#if !confirmedRunId && finishedRun && finishedRun.checkpoint !== setup.checkpoint}
+    <p class="setup-problem" role="status" data-finished-mismatch>
+      A test run finished with checkpoint
+      <code>{finishedRun.checkpoint ?? 'unknown'}</code>, not your current
+      choice
+      <code>{setup.checkpoint ?? 'none'}</code>.
+      <a href={`#/runs/${encodeURIComponent(finishedRun.runId)}`}
+        >View the run</a
+      >. The step stays not done until a run uses your current choice.
     </p>
   {/if}
 

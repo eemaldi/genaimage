@@ -21,6 +21,11 @@ const fake = vi.hoisted(() => ({
   llmModels: vi.fn(),
   checkpoints: vi.fn(),
   doctor: vi.fn(),
+  getWorkflow: vi.fn(),
+  validateWorkflow: vi.fn(),
+  createRun: vi.fn(),
+  getRun: vi.fn(),
+  listOutputs: vi.fn(),
 }));
 vi.mock('../../lib/api/client', async (original) => ({
   ...(await original<typeof import('../../lib/api/client')>()),
@@ -639,4 +644,84 @@ test('dismissal is remembered per set of blocking reasons only as a convenience'
       }) as never,
     ),
   ).toBe(false);
+});
+
+test('a confirmed test run is bound to the endpoint it ran on', async () => {
+  sessionStorage.clear();
+  const applied = (over: Record<string, unknown> = {}) =>
+    status({
+      needs_setup: false,
+      reasons: [],
+      config_file_exists: true,
+      restart_required: ['llm.base_url'],
+      ...over,
+    });
+  const param = () => ({
+    kind: 'string',
+    node: '1',
+    input: 'value',
+    description: '',
+    required: false,
+  });
+  fake.getWorkflow.mockResolvedValue({
+    revision: 'rev-1',
+    id: 'text-to-image',
+    version: '1.0.0',
+    schema_version: 2,
+    title: 't',
+    workflow: 'w.json',
+    outputs: [],
+    presets: {},
+    parameters: { checkpoint: param(), positive_prompt: param() },
+  });
+  fake.validateWorkflow.mockResolvedValue({
+    valid: true,
+    revision: 'rev-1',
+    parameter_errors: [],
+    inherited_inputs: [],
+    node_check: { status: 'available', missing_classes: [] },
+  });
+  const run = {
+    id: 'run-1',
+    workflow_id: 'text-to-image',
+    status: 'completed',
+    parameters: { checkpoint: 'sdxl.safetensors' },
+    created_at: '2026-11-24T12:00:00.000Z',
+    updated_at: '2026-11-24T12:00:00.000Z',
+    prompt_id: 'p',
+    workflow_sha256: 'h',
+    workflow_version: '1.0.0',
+  };
+  fake.createRun.mockResolvedValue(run);
+  fake.getRun.mockResolvedValue(run);
+  fake.listOutputs.mockResolvedValue({
+    outputs: [{ id: 'o', run_id: 'run-1', content_type: 'image/png' }],
+  });
+  fake.putSettingsWithRevision.mockResolvedValue({
+    etag: '"rev-2"',
+    settings: snapshot(false, { restart_required: ['llm.base_url'] }).settings,
+  });
+  const user = await open();
+  await toReview(user);
+  fake.setupStatus.mockResolvedValue(applied());
+  await save(user);
+  await screen.findByText('Restart required.');
+  await next(user);
+  await user.click(
+    await screen.findByRole('button', { name: 'Validate and review' }),
+  );
+  await user.click(
+    await screen.findByRole('button', { name: 'Run test generation' }),
+  );
+  await screen.findByText(/finished and the server confirmed/);
+  fake.setupStatus.mockResolvedValue(
+    applied({
+      comfyui: { configured_url: 'http://other:8188', source: 'default' },
+    }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Check again' }));
+  await waitFor(() =>
+    expect(screen.queryByText(/finished and the server confirmed/)).toBeNull(),
+  );
+  expect(stepItem('Test generation').textContent).not.toContain('Done');
 });

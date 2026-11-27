@@ -10,6 +10,7 @@
   import type { PendingSubmission } from '../generate/pending';
   import type { SubmissionControls } from '../generate/Submission.svelte';
   import {
+    checkpointParameter,
     defaultTestPrompt,
     parametersOf,
     showValue,
@@ -51,6 +52,12 @@
       ? reviewed
       : undefined,
   );
+  let restoredCheckpoint = $derived.by(() => {
+    const value = (
+      controls.pending?.body.parameters as Record<string, unknown> | undefined
+    )?.[checkpointParameter];
+    return typeof value === 'string' ? value : undefined;
+  });
   let locked = $derived(controls.editingLocked || controls.accepted);
 
   function describe(failure: unknown, title: string): Problem {
@@ -152,8 +159,8 @@
   function run() {
     if (!current || locked) return;
     controls.submit(current.snapshot, (conflict) => {
+      reviewed = undefined;
       if (conflict) reloadWorkflow(conflict);
-      else reviewed = undefined;
     });
   }
 </script>
@@ -191,6 +198,15 @@
 {/each}
 {#if problem}<ProblemDetails {problem} />{/if}
 {#if validating}<p role="status">Validating with the server…</p>{/if}
+{#if restoredCheckpoint !== undefined && restoredCheckpoint !== checkpoint}
+  <p class="setup-problem" role="alert" data-restored-mismatch>
+    The pending test submission above uses checkpoint
+    <code>{restoredCheckpoint}</code>, not your current choice
+    <code>{checkpoint}</code>. Retrying sends it unchanged with the same key;
+    the step will not count as done unless the finished run used your current
+    choice.
+  </p>
+{/if}
 
 {#if current}
   <section aria-labelledby="test-review-heading">

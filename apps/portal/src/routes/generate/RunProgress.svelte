@@ -16,7 +16,8 @@
   let {
     initial,
     onconfirmed,
-  }: { initial: Run; onconfirmed?: (runId: string) => void } = $props();
+  }: { initial: Run; onconfirmed?: (runId: string, run: Run) => void } =
+    $props();
   let row = $state.raw<RunRow>(untrack(() => ({ run: initial })));
   let outputs = $state.raw<Output[]>();
   let snapshotProblem = $state<Problem>();
@@ -26,7 +27,7 @@
   let status = $derived(row.run.status);
   $effect(() => {
     if (status === 'completed' && outputs?.length)
-      untrack(() => onconfirmed?.(row.run.id));
+      untrack(() => onconfirmed?.(row.run.id, row.run));
   });
   const runEvents = [
     'run_queued',
