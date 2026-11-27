@@ -103,8 +103,8 @@ jobs:
           context: .
           load: true
           tags: genaimage:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=ci-image
+          cache-to: type=gha,mode=max,scope=ci-image
 
       - name: Check image size
         run: |
