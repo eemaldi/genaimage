@@ -9,10 +9,12 @@ ComfyUI image decision.
 ## Quick start
 
 ```sh
+cp .env.example .env    # edit it: accelerator, group IDs, models
 docker compose up -d
 ```
 
-Then open `http://127.0.0.1:8190`. The first run builds the GenAImage and
+The default `.env.example` selects the AMD ROCm override; remove its
+`COMPOSE_FILE` line for the CPU stack. Then open `http://127.0.0.1:8190`. The first run builds the GenAImage and
 ComfyUI images from this repository, which takes several minutes and downloads
 the PyTorch wheels; there is no prebuilt image yet. This default stack runs
 ComfyUI on the CPU, which is slow but needs no GPU.
@@ -32,7 +34,7 @@ model, the portal reports what is missing.
 The accelerators are Compose override files rather than profiles, because the
 service must always be named `comfyui` for GenAImage to reach it. To avoid
 repeating `-f`, set `COMPOSE_FILE=compose.yaml:compose.nvidia.yaml` (for example
-in a `.env` file). Use the same files for `down`, `logs` and `build`.
+in `.env`, see `.env.example`). Use the same files for `down`, `logs` and `build`.
 
 GPU variants never fall back to the CPU. If the GPU is not available, the
 container fails to start (a missing NVIDIA runtime or `/dev/kfd`), or ComfyUI
@@ -59,13 +61,12 @@ Ollama `0.40.18-rocm`. No `HSA_OVERRIDE_GFX_VERSION` was needed.
 
 ```sh
 getent group video render        # video:x:39: and render:x:105: on that machine
-VIDEO_GID=39 RENDER_GID=105 \
-  docker compose -f compose.yaml -f compose.rocm.yaml up -d --build --wait
+# .env: COMPOSE_FILE=compose.yaml:compose.rocm.yaml, VIDEO_GID=39, RENDER_GID=105
+docker compose up -d --build --wait
 ```
 
 Use the numeric group IDs from your host (the user running Docker need not be a
-member, because the daemon opens the devices); put them in a `.env` file to keep
-them. The ComfyUI image needs `libatomic1`, which the Dockerfile installs.
+member, because the daemon opens the devices); keep them in `.env`. The ComfyUI image needs `libatomic1`, which the Dockerfile installs.
 
 - **GPU selection.** ComfyUI lists the integrated GPU as a second device
   (`cuda:1`, named after the CPU) and uses `cuda:0`, the discrete card, by
@@ -83,17 +84,17 @@ them. The ComfyUI image needs `libatomic1`, which the Dockerfile installs.
   then pull the LLM and recreate GenAImage with it as the text model:
 
   ```sh
-  docker compose -f compose.yaml -f compose.rocm.yaml cp sd_xl_base_1.0.safetensors comfyui:/opt/comfyui/models/checkpoints/
-  docker compose -f compose.yaml -f compose.rocm.yaml exec genaimage genaimage models pull qwen3:8b
-  GENAIMAGE_LLM_TEXT_MODEL=qwen3:8b VIDEO_GID=39 RENDER_GID=105 \
-    docker compose -f compose.yaml -f compose.rocm.yaml up -d --wait genaimage
-  docker compose -f compose.yaml -f compose.rocm.yaml exec genaimage genaimage run text-to-image --wait --json \
+  docker compose cp sd_xl_base_1.0.safetensors comfyui:/opt/comfyui/models/checkpoints/
+  docker compose exec genaimage genaimage models pull qwen3:8b
+  # set GENAIMAGE_LLM_TEXT_MODEL=qwen3:8b in .env, then:
+  docker compose up -d --wait genaimage
+  docker compose exec genaimage genaimage run text-to-image --wait --json \
     --set 'checkpoint="sd_xl_base_1.0.safetensors"' \
     --set 'positive_prompt="a lighthouse on a rocky coast at sunset, detailed, photograph"' \
     --set 'negative_prompt="blurry, low quality"' --set seed=42 --set width=1024 --set height=1024
   ```
 
-  Keep the exports for every later `up`, or the setting reverts. On the RX 9070
+  `.env` keeps the settings for every later `up`. On the RX 9070
   XT the 1024x1024, 20-step run took about 15 s, and `qwen3:8b` loaded all 37
   layers on the GPU. Ollama logs a harmless `rocblaslt ... gfx1201` warning.
 
@@ -120,8 +121,8 @@ docker compose cp ./model.safetensors comfyui:/opt/comfyui/models/checkpoints/
 
 ComfyUI lists new files without a restart after a refresh. Pull an Ollama model
 yourself, then choose it in the portal settings. Alternatively set
-`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in the
-environment of `docker compose up`, but leave them unset rather than empty: an
+`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in `.env`
+or the environment of `docker compose up`, but leave them unset rather than empty: an
 empty value locks the setting to empty through the environment.
 
 ```sh
