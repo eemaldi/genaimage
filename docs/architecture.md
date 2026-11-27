@@ -24,6 +24,7 @@ genaimage serve module -> genaimage-server -> genaimage-api
         +-> genaimage-core
 genaimage local config module -> genaimage-core (configuration only)
 genaimage-llm -> genaimage-core (OpenAI-compatible provider)
+genaimage serve module -> genaimage-webhook -> genaimage-core (webhook event sink)
 ```
 
 - `genaimage-core` owns configuration, workflow manifests and explicit
@@ -36,6 +37,8 @@ genaimage-llm -> genaimage-core (OpenAI-compatible provider)
   model-listing endpoints. It handles SSE text and tool-call streams, vision
   data URLs and endpoint validation without moving assistant orchestration out
   of core. The isolated serve module registers it when `llm.base_url` is set.
+- `genaimage-webhook` implements the webhook `EventSink` with endpoint
+  validation, retries and a dead-letter log; see [event sinks](#event-sinks).
 - `genaimage` provides the scripted CLI. Its client modules use only the HTTP
   API through `genaimage-api` for GenAImage functionality. The isolated `serve`
   module supplies the ComfyUI adapter factory, constructs the core harness and
@@ -905,10 +908,54 @@ event or explicit invalidation. Other processes have separate buses; a CLI
 waiter also publishes a progress snapshot when it observes a terminal state
 written by another process.
 
-Applications start one independent forwarding task per registered `EventSink`
-using `ExtensionRegistry::forward_event_sinks` and should observe the returned
-handles for failures. Each sink receives an explicit resync notification and
-its task stops on lag or invalidation. Slow sinks and subscribers do not block
+Applications start event sinks with `genaimage_core::sinks::spawn_sink`, which
+gives each sink its own bounded queue, forwarding task and worker. The older
+`ExtensionRegistry::forward_event_sinks` is a minimal helper that ends a sink on
+lag and is not used by `serve`.
+
+### Event sinks
+
+`serve` builds the configured `[[sinks]]` ([configuration](configuration.md#event-sinks)),
+registers them in the `ExtensionRegistry` and starts them on a task tracker.
+`JsonlSink` lives in core; `WebhookSink` lives in `genaimage-webhook`, which
+carries the HTTP client so core stays free of one.
+
+- **The bus is never blocked.** A forwarder moves events into a per-sink queue
+  of 256 notifications and nothing on the publish path awaits a sink.
+- **Drops are explicit.** A full queue drops the newest event, counts it and
+  puts a gap marker before the next queued event. A bus lag (`ResyncRequired`)
+  is counted, queued as a gap and the forwarder re-subscribes at the live tail
+  instead of ending. A sink error or panic never stops forwarding; it is
+  counted and the next event is attempted.
+- **JSONL.** One `EventEnvelope` per line, written with a single append and
+  `fsync` per line. Gaps are written as
+  `{"type":"sink_gap","reason":"lagged","skipped":N,"at":"..."}`. A line of
+  1 MiB or more is replaced by a `sink_oversize` marker and counted as a
+  failure. A torn last line from a crash is terminated before the next write.
+- **Webhook.** `POST` of the envelope JSON with `Content-Type: application/json`,
+  `Idempotency-Key: <bus_id>:<id>`, `X-GenAImage-Event`, `X-GenAImage-Attempt`
+  and, with `secret_env`, `X-GenAImage-Timestamp` and
+  `X-GenAImage-Signature: sha256=<hex>` where the digest is HMAC-SHA256 over
+  `<timestamp>.<body>`. Delivery is **at-least-once and sequential per sink**:
+  receivers must de-duplicate on the key. A `2xx` is success. Connection
+  errors, timeouts, `408`, `429` and `5xx` are retried with exponential backoff
+  (250 ms doubling to 30 s, with jitter) up to `max_attempts`. Any other status,
+  including a redirect, is permanent and is not retried. An event that fails
+  permanently or exhausts its attempts is appended to
+  `<data dir>/sinks/<name>.dead-letter.jsonl` with the attempts, the last
+  redacted error and the event. Gap notifications are not posted; receivers
+  see a jump in `id`, and doctor shows the count.
+- **Shutdown.** After the server has drained, sinks stop intake, deliver the
+  queue for up to three seconds and count what remains as dropped. Events
+  still queued at that point are not delivered after restart.
+- **Status.** Each sink has a shared status (delivered, failed, dropped,
+  dead-lettered, resyncs, retries, last redacted error, last success). Counters
+  are totals since start. The sink is `failing` after three consecutive failed
+  events or an unexpected task stop, `degraded` after any drop, dead letter,
+  failure or resync, and otherwise `ok`. The doctor `event_sinks` check reads
+  the same status through the bus.
+
+Slow sinks and subscribers do not block
 publishers. The CLI waits on run-filtered SSE and reads the durable run state
 on completion, stream failure or resync. It falls back to status polling
 without submitting or reconciling the run.

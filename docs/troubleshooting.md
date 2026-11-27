@@ -22,6 +22,7 @@ failed. Fix the first failing check and run `doctor` again.
 | `gpu` | ComfyUI reports a GPU device in `/system_stats`. A CPU-only ComfyUI, such as the default Compose stack, is a warning, not an error. | Install a GPU build of PyTorch and do not start ComfyUI with `--cpu`; under Compose pick an accelerator ([Compose](compose.md#accelerators)). |
 | `disk` | Free space for `paths.runs`: warning under 5 GiB, error under 512 MiB. | Free space or move `paths.runs` to a larger disk. |
 | `ports` | The server, ComfyUI and the LLM use different addresses, and the ComfyUI address answers like ComfyUI. | Give each service its own port. |
+| `event_sinks` | Every `[[sinks]]` entry is running and delivering. `ok` when none is configured; `warning` when a sink has dropped, dead-lettered, failed or resynchronised events since the server started; `error` when a sink is not running, its task stopped, or its last three deliveries failed. The items list each sink with its counters and last redacted error. | Fix the endpoint or path named in the item, read the dead-letter log (see [event sinks](configuration.md#event-sinks)), and restart the server to reset the counters. |
 
 The portal shows the same report on the Diagnostics page (`#/diagnostics`).
 Doctor only contacts the endpoints in your configuration and never prints the

@@ -57,6 +57,38 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// Every `type` discriminator, as written in the JSON contract.
+    pub const KINDS: [&'static str; 10] = [
+        "run_queued",
+        "run_started",
+        "run_progress",
+        "run_output",
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_unknown_submission",
+        "backend_health_changed",
+        "settings_changed",
+    ];
+
+    /// The `type` discriminator of this event.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::RunQueued { .. } => Self::KINDS[0],
+            Self::RunStarted { .. } => Self::KINDS[1],
+            Self::RunProgress { .. } => Self::KINDS[2],
+            Self::RunOutput { .. } => Self::KINDS[3],
+            Self::RunCompleted { .. } => Self::KINDS[4],
+            Self::RunFailed { .. } => Self::KINDS[5],
+            Self::RunCancelled { .. } => Self::KINDS[6],
+            Self::RunUnknownSubmission { .. } => Self::KINDS[7],
+            Self::BackendHealthChanged { .. } => Self::KINDS[8],
+            Self::SettingsChanged { .. } => Self::KINDS[9],
+        }
+    }
+}
+
 /// IDs start at one and are unique and increasing for the lifetime of a bus.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventEnvelope {
@@ -139,6 +171,7 @@ struct Inner {
     capacity: usize,
     state: Mutex<State>,
     sender: broadcast::Sender<BusMessage>,
+    sinks: crate::sinks::SinkStatuses,
 }
 
 /// Publishing never waits for a subscriber or an event sink.
@@ -168,7 +201,13 @@ impl EventBus {
                 progress_subscribers: Vec::new(),
             }),
             sender,
+            sinks: crate::sinks::SinkStatuses::default(),
         }))
+    }
+
+    /// Delivery status of the event sinks attached to this bus, for diagnostics.
+    pub fn sink_statuses(&self) -> &crate::sinks::SinkStatuses {
+        &self.0.sinks
     }
 
     pub(crate) fn run_lock(

@@ -14,6 +14,8 @@ ComfyUI image generation, assisted by local LLMs. Read
   protocol (`assistant/`). Do not duplicate orchestration in operator surfaces.
 - `crates/genaimage-llm` implements the OpenAI-compatible `LlmProvider` and the
   Ollama-native model list and pull client.
+- `crates/genaimage-webhook` implements the webhook `EventSink`; the JSONL
+  sink, sink queues and status live in `genaimage-core` (`sinks.rs`).
 - `crates/genaimage-comfyui` implements the core transport port using ComfyUI
   HTTP and WebSocket connections.
 - `crates/genaimage` is the scripted interface. Health, workflow, preset and

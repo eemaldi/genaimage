@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Every check id, in report order.
-pub const DOCTOR_CHECK_IDS: [&str; 13] = [
+pub const DOCTOR_CHECK_IDS: [&str; 14] = [
     "server",
     "config",
     "comfyui.reachable",
@@ -16,6 +16,7 @@ pub const DOCTOR_CHECK_IDS: [&str; 13] = [
     "gpu",
     "disk",
     "ports",
+    "event_sinks",
 ];
 
 /// Outcome of one diagnostic check.
@@ -35,7 +36,7 @@ pub enum DoctorStatus {
 pub struct DoctorCheck {
     /// Stable identifier, one of `server`, `config`, `comfyui.reachable`,
     /// `comfyui.version`, `comfyui.object_info`, `workflows.nodes`,
-    /// `packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.
+    /// `packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk`, `ports` and `event_sinks`.
     pub id: String,
     pub status: DoctorStatus,
     pub summary: String,

@@ -703,6 +703,41 @@ mod tests {
     }
 
     #[test]
+    fn sinks_are_read_only_and_survive_a_settings_rewrite() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join(PROJECT_CONFIG);
+        let load = || {
+            HarnessConfig::load_with(workspace.path(), Some(&path), workspace.path(), |name| {
+                match name {
+                    "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => {
+                        Some(workspace.path().to_str().unwrap().to_owned())
+                    }
+                    "HOOK_SECRET" => Some("s3cret".into()),
+                    _ => None,
+                }
+            })
+            .unwrap()
+        };
+        let sinks = "[[sinks]]\n# keep me\nname = \"audit\"\nkind = \"jsonl\"\npath = \"events.jsonl\"\nevents = [\"run_failed\"]\n\n[[sinks]]\nname = \"hook\"\nkind = \"webhook\"\nurl = \"http://127.0.0.1:9000/h\"\nsecret_env = \"HOOK_SECRET\"\n";
+        fs::write(&path, format!("[paths]\nruns = \"old\"\n\n{sinks}")).unwrap();
+        let initial = load();
+        assert!(!initial.settings_values().contains_key("sinks"));
+        assert!(initial
+            .propose_settings(BTreeMap::from([("sinks".into(), json!([]))]))
+            .is_err());
+        let saved = initial
+            .propose_settings(BTreeMap::from([("paths.runs".into(), json!("new"))]))
+            .unwrap()
+            .persist()
+            .unwrap();
+        assert_eq!(saved.sinks.len(), 2);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains(sinks), "{contents}");
+        assert!(!contents.contains("s3cret"));
+        assert_eq!(load().sinks, saved.sinks);
+    }
+
+    #[test]
     fn interrupted_write_never_replaces_original() {
         let workspace = tempfile::tempdir().unwrap();
         let path = workspace.path().join(PROJECT_CONFIG);

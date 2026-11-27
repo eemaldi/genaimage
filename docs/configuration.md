@@ -64,6 +64,51 @@ Notes on individual keys:
   current directory by default). A database that contains runs is bound to its
   workspace and ComfyUI endpoint; see [setup](setup.md#settings-api).
 
+## Event sinks
+
+`[[sinks]]` tables deliver bus events to a file or a local HTTP receiver
+without polling. They are read-only in the settings API: edit the file and
+restart the server. Saving other settings keeps every `[[sinks]]` table.
+Unknown keys, duplicate names, public endpoints and a missing `secret_env`
+variable stop the server from starting with an error naming the key.
+
+```toml
+[[sinks]]
+name = "audit"              # unique; [a-z0-9][a-z0-9_-]{0,63}
+kind = "jsonl"
+path = "events.jsonl"       # relative; created below <data dir>/sinks
+events = ["run_completed", "run_failed"]   # optional; default is every event
+
+[[sinks]]
+name = "local-hook"
+kind = "webhook"
+url = "http://127.0.0.1:9000/hooks/genaimage"
+allowed_hosts = []          # same rules as comfyui.allowed_hosts
+secret_env = "GENAIMAGE_HOOK_SECRET"       # optional HMAC key, read from the environment
+timeout_seconds = 5         # 1 to 120, default 5
+max_attempts = 5            # 1 to 20, default 5
+events = ["run_completed"]
+```
+
+- `events` lists event `type` names: `run_queued`, `run_started`,
+  `run_progress`, `run_output`, `run_completed`, `run_failed`, `run_cancelled`,
+  `run_unknown_submission`, `backend_health_changed` and `settings_changed`.
+  An empty list is rejected.
+- A `jsonl` path must be relative, without `..`, below `<data dir>/sinks`, and
+  not shared with another sink. The suffix `.dead-letter.jsonl` is reserved.
+  Files are created with mode `0600` and grow until you rotate them; the file is
+  reopened for every line, so renaming it is safe.
+- A `webhook` URL follows the outbound endpoint rules above: loopback by
+  default, private or Compose hosts only when listed in the sink's
+  `allowed_hosts`, never public. Every attempt resolves the host again and
+  checks every answer; redirects and proxies are disabled.
+- `secret_env` names an environment variable. The secret is never stored in
+  TOML and never printed, logged, returned or written to a dead-letter record.
+  It signs each request (see [delivery semantics](architecture.md#event-sinks)).
+
+Delivery status and failures appear in the `event_sinks` check of
+`genaimage doctor` ([troubleshooting](troubleshooting.md#doctor-checks)).
+
 ## Other environment variables
 
 | Variable | Meaning |

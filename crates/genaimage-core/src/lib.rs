@@ -18,6 +18,7 @@ pub mod persistence;
 #[doc(hidden)]
 pub mod safe_file;
 pub mod setup;
+pub mod sinks;
 pub mod templates;
 mod tool_schema;
 pub mod uploads;

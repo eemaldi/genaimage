@@ -801,10 +801,12 @@ dependencies = [
  "genaimage-llm",
  "genaimage-server",
  "genaimage-test-support",
+ "genaimage-webhook",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing-subscriber",
  "uuid",
 ]
@@ -936,6 +938,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "genaimage-webhook"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "genaimage-core",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]
