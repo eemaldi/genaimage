@@ -328,7 +328,8 @@ requirements are checked by one core function shared by the packs API and the
 doctor.
 
 The workflows API is read-only apart from validation, which does not submit a run,
-and `POST /api/v1/workflows/refresh`, which forces a catalogue rebuild:
+`POST /api/v1/workflows/refresh`, which forces a catalogue rebuild, and the
+import endpoints, whose confirmation writes one new user workflow:
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
   tags, category, `source`, `available`, `unavailable_reason`, `revision` and optional `thumbnail_url`) and non-fatal `diagnostics` for
@@ -337,7 +338,11 @@ and `POST /api/v1/workflows/refresh`, which forces a catalogue rebuild:
   manifest makes the catalogue incomplete; its diagnostic identifies the problem.
   The API does not generate detail URLs.
 - `POST /api/v1/workflows/refresh` rebuilds the catalogue and returns the same
-  listing. The ID `refresh` is reserved. `GET /api/v1/packs` lists packs with
+  listing. The IDs `refresh` and `import` are reserved. `POST /api/v1/workflows/import`
+  proposes a manifest for an API-format graph without writing, and
+  `POST /api/v1/workflows/import/confirm` writes it as a new user workflow; see
+  [importing a workflow](workflow-manifest.md#importing-a-comfyui-workflow).
+  `GET /api/v1/packs` lists packs with
   their workflow IDs, templates, requirements and diagnostics, and
   `GET /api/v1/packs/{id}/validate` checks the requirements against ComfyUI
   `/object_info`, reporting missing, unknown and unreachable as such.

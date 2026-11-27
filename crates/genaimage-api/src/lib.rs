@@ -21,6 +21,9 @@ pub use settings::*;
 mod setup;
 pub use setup::*;
 
+mod workflow_import;
+pub use workflow_import::*;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 

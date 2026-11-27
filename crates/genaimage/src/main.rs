@@ -144,6 +144,13 @@ enum WorkflowCommand {
     Inspect {
         id: String,
     },
+    /// Analyse a ComfyUI API-format file and print a proposed manifest. Writes nothing.
+    Import {
+        file: std::path::PathBuf,
+        /// Display name that seeds the proposed title and id.
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Args)]

@@ -99,7 +99,7 @@ carries `source`: `user` or `pack:<id>`.
 - A **broken pack** (invalid `pack.toml`, escaping symlink) is a diagnostic and
   does not affect other packs. A declared file that is missing leaves the pack
   loaded and is reported on the pack.
-- The workflow ID `refresh` is reserved for `POST /api/v1/workflows/refresh`.
+- The workflow IDs `refresh` and `import` are reserved for `POST /api/v1/workflows/refresh` and `POST /api/v1/workflows/import`.
 - At most 64 packs and 512 entries per root are scanned.
 
 A new pack directory appears without a restart: every catalogue request

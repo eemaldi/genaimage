@@ -152,6 +152,27 @@ impl<'a> Command<'a> {
                     return Ok(Status::NegativeResult);
                 }
             }
+            Self::Workflow(WorkflowCommand::Import { file, name }) => {
+                let bytes = std::fs::read(file).map_err(|error| {
+                    Error::Input(format!("cannot read '{}': {error}", file.display()))
+                })?;
+                let graph = serde_json::from_slice(&bytes).map_err(|error| {
+                    Error::Input(format!("'{}' is not valid JSON: {error}", file.display()))
+                })?;
+                let proposal = client
+                    .import_workflow(&genaimage_api::WorkflowImportRequest {
+                        graph,
+                        name: name.clone(),
+                    })
+                    .await?;
+                output.write(&proposal, |out| {
+                    writeln!(
+                        out,
+                        "{}",
+                        serde_json::to_string_pretty(&proposal).map_err(std::io::Error::other)?
+                    )
+                })?;
+            }
             Self::Presets(id) => {
                 let presets = client.workflow(id).await?.presets;
                 output.write(&presets, |out| {
