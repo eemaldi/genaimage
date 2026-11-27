@@ -152,6 +152,7 @@
     disabled={loading || refreshing}
     onclick={(event) => refresh(event.currentTarget)}>Refresh</Button
   >
+  <a class="ui-button" href="#/workflows/import">Import workflow</a>
 </div>
 {#if refreshing}<p role="status">Refreshing workflows…</p>{/if}
 {#if refreshProblem}<ProblemDetails problem={refreshProblem} />{/if}

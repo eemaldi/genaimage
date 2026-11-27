@@ -163,8 +163,9 @@ not approve content.
 ## Importing a ComfyUI workflow
 
 Writing a manifest by hand is optional. The server can propose one from a
-ComfyUI **API-format** export. This is the API behind the import wizard; the
-portal wizard itself is **not yet implemented** (issue #68). The CLI prints a
+ComfyUI **API-format** export. The portal's import wizard (Workflows, then
+Import workflow, at `#/workflows/import`) uses this API: choose a file, review
+and edit the parameters, add presets, preview the form and save. The CLI prints a
 proposal with `genaimage workflow import <file> [--name NAME]`.
 
 1. `POST /api/v1/workflows/import` with `{"graph": <API-format JSON>, "name": "optional"}`

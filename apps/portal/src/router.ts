@@ -4,6 +4,7 @@ import Generate from './routes/generate/Page.svelte';
 import Jobs from './routes/jobs/Page.svelte';
 import Gallery from './routes/gallery/Page.svelte';
 import Workflows from './routes/workflows/Page.svelte';
+import WorkflowImport from './routes/workflows/import/Page.svelte';
 import WorkflowDetail from './routes/workflows/Detail.svelte';
 import Assistant from './routes/assistant/Page.svelte';
 import Diagnostics from './routes/diagnostics/Page.svelte';
@@ -25,6 +26,7 @@ const routes: Route[] = [
   { pattern: '/jobs', component: Jobs },
   { pattern: '/gallery', component: Gallery },
   { pattern: '/workflows', component: Workflows },
+  { pattern: '/workflows/import', component: WorkflowImport },
   { pattern: '/workflows/:id', component: WorkflowDetail },
   { pattern: '/assistant', component: Assistant },
   { pattern: '/diagnostics', component: Diagnostics },
