@@ -4,7 +4,13 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { ApiProblemError, type api } from '../../lib/api/client';
 import { mockNativeDialog } from '../../test/dialog';
 import Models from './Models.svelte';
-import { formatBytes, validateModelName, type ModelPull } from './model';
+import {
+  formatBytes,
+  percentComplete,
+  reconnectDelay,
+  validateModelName,
+  type ModelPull,
+} from './model';
 
 const fake = vi.hoisted(() => ({
   llmModels: vi.fn<typeof api.llmModels>(),
@@ -353,4 +359,93 @@ test('formats bytes for display only', () => {
   expect(formatBytes(999)).toBe('999 B');
   expect(formatBytes(1_500)).toBe('1.5 KB');
   expect(formatBytes(9_007_199_254_740_991)).toBe('9007 TB');
+});
+
+test('percent never goes below zero', () => {
+  expect(percentComplete(pull({ total_bytes: 100, completed_bytes: -5 }))).toBe(
+    0,
+  );
+});
+
+test('reconnect delay doubles and is capped', () => {
+  expect([0, 1, 2, 3, 4, 5, 9].map(reconnectDelay)).toEqual([
+    250, 500, 1000, 2000, 4000, 5000, 5000,
+  ]);
+});
+
+test('the confirmation never starts on the download action', async () => {
+  render(Models, props);
+  await confirmPull();
+  const dialog = await screen.findByRole('dialog');
+  const focused = document.activeElement as HTMLElement;
+  expect(dialog.contains(focused)).toBe(true);
+  expect(focused.textContent).toMatch(/Close|Do not download/);
+  expect(focused.textContent).not.toMatch(/Download llama/);
+});
+
+test('a double click on Download posts exactly once', async () => {
+  fake.startModelPull.mockImplementation(() => new Promise(() => undefined));
+  render(Models, props);
+  const user = await confirmPull();
+  const download = await screen.findByRole('button', { name: /Download/ });
+  await user.dblClick(download);
+  expect(fake.startModelPull).toHaveBeenCalledTimes(1);
+});
+
+test('two pulls are tracked independently', async () => {
+  const a = pull({ id: 'a', name: 'alpha', status: 'alpha running' });
+  const b = pull({ id: 'b', name: 'beta', status: 'beta running' });
+  fake.listModelPulls.mockResolvedValue({ pulls: [a, b] });
+  fake.streamModelPull.mockImplementation(async (id) =>
+    id === 'a'
+      ? stream(
+          pull({
+            id: 'a',
+            name: 'alpha',
+            state: 'failed',
+            error: 'boom',
+            sequence: 4,
+          }),
+        )
+      : hanging(
+          pull({ id: 'b', name: 'beta', status: 'beta running', sequence: 2 }),
+        ),
+  );
+  render(Models, props);
+  await screen.findByText('boom');
+  expect(screen.getByText(/beta running/)).toBeTruthy();
+  expect(
+    screen
+      .getAllByRole('button', { name: /Cancel pull of/ })
+      .map((x) => x.getAttribute('aria-label')),
+  ).toEqual(['Cancel pull of beta']);
+  expect(fake.streamModelPull.mock.calls.map((call) => call[0]).sort()).toEqual(
+    ['a', 'b'],
+  );
+});
+
+test('a stream repeating one snapshot ends in lost contact, and Check again resumes', async () => {
+  vi.useFakeTimers();
+  try {
+    fake.listModelPulls.mockResolvedValue({ pulls: [pull()] });
+    fake.streamModelPull.mockImplementation(async () =>
+      stream(pull({ sequence: 1 })),
+    );
+    fake.getModelPull.mockResolvedValue(pull({ sequence: 1 }));
+    render(Models, props);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(screen.getByText(/Lost contact with the server/)).toBeTruthy();
+    expect(fake.streamModelPull).toHaveBeenCalledTimes(5);
+
+    fake.streamModelPull.mockImplementation(async () =>
+      hanging(pull({ sequence: 2, status: 'back again' })),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByRole('button', { name: 'Check again' }));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(screen.getByText(/back again/)).toBeTruthy();
+    expect(screen.queryByText(/Lost contact/)).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });

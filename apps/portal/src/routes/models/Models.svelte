@@ -13,6 +13,7 @@
   import {
     formatBytes,
     isRunning,
+    reconnectDelay,
     roleStates,
     validateModelName,
     type LlmModelsResponse,
@@ -21,7 +22,6 @@
 
   let { params: _params, query: _query }: RouteProps = $props();
 
-  const RECONNECT_DELAY_MS = 250;
   const MAX_SILENT_RECONNECTS = 5;
   const inputId = 'model-pull-name';
 
@@ -98,8 +98,10 @@
     } else if (pull.state === 'cancelled') {
       announcement = `Pull of ${pull.name} was cancelled. It may still have installed the model.`;
       void loadModels();
-    } else {
+    } else if (pull.state === 'failed') {
       announcement = `Pull of ${pull.name} failed${pull.error ? `: ${pull.error}` : '.'}`;
+    } else {
+      announcement = `Pull of ${pull.name} ended in an unknown state. Check the installed models.`;
     }
   }
 
@@ -111,11 +113,13 @@
 
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      life.signal.addEventListener('abort', () => {
+      const done = () => {
         clearTimeout(timer);
+        life.signal.removeEventListener('abort', done);
         resolve();
-      });
+      };
+      const timer = setTimeout(done, ms);
+      life.signal.addEventListener('abort', done, { once: true });
     });
 
   async function follow(id: string) {
@@ -123,6 +127,15 @@
     following[id] = true;
     delete detached[id];
     let silent = 0;
+    const known = pulls.find((pull) => pull.id === id);
+    let seen = { sequence: known?.sequence ?? -1, state: known?.state };
+    /** Progress means a newer sequence or a changed state, never just a frame. */
+    const advanced = (pull: ModelPull) => {
+      const moved = pull.sequence > seen.sequence || pull.state !== seen.state;
+      if (pull.sequence >= seen.sequence)
+        seen = { sequence: pull.sequence, state: pull.state };
+      return moved;
+    };
     try {
       while (!life.signal.aborted) {
         let progressed = false;
@@ -132,7 +145,7 @@
           });
           for await (const { data } of stream) {
             if (data?.id !== id || typeof data.sequence !== 'number') continue;
-            progressed = true;
+            if (advanced(data)) progressed = true;
             const current = apply(data);
             if (!isRunning(current)) return settle(current);
           }
@@ -145,6 +158,7 @@
           const current = apply(
             await api.getModelPull(id, { signal: life.signal }),
           );
+          if (advanced(current)) progressed = true;
           if (!isRunning(current)) return settle(current);
         } catch (error) {
           if (life.signal.aborted) return;
@@ -155,7 +169,7 @@
           detached[id] = true;
           return;
         }
-        await sleep(RECONNECT_DELAY_MS);
+        await sleep(reconnectDelay(silent));
       }
     } finally {
       delete following[id];
@@ -418,8 +432,8 @@
   returnFocus={() => document.getElementById(inputId)?.focus()}
 >
   <p>
-    <Button variant="primary" onclick={startPull}>Download {confirming}</Button>
     <Button onclick={() => (confirmOpen = false)}>Do not download</Button>
+    <Button variant="primary" onclick={startPull}>Download {confirming}</Button>
   </p>
 </Dialog>
 

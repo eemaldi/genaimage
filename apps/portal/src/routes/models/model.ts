@@ -22,8 +22,15 @@ export function formatBytes(bytes: number): string {
 export function percentComplete(pull: ModelPull): number | undefined {
   const { total_bytes: total, completed_bytes: done } = pull;
   if (total == null || total <= 0 || done == null) return undefined;
-  return Math.min(100, Math.floor((done / total) * 100));
+  return Math.max(0, Math.min(100, Math.floor((done / total) * 100)));
 }
+
+const BACKOFF_START_MS = 250;
+const BACKOFF_CAP_MS = 5000;
+
+/** Delay before reconnect number `attempt` (0-based): doubles, capped. */
+export const reconnectDelay = (attempt: number) =>
+  Math.min(BACKOFF_CAP_MS, BACKOFF_START_MS * 2 ** attempt);
 
 export const isRunning = (pull: ModelPull) => pull.state === 'running';
 

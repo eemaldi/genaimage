@@ -289,4 +289,67 @@ describe('portal API client', () => {
     expect((init?.body as FormData).get('file')).toBe(file);
     expect(new Headers(init?.headers).has('Content-Type')).toBe(false);
   });
+
+  describe('startModelPull', () => {
+    const pullBody = { id: 'p1', name: 'm', state: 'running', sequence: 1 };
+    const conflict = (headers: Record<string, string>) =>
+      new Response(
+        JSON.stringify({
+          type: 'about:blank',
+          title: 'Conflict',
+          status: 409,
+          detail: 'Busy.',
+          recovery: 'Wait.',
+        }),
+        {
+          status: 409,
+          headers: { 'Content-Type': 'application/problem+json', ...headers },
+        },
+      );
+
+    it('posts once and returns the pull', async () => {
+      const fetcher = mockFetch().mockResolvedValue(
+        Response.json(pullBody, { status: 202 }),
+      );
+      const result = await createApiClient(fetcher).startModelPull('m');
+      expect(result).toEqual({ pull: pullBody, existingId: undefined });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0][1]?.method).toBe('POST');
+    });
+
+    it('does not retry after an error', async () => {
+      const fetcher = mockFetch().mockRejectedValue(new TypeError('down'));
+      await expect(
+        createApiClient(fetcher).startModelPull('m'),
+      ).rejects.toBeInstanceOf(ApiNetworkError);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the existing ID from the Location of a 409', async () => {
+      const fetcher = mockFetch().mockResolvedValue(
+        conflict({ Location: '/api/v1/models/llm/pulls/p9' }),
+      );
+      expect(await createApiClient(fetcher).startModelPull('m')).toEqual({
+        pull: undefined,
+        existingId: 'p9',
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('rethrows a 409 without a Location', async () => {
+      const fetcher = mockFetch().mockResolvedValue(conflict({}));
+      await expect(
+        createApiClient(fetcher).startModelPull('m'),
+      ).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('leaves other callers unaffected by the inspect hook', async () => {
+      const fetcher = mockFetch().mockResolvedValue(
+        conflict({ Location: '/api/v1/models/llm/pulls/p9' }),
+      );
+      await expect(createApiClient(fetcher).health()).rejects.toMatchObject({
+        status: 409,
+      });
+    });
+  });
 });
