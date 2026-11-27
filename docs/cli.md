@@ -163,8 +163,8 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   `ok`, `warning`, `error` or `skipped`; `items` is a bounded list of detail
   lines; `fix` is a string for every check except `ok` (where it is `null`).
   The check ids are `server`, `config`, `comfyui.reachable`, `comfyui.version`,
-  `comfyui.object_info`, `workflows.nodes`, `llm.reachable`, `llm.text`,
-  `llm.vision`, `gpu`, `disk` and `ports`; see
+  `comfyui.object_info`, `workflows.nodes`, `packs.requirements`, `llm.reachable`,
+  `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`; see
   [troubleshooting](troubleshooting.md#doctor-checks). Every id is always
   present. Exit `6` means at least one check is an `error`, including a server that
   accepts connections but does not answer within 20 s; warnings and skipped
@@ -179,8 +179,18 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   for that shape.
 - **`workflow list`** lists catalogue entries and non-fatal discovery
   diagnostics. JSON is `{workflows, diagnostics}`. Each workflow has `id`,
-  `name`, `version`, `revision`, `description`, `tags`, `category` and `thumbnail_url`;
-  the descriptive fields can be null. Each diagnostic has `path` and `error`.
+  `name`, `version`, `source` (`user` or `pack:<id>`), `revision`, `description`, `tags`,
+  `category` and `thumbnail_url`; the descriptive fields can be null. Each
+  diagnostic has `path` and `error`.
+- **`workflow refresh`** forces a catalogue rebuild, including every pack, and
+  prints the same `{workflows, diagnostics}` shape.
+- **`packs list`** lists workflow packs. JSON is `{packs, diagnostics}`; each
+  pack has `id`, `version`, `description`, `root`, `directory`, `workflow_ids`,
+  `templates`, `requires` (`node_classes`, `models`) and `diagnostics`.
+- **`packs validate <ID>`** checks a pack's requirements against ComfyUI and
+  never installs anything. JSON is `{pack_id, status, reason, node_classes,
+  models}` with `status` `ok`, `missing`, `unknown` or `unavailable`; exit `6`
+  unless it is `ok`. See [packs](packs.md#requirement-validation).
 - **`workflow inspect <ID>`** shows a catalogue workflow, its declared
   bindings and outputs. JSON is `WorkflowDetails`: `{schema_version, id,
   version, revision, title, workflow, description, tags, category, thumbnail, parameters,

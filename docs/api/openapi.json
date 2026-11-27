@@ -916,7 +916,7 @@
             ]
           },
           "id": {
-            "description": "Stable identifier, one of `server`, `config`, `comfyui.reachable`,\n`comfyui.version`, `comfyui.object_info`, `workflows.nodes`,\n`llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.",
+            "description": "Stable identifier, one of `server`, `config`, `comfyui.reachable`,\n`comfyui.version`, `comfyui.object_info`, `workflows.nodes`,\n`packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.",
             "type": "string"
           },
           "items": {
@@ -1875,6 +1875,218 @@
           "tags"
         ],
         "type": "object"
+      },
+      "PackListResponse": {
+        "description": "Workflow packs found below `paths.packs`, and discovery problems.",
+        "properties": {
+          "diagnostics": {
+            "description": "Broken packs and unreadable declared files; a broken pack never hides the others.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowDiagnostic"
+            },
+            "type": "array"
+          },
+          "packs": {
+            "items": {
+              "$ref": "#/components/schemas/PackSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "packs",
+          "diagnostics"
+        ],
+        "type": "object"
+      },
+      "PackModelCheck": {
+        "properties": {
+          "folder": {
+            "type": "string"
+          },
+          "loader": {
+            "description": "The loader input used for the check, as `Class.input`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why the status is `unknown`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/PackRequirementStatus"
+          }
+        },
+        "required": [
+          "folder",
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "PackNodeCheck": {
+        "properties": {
+          "class": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PackRequirementStatus"
+          }
+        },
+        "required": [
+          "class",
+          "status"
+        ],
+        "type": "object"
+      },
+      "PackRequirementStatus": {
+        "enum": [
+          "available",
+          "missing",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "PackRequirements": {
+        "description": "Declared requirements, checked but never installed.",
+        "properties": {
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Model folder to file names.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "node_classes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "node_classes",
+          "models"
+        ],
+        "type": "object"
+      },
+      "PackSummary": {
+        "description": "One valid pack with its declared contents.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "description": "Declared files that are missing or unreadable.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "directory": {
+            "description": "The pack directory.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "requires": {
+            "$ref": "#/components/schemas/PackRequirements"
+          },
+          "root": {
+            "description": "The configured pack root that contains this pack.",
+            "type": "string"
+          },
+          "templates": {
+            "description": "Template paths relative to the pack. Listed only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workflow_ids": {
+            "description": "IDs of the workflows the pack declares and that could be read.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "description",
+          "root",
+          "directory",
+          "workflow_ids",
+          "templates",
+          "requires",
+          "diagnostics"
+        ],
+        "type": "object"
+      },
+      "PackValidationResponse": {
+        "description": "Result of checking one pack against ComfyUI `/object_info`.",
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/PackModelCheck"
+            },
+            "type": "array"
+          },
+          "node_classes": {
+            "items": {
+              "$ref": "#/components/schemas/PackNodeCheck"
+            },
+            "type": "array"
+          },
+          "pack_id": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why the status is `unavailable`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/PackValidationStatus"
+          }
+        },
+        "required": [
+          "pack_id",
+          "status",
+          "node_classes",
+          "models"
+        ],
+        "type": "object"
+      },
+      "PackValidationStatus": {
+        "enum": [
+          "ok",
+          "missing",
+          "unknown",
+          "unavailable"
+        ],
+        "type": "string"
       },
       "ProblemDetails": {
         "description": "RFC 9457 problem details with a GenAImage recovery hint.",
@@ -3333,6 +3545,10 @@
             "description": "Opaque revision of the API graph and manifest.",
             "type": "string"
           },
+          "source": {
+            "description": "`user` for the writable workflow root, or `pack:<id>` for a workflow pack.",
+            "type": "string"
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -3356,6 +3572,7 @@
           "id",
           "name",
           "version",
+          "source",
           "revision"
         ],
         "type": "object"
@@ -7306,6 +7523,289 @@
         ]
       }
     },
+    "/api/v1/packs": {
+      "get": {
+        "description": "List workflow packs with their declared workflows, templates and requirements, plus discovery diagnostics.",
+        "operationId": "packs_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "packs"
+        ]
+      },
+      "head": {
+        "description": "List workflow packs with their declared workflows, templates and requirements, plus discovery diagnostics.",
+        "operationId": "packs_list_head",
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "packs"
+        ]
+      }
+    },
+    "/api/v1/packs/{id}/validate": {
+      "get": {
+        "description": "Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything.",
+        "operationId": "packs_validate",
+        "parameters": [
+          {
+            "description": "Pack ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackValidationResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "packs"
+        ]
+      },
+      "head": {
+        "description": "Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything.",
+        "operationId": "packs_validate_head",
+        "parameters": [
+          {
+            "description": "Pack ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "packs"
+        ]
+      }
+    },
     "/api/v1/runs": {
       "get": {
         "description": "List runs.",
@@ -10154,6 +10654,97 @@
             "description": "Problem details"
           },
           "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "workflows"
+        ]
+      }
+    },
+    "/api/v1/workflows/refresh": {
+      "post": {
+        "description": "Force a rebuild of the workflow catalogue, including every pack, and return the listing. The ID `refresh` is reserved.",
+        "operationId": "workflows_refresh",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
             "description": "Problem details"
           }
         },

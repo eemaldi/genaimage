@@ -56,6 +56,8 @@ rejected with a request to export API format.
 }
 ```
 
+Manifests can be bundled with requirements in a [workflow pack](packs.md).
+
 The published [JSON Schema](schemas/workflow-manifest.v2.json) defines the
 structural format. Unknown fields are rejected, including the retired
 `generation_mode` and `required_gates` fields. `id`, `version`, `workflow` and

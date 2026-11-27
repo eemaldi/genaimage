@@ -102,7 +102,7 @@ callers must provide the intended port.
   `status` (`ok`, `warning`, `error` or `skipped`), `summary`, bounded `items`
   and a `fix` that is always present unless the status is `ok`. Unlike health,
   it probes ComfyUI (`/system_stats`, `/object_info`), the LLM model listing,
-  the workflow node classes, free disk space and configured ports concurrently,
+  the workflow node classes, pack requirements, free disk space and configured ports concurrently,
   each with its own deadline (at most about seven seconds in total). It is
   read-only, contacts only the configured endpoints, and never includes the
   LLM API key. See [troubleshooting](troubleshooting.md#doctor-checks).
@@ -320,14 +320,27 @@ again with a fresh stream and snapshot. Resync frames are not subject to
 
 ### Workflows API
 
-The workflows API is read-only apart from validation, which does not submit a run:
+Workflow discovery spans one writable user root (`paths.workflows`) and every
+read-only [pack](packs.md) below `paths.packs`. The core merges them, tags each
+workflow with its `source` and treats an ID claimed twice as a diagnostic that
+makes the ID unavailable. The index cache fingerprints every root. Pack
+requirements are checked by one core function shared by the packs API and the
+doctor.
+
+The workflows API is read-only apart from validation, which does not submit a run,
+and `POST /api/v1/workflows/refresh`, which forces a catalogue rebuild:
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
-  tags, category, `revision` and optional `thumbnail_url`) and non-fatal `diagnostics` for
+  tags, category, `source`, `revision` and optional `thumbnail_url`) and non-fatal `diagnostics` for
   manifests and references that cannot be inspected, including IDs `.` and `..`
   which browsers normalise as URL path segments. An unreadable directory or
   manifest makes the catalogue incomplete; its diagnostic identifies the problem.
   The API does not generate detail URLs.
+- `POST /api/v1/workflows/refresh` rebuilds the catalogue and returns the same
+  listing. The ID `refresh` is reserved. `GET /api/v1/packs` lists packs with
+  their workflow IDs, templates, requirements and diagnostics, and
+  `GET /api/v1/packs/{id}/validate` checks the requirements against ComfyUI
+  `/object_info`, reporting missing, unknown and unreachable as such.
 - `GET /api/v1/workflows/{id}` returns the v2 manifest, including parameter
   constraints and UI hints, presets and outputs, plus `revision`. The effective `required` and
   output `kind` remain available; `declared_required` and `declared_kind` are

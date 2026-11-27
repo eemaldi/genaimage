@@ -80,10 +80,13 @@ unless `--server` or `GENAIMAGE_SERVER` is set.
   port is refused with 421.
 - **Data.** `/data` is the volume: `/data/state.sqlite3`, `/data/runs`,
   `/data/uploads` and `/data/config` (settings file).
-- **Workflows.** Starter workflows ship read-only at
-  `/usr/share/genaimage/workflows/comfyui` (`GENAIMAGE_WORKFLOWS`). To use your
-  own, mount them and override the variable, for example
-  `-v ./my-workflows:/workflows:ro -e GENAIMAGE_WORKFLOWS=/workflows`.
+- **Workflows.** The starter `core` pack ships read-only at
+  `/usr/share/genaimage/workflows/packs` (`GENAIMAGE_PACKS`). Your own
+  workflows live in the user root `/data/workflows` (`GENAIMAGE_WORKFLOWS`),
+  which may be missing. To use a different directory, mount it and override the
+  variable, for example `-v ./my-workflows:/workflows:ro -e GENAIMAGE_WORKFLOWS=/workflows`.
+  Add packs by mounting a directory of pack directories and listing it in
+  `GENAIMAGE_PACKS` (separate roots with `:`, keeping the bundled one).
 - **Services.** ComfyUI and the LLM stay outside the image. Point
   `GENAIMAGE_COMFYUI_URL` and `GENAIMAGE_LLM_URL` at them and list non-loopback
   hosts in `GENAIMAGE_COMFYUI_ALLOWED_HOSTS` and `GENAIMAGE_LLM_ALLOWED_HOSTS`;
@@ -149,7 +152,7 @@ The server bind host is restricted to loopback regardless of outbound settings.
 State defaults to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3`,
 runs to `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/runs`, and uploads to
 `$XDG_DATA_HOME/genaimage/uploads`. If unset, `XDG_DATA_HOME` defaults to
-`~/.local/share`. Workflows remain under `workflows/comfyui` in the workspace.
+`~/.local/share`. Your workflows remain under `workflows/comfyui` in the workspace (it may be missing) and the bundled pack is under `workflows/packs/core`.
 Each canonical workspace gets its own database and runs directory. An empty
 database may be rebound; once it contains runs, it is bound atomically to its
 workspace and backend endpoint, including when a custom path is used. Changing
