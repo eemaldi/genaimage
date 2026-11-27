@@ -33,4 +33,8 @@ idle_timeout_secs = 30
 # state_database = "/absolute/path/state.sqlite3"
 # runs = "/absolute/path/runs"
 # uploads = "/absolute/path/uploads"
+# Writable user workflow root; it may be missing. Workflow packs are read-only.
 workflows = "workflows/comfyui"
+# Each pack root is a directory of pack directories that contain pack.toml.
+# Omitting this key uses ["workflows/packs"]; an empty list disables packs.
+# packs = ["workflows/packs", "/absolute/path/more-packs"]

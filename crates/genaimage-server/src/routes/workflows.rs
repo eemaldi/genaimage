@@ -44,6 +44,14 @@ fn internal_error(error: impl std::fmt::Display) -> Problem {
     )
 }
 
+fn workflow_error(error: HarnessError) -> Problem {
+    match error {
+        HarnessError::WorkflowChanged => Problem::workflow_changed(),
+        HarnessError::WorkflowAmbiguous(detail) => Problem::workflow_ambiguous(detail),
+        error => internal_error(error),
+    }
+}
+
 fn not_found(id: &str) -> Problem {
     Problem::new(
         StatusCode::NOT_FOUND,
@@ -61,10 +69,7 @@ async fn load(
     tokio::task::spawn_blocking(move || harness.load_api_workflow(&search_id, revision.as_deref()))
         .await
         .map_err(internal_error)?
-        .map_err(|error| match error {
-            HarnessError::WorkflowChanged => Problem::workflow_changed(),
-            error => internal_error(error),
-        })?
+        .map_err(workflow_error)?
         .ok_or_else(|| not_found(&id))
 }
 
@@ -87,6 +92,32 @@ async fn load(
 pub(super) async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<WorkflowListResponse>, Problem> {
+    listing(state).await
+}
+
+#[utoipa::path(
+    post, path = "/workflows/refresh",
+    operation_id = "workflows_refresh",
+    tag = "workflows",
+    description = "Force a rebuild of the workflow catalogue, including every pack, and return the listing. The ID `refresh` is reserved.",
+    responses(
+        (status = 200, body = genaimage_api::WorkflowListResponse),
+        (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn refresh(
+    State(state): State<AppState>,
+) -> Result<Json<WorkflowListResponse>, Problem> {
+    listing(state).await
+}
+
+async fn listing(state: AppState) -> Result<Json<WorkflowListResponse>, Problem> {
     let discovery = state
         .workflow_index
         .list(state.harness())
@@ -97,11 +128,12 @@ pub(super) async fn list(
             .workflows
             .into_iter()
             .map(|workflow| {
+                let source = workflow.source;
                 let manifest = workflow.manifest;
                 let thumbnail_url = manifest
                     .thumbnail
                     .as_ref()
-                    .filter(|_| !matches!(manifest.id.as_str(), "." | ".."))
+                    .filter(|_| !matches!(manifest.id.as_str(), "." | ".." | "refresh"))
                     .map(|_| {
                         format!(
                             "/api/v1/workflows/{}/thumbnail",
@@ -116,6 +148,9 @@ pub(super) async fn list(
                     category: manifest.category,
                     thumbnail_url,
                     version: manifest.version,
+                    source: source.to_string(),
+                    available: workflow.unavailable_reason.is_none(),
+                    unavailable_reason: workflow.unavailable_reason,
                     revision: Some(workflow.revision),
                 }
             })
@@ -142,6 +177,7 @@ pub(super) async fn list(
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow ID declared by several manifests", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -194,7 +230,7 @@ pub(super) async fn details(
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 409, description = "Workflow revision mismatch", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow revision mismatch or workflow ID declared by several manifests", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -320,6 +356,7 @@ pub(super) async fn validate(
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow ID declared by several manifests", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -346,7 +383,7 @@ pub(super) async fn thumbnail(
     })
     .await
     .map_err(internal_error)?
-    .map_err(internal_error)?
+    .map_err(workflow_error)?
     .ok_or_else(|| not_found(&id))?;
     let (content_type, bytes) = image.ok_or_else(|| {
         Problem::new(
@@ -358,7 +395,9 @@ pub(super) async fn thumbnail(
     Ok(([(header::CONTENT_TYPE, content_type)], bytes))
 }
 
-fn read_thumbnail(workflow: &ThumbnailSource, root: &Path) -> Option<(&'static str, Vec<u8>)> {
+/// Reads a thumbnail confined to the pack directory for a pack workflow, and
+/// to the user workflow root for any other.
+fn read_thumbnail(workflow: &ThumbnailSource, user_root: &Path) -> Option<(&'static str, Vec<u8>)> {
     let relative = Path::new(workflow.thumbnail.as_deref()?);
     if relative.as_os_str().is_empty()
         || !relative
@@ -377,6 +416,7 @@ fn read_thumbnail(workflow: &ThumbnailSource, root: &Path) -> Option<(&'static s
         _ => return None,
     };
     let directory = workflow.manifest_path.parent()?;
+    let root = workflow.boundary.as_deref().unwrap_or(user_root);
     let file = genaimage_core::safe_file::open_regular_beneath(root, directory, relative)?;
     let mut bytes = Vec::new();
     file.take(MAX_THUMBNAIL_BYTES + 1)
@@ -414,6 +454,7 @@ mod tests {
         let source = ThumbnailSource {
             manifest_path: loaded.manifest_path.clone(),
             thumbnail: loaded.manifest.thumbnail.clone(),
+            boundary: None,
         };
         let (mime, bytes) = read_thumbnail(&source, &root).unwrap();
         assert_eq!(mime, "image/png");
@@ -443,6 +484,7 @@ mod tests {
         let source = ThumbnailSource {
             manifest_path: loaded.manifest_path.clone(),
             thumbnail: loaded.manifest.thumbnail.clone(),
+            boundary: None,
         };
         assert!(read_thumbnail(&source, &root).is_none());
     }

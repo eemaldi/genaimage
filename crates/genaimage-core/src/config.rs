@@ -162,6 +162,8 @@ impl fmt::Debug for LlmConfig {
 pub struct HarnessPaths {
     pub state_database: Option<PathBuf>,
     pub workflows: Option<PathBuf>,
+    /// Read-only pack roots; each holds pack directories containing `pack.toml`.
+    pub packs: Option<Vec<PathBuf>>,
     pub runs: Option<PathBuf>,
     pub uploads: Option<PathBuf>,
 }
@@ -173,7 +175,10 @@ pub struct ResolvedConfig {
     pub comfyui: ComfyUiProfile,
     pub llm: LlmConfig,
     pub state_database: PathBuf,
+    /// Writable user workflow root; it may be missing.
     pub workflows: PathBuf,
+    /// Read-only pack roots, each a directory of pack directories.
+    pub packs: Vec<PathBuf>,
     pub runs: PathBuf,
     pub uploads: PathBuf,
     #[serde(skip)]
@@ -405,6 +410,14 @@ impl HarnessConfig {
         );
         path!("GENAIMAGE_STATE_DATABASE", config.paths.state_database);
         path!("GENAIMAGE_WORKFLOWS", config.paths.workflows);
+        if let Some(value) = env("GENAIMAGE_PACKS") {
+            settings.mark_env("paths.packs", "GENAIMAGE_PACKS");
+            config.paths.packs = Some(
+                std::env::split_paths(&value)
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .collect(),
+            );
+        }
         path!("GENAIMAGE_RUNS", config.paths.runs);
         path!("GENAIMAGE_UPLOADS", config.paths.uploads);
         if let Some(error) = validate_fields(&config.server, &config.comfyui, &config.llm)
@@ -444,8 +457,15 @@ impl HarnessConfig {
                 &workspace,
                 "paths.workflows",
                 config.paths.workflows,
-                PathBuf::from("workflows/comfyui"),
+                PathBuf::from(DEFAULT_WORKFLOWS),
             )?,
+            packs: config
+                .paths
+                .packs
+                .unwrap_or_else(|| vec![PathBuf::from(DEFAULT_PACKS)])
+                .into_iter()
+                .map(|path| resolve_path(&workspace, "paths.packs", Some(path), PathBuf::new()))
+                .collect::<Result<_>>()?,
             runs: resolve_path(
                 &workspace,
                 "paths.runs",
@@ -523,6 +543,9 @@ fn validate_fields(
     }
     errors
 }
+
+const DEFAULT_WORKFLOWS: &str = "workflows/comfyui";
+const DEFAULT_PACKS: &str = "workflows/packs";
 
 fn resolve_path(
     workspace: &Path,
@@ -936,6 +959,68 @@ mod tests {
                 && error.contains("invalid")
                 && error.contains("integer")
         );
+    }
+
+    #[test]
+    fn pack_roots_default_to_the_bundled_core_pack_and_never_collide_with_the_user_root() {
+        let temp = TempDir::new().unwrap();
+        let vars = values(&temp);
+        let config = load(&temp, None, &vars).unwrap();
+        assert_eq!(config.packs, [temp.path().join("workflows/packs")]);
+        assert_ne!(config.workflows, config.packs[0]);
+        assert!(!config.workflows.starts_with(&config.packs[0]));
+        assert!(!config.packs[0].starts_with(&config.workflows));
+    }
+
+    #[test]
+    fn pack_roots_come_from_the_file_or_the_path_list_override() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PROJECT_CONFIG),
+            "[paths]\nworkflows = 'mine'\npacks = ['one', '/abs/two']\n",
+        )
+        .unwrap();
+        let mut vars = values(&temp);
+        let config = load(&temp, None, &vars).unwrap();
+        assert_eq!(config.workflows, temp.path().join("mine"));
+        assert_eq!(
+            config.packs,
+            [temp.path().join("one"), PathBuf::from("/abs/two")]
+        );
+        assert!(matches!(
+            config.setting_source("paths.packs"),
+            settings::SettingSource::File(_)
+        ));
+        let joined = std::env::join_paths(["env-a", "/env/b"]).unwrap();
+        vars.push(("GENAIMAGE_PACKS", joined.into_string().unwrap()));
+        let config = load(&temp, None, &vars).unwrap();
+        assert_eq!(
+            config.packs,
+            [temp.path().join("env-a"), PathBuf::from("/env/b")]
+        );
+        assert!(matches!(
+            config.setting_source("paths.packs"),
+            settings::SettingSource::Env("GENAIMAGE_PACKS")
+        ));
+        vars.retain(|(key, _)| *key != "GENAIMAGE_PACKS");
+        vars.push(("GENAIMAGE_PACKS", String::new()));
+        assert!(load(&temp, None, &vars).unwrap().packs.is_empty());
+    }
+
+    #[test]
+    fn a_config_without_pack_roots_still_loads_and_an_empty_root_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PROJECT_CONFIG),
+            "[paths]\nworkflows = 'wf'\nruns = 'r'\n",
+        )
+        .unwrap();
+        assert!(load(&temp, None, &values(&temp)).is_ok());
+        fs::write(temp.path().join(PROJECT_CONFIG), "[paths]\npacks = ['']\n").unwrap();
+        assert!(load(&temp, None, &values(&temp))
+            .unwrap_err()
+            .to_string()
+            .contains("paths.packs"));
     }
 
     #[test]

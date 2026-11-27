@@ -66,6 +66,16 @@ impl Problem {
         .with_type("urn:genaimage:problem:workflow-changed")
     }
 
+    /// Several manifests claim one workflow ID; the detail names every claimant.
+    pub(crate) fn workflow_ambiguous(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            detail,
+            "Remove or rename the duplicate workflow so exactly one manifest declares the ID, then refresh the workflow catalogue.",
+        )
+        .with_type("urn:genaimage:problem:workflow-ambiguous")
+    }
+
     pub(crate) fn invalid_path(error: PathRejection, recovery: &str) -> Self {
         Self::new(error.status(), error.body_text(), recovery)
     }

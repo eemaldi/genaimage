@@ -1,0 +1,14 @@
+id = "core"
+version = "1.0.0"
+description = "Bundled starter workflows."
+workflows = ["text-to-image/workflow.genaimage.json"]
+
+[requires]
+node_classes = [
+  "CheckpointLoaderSimple",
+  "CLIPTextEncode",
+  "EmptyLatentImage",
+  "KSampler",
+  "SaveImage",
+  "VAEDecode",
+]

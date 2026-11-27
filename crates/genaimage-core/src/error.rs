@@ -23,6 +23,11 @@ pub enum HarnessError {
     },
     #[error("workflow validation failed: {0}")]
     Workflow(String),
+    #[error("workflow pack invalid: {0}")]
+    Pack(String),
+    /// Several manifests claim one workflow ID; none of them can be resolved.
+    #[error("{0}")]
+    WorkflowAmbiguous(String),
     #[error("The workflow changed since you reviewed it.")]
     WorkflowChanged,
     #[error("cannot resolve workflow ID '{id}' unambiguously: workflow directory or entry '{}' could not be inspected ({reason}); fix permissions or repair the path and retry", path.display())]

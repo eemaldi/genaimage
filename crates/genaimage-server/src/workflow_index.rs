@@ -7,7 +7,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use genaimage_core::{orchestrator::WorkflowDiscovery, Harness, HarnessError, LoadedWorkflow};
+use genaimage_core::{
+    orchestrator::WorkflowDiscovery, pack::PACK_FILE, Harness, HarnessError, LoadedWorkflow,
+};
 use tokio::sync::Mutex;
 
 const REVALIDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -106,13 +108,14 @@ fn record_tree(
     entries: &mut BTreeMap<PathBuf, Result<Entry, ReferenceError>>,
     issues: &mut Vec<(PathBuf, &'static str, ReferenceError)>,
     ancestors: &mut Vec<PathBuf>,
+    depth: usize,
 ) {
     let state = observe(path);
     let directory = state
         .as_ref()
         .is_ok_and(|state| state.target.as_ref().is_some_and(|stamp| stamp.directory));
     entries.insert(path.to_path_buf(), state);
-    if !directory {
+    if !directory || depth == 0 {
         return;
     }
     let canonical = match fs::canonicalize(path) {
@@ -159,11 +162,11 @@ fn record_tree(
             }
         };
         if kind.is_dir() {
-            record_tree(&child, entries, issues, ancestors);
+            record_tree(&child, entries, issues, ancestors, depth - 1);
         } else if kind.is_symlink() {
             match observe(&child) {
                 Ok(state) if state.target.as_ref().is_some_and(|stamp| stamp.directory) => {
-                    record_tree(&child, entries, issues, ancestors)
+                    record_tree(&child, entries, issues, ancestors, depth - 1)
                 }
                 state if state.is_err() || is_manifest(&child) => {
                     entries.insert(child, state);
@@ -180,7 +183,23 @@ fn record_tree(
 fn is_manifest(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".genaimage.json"))
+        .is_some_and(|name| name.ends_with(".genaimage.json") || name == PACK_FILE)
+}
+
+/// Pack roots hold packs whose files lie at most this deep below the root.
+const PACK_ROOT_DEPTH: usize = 8;
+
+/// The user root (unbounded, as before) and every pack root (bounded).
+fn watched_roots(harness: &Harness) -> Vec<(PathBuf, usize)> {
+    let config = harness.config();
+    std::iter::once((config.workflows.clone(), usize::MAX))
+        .chain(
+            config
+                .packs
+                .iter()
+                .map(|root| (root.clone(), PACK_ROOT_DEPTH)),
+        )
+        .collect()
 }
 
 #[cfg(test)]
@@ -194,7 +213,11 @@ struct ScanProbe {
     after_discovery: Arc<std::sync::Mutex<Option<DiscoveryHook>>>,
 }
 
-fn fingerprint(root: &Path, references: &BTreeSet<PathBuf>, probe: &ScanProbe) -> Fingerprint {
+fn fingerprint(
+    roots: &[(PathBuf, usize)],
+    references: &BTreeSet<PathBuf>,
+    probe: &ScanProbe,
+) -> Fingerprint {
     #[cfg(test)]
     probe
         .scans
@@ -203,7 +226,9 @@ fn fingerprint(root: &Path, references: &BTreeSet<PathBuf>, probe: &ScanProbe) -
     let _ = probe;
     let mut entries = BTreeMap::new();
     let mut issues = Vec::new();
-    record_tree(root, &mut entries, &mut issues, &mut Vec::new());
+    for (root, depth) in roots {
+        record_tree(root, &mut entries, &mut issues, &mut Vec::new(), *depth);
+    }
     issues.sort_by(|left, right| {
         (&left.0, left.1, left.2.raw_os_error, &left.2.message).cmp(&(
             &right.0,
@@ -224,12 +249,20 @@ fn fingerprint(root: &Path, references: &BTreeSet<PathBuf>, probe: &ScanProbe) -
     }
 }
 
-fn append_diagnostics(discovery: &mut WorkflowDiscovery, fingerprint: &Fingerprint) {
+fn append_diagnostics(
+    discovery: &mut WorkflowDiscovery,
+    fingerprint: &Fingerprint,
+    roots: &[(PathBuf, usize)],
+) {
     let entries = fingerprint
         .entries
         .iter()
         .chain(fingerprint.references.iter())
-        .filter_map(|(path, result)| result.as_ref().err().map(|error| (path, error)));
+        .filter_map(|(path, result)| result.as_ref().err().map(|error| (path, error)))
+        // A root that does not exist yet is normal: the user root and pack roots are optional.
+        .filter(|(path, error)| {
+            !(error.kind == io::ErrorKind::NotFound && roots.iter().any(|(root, _)| root == *path))
+        });
     let issues = fingerprint
         .issues
         .iter()
@@ -283,6 +316,8 @@ fn discover(harness: &Harness, probe: &ScanProbe) -> WorkflowDiscovery {
 pub(crate) struct ThumbnailSource {
     pub(crate) manifest_path: PathBuf,
     pub(crate) thumbnail: Option<String>,
+    /// The pack directory a pack workflow's files must stay inside.
+    pub(crate) boundary: Option<PathBuf>,
 }
 
 struct IndexedWorkflow {
@@ -293,6 +328,8 @@ struct IndexedWorkflow {
 pub(crate) struct WorkflowIndex {
     entries: BTreeMap<String, IndexedWorkflow>,
     blocked: BTreeSet<String>,
+    /// IDs claimed by several manifests, with a message naming every claimant.
+    ambiguity: BTreeMap<String, String>,
     traversal_failure: Option<genaimage_core::orchestrator::WorkflowTraversalFailure>,
     references: BTreeSet<PathBuf>,
     fingerprint: Option<Fingerprint>,
@@ -310,18 +347,14 @@ impl WorkflowIndex {
     fn rebuild(harness: Arc<Harness>, probe: &ScanProbe) -> (Self, WorkflowDiscovery) {
         for attempt in 0..3 {
             let first = discover(&harness, probe);
-            let before = fingerprint(
-                &harness.config().workflows,
-                &Self::references(&first),
-                probe,
-            );
+            let before = fingerprint(&watched_roots(&harness), &Self::references(&first), probe);
             let mut discovery = discover(&harness, probe);
             #[cfg(test)]
             if let Some(hook) = probe.after_discovery.lock().unwrap().as_ref() {
                 hook();
             }
             let after = fingerprint(
-                &harness.config().workflows,
+                &watched_roots(&harness),
                 &Self::references(&discovery),
                 probe,
             );
@@ -332,7 +365,7 @@ impl WorkflowIndex {
                         error: HarnessError::Workflow("Workflow files changed during discovery; results may be incomplete. Try again when they are stable.".into()),
                     });
                 }
-                append_diagnostics(&mut discovery, &after);
+                append_diagnostics(&mut discovery, &after, &watched_roots(&harness));
                 let mut entries = BTreeMap::new();
                 for workflow in &discovery.workflows {
                     let manifest = &workflow.manifest;
@@ -358,6 +391,7 @@ impl WorkflowIndex {
                                 source: ThumbnailSource {
                                     manifest_path: path.clone(),
                                     thumbnail: manifest.thumbnail.clone(),
+                                    boundary: workflow.boundary.clone(),
                                 },
                                 manifest: state,
                             },
@@ -368,6 +402,7 @@ impl WorkflowIndex {
                     Self {
                         entries,
                         blocked: discovery.unresolvable_ids.clone(),
+                        ambiguity: discovery.ambiguity.clone(),
                         traversal_failure: discovery.traversal_failures.first().cloned(),
                         references: Self::references(&discovery),
                         fingerprint: (before == after).then_some(after),
@@ -389,8 +424,11 @@ impl WorkflowIndex {
         if let Some(failure) = &self.traversal_failure {
             return Err(failure.for_id(id));
         }
+        if let Some(reason) = self.ambiguity.get(id) {
+            return Err(HarnessError::WorkflowAmbiguous(reason.clone()));
+        }
         if self.blocked.contains(id) {
-            return Err(HarnessError::Workflow(format!("workflow id '{id}' is ambiguous or claimed by an invalid manifest; inspect the catalogue diagnostics and resolve duplicates")));
+            return Err(HarnessError::Workflow(format!("workflow id '{id}' is claimed by an invalid manifest; inspect the catalogue diagnostics and repair or remove it")));
         }
         let Some(cached) = self.entries.get(id) else {
             return Ok(None);
@@ -403,7 +441,11 @@ impl WorkflowIndex {
                 return Ok(None);
             }
         }
-        let Ok(workflow) = LoadedWorkflow::load(&cached.source.manifest_path) else {
+        let reloaded = match &cached.source.boundary {
+            Some(boundary) => LoadedWorkflow::load_within(&cached.source.manifest_path, boundary),
+            None => LoadedWorkflow::load(&cached.source.manifest_path),
+        };
+        let Ok(workflow) = reloaded else {
             return Ok(None);
         };
         if workflow.manifest.id != id {
@@ -412,6 +454,7 @@ impl WorkflowIndex {
         Ok(Some(ThumbnailSource {
             manifest_path: workflow.manifest_path,
             thumbnail: workflow.manifest.thumbnail,
+            boundary: cached.source.boundary.clone(),
         }))
     }
 }
@@ -473,7 +516,7 @@ impl WorkflowIndexCache {
             let index = match old {
                 Some(old)
                     if old.fingerprint.as_ref().is_some_and(|fingerprint_before| {
-                        fingerprint(&harness.config().workflows, &old.references, &cache.probe)
+                        fingerprint(&watched_roots(&harness), &old.references, &cache.probe)
                             == *fingerprint_before
                     }) =>
                 {
@@ -537,13 +580,16 @@ mod tests {
         let graph = parent.join("graph.json");
         let references = BTreeSet::from([graph.clone()]);
         let probe = ScanProbe::default();
-        let broken = fingerprint(root, &references, &probe);
+        let broken = fingerprint(&[(root.to_path_buf(), usize::MAX)], &references, &probe);
         assert!(broken.references[&graph].is_err());
-        assert_eq!(broken, fingerprint(root, &references, &probe));
+        assert_eq!(
+            broken,
+            fingerprint(&[(root.to_path_buf(), usize::MAX)], &references, &probe)
+        );
         fs::remove_file(&parent).unwrap();
         fs::create_dir(&parent).unwrap();
         fs::write(&graph, b"{}").unwrap();
-        let repaired = fingerprint(root, &references, &probe);
+        let repaired = fingerprint(&[(root.to_path_buf(), usize::MAX)], &references, &probe);
         assert!(repaired.references[&graph].is_ok());
         assert_ne!(broken, repaired);
     }
@@ -599,6 +645,51 @@ mod tests {
         let index = cache.get(harness).await.unwrap();
         assert!(index.fingerprint.is_some());
         assert!(index.source("later").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_new_pack_directory_is_indexed_on_revalidation_without_a_restart() {
+        let fixture = ApiFixture::start(5, ServerConfig::default().max_upload_bytes).await;
+        let workspace = fixture.workspace.path();
+        let config =
+            HarnessConfig::load_with(workspace, Some(&fixture.config_path), workspace, |key| {
+                (key == "HOME").then(|| workspace.display().to_string())
+            })
+            .unwrap();
+        let pack_root = config.packs[0].clone();
+        let backend = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
+        let harness = Arc::new(Harness::new_async(config, backend).await.unwrap());
+        let cache = Arc::new(WorkflowIndexCache {
+            interval: Duration::ZERO,
+            ..WorkflowIndexCache::default()
+        });
+        assert!(!pack_root.exists());
+        let first = cache.get(harness.clone()).await.unwrap();
+        assert!(first.source("late").unwrap().is_none());
+        let dir = pack_root.join("late-pack");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("pack.toml"),
+            "id = 'late-pack'\nversion = '1'\nworkflows = ['wf.genaimage.json']\n",
+        )
+        .unwrap();
+        install_contract_workflow(&dir);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(dir.join("contract.genaimage.json")).unwrap())
+                .unwrap();
+        manifest["id"] = json!("late");
+        fs::write(
+            dir.join("wf.genaimage.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(dir.join("contract.genaimage.json")).unwrap();
+        let second = cache.get(harness).await.unwrap();
+        let source = second
+            .source("late")
+            .unwrap()
+            .expect("pack workflow indexed");
+        assert!(source.manifest_path.starts_with(&dir));
     }
 
     #[tokio::test]
@@ -676,6 +767,7 @@ mod tests {
                 },
             )]),
             blocked: BTreeSet::new(),
+            ambiguity: BTreeMap::new(),
             traversal_failure: None,
             references: BTreeSet::new(),
             fingerprint: Some(Fingerprint {

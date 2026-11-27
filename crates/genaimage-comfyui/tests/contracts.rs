@@ -34,11 +34,11 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
     let workflow_dir = temp.path().join("workflows/comfyui/text-to-image");
     write_file(
         &workflow_dir.join("workflow.genaimage.json"),
-        include_str!("../../../workflows/comfyui/text-to-image/workflow.genaimage.json"),
+        include_str!("../../../workflows/packs/core/text-to-image/workflow.genaimage.json"),
     );
     write_file(
         &workflow_dir.join("api-workflow.json"),
-        include_str!("../../../workflows/comfyui/text-to-image/api-workflow.json"),
+        include_str!("../../../workflows/packs/core/text-to-image/api-workflow.json"),
     );
 
     let harness = open_harness(temp.path()).await.expect("open harness");

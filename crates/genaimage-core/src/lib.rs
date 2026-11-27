@@ -11,6 +11,8 @@ pub mod llm_roles;
 pub mod media;
 pub mod models;
 pub mod orchestrator;
+pub mod pack;
+pub mod pack_requirements;
 pub mod persistence;
 #[doc(hidden)]
 pub mod safe_file;

@@ -119,8 +119,13 @@ pub struct LoadedWorkflow {
 }
 
 pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    read_regular_file_limited(path, u64::MAX)
+}
+
+/// Reads a regular file and fails once it exceeds `limit` bytes.
+pub(crate) fn read_regular_file_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     #[cfg(unix)]
-    let mut file: fs::File = {
+    let file: fs::File = {
         use rustix::fs::{open, Mode, OFlags};
         open(
             path,
@@ -131,7 +136,7 @@ pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         .into()
     };
     #[cfg(not(unix))]
-    let mut file = {
+    let file = {
         if !fs::metadata(path)?.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -147,12 +152,43 @@ pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds {limit} bytes"),
+        ));
+    }
     Ok(bytes)
 }
 
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
+        Self::load_inner(manifest_path, None)
+    }
+
+    /// Loads a manifest and its API graph, refusing both unless they resolve
+    /// inside `boundary` (a canonical directory). Confinement is checked on the
+    /// canonical path before anything is read, and that path is what is read.
+    pub fn load_within(manifest_path: &Path, boundary: &Path) -> Result<Self> {
+        Self::load_inner(manifest_path, Some(boundary))
+    }
+
+    fn load_inner(manifest_path: &Path, boundary: Option<&Path>) -> Result<Self> {
+        let confined_manifest;
+        let manifest_path = match boundary {
+            None => manifest_path,
+            Some(boundary) => {
+                confined_manifest = fs::canonicalize(manifest_path)?;
+                if !confined_manifest.starts_with(boundary) {
+                    return Err(HarnessError::Pack(format!(
+                        "manifest '{}' resolves outside the pack directory through a symlink",
+                        manifest_path.display()
+                    )));
+                }
+                confined_manifest.as_path()
+            }
+        };
         let manifest_bytes = read_regular_file(manifest_path)?;
         let manifest_source: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
             HarnessError::Workflow(format!(
@@ -192,10 +228,25 @@ impl LoadedWorkflow {
                 "workflow id and version cannot be empty".to_owned(),
             ));
         }
-        let workflow_path = manifest_path
+        let mut workflow_path = manifest_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(&manifest.workflow);
+        if let Some(boundary) = boundary {
+            let real = fs::canonicalize(&workflow_path).map_err(|error| {
+                HarnessError::Workflow(format!(
+                    "cannot read workflow '{}': {error}",
+                    workflow_path.display()
+                ))
+            })?;
+            if !real.starts_with(boundary) {
+                return Err(HarnessError::Pack(format!(
+                    "workflow graph '{}' resolves outside the pack directory through a symlink",
+                    workflow_path.display()
+                )));
+            }
+            workflow_path = real;
+        }
         let workflow_bytes = read_regular_file(&workflow_path).map_err(|error| {
             HarnessError::Workflow(format!(
                 "cannot read workflow '{}': {error}",

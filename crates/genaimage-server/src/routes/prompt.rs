@@ -26,6 +26,7 @@ pub(crate) const PROMPT_ASSIST_BODY_LIMIT: usize = 512 * 1024;
         (status = 400, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Workflow not found", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow ID declared by several manifests", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
@@ -54,7 +55,10 @@ pub(super) async fn assist(
             tokio::task::spawn_blocking(move || harness.load_workflow_by_id(&workflow_id))
                 .await
                 .map_err(internal_error)?
-                .map_err(internal_error)?
+                .map_err(|error| match error {
+                    HarnessError::WorkflowAmbiguous(detail) => Problem::workflow_ambiguous(detail),
+                    error => internal_error(error),
+                })?
                 .ok_or_else(|| not_found(id))?
                 .into()
         }

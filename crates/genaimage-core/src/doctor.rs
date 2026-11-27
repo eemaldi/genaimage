@@ -29,6 +29,7 @@ pub const COMFYUI_REACHABLE: &str = "comfyui.reachable";
 pub const COMFYUI_VERSION: &str = "comfyui.version";
 pub const COMFYUI_OBJECT_INFO: &str = "comfyui.object_info";
 pub const WORKFLOWS_NODES: &str = "workflows.nodes";
+pub const PACKS_REQUIREMENTS: &str = "packs.requirements";
 pub const LLM_REACHABLE: &str = "llm.reachable";
 pub const LLM_TEXT: &str = "llm.text";
 pub const LLM_VISION: &str = "llm.vision";
@@ -37,13 +38,14 @@ pub const DISK: &str = "disk";
 pub const PORTS: &str = "ports";
 
 /// Every check id, in report order. A report always contains each id once.
-pub const CHECK_IDS: [&str; 12] = [
+pub const CHECK_IDS: [&str; 13] = [
     SERVER,
     CONFIG,
     COMFYUI_REACHABLE,
     COMFYUI_VERSION,
     COMFYUI_OBJECT_INFO,
     WORKFLOWS_NODES,
+    PACKS_REQUIREMENTS,
     LLM_REACHABLE,
     LLM_TEXT,
     LLM_VISION,
@@ -163,10 +165,11 @@ pub async fn run(
     let config = harness.config();
     let secret = llm_roles.config().api_key.clone();
     let secret = secret.as_deref();
-    let (comfy, llm, workflows, disk) = tokio::join!(
+    let (comfy, llm, workflows, packs, disk) = tokio::join!(
         comfy_checks(harness, options),
         llm_checks(llm_roles, secret, options),
         discover_workflows(harness, options),
+        discover_packs(harness, options),
         async { disk_check(&config.runs, options) },
     );
     let ComfyChecks {
@@ -176,9 +179,11 @@ pub async fn run(
         gpu,
         protocol_note,
         node_classes,
+        object_info_value,
     } = comfy;
     let [llm_reachable, llm_text, llm_vision] = llm;
     let nodes = nodes_check(&config.workflows, workflows, node_classes.as_ref());
+    let packs = packs_check(packs, object_info_value.as_ref());
     let ports = ports_check(config, llm_roles.config().base_url.as_str(), protocol_note);
     DoctorReport {
         checks: vec![
@@ -194,6 +199,7 @@ pub async fn run(
             version,
             object_info,
             nodes,
+            packs,
             llm_reachable,
             llm_text,
             llm_vision,
@@ -268,6 +274,8 @@ struct ComfyChecks {
     gpu: DoctorCheck,
     protocol_note: Option<String>,
     node_classes: Option<BTreeSet<String>>,
+    /// The raw `/object_info` reply, for requirement checks.
+    object_info_value: Option<Value>,
 }
 
 async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks {
@@ -303,6 +311,7 @@ async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks
                 gpu: dependent(GPU),
                 protocol_note: None,
                 node_classes: None,
+                object_info_value: None,
             };
         }
     };
@@ -326,8 +335,10 @@ async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks
             gpu: dependent(GPU),
             protocol_note: Some(note),
             node_classes: None,
+            object_info_value: None,
         };
     }
+    let mut object_info_value = None;
     let (object_info, node_classes) =
         match timeout(options.object_info_deadline, backend.object_info()).await {
             Ok(Ok(Value::Object(classes))) if classes.is_empty() => (
@@ -338,13 +349,18 @@ async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks
                 ),
                 None,
             ),
-            Ok(Ok(Value::Object(classes))) => (
-                DoctorCheck::ok(
-                    COMFYUI_OBJECT_INFO,
-                    format!("ComfyUI lists {} node classes.", classes.len()),
-                ),
-                Some(classes.keys().cloned().collect()),
-            ),
+            Ok(Ok(Value::Object(classes))) => {
+                let listed = classes.keys().cloned().collect();
+                let count = classes.len();
+                object_info_value = Some(Value::Object(classes));
+                (
+                    DoctorCheck::ok(
+                        COMFYUI_OBJECT_INFO,
+                        format!("ComfyUI lists {count} node classes."),
+                    ),
+                    Some(listed),
+                )
+            }
             Ok(Ok(_)) => (
                 DoctorCheck::error(
                     COMFYUI_OBJECT_INFO,
@@ -380,6 +396,7 @@ async fn comfy_checks(harness: &Harness, options: &DoctorOptions) -> ComfyChecks
         gpu: gpu_check(&stats),
         protocol_note: None,
         node_classes,
+        object_info_value,
     }
 }
 
@@ -627,6 +644,186 @@ fn nodes_check(
             graphs.len()
         ),
     )
+}
+
+struct DiscoveredPacks {
+    result: Result<crate::orchestrator::WorkflowDiscovery, String>,
+}
+
+async fn discover_packs(harness: &Harness, options: &DoctorOptions) -> DiscoveredPacks {
+    let harness = harness.clone();
+    let task = tokio::task::spawn_blocking(move || harness.discover_workflows());
+    DiscoveredPacks {
+        result: match timeout(options.workflow_deadline, task).await {
+            Ok(Ok(Ok(discovery))) => Ok(discovery),
+            Ok(Ok(Err(error))) => Err(clean(&error.to_string(), None)),
+            Ok(Err(error)) => Err(clean(&error.to_string(), None)),
+            Err(_) => Err(format!(
+                "pack discovery did not finish within {} s",
+                options.workflow_deadline.as_secs_f64()
+            )),
+        },
+    }
+}
+
+/// Pack problems and requirements, from the same domain functions as the
+/// validate endpoint. Pack problems are reported even when ComfyUI's node
+/// classes are unknown; only the node and model part is skipped then.
+fn packs_check(discovered: DiscoveredPacks, object_info: Option<&Value>) -> DoctorCheck {
+    use crate::pack_requirements::{check_requirements, PackStatus, RequirementStatus::Missing};
+    let discovery = match discovered.result {
+        Ok(discovery) => discovery,
+        Err(error) => {
+            return DoctorCheck::error(
+                PACKS_REQUIREMENTS,
+                format!("Workflow packs could not be discovered: {error}"),
+                "Check that the `paths.packs` directories are readable by the server.",
+            )
+        }
+    };
+    let mut items: Vec<String> = discovery
+        .packs
+        .diagnostics
+        .iter()
+        .map(|item| format!("{}: {}", item.path.display(), clean(&item.message, None)))
+        .collect();
+    let broken = items.len();
+    let mut with_problems = 0;
+    let mut missing_requirements = 0;
+    let mut checked = 0;
+    let mut unchecked = 0;
+    for pack in &discovery.packs.packs {
+        let requires = &pack.manifest.requires;
+        let info = match (requires.is_empty(), object_info) {
+            (false, Some(info)) => Ok(info),
+            (false, None) => Err("ComfyUI node classes are unknown"),
+            (true, _) => Err(""),
+        };
+        let validation = check_requirements(&pack.manifest.id, requires, info)
+            .with_problems(discovery.pack_problems(pack));
+        if !requires.is_empty() {
+            checked += 1;
+        }
+        if !validation.diagnostics.is_empty() {
+            with_problems += 1;
+        }
+        if validation
+            .node_classes
+            .iter()
+            .any(|node| node.status == Missing)
+            || validation
+                .models
+                .iter()
+                .any(|model| model.status == Missing)
+        {
+            missing_requirements += 1;
+        }
+        if matches!(
+            validation.status,
+            PackStatus::Unknown | PackStatus::Unavailable
+        ) {
+            unchecked += 1;
+        }
+        if object_info.is_some() {
+            items.extend(requirement_lines(&validation));
+        }
+        items.extend(
+            validation
+                .diagnostics
+                .iter()
+                .map(|problem| format!("{}: {}", validation.pack_id, clean(problem, None))),
+        );
+    }
+    let fix = "Install the missing nodes and models in ComfyUI yourself (GenAImage never installs or substitutes them), restart ComfyUI and run `genaimage doctor` again; `genaimage packs validate <ID>` rechecks one pack.";
+    let repair = "Repair or remove the listed packs and workflows; `genaimage packs validate <ID>` shows the same diagnostics. See docs/packs.md.";
+    let problems = broken + with_problems;
+    if object_info.is_none() && unchecked > 0 && problems == 0 && missing_requirements == 0 {
+        return DoctorCheck::skipped(
+            PACKS_REQUIREMENTS,
+            "Not run: ComfyUI node classes are unknown.",
+            "Fix `comfyui.reachable` and `comfyui.object_info` first.",
+        );
+    }
+    if missing_requirements > 0 {
+        let summary = format!(
+            "{missing_requirements} of {checked} workflow packs need nodes or models that ComfyUI does not provide{}.",
+            if problems > 0 {
+                format!(", and {problems} have file or workflow problems")
+            } else {
+                String::new()
+            }
+        );
+        let check = if missing_requirements == checked && problems == 0 {
+            DoctorCheck::error(PACKS_REQUIREMENTS, summary, fix)
+        } else {
+            DoctorCheck::warning(PACKS_REQUIREMENTS, summary, fix)
+        };
+        return check.with_items(items);
+    }
+    if problems > 0 {
+        let not_checked = if object_info.is_none() && unchecked > 0 {
+            " Their requirements were not checked because ComfyUI node classes are unknown."
+        } else {
+            ""
+        };
+        return DoctorCheck::warning(
+            PACKS_REQUIREMENTS,
+            format!("{problems} workflow packs have file or workflow problems.{not_checked}"),
+            repair,
+        )
+        .with_items(items);
+    }
+    if unchecked > 0 {
+        return DoctorCheck::warning(
+            PACKS_REQUIREMENTS,
+            format!("{unchecked} workflow packs have requirements that could not be checked."),
+            "Declare a model folder GenAImage can check (such as `checkpoints` or `loras`); see docs/packs.md.",
+        )
+        .with_items(items);
+    }
+    if checked == 0 {
+        return DoctorCheck::ok(
+            PACKS_REQUIREMENTS,
+            format!(
+                "{} workflow packs declare no requirements to check.",
+                discovery.packs.packs.len()
+            ),
+        );
+    }
+    DoctorCheck::ok(
+        PACKS_REQUIREMENTS,
+        format!("All {checked} workflow packs have the nodes and models they require."),
+    )
+}
+
+fn requirement_lines(validation: &crate::pack_requirements::PackValidation) -> Vec<String> {
+    use crate::pack_requirements::RequirementStatus::{Available, Missing, Unknown};
+    let mut lines = Vec::new();
+    for node in &validation.node_classes {
+        match node.status {
+            Missing => lines.push(format!(
+                "{}: missing node class {}",
+                validation.pack_id, node.class
+            )),
+            Unknown => lines.push(format!(
+                "{}: node class {} is unknown",
+                validation.pack_id, node.class
+            )),
+            Available => {}
+        }
+    }
+    for model in &validation.models {
+        let label = match model.status {
+            Missing => "missing",
+            Unknown => "could not check",
+            Available => continue,
+        };
+        lines.push(format!(
+            "{}: {label} {}/{}",
+            validation.pack_id, model.folder, model.name
+        ));
+    }
+    lines
 }
 
 async fn llm_checks(

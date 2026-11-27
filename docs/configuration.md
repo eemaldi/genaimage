@@ -33,7 +33,8 @@ value set by an environment variable is read-only there and in the portal.
 | `llm.idle_timeout_secs` | `GENAIMAGE_LLM_IDLE_TIMEOUT_SECS` | `30` | Restart |
 | `llm.capabilities."<model>"` | none (file only) | none | Restart |
 | `paths.state_database` | `GENAIMAGE_STATE_DATABASE` | `$XDG_DATA_HOME/genaimage/workspaces/<hash>/state.sqlite3` | Restart |
-| `paths.workflows` | `GENAIMAGE_WORKFLOWS` | `workflows/comfyui` in the workspace | Restart |
+| `paths.workflows` | `GENAIMAGE_WORKFLOWS` | `workflows/comfyui` in the workspace; may be missing | Restart |
+| `paths.packs` | `GENAIMAGE_PACKS` (path list) | `["workflows/packs"]` in the workspace | Restart; file only in the settings API |
 | `paths.runs` | `GENAIMAGE_RUNS` | `$XDG_DATA_HOME/genaimage/workspaces/<hash>/runs` | Restart |
 | `paths.uploads` | `GENAIMAGE_UPLOADS` | `$XDG_DATA_HOME/genaimage/uploads` | Restart |
 
@@ -51,6 +52,13 @@ Notes on individual keys:
   model must support tools and the vision model must support vision. Declare a
   reviewed override with `[llm.capabilities."model-id"]` and `tools` and
   `vision` booleans. The two roles never fall back to each other.
+- `paths.workflows` is the single writable user workflow root. `paths.packs` is
+  a list of read-only pack roots, each a directory of pack directories that
+  contain `pack.toml`; the default root holds the bundled `core` pack.
+  `GENAIMAGE_PACKS` takes the platform path-list separator (`:` on Linux and
+  macOS) and an empty value means no packs. The settings API does not edit
+  `paths.packs`; it is preserved when other settings are saved. See
+  [workflow packs](packs.md).
 - `paths.*` relative values resolve against the workspace (`--workspace`, the
   current directory by default). A database that contains runs is bound to its
   workspace and ComfyUI endpoint; see [setup](setup.md#settings-api).

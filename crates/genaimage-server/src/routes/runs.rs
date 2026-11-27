@@ -27,7 +27,7 @@ use crate::{AppState, Problem};
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 409, description = "Workflow revision mismatch or idempotency key conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -86,7 +86,7 @@ pub(super) async fn submit(
         (status = 403, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Source run not found", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 409, description = "Fingerprint mismatch or idempotency key conflict", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Fingerprint mismatch, workflow ID declared by several manifests or idempotency key conflict", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 422, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
         (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
@@ -447,6 +447,9 @@ fn problem(error: HarnessError) -> Problem {
             "Use a run ID returned by the runs API.",
         ),
         HarnessError::WorkflowChanged => return Problem::workflow_changed(),
+        HarnessError::WorkflowAmbiguous(detail) => {
+            return Problem::workflow_ambiguous(detail.clone())
+        }
         HarnessError::IdempotencyConflict => (
             StatusCode::CONFLICT,
             "Use the original request with this key, or a fresh key for a distinct run.",

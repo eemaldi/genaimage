@@ -4,12 +4,13 @@ use genaimage_api::{
 
 use crate::{
     output::{Error, Output, Status},
-    ConfigCommand, WorkflowCommand,
+    ConfigCommand, PacksCommand, WorkflowCommand,
 };
 
 pub(crate) enum Command<'a> {
     Doctor,
     Workflow(&'a WorkflowCommand),
+    Packs(&'a PacksCommand),
     Presets(&'a str),
     ConfigShow,
     Open { print: bool },
@@ -24,6 +25,7 @@ impl<'a> Command<'a> {
             crate::Command::Doctor => Some(Self::Doctor),
             crate::Command::Open { print } => Some(Self::Open { print: *print }),
             crate::Command::Workflow { command } => Some(Self::Workflow(command)),
+            crate::Command::Packs { command } => Some(Self::Packs(command)),
             crate::Command::Presets { id } => Some(Self::Presets(id)),
             crate::Command::Config {
                 command: ConfigCommand::Show,
@@ -43,8 +45,15 @@ impl<'a> Command<'a> {
                 return crate::model_commands::execute(client, output, command).await
             }
             Self::Doctor => return crate::doctor::run(client, output).await,
-            Self::Workflow(WorkflowCommand::List) => {
-                let catalogue = client.workflows().await?;
+            Self::Packs(command) => {
+                return crate::pack_commands::run(client, output, command).await
+            }
+            Self::Workflow(command @ (WorkflowCommand::List | WorkflowCommand::Refresh)) => {
+                let catalogue = if matches!(command, WorkflowCommand::Refresh) {
+                    client.refresh_workflows().await?
+                } else {
+                    client.workflows().await?
+                };
                 output.write(&catalogue, |out| {
                     if catalogue.workflows.is_empty() {
                         writeln!(out, "No workflows found.")?;

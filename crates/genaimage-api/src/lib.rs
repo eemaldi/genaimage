@@ -116,10 +116,30 @@ pub struct WorkflowSummary {
     pub category: Option<String>,
     pub thumbnail_url: Option<String>,
     pub version: String,
+    /// `user` for the writable workflow root, or `pack:<id>` for a workflow pack.
+    #[serde(default = "user_source")]
+    #[schema(required = true)]
+    pub source: String,
+    /// `false` when another manifest claims the same ID, so it cannot be used.
+    #[serde(default = "available_default")]
+    #[schema(required = true)]
+    pub available: bool,
+    /// Why the workflow is unavailable, naming the other claimants.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub unavailable_reason: Option<String>,
     /// Opaque revision of the API graph and manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(required = true, value_type = String)]
     pub revision: Option<String>,
+}
+
+fn available_default() -> bool {
+    true
+}
+
+fn user_source() -> String {
+    "user".to_owned()
 }
 
 /// A manifest that could not be loaded during discovery.
@@ -272,6 +292,9 @@ pub enum WorkflowNodeCheckStatus {
 
 mod outputs;
 pub use outputs::*;
+
+mod packs;
+pub use packs::*;
 
 mod runs;
 pub use runs::*;

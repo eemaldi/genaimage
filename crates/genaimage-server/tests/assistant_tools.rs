@@ -885,3 +885,51 @@ async fn propose_run_rejects_integer_above_an_exact_manifest_maximum() {
         .unwrap_err();
     assert!(error.to_string().contains("above maximum"), "{error}");
 }
+
+#[tokio::test]
+async fn the_list_tool_omits_ids_claimed_by_several_manifests() {
+    let (api, llm) = configured_with_builtin_tools().await;
+    install_workflow(&api);
+    let pack = api.core.config().packs[0].join("twin");
+    std::fs::create_dir_all(&pack).unwrap();
+    std::fs::write(
+        pack.join("pack.toml"),
+        "id = 'twin'\nversion = '1'\nworkflows = ['a.genaimage.json', 'b.genaimage.json']\n",
+    )
+    .unwrap();
+    std::fs::write(
+        pack.join("workflow.api.json"),
+        include_str!("../../genaimage-core/tests/fixtures/contract-workflow.api.json"),
+    )
+    .unwrap();
+    for (file, id) in [("a", "contract-workflow"), ("b", "pack-only")] {
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../genaimage-core/tests/fixtures/contract-workflow.genaimage.json"
+        ))
+        .unwrap();
+        manifest["id"] = json!(id);
+        std::fs::write(
+            pack.join(format!("{file}.genaimage.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    let client = client(&api);
+    let conversation = create(&client).await;
+    llm.set_scripts([
+        tool_script("list", "list_workflows", json!({})),
+        text_script("listed"),
+    ]);
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &message("what can I run?"))
+        .await
+        .unwrap();
+    let result = finish(&mut stream).await;
+    let ids: Vec<_> = result["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|workflow| workflow["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["pack-only"], "a duplicated ID cannot be proposed");
+}

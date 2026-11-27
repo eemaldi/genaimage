@@ -194,6 +194,7 @@ beforeEach(() => {
   history.replaceState(null, '', '/');
   sessionStorage.clear();
   fake.getWorkflow.mockResolvedValue(workflow);
+  fake.listWorkflows.mockResolvedValue({ workflows: [], diagnostics: [] });
   fake.health.mockResolvedValue({
     self: 'ok',
     image_backend: 'ok',
@@ -264,6 +265,9 @@ test('offers an explicit picker and follows a changed workflow query', async () 
         name: 'Portrait copy',
         version: '1',
         revision: workflow.revision,
+        source: 'user',
+        available: true,
+        unavailable_reason: null,
       },
     ],
     diagnostics: [],
@@ -286,6 +290,83 @@ test('offers an explicit picker and follows a changed workflow query', async () 
     'portrait/copy',
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
+});
+
+const duplicateReason =
+  "workflow id 'dup' is also declared by pack:core; none of them can be used until the duplicates are removed or renamed";
+const duplicate = (revision: string, source: string) => ({
+  id: 'dup',
+  name: 'Duplicate',
+  version: '1',
+  revision,
+  source,
+  available: false,
+  unavailable_reason: duplicateReason,
+});
+
+test('offers only available workflows and never a duplicated ID', async () => {
+  fake.listWorkflows.mockResolvedValue({
+    workflows: [
+      {
+        id: 'portrait/copy',
+        name: 'Portrait copy',
+        version: '1',
+        revision: workflow.revision,
+        source: 'user',
+        available: true,
+        unavailable_reason: null,
+      },
+      duplicate('dup-user', 'user'),
+      duplicate('dup-pack', 'pack:core'),
+    ],
+    diagnostics: [
+      {
+        path: 'dup.genaimage.json',
+        error: "workflow id 'dup' is declared more than once",
+      },
+    ],
+  });
+  mount('');
+  const picker = (await screen.findByLabelText(
+    'Workflow',
+  )) as HTMLSelectElement;
+  expect([...picker.options].map((option) => option.value)).toEqual([
+    '',
+    'portrait/copy',
+  ]);
+});
+
+test('explains when every listed workflow is unavailable', async () => {
+  fake.listWorkflows.mockResolvedValue({
+    workflows: [
+      duplicate('dup-user', 'user'),
+      duplicate('dup-pack', 'pack:core'),
+    ],
+    diagnostics: [],
+  });
+  mount('');
+  expect(await screen.findByText(/No workflows are available/)).toBeTruthy();
+  expect(screen.queryByLabelText('Workflow')).toBeNull();
+});
+
+test('explains an ambiguous workflow link with its claimants', async () => {
+  const claimants =
+    "declared by user '/w/a.genaimage.json', pack:core '/p/b.genaimage.json'";
+  fake.getWorkflow.mockRejectedValue(
+    new ApiProblemError({
+      type: 'urn:genaimage:problem:workflow-ambiguous',
+      title: 'Workflow ambiguous',
+      status: 409,
+      detail: `workflow id 'portrait' is ambiguous: ${claimants}; remove or rename all but one`,
+      recovery: 'Remove or rename the duplicate workflow.',
+    }),
+  );
+  mount();
+  expect(
+    await screen.findByText('This workflow ID is declared more than once'),
+  ).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toContain(claimants);
+  expect(screen.queryByText('Workflow ambiguous')).toBeNull();
 });
 
 test('renders the manifest widgets and groups without inventing missing defaults', async () => {

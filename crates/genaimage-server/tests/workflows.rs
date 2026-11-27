@@ -216,7 +216,12 @@ async fn directory_cycle_and_unreadable_directory_are_nonfatal() {
         .send()
         .await
         .unwrap();
-    let problem = ApiHarness::assert_problem(duplicate, StatusCode::INTERNAL_SERVER_ERROR).await;
+    let problem = ApiHarness::assert_typed_problem(
+        duplicate,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-ambiguous",
+    )
+    .await;
     assert!(problem.detail.contains("ambiguous"));
     std::fs::remove_file(inaccessible.join("duplicate.genaimage.json")).unwrap();
     let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
@@ -663,7 +668,12 @@ async fn defaults_and_ambiguous_or_invalid_identifiers_are_handled() {
         .send()
         .await
         .unwrap();
-    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-ambiguous",
+    )
+    .await;
     assert!(problem.detail.contains("ambiguous"));
     manifest["schema_version"] = json!(1);
     std::fs::write(
@@ -854,11 +864,21 @@ async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
         .send()
         .await
         .unwrap();
-    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-ambiguous",
+    )
+    .await;
     assert!(problem.detail.contains("ambiguous"));
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let response = api.request(Method::GET, url).send().await.unwrap();
-    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-ambiguous",
+    )
+    .await;
     assert!(problem.detail.contains("ambiguous"));
     let mut invalid = manifest.clone();
     invalid["schema_version"] = json!(1);
@@ -882,7 +902,12 @@ async fn catalogue_indexes_thumbnails_and_invalidates_on_changes() {
     std::fs::write(&sibling, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
     let response = api.request(Method::GET, url).send().await.unwrap();
-    let problem = ApiHarness::assert_problem(response, StatusCode::INTERNAL_SERVER_ERROR).await;
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::CONFLICT,
+        "urn:genaimage:problem:workflow-ambiguous",
+    )
+    .await;
     assert!(problem.detail.contains("ambiguous"));
     std::fs::write(&sibling, original).unwrap();
     let _: WorkflowListResponse = api.get_json("/api/v1/workflows").await;
