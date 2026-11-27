@@ -1584,3 +1584,129 @@ async fn legacy_submitting_record_requires_backend_evidence() {
         RunStatus::Running
     );
 }
+
+fn install_pack(harness: &Harness, pack: &str, workflow_id: &str) -> PathBuf {
+    let dir = harness.config().packs[0].join(pack);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("pack.toml"),
+        format!("id = '{pack}'\nversion = '1'\nworkflows = ['wf.genaimage.json']\n"),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("workflow.api.json"),
+        include_str!("../../tests/fixtures/contract-workflow.api.json"),
+    )
+    .unwrap();
+    let mut manifest: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/contract-workflow.genaimage.json"
+    ))
+    .unwrap();
+    manifest["id"] = json!(workflow_id);
+    fs::write(
+        dir.join("wf.genaimage.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn discovery_merges_the_user_root_and_packs_with_their_sources() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_pack(&harness, "extras", "pack-flow");
+    let discovery = harness.discover_workflows().unwrap();
+    let sources: Vec<_> = discovery
+        .workflows
+        .iter()
+        .map(|w| (w.manifest.id.clone(), w.source.to_string()))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            ("contract-workflow".to_owned(), "user".to_owned()),
+            ("pack-flow".to_owned(), "pack:extras".to_owned())
+        ]
+    );
+    assert!(discovery.diagnostics.is_empty());
+    let loaded = harness.load_workflow_by_id("pack-flow").unwrap().unwrap();
+    assert!(loaded.manifest_path.starts_with(&harness.config().packs[0]));
+}
+
+#[test]
+fn a_duplicate_id_across_roots_is_a_diagnostic_and_unavailable() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_pack(&harness, "extras", "contract-workflow");
+    let discovery = harness.discover_workflows().unwrap();
+    assert_eq!(discovery.unresolvable_ids.len(), 1);
+    assert!(discovery.unresolvable_ids.contains("contract-workflow"));
+    assert!(!discovery
+        .indexable_manifest_paths
+        .contains_key("contract-workflow"));
+    let message = discovery
+        .diagnostics
+        .iter()
+        .map(|item| item.error.to_string())
+        .find(|message| message.contains("declared more than once"))
+        .expect("duplicate diagnostic");
+    assert!(message.contains("user '") && message.contains("pack:extras '"));
+    assert!(harness.load_workflow_by_id("contract-workflow").is_err());
+}
+
+#[test]
+fn a_broken_pack_is_reported_without_hiding_other_workflows() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_pack(&harness, "good", "good-flow");
+    let broken = harness.config().packs[0].join("broken");
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join("pack.toml"), "id = 'broken'\nunknown = 1\n").unwrap();
+    let discovery = harness.discover_workflows().unwrap();
+    let ids: Vec<_> = discovery
+        .workflows
+        .iter()
+        .map(|w| w.manifest.id.as_str())
+        .collect();
+    assert_eq!(ids, ["contract-workflow", "good-flow"]);
+    assert_eq!(discovery.diagnostics.len(), 1);
+    assert!(discovery.diagnostics[0].path.ends_with("broken/pack.toml"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pack_workflow_graph_outside_the_pack_is_rejected() {
+    let (workspace, harness, _, _) = setup(false);
+    let dir = install_pack(&harness, "leaky", "leaky-flow");
+    let outside = workspace.path().join("outside.json");
+    fs::write(
+        &outside,
+        include_str!("../../tests/fixtures/contract-workflow.api.json"),
+    )
+    .unwrap();
+    fs::remove_file(dir.join("workflow.api.json")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("workflow.api.json")).unwrap();
+    let discovery = harness.discover_workflows().unwrap();
+    assert!(discovery
+        .workflows
+        .iter()
+        .all(|w| w.manifest.id != "leaky-flow"));
+    assert!(discovery.unresolvable_ids.contains("leaky-flow"));
+    assert!(discovery.diagnostics.iter().any(|item| item
+        .error
+        .to_string()
+        .contains("not a file inside the pack")));
+}
+
+#[test]
+fn the_refresh_id_is_reserved_for_the_route() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_pack(&harness, "extras", "refresh");
+    let discovery = harness.discover_workflows().unwrap();
+    assert!(discovery
+        .workflows
+        .iter()
+        .all(|w| w.manifest.id != "refresh"));
+    assert!(discovery
+        .diagnostics
+        .iter()
+        .any(|d| d.error.to_string().contains("reserved URL path segment")));
+}

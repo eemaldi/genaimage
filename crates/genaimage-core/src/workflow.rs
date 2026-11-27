@@ -119,8 +119,13 @@ pub struct LoadedWorkflow {
 }
 
 pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    read_regular_file_limited(path, u64::MAX)
+}
+
+/// Reads a regular file and fails once it exceeds `limit` bytes.
+pub(crate) fn read_regular_file_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     #[cfg(unix)]
-    let mut file: fs::File = {
+    let file: fs::File = {
         use rustix::fs::{open, Mode, OFlags};
         open(
             path,
@@ -131,7 +136,7 @@ pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         .into()
     };
     #[cfg(not(unix))]
-    let mut file = {
+    let file = {
         if !fs::metadata(path)?.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -147,7 +152,13 @@ pub(crate) fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds {limit} bytes"),
+        ));
+    }
     Ok(bytes)
 }
 

@@ -665,6 +665,43 @@ mod tests {
     }
 
     #[test]
+    fn pack_roots_are_read_only_and_survive_a_settings_rewrite() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join(PROJECT_CONFIG);
+        let load = || {
+            HarnessConfig::load_with(workspace.path(), Some(&path), workspace.path(), |name| {
+                match name {
+                    "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => {
+                        Some(workspace.path().to_str().unwrap().to_owned())
+                    }
+                    _ => None,
+                }
+            })
+            .unwrap()
+        };
+        fs::write(
+            &path,
+            "[paths]\n# keep me\npacks = [\"packs-a\", \"packs-b\"]\nruns = \"old\"\n",
+        )
+        .unwrap();
+        let initial = load();
+        assert!(!initial.settings_values().contains_key("paths.packs"));
+        let rejected =
+            initial.propose_settings(BTreeMap::from([("paths.packs".into(), json!(["x"]))]));
+        assert!(rejected.is_err());
+        let saved = initial
+            .propose_settings(BTreeMap::from([("paths.runs".into(), json!("new"))]))
+            .unwrap()
+            .persist()
+            .unwrap();
+        assert_eq!(saved.packs.len(), 2);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("# keep me"));
+        assert!(contents.contains("packs = [\"packs-a\", \"packs-b\"]"));
+        assert_eq!(load().packs, saved.packs);
+    }
+
+    #[test]
     fn interrupted_write_never_replaces_original() {
         let workspace = tempfile::tempdir().unwrap();
         let path = workspace.path().join(PROJECT_CONFIG);

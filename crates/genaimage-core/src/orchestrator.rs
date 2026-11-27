@@ -168,10 +168,27 @@ pub struct WorkflowDiscovery {
     pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
+/// Where a workflow was discovered: the writable user root or a read-only pack.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkflowSource {
+    User,
+    Pack(String),
+}
+
+impl std::fmt::Display for WorkflowSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User => formatter.write_str("user"),
+            Self::Pack(id) => write!(formatter, "pack:{id}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DiscoveredWorkflow {
     pub manifest: WorkflowManifest,
     pub revision: String,
+    pub source: WorkflowSource,
 }
 
 #[derive(Clone, Debug)]
@@ -365,10 +382,47 @@ impl Harness {
         )
     }
 
+    /// Visits the user root, then every pack's declared manifests. A pack
+    /// workflow whose API graph resolves outside its pack is an invalid manifest.
+    fn visit_all_workflows(
+        &self,
+        mut visitor: impl FnMut(&Path, &WorkflowSource, WorkflowVisit),
+    ) -> crate::pack::PackDiscovery {
+        visit_workflows(&self.config.workflows, |path, visit| {
+            visitor(path, &WorkflowSource::User, visit)
+        });
+        let packs = self.discover_packs();
+        for pack in &packs.packs {
+            let source = WorkflowSource::Pack(pack.manifest.id.clone());
+            let canonical = fs::canonicalize(&pack.dir);
+            for path in &pack.workflow_paths {
+                let visit = match LoadedWorkflow::load(path) {
+                    Err(HarnessError::Io(error)) => WorkflowVisit::Incomplete(error),
+                    Ok(loaded)
+                        if !canonical.as_ref().is_ok_and(|dir| {
+                            fs::canonicalize(&loaded.workflow_path)
+                                .is_ok_and(|graph| graph.starts_with(dir))
+                        }) =>
+                    {
+                        WorkflowVisit::Manifest(Err(HarnessError::Pack(format!(
+                            "workflow graph '{}' of pack '{}' is not a file inside the pack directory",
+                            loaded.workflow_path.display(),
+                            pack.manifest.id
+                        ))))
+                    }
+                    result => WorkflowVisit::Manifest(result.map(Box::new)),
+                };
+                visitor(path, &source, visit);
+            }
+        }
+        packs
+    }
+
     pub fn discover_workflows(&self) -> Result<WorkflowDiscovery> {
         let mut discovery = WorkflowDiscovery::default();
         let mut ambiguous = BTreeSet::new();
-        visit_workflows(&self.config.workflows, |path, workflow| match workflow {
+        let mut claims: BTreeMap<String, Vec<(PathBuf, WorkflowSource)>> = BTreeMap::new();
+        let packs = self.visit_all_workflows(|path, source, workflow| match workflow {
             WorkflowVisit::Incomplete(error) => {
                 discovery.traversal_failures.push(WorkflowTraversalFailure {
                     path: path.to_path_buf(),
@@ -386,7 +440,7 @@ impl Harness {
                 });
             }
             WorkflowVisit::Manifest(Ok(loaded))
-                if matches!(loaded.manifest.id.as_str(), "." | "..") =>
+                if matches!(loaded.manifest.id.as_str(), "." | ".." | "refresh") =>
             {
                 discovery.diagnostics.push(WorkflowDiagnostic {
                     path: path.to_path_buf(),
@@ -418,6 +472,10 @@ impl Harness {
                     .referenced_workflow_paths
                     .insert(loaded.workflow_path.clone());
                 let id = loaded.manifest.id.clone();
+                claims
+                    .entry(id.clone())
+                    .or_default()
+                    .push((path.to_path_buf(), source.clone()));
                 if discovery
                     .indexable_manifest_paths
                     .insert(id.clone(), path.to_path_buf())
@@ -428,6 +486,7 @@ impl Harness {
                 discovery.workflows.push(DiscoveredWorkflow {
                     revision: loaded.revision(),
                     manifest: loaded.manifest,
+                    source: source.clone(),
                 });
             }
             WorkflowVisit::Manifest(Err(error)) => {
@@ -451,7 +510,32 @@ impl Harness {
         });
         for id in &ambiguous {
             discovery.indexable_manifest_paths.remove(id);
+            let Some(claimants) = claims.get(id).filter(|claimants| claimants.len() > 1) else {
+                continue;
+            };
+            let described = claimants
+                .iter()
+                .map(|(path, source)| format!("{source} '{}'", path.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            discovery.diagnostics.push(WorkflowDiagnostic {
+                path: claimants[0].0.clone(),
+                error: HarnessError::Workflow(format!(
+                    "workflow id '{id}' is declared more than once ({described}); the id is unavailable until the duplicates are removed"
+                )),
+            });
         }
+        discovery
+            .diagnostics
+            .extend(
+                packs
+                    .all_diagnostics()
+                    .into_iter()
+                    .map(|item| WorkflowDiagnostic {
+                        path: item.path,
+                        error: HarnessError::Pack(item.message),
+                    }),
+            );
         discovery.unresolvable_ids = ambiguous;
         discovery
             .traversal_failures
@@ -483,7 +567,7 @@ impl Harness {
         let mut invalid_matches = Vec::new();
         let mut skipped = false;
         let mut incomplete = Vec::new();
-        visit_workflows(&self.config.workflows, |path, result| match result {
+        self.visit_all_workflows(|path, _, result| match result {
             WorkflowVisit::Incomplete(error) => incomplete.push(WorkflowTraversalFailure {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
@@ -525,7 +609,7 @@ impl Harness {
         }
         match matches.len() {
             0 => Err(HarnessError::Workflow(format!(
-                "workflow '{workflow}' was not found below '{}'{}",
+                "workflow '{workflow}' was not found below '{}' or in any workflow pack{}",
                 self.config.workflows.display(),
                 if skipped {
                     "; some manifests could not be loaded; use 'workflow list' for details"
@@ -545,7 +629,7 @@ impl Harness {
         let mut matches = Vec::new();
         let mut invalid_matches = Vec::new();
         let mut incomplete = Vec::new();
-        visit_workflows(&self.config.workflows, |path, result| match result {
+        self.visit_all_workflows(|path, _, result| match result {
             WorkflowVisit::Incomplete(error) => incomplete.push(WorkflowTraversalFailure {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
@@ -2224,6 +2308,10 @@ fn visit_files(
                 "workflow directory contains a symlink cycle",
             )),
         );
+        return;
+    }
+    // A pack owns its directory; scanning it here would report its workflows twice.
+    if directory.join(crate::pack::PACK_FILE).is_file() {
         return;
     }
     let entries = match fs::read_dir(directory) {

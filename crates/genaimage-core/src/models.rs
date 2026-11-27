@@ -508,31 +508,34 @@ pub async fn list_checkpoints(harness: &Harness) -> Result<Vec<String>> {
 }
 
 pub fn checkpoint_names(object_info: &Value) -> Result<Vec<String>> {
-    let missing = || {
+    loader_options(object_info, CHECKPOINT_LOADER, "ckpt_name").ok_or_else(|| {
         HarnessError::ComfyUi(format!(
             "ComfyUI does not list the {CHECKPOINT_LOADER} node or its ckpt_name options; \
              update ComfyUI or check that its core nodes loaded"
         ))
-    };
-    let field = object_info
-        .pointer(&format!("/{CHECKPOINT_LOADER}/input/required/ckpt_name"))
-        .and_then(Value::as_array)
-        .ok_or_else(missing)?;
-    let options = match field.first() {
-        Some(Value::Array(options)) => options,
-        Some(Value::String(_)) => field
-            .get(1)
-            .and_then(|config| config.get("options"))
-            .and_then(Value::as_array)
-            .ok_or_else(missing)?,
-        _ => return Err(missing()),
+    })
+}
+
+/// Sorted file names a loader node offers for one required input. Handles the
+/// legacy `[[names], {}]` and the `["COMBO", {"options": [...]}]` shapes.
+/// `None` when the node, the input or its options are absent or malformed.
+pub fn loader_options(object_info: &Value, class: &str, input: &str) -> Option<Vec<String>> {
+    let class = object_info.get(class)?;
+    let field = ["required", "optional"]
+        .iter()
+        .find_map(|section| class.pointer(&format!("/input/{section}/{input}")))?
+        .as_array()?;
+    let options = match field.first()? {
+        Value::Array(options) => options,
+        Value::String(_) => field.get(1)?.get("options")?.as_array()?,
+        _ => return None,
     };
     let mut names = options
         .iter()
-        .map(|option| option.as_str().map(str::to_owned).ok_or_else(missing))
-        .collect::<Result<Vec<_>>>()?;
+        .map(|option| option.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()?;
     names.sort();
-    Ok(names)
+    Some(names)
 }
 
 #[cfg(test)]
