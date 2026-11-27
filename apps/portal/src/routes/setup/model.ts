@@ -37,7 +37,8 @@ export type Evidence = {
   comfyui?: { url: string };
   llm?: { url: string; textModel: string };
   checkpoint?: { name: string };
-  saved?: true;
+  /** The patch that was saved, so it only counts for identical current choices. */
+  saved?: { signature: string };
 };
 
 export type ReviewEntry = {
@@ -90,8 +91,48 @@ export function envVariable(
   if (setting && 'variable' in setting) return String(setting.variable);
 }
 
-export function readOnly(settings: Settings | undefined, key: string) {
-  return settings?.settings[key]?.read_only ?? true;
+/** Whether the wizard may write this key: neither read-only nor owned by the environment. */
+export function isEditable(settings: Settings | undefined, key: string) {
+  const setting = settings?.settings[key];
+  return !!setting && !setting.read_only && setting.source !== 'env';
+}
+
+export function patchSignature(patch: Record<string, string>): string {
+  return JSON.stringify(
+    Object.entries(patch).sort(([a], [b]) => (a < b ? -1 : 1)),
+  );
+}
+
+/** Selects an endpoint; a new LLM endpoint invalidates models chosen for the old one. */
+export function chooseEndpoint(
+  choices: Choices,
+  evidence: Evidence,
+  kind: 'comfyui' | 'llm',
+  url: string | undefined,
+) {
+  if (kind === 'comfyui') {
+    choices.comfyuiUrl = url;
+    return;
+  }
+  if (choices.llmUrl !== url) {
+    choices.textModel = undefined;
+    choices.visionModel = undefined;
+    delete evidence.llm;
+  }
+  choices.llmUrl = url;
+}
+
+export function llmVerified(
+  evidence: Evidence,
+  choices: Choices,
+  llmUrl: string,
+): boolean {
+  return (
+    !!evidence.llm &&
+    evidence.llm.url === llmUrl &&
+    !!evidence.llm.textModel &&
+    (!choices.textModel || choices.textModel === evidence.llm.textModel)
+  );
 }
 
 export function endpointKey(service: 'comfyui' | 'llm') {
@@ -136,7 +177,7 @@ export function buildReview(
   const entries: ReviewEntry[] = [];
   const patch: Record<string, string> = {};
   for (const [key, label, to] of wanted) {
-    if (!to || readOnly(settings, key)) continue;
+    if (!to || !isEditable(settings, key)) continue;
     patch[key] = to;
     entries.push({ key, label, from: configuredValue(settings, key), to });
   }
@@ -157,7 +198,7 @@ export function envOwned(
   return keys
     .filter(
       ([key]) =>
-        readOnly(settings, key) &&
+        !isEditable(settings, key) &&
         (key.endsWith('base_url') ||
           (!choices.llmSkipped &&
             (key === 'llm.text_model'
@@ -207,11 +248,28 @@ export function comfyuiFix(reason: string | null | undefined): string {
     : 'Start ComfyUI and check that the URL matches the address it listens on (default http://127.0.0.1:8188), then test again.';
 }
 
-/** State handed to the test generation step (component C). */
+/**
+ * State handed to the test generation step (component C).
+ *
+ * Component C must not treat any field as evidence that a run works.
+ * `checkpoint` and `llmTextModel` are operator choices, not run evidence, and
+ * the checkpoint was only listed by the running server. C must not run while
+ * `restartPending` could change the ComfyUI endpoint, that is, while
+ * `activeComfyuiUrl` differs from or cannot confirm `comfyuiUrl`.
+ */
 export type TestGenerationState = {
+  /** A choice from the installed list; not run evidence. */
   checkpoint?: string;
-  comfyuiUrl: string;
+  /** A choice from the installed list; not run evidence. */
   llmTextModel?: string;
-  configSaved: boolean;
+  /** The ComfyUI URL chosen or configured in the wizard (may not be live yet). */
+  comfyuiUrl: string;
+  /** The ComfyUI URL the running server uses; `undefined` when unknown. */
+  activeComfyuiUrl?: string;
+  /** True when this session saved exactly the current choices. */
+  savedThisSession: boolean;
+  /** True when the server reports a config file on disk. */
+  configFileExists: boolean;
+  /** True when a restart is pending or could not be ruled out. */
   restartPending: boolean;
 };

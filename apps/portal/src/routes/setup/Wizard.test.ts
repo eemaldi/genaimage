@@ -158,6 +158,10 @@ async function open() {
   await screen.findByRole('heading', { name: '1. Detect services' });
   return user;
 }
+const stepItem = (label: string) =>
+  within(screen.getByRole('navigation', { name: 'Setup steps' }))
+    .getByText(new RegExp(label))
+    .closest('li')!;
 const next = (user: ReturnType<typeof userEvent.setup>) =>
   user.click(screen.getByRole('button', { name: /^Next:/ }));
 
@@ -239,7 +243,8 @@ test('model choice needs an explicit selection and never auto-picks', async () =
   const step = screen.getByRole('navigation', { name: 'Setup steps' });
   expect(within(step).getByText('Not chosen')).toBeTruthy();
   await user.selectOptions(select, 'qwen3:8b');
-  expect(within(step).getAllByText('Done').length).toBeGreaterThan(0);
+  expect(stepItem('LLM and models').textContent).toContain('Done');
+  expect(stepItem('Detect services').textContent).toContain('Ran');
   expect(
     (screen.getByLabelText(/Vision model/) as HTMLSelectElement).value,
   ).toBe('');
@@ -379,6 +384,188 @@ test('a reload resumes at the restart step from the server state', async () => {
   ).toBeTruthy();
   expect(screen.getByText('comfyui.base_url')).toBeTruthy();
   expect(screen.getByText('Restart required.')).toBeTruthy();
+  expect(screen.queryByText(/no pending restart/)).toBeNull();
+});
+
+const save = (user: ReturnType<typeof userEvent.setup>) =>
+  user.click(screen.getByRole('button', { name: /^Save/ }));
+const back = async (
+  user: ReturnType<typeof userEvent.setup>,
+  times: number,
+) => {
+  for (let i = 0; i < times; i++)
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+};
+
+test('a failed status refresh never claims there is no pending restart', async () => {
+  fake.putSettingsWithRevision.mockResolvedValue({
+    etag: '"rev-2"',
+    settings: snapshot(false, { restart_required: [] }).settings,
+  });
+  const user = await open();
+  await toReview(user);
+  fake.setupStatus.mockRejectedValue(new Error('offline'));
+  await save(user);
+  expect(
+    await screen.findByText(/could not confirm the restart state/),
+  ).toBeTruthy();
+  expect(screen.queryByText(/no pending restart/)).toBeNull();
+  expect(stepItem('Apply changes').textContent).toContain('unconfirmed');
+  fake.setupStatus.mockResolvedValue(
+    status({ needs_setup: false, reasons: [] }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Check again' }));
+  expect(await screen.findByText(/reports no pending restart/)).toBeTruthy();
+  expect(stepItem('Apply changes').textContent).toContain('Done');
+});
+
+test('a failed refresh falls back to the restart keys of the save response', async () => {
+  fake.putSettingsWithRevision.mockResolvedValue({
+    etag: '"rev-2"',
+    settings: snapshot(false, { restart_required: ['llm.text_model'] })
+      .settings,
+  });
+  const user = await open();
+  await toReview(user);
+  fake.setupStatus.mockRejectedValue(new Error('offline'));
+  await save(user);
+  expect(await screen.findByText('Restart required.')).toBeTruthy();
+  expect(screen.getByText('llm.text_model')).toBeTruthy();
+  expect(screen.queryByText(/no pending restart/)).toBeNull();
+});
+
+test('Saved and Done are invalidated when a choice changes after saving', async () => {
+  fake.putSettingsWithRevision.mockResolvedValue({
+    etag: '"rev-2"',
+    settings: snapshot(false, { restart_required: ['llm.base_url'] }).settings,
+  });
+  const user = await open();
+  await toReview(user);
+  fake.setupStatus.mockResolvedValue(
+    status({ restart_required: ['llm.base_url'] }),
+  );
+  await save(user);
+  await screen.findByText('Restart required.');
+  expect(stepItem('Review and save').textContent).toContain('Saved');
+  await back(user, 5);
+  await user.click(screen.getAllByLabelText(/Keep the configured endpoint/)[1]);
+  expect(stepItem('Review and save').textContent).toContain(
+    'Changed since saved',
+  );
+  expect(stepItem('LLM and models').textContent).not.toContain('Done');
+});
+
+test('the review lists unverified items and the checkpoint is marked running-server only', async () => {
+  fake.testSettings.mockResolvedValueOnce({
+    comfyui: 'failed',
+    comfyui_reason: 'refused',
+  });
+  const user = await open();
+  for (let i = 0; i < 3; i++) await next(user);
+  await user.selectOptions(
+    await screen.findByLabelText(/Checkpoint for/),
+    'sdxl.safetensors',
+  );
+  await next(user);
+  expect(
+    await screen.findByText('Not verified for these choices:'),
+  ).toBeTruthy();
+  expect(screen.getByText(/ComfyUI at .* was not tested/)).toBeTruthy();
+});
+
+test('Compose saves no environment-owned keys', async () => {
+  fake.setupStatus.mockResolvedValue(
+    status({
+      endpoints_env_owned: true,
+      comfyui: { configured_url: 'http://comfyui:8188', source: 'env' },
+      llm: { configured_url: 'http://llm:11434/v1', source: 'env' },
+    }),
+  );
+  fake.getSettingsWithRevision.mockResolvedValue(snapshot(true));
+  fake.putSettingsWithRevision.mockResolvedValue({
+    etag: '"rev-2"',
+    settings: snapshot(true).settings,
+  });
+  const user = await open();
+  await next(user);
+  await next(user);
+  await user.selectOptions(
+    await screen.findByLabelText('Text model'),
+    'qwen3:8b',
+  );
+  await next(user);
+  await next(user);
+  await screen.findByRole('heading', { name: '5. Review and save' });
+  await save(user);
+  expect(fake.putSettingsWithRevision).toHaveBeenCalledWith(
+    { 'llm.text_model': 'qwen3:8b' },
+    '"rev-1"',
+  );
+});
+
+test('skipping the LLM saves no LLM values', async () => {
+  fake.putSettingsWithRevision.mockResolvedValue({
+    etag: '"rev-2"',
+    settings: snapshot().settings,
+  });
+  const user = await open();
+  await next(user);
+  await next(user);
+  await user.click(
+    await screen.findByRole('button', { name: 'Skip LLM setup' }),
+  );
+  expect(stepItem('LLM and models').textContent).toContain('Skipped');
+  await next(user);
+  await next(user);
+  expect(screen.getByText(/LLM setup was skipped/)).toBeTruthy();
+  await save(user);
+  expect(fake.putSettingsWithRevision).toHaveBeenCalledWith(
+    { 'comfyui.base_url': 'http://127.0.0.1:8188' },
+    '"rev-1"',
+  );
+});
+
+test('a 412 on the ComfyUI test is reported and the step stays unverified', async () => {
+  fake.testSettings.mockRejectedValue(
+    new ApiProblemError({ title: 'Precondition failed', status: 412 } as never),
+  );
+  const user = await open();
+  await next(user);
+  expect(await screen.findByText('Precondition failed')).toBeTruthy();
+  expect(screen.getByText(/Reload this page/)).toBeTruthy();
+  expect(stepItem('Test ComfyUI').textContent).toContain('Not verified');
+});
+
+test('an unknown save outcome is not reported as nothing saved', async () => {
+  fake.putSettingsWithRevision.mockRejectedValue(new Error('connection reset'));
+  const user = await open();
+  await toReview(user);
+  await save(user);
+  expect(
+    await screen.findByText('The outcome of the save is unknown'),
+  ).toBeTruthy();
+  expect(screen.queryByText(/Nothing was saved/)).toBeNull();
+  expect(
+    screen.getByRole('button', { name: 'Reload current settings' }),
+  ).toBeTruthy();
+  expect(stepItem('Review and save').textContent).toContain('Not saved');
+});
+
+test('dismissal storage that throws is tolerated', () => {
+  const broken = vi
+    .spyOn(Storage.prototype, 'getItem')
+    .mockImplementation(() => {
+      throw new Error('blocked');
+    });
+  const write = vi
+    .spyOn(Storage.prototype, 'setItem')
+    .mockImplementation(() => {
+      throw new Error('blocked');
+    });
+  expect(isDismissed(status() as never)).toBe(false);
+  expect(() => rememberDismissal(status() as never)).not.toThrow();
+  broken.mockRestore();
+  write.mockRestore();
 });
 
 test('dismissal is remembered per set of blocking reasons only as a convenience', () => {

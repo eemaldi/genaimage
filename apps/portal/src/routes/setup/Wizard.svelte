@@ -21,9 +21,11 @@
     envOwned,
     envVariable,
     isAbort,
+    isEditable,
     latest,
+    llmVerified,
+    patchSignature,
     problemFrom,
-    readOnly,
     rememberDismissal,
     steps,
     type Choices,
@@ -41,62 +43,73 @@
   let choices = $state<Choices>({ llmSkipped: false });
   let evidence = $state<Evidence>({});
   let heading = $state<HTMLElement>();
+  let statusFresh = $state(true);
+  let activeComfyui = $state<string>();
   const request = latest();
+  const statusRequest = latest();
 
   let index = $derived(steps.findIndex((item) => item.id === step));
-  let comfyEditable = $derived(
-    !!status &&
-      !!settings &&
-      status.comfyui.source !== 'env' &&
-      !readOnly(settings, 'comfyui.base_url'),
-  );
-  let llmEditable = $derived(
-    !!status &&
-      !!settings &&
-      status.llm.source !== 'env' &&
-      !readOnly(settings, 'llm.base_url'),
-  );
+  let comfyEditable = $derived(isEditable(settings, 'comfyui.base_url'));
+  let llmEditable = $derived(isEditable(settings, 'llm.base_url'));
   let comfyUrl = $derived(effectiveUrl('comfyui', choices, settings));
   let llmUrl = $derived(effectiveUrl('llm', choices, settings));
   let review = $derived(settings ? buildReview(choices, settings) : undefined);
-  let restartPending = $derived(!!status?.restart_required.length);
+  let restartKeys = $derived(
+    (statusFresh ? status?.restart_required : settings?.restart_required) ?? [],
+  );
+  let savedCurrent = $derived(
+    !!review && evidence.saved?.signature === patchSignature(review.patch),
+  );
+  let restartUnconfirmed = $derived(
+    !statusFresh && !restartKeys.length && !!evidence.saved,
+  );
+  let restartPending = $derived(!!restartKeys.length || restartUnconfirmed);
   let comfyChanged = $derived(
     !!status &&
-      (!!choices.comfyuiUrl ||
-        status.restart_required.includes('comfyui.base_url')),
+      (!!choices.comfyuiUrl || restartKeys.includes('comfyui.base_url')),
+  );
+  let comfyVerified = $derived(evidence.comfyui?.url === comfyUrl);
+  let llmDone = $derived(llmVerified(evidence, choices, llmUrl));
+  let unverified = $derived(
+    [
+      comfyVerified ? '' : `ComfyUI at ${comfyUrl || 'no URL'} was not tested.`,
+      choices.llmSkipped || llmDone
+        ? ''
+        : `The LLM at ${llmUrl || 'no URL'} was not verified with a chosen text model.`,
+    ].filter(Boolean),
   );
 
   function stepStatus(id: StepId): string {
     switch (id) {
       case 'detect':
-        return evidence.detected ? 'Done' : 'Not checked';
+        return evidence.detected ? 'Ran' : 'Not checked';
       case 'comfyui':
-        return evidence.comfyui?.url === comfyUrl ? 'Done' : 'Not verified';
+        return comfyVerified ? 'Done' : 'Not verified';
       case 'llm':
-        return choices.llmSkipped
-          ? 'Skipped'
-          : evidence.llm?.url === llmUrl &&
-              evidence.llm.textModel &&
-              (!choices.textModel ||
-                choices.textModel === evidence.llm.textModel)
-            ? 'Done'
-            : 'Not chosen';
+        return choices.llmSkipped ? 'Skipped' : llmDone ? 'Done' : 'Not chosen';
       case 'checkpoint':
-        return evidence.checkpoint ? 'Done' : 'Not verified';
+        return !evidence.checkpoint
+          ? 'Not verified'
+          : comfyChanged
+            ? 'Verified on the running server only'
+            : 'Done';
       case 'review':
-        return evidence.saved ? 'Saved' : 'Not saved';
-      case 'apply':
-        return restartPending
-          ? 'Restart required'
+        return savedCurrent
+          ? 'Saved'
           : evidence.saved
-            ? 'Done'
-            : 'Not started';
+            ? 'Changed since saved'
+            : 'Not saved';
+      case 'apply':
+        if (restartKeys.length) return 'Restart required';
+        if (restartUnconfirmed) return 'Restart state unconfirmed';
+        return savedCurrent ? 'Done' : 'Not started';
       case 'test':
         return 'Not available yet';
     }
   }
 
   async function loadServerState() {
+    statusRequest.cancel();
     const { signal, live } = request.begin();
     loading = true;
     try {
@@ -108,6 +121,9 @@
       status = nextStatus;
       settings = snapshot.settings;
       etag = snapshot.etag;
+      statusFresh = true;
+      if (!nextStatus.restart_required.includes('comfyui.base_url'))
+        activeComfyui = nextStatus.comfyui.configured_url;
       problem = undefined;
       return true;
     } catch (error) {
@@ -122,16 +138,23 @@
     }
   }
 
-  async function refreshStatus() {
+  async function refreshStatus(): Promise<boolean> {
+    const { signal, live } = statusRequest.begin();
     try {
-      status = await api.setupStatus();
+      const next = await api.setupStatus({ signal });
+      if (!live()) return false;
+      status = next;
+      statusFresh = true;
       problem = undefined;
+      return true;
     } catch (error) {
+      if (isAbort(error) || !live()) return false;
       problem = problemFrom(
         error,
         'The setup status could not be refreshed',
         'Check that the GenAImage server is running, then check again.',
       );
+      return false;
     }
   }
 
@@ -139,10 +162,15 @@
     await loadServerState();
   }
 
-  async function onSaved(snapshot: { settings: Settings; etag: string }) {
+  async function onSaved(snapshot: {
+    settings: Settings;
+    etag: string;
+    patch: Record<string, string>;
+  }) {
     settings = snapshot.settings;
     etag = snapshot.etag;
-    evidence.saved = true;
+    evidence.saved = { signature: patchSignature(snapshot.patch) };
+    statusFresh = false;
     await refreshStatus();
     go('apply');
   }
@@ -164,7 +192,10 @@
       // restart resumes at the apply step after a reload.
       if (ok && status?.restart_required.length) step = 'apply';
     });
-    return () => request.cancel();
+    return () => {
+      request.cancel();
+      statusRequest.cancel();
+    };
   });
 </script>
 
@@ -271,7 +302,7 @@
       <LlmStep
         url={llmUrl}
         draftUrl={choices.llmUrl}
-        restartPending={status.restart_required.includes('llm.base_url')}
+        restartPending={restartKeys.includes('llm.base_url')}
         {settings}
         {etag}
         bind:choices
@@ -288,19 +319,27 @@
         {settings}
         {choices}
         {etag}
-        saved={!!evidence.saved}
+        saved={savedCurrent}
+        {unverified}
         {onSaved}
         reload={reloadSettings}
       />
     {:else if step === 'apply'}
-      <ApplyStep {status} refresh={refreshStatus} />
+      <ApplyStep
+        {restartKeys}
+        confirmed={statusFresh}
+        saved={savedCurrent}
+        refresh={refreshStatus}
+      />
     {:else if step === 'test'}
       <TestGenerationSlot
         state={{
           checkpoint: choices.checkpoint,
-          comfyuiUrl: comfyUrl,
           llmTextModel: choices.textModel,
-          configSaved: !!evidence.saved || !!status.config_file_exists,
+          comfyuiUrl: comfyUrl,
+          activeComfyuiUrl: activeComfyui,
+          savedThisSession: savedCurrent,
+          configFileExists: status.config_file_exists,
           restartPending,
         }}
       />

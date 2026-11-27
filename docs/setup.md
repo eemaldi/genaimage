@@ -249,14 +249,24 @@ choose the LLM endpoint and text and optional vision model from the installed
 models, verify a checkpoint, review and save, and apply changes. Test generation
 is planned and not yet implemented.
 
-Nothing is chosen for you and nothing is saved until you review every value. A
-step is marked done only when the server confirmed it. Saving uses the settings
-ETag (`If-Match`); the new configuration is not live until you restart
-`genaimage serve` (or the Compose container), and the wizard lists the pending
-`restart_required` keys. Endpoints owned by environment variables, as in Compose,
-are shown read-only. `POST /api/v1/setup/detect` probes a fixed list of common
-local ports and Compose hosts. Hosts that are not allow-listed are reported
-with the setting to add, never probed. See the
+Nothing is chosen for you and nothing is saved until you review every value.
+A step is marked done only when the server confirmed it for your current
+choices: "Ran" for detection, "Done" for a ComfyUI test or an LLM text model
+verified at the endpoint you chose, and "Saved" only for exactly the values that
+were saved; changing a choice afterwards shows "Changed since saved". Choosing a
+different LLM endpoint clears the models chosen for the old one. Checkpoints are
+listed by the running server, so a changed ComfyUI endpoint shows them as
+verified on the running server only. The review lists anything not verified
+before you save. Saving uses the settings ETag (`If-Match`); if a save fails
+with a network or server error, the outcome is reported as unknown and you
+reload the current settings. The new configuration is not live until you
+restart `genaimage serve` (or the Compose container). The wizard lists the
+pending `restart_required` keys and reports "no pending restart" only after a
+fresh status confirms it; if the status cannot be refreshed it tells you to
+assume a restart is needed. Endpoints owned by environment variables, as in
+Compose, are shown read-only and never written. `POST /api/v1/setup/detect`
+probes a fixed list of common local ports and Compose hosts. Hosts that are not
+allow-listed are reported with the setting to add, never probed. See the
 [architecture](architecture.md#local-http-server).
 
 ### Environment overrides

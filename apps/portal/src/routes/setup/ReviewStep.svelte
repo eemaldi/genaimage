@@ -21,6 +21,7 @@
     choices,
     etag,
     saved,
+    unverified,
     onSaved,
     reload,
   }: {
@@ -32,13 +33,19 @@
     choices: Choices;
     etag: string;
     saved: boolean;
-    onSaved: (snapshot: { settings: Settings; etag: string }) => void;
+    unverified: string[];
+    onSaved: (snapshot: {
+      settings: Settings;
+      etag: string;
+      patch: Record<string, string>;
+    }) => void;
     reload: () => Promise<void>;
   } = $props();
 
   let saving = $state(false);
   let problem = $state<Problem>();
   let conflict = $state(false);
+  let unknown = $state(false);
   let outcome = $state('');
 
   async function save() {
@@ -46,20 +53,30 @@
     saving = true;
     problem = undefined;
     conflict = false;
+    unknown = false;
     outcome = '';
     try {
       const snapshot = await api.putSettingsWithRevision(patch, etag);
       outcome = 'Configuration saved.';
-      onSaved({ settings: snapshot.settings, etag: snapshot.etag });
+      onSaved({ settings: snapshot.settings, etag: snapshot.etag, patch });
     } catch (error) {
       if (isAbort(error)) return;
       conflict = error instanceof ApiProblemError && error.status === 412;
+      const rejected =
+        error instanceof ApiProblemError &&
+        error.status >= 400 &&
+        error.status < 500;
+      unknown = !rejected;
       problem = problemFrom(
         error,
-        'The configuration was not saved',
+        rejected
+          ? 'The configuration was not saved'
+          : 'The outcome of the save is unknown',
         conflict
           ? 'The settings changed since the wizard loaded them. Reload the current settings and review the values again.'
-          : 'Nothing was saved. Fix the problem above and save again.',
+          : rejected
+            ? 'Nothing was saved. Fix the problem above and save again.'
+            : 'The server may or may not have saved the configuration. Reload the current settings to see what is saved, then review the values again.',
       );
     } finally {
       saving = false;
@@ -70,6 +87,7 @@
     await reload();
     problem = undefined;
     conflict = false;
+    unknown = false;
   }
 </script>
 
@@ -128,15 +146,24 @@
   Saved values take effect only after you restart <code>genaimage serve</code>;
   they are not live yet.
 </p>
+{#if unverified.length}
+  <div class="setup-problem" role="note">
+    <p><strong>Not verified for these choices:</strong></p>
+    <ul>
+      {#each unverified as item (item)}<li>{item}</li>{/each}
+    </ul>
+    <p>You can still save, but nothing above has confirmed these work.</p>
+  </div>
+{/if}
 {#if problem}<ProblemDetails {problem} />{/if}
-{#if conflict}<p>
+{#if conflict || unknown}<p>
     <Button onclick={refresh}>Reload current settings</Button>
   </p>{/if}
 <p>
   <Button
     variant="primary"
     onclick={save}
-    disabled={saving || conflict || !entries.length}
+    disabled={saving || conflict || unknown || !entries.length}
     aria-busy={saving}>{saved ? 'Save again' : 'Save configuration'}</Button
   >
 </p>

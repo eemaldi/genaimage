@@ -7,6 +7,7 @@
   } from '../../lib/ui/ProblemDetails.svelte';
   import Inline from './Inline.svelte';
   import {
+    chooseEndpoint,
     isAbort,
     latest,
     problemFrom,
@@ -62,12 +63,23 @@
   }
 
   function choose(kind: 'comfyui' | 'llm', url: string) {
-    const value = url === '' ? undefined : url;
-    if (kind === 'comfyui') choices.comfyuiUrl = value;
-    else choices.llmUrl = value;
+    chooseEndpoint(choices, evidence, kind, url === '' ? undefined : url);
   }
   const selected = (kind: 'comfyui' | 'llm') =>
     (kind === 'comfyui' ? choices.comfyuiUrl : choices.llmUrl) ?? '';
+
+  function candidates(kind: 'comfyui' | 'llm', items: DetectedService[]) {
+    const found = items
+      .filter(
+        (service) =>
+          service.status === 'found' && service.url !== configured[kind],
+      )
+      .map((service) => ({ url: service.url, stale: false }));
+    const chosen = selected(kind);
+    return chosen && !found.some((item) => item.url === chosen)
+      ? [...found, { url: chosen, stale: true }]
+      : found;
+  }
 
   onMount(() => {
     void detect();
@@ -145,15 +157,16 @@
           />
           Keep the configured endpoint <code>{configured[kind]}</code></label
         >
-        {#each items.filter((service) => service.status === 'found' && service.url !== configured[kind]) as service (service.url)}
+        {#each candidates(kind, items) as candidate (candidate.url)}
           <label
             ><input
               type="radio"
               name={`use-${kind}`}
-              checked={selected(kind) === service.url}
-              onchange={() => choose(kind, service.url)}
+              checked={selected(kind) === candidate.url}
+              onchange={() => choose(kind, candidate.url)}
             />
-            Use <code>{service.url}</code></label
+            Use <code>{candidate.url}</code>{#if candidate.stale}
+              (chosen earlier; the latest detection did not find it){/if}</label
           >
         {/each}
       {/if}

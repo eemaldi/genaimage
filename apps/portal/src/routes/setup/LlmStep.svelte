@@ -13,7 +13,7 @@
     isAbort,
     latest,
     problemFrom,
-    readOnly,
+    isEditable,
     type Choices,
     type Evidence,
     type LlmModelsResponse,
@@ -43,7 +43,7 @@
   let running = $state(false);
   let source = $state<'active' | 'candidate'>('active');
   const request = latest();
-  let rolesEditable = $derived(!readOnly(settings, 'llm.text_model'));
+  let rolesEditable = $derived(isEditable(settings, 'llm.text_model'));
 
   const options = (empty: string) => [
     { value: '', label: empty },

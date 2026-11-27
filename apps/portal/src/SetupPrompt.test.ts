@@ -64,3 +64,11 @@ it('does not reopen after dismissal but the Setup link reopens it', async () => 
   await user.click(screen.getByRole('link', { name: 'Setup' }));
   await waitFor(() => expect(window.location.hash).toBe('#/setup'));
 });
+
+it('does not hijack a deep link to another page', async () => {
+  vi.spyOn(api, 'setupStatus').mockResolvedValue(needsSetup as never);
+  window.location.hash = '#/jobs';
+  render(App);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(window.location.hash).toBe('#/jobs');
+});

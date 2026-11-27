@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from '../../lib/api/client';
+  import { onMount } from 'svelte';
   import Button from '../../lib/ui/Button.svelte';
   import ProblemDetails, {
     type Problem,
@@ -10,12 +11,19 @@
     validateReport,
     type DoctorCheck,
   } from '../diagnostics/model';
-  import { isAbort, latest, problemFrom, type SetupStatus } from './model';
+  import { isAbort, latest, problemFrom } from './model';
 
   let {
-    status,
+    restartKeys,
+    confirmed,
+    saved,
     refresh,
-  }: { status: SetupStatus; refresh: () => Promise<void> } = $props();
+  }: {
+    restartKeys: string[];
+    confirmed: boolean;
+    saved: boolean;
+    refresh: () => Promise<boolean>;
+  } = $props();
 
   let checks = $state<DoctorCheck[]>();
   let problem = $state<Problem>();
@@ -23,6 +31,8 @@
   let checking = $state(false);
   const request = latest();
   const relevant = /^(config|comfyui\.|llm\.)/;
+
+  onMount(() => () => request.cancel());
 
   async function recheck() {
     checking = true;
@@ -57,14 +67,14 @@
   }
 </script>
 
-{#if status.restart_required.length}
+{#if restartKeys.length}
   <div class="setup-problem" role="alert">
     <p>
       <strong>Restart required.</strong> The saved configuration is not in use yet.
       These settings change only after a restart:
     </p>
     <ul>
-      {#each status.restart_required as key (key)}<li>
+      {#each restartKeys as key (key)}<li>
           <code>{key}</code>
         </li>{/each}
     </ul>
@@ -77,10 +87,26 @@
   <p>
     <Button onclick={recheck} aria-busy={checking}>Check again</Button>
   </p>
+{:else if !confirmed}
+  <div class="setup-problem" role="alert">
+    <p>
+      <strong>Saved; could not confirm the restart state.</strong> Assume a
+      restart is needed: stop <code>genaimage serve</code> and start it again, then
+      check again.
+    </p>
+  </div>
+  <p>
+    <Button onclick={recheck} aria-busy={checking}>Check again</Button>
+  </p>
 {:else}
   <p role="status">
-    The server reports no pending restart: the running server uses the saved
-    configuration.
+    {#if saved}
+      The server reports no pending restart: the running server uses the saved
+      configuration.
+    {:else}
+      The server reports no pending restart, but the wizard has not saved the
+      current choices, so they are not in use.
+    {/if}
   </p>
   <p>
     <Button onclick={diagnose} aria-busy={running}>Run diagnostics</Button>
