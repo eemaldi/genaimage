@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "compose*.yaml"
+      - ".env.example"
       - "docker/**"
       - "Dockerfile"
       - "scripts/check_compose_config.py"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "compose*.yaml"
+      - ".env.example"
       - "docker/**"
       - "Dockerfile"
       - "scripts/check_compose_config.py"

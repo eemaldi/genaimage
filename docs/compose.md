@@ -9,9 +9,12 @@ ComfyUI image decision.
 ## Quick start
 
 ```sh
+cp .env.example .env    # edit it: accelerator, group IDs, models
 docker compose up -d
 ```
 
+`.env.example` selects the CPU stack by default. For a GPU, uncomment the
+matching `COMPOSE_FILE` line in `.env` (see [Accelerators](#accelerators)).
 Then open `http://127.0.0.1:8190`. The first run builds the GenAImage and
 ComfyUI images from this repository, which takes several minutes and downloads
 the PyTorch wheels; there is no prebuilt image yet. This default stack runs
@@ -32,7 +35,7 @@ model, the portal reports what is missing.
 The accelerators are Compose override files rather than profiles, because the
 service must always be named `comfyui` for GenAImage to reach it. To avoid
 repeating `-f`, set `COMPOSE_FILE=compose.yaml:compose.nvidia.yaml` (for example
-in a `.env` file). Use the same files for `down`, `logs` and `build`.
+in `.env`, see `.env.example`). Use the same files for `down`, `logs` and `build`.
 
 GPU variants never fall back to the CPU. If the GPU is not available, the
 container fails to start (a missing NVIDIA runtime or `/dev/kfd`), or ComfyUI
@@ -46,9 +49,60 @@ exits at once with `COMFYUI_REQUIRE_GPU=1 but torch sees no GPU`. Check
   groups by numeric ID; set `VIDEO_GID` and `RENDER_GID` if they differ from
   `44` and `992` (`getent group video render`). Some cards need extra settings,
   such as `HSA_OVERRIDE_GFX_VERSION`; add them in your own override file.
+  See [AMD ROCm (RDNA4)](#amd-rocm-rdna4) for a verified setup.
 
 Older drivers can build another PyTorch variant by overriding the `TORCH_INDEX`,
 `TORCH_VERSION` and `TORCHVISION_VERSION` build arguments in `docker/comfyui`.
+
+### AMD ROCm (RDNA4)
+
+Verified on Nobara Linux 44 (kernel 7.3) with a Radeon RX 9070 XT (gfx1201) next
+to the Ryzen integrated GPU, using the stock `rocm7.2` PyTorch 2.14.1 wheels and
+Ollama `0.40.18-rocm`. No `HSA_OVERRIDE_GFX_VERSION` was needed.
+
+```sh
+getent group video render        # for example video:x:39: and render:x:105:
+# .env: COMPOSE_FILE=compose.yaml:compose.rocm.yaml, VIDEO_GID=39, RENDER_GID=105
+docker compose up -d --build --wait
+```
+
+Keep the numeric group IDs from your host in `.env`. The rootful Docker daemon
+opens the devices, so the user running Docker need not be in those groups; the
+containers receive the groups through `group_add`. The ComfyUI image needs
+`libatomic1`, which the Dockerfile installs.
+
+- **GPU selection.** ComfyUI lists the integrated GPU as a second device
+  (`cuda:1`, named after the CPU) and uses `cuda:0`, the discrete card, by
+  default. Check `curl -s http://127.0.0.1:8188/system_stats`: the discrete card
+  has the larger `vram_total`, and the doctor `gpu` check lists both. Ollama
+  drops the unsupported iGPU (`gfx1036`) with a warning and logs
+  `library=ROCm compute=gfx1201 ... RX 9070 XT`. To hide a device for both
+  services, add `HIP_VISIBLE_DEVICES` (or `ROCR_VISIBLE_DEVICES`) to the
+  `environment` of your own override file; GenAImage never sets it for you.
+- **Check.** `docker compose exec comfyui python -c "import torch; print(torch.cuda.get_device_name(0))"`
+  prints `AMD Radeon Graphics` (the generic name of the RX 9070 XT here).
+- **Size.** The ROCm ComfyUI image is about 25 GB on disk.
+- **First models and image.** Verified with SDXL base 1.0 and `qwen3:8b`.
+  Download `sd_xl_base_1.0.safetensors` yourself from
+  `stabilityai/stable-diffusion-xl-base-1.0` on Hugging Face. Run
+  `sha256sum sd_xl_base_1.0.safetensors` and compare the result with the SHA-256
+  that Hugging Face shows for that exact file. Then copy the checkpoint in, pull
+  the LLM and recreate GenAImage with it as the text model:
+
+  ```sh
+  docker compose cp sd_xl_base_1.0.safetensors comfyui:/opt/comfyui/models/checkpoints/
+  docker compose exec genaimage genaimage models pull qwen3:8b
+  # set GENAIMAGE_LLM_TEXT_MODEL=qwen3:8b in .env, then:
+  docker compose up -d --wait genaimage
+  docker compose exec genaimage genaimage run text-to-image --wait --json \
+    --set 'checkpoint="sd_xl_base_1.0.safetensors"' \
+    --set 'positive_prompt="a lighthouse on a rocky coast at sunset, detailed, photograph"' \
+    --set 'negative_prompt="blurry, low quality"' --set seed=42 --set width=1024 --set height=1024
+  ```
+
+  `.env` keeps the settings for every later `up`. On the RX 9070
+  XT the 1024x1024, 20-step run took about 15 s, and `qwen3:8b` loaded all 37
+  layers on the GPU. Ollama logs a harmless `rocblaslt ... gfx1201` warning.
 
 ## Adding models
 
@@ -73,9 +127,10 @@ docker compose cp ./model.safetensors comfyui:/opt/comfyui/models/checkpoints/
 
 ComfyUI lists new files without a restart after a refresh. Pull an Ollama model
 yourself, then choose it in the portal settings. Alternatively set
-`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in the
-environment of `docker compose up`, but leave them unset rather than empty: an
-empty value locks the setting to empty through the environment.
+`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in
+`.env` or in the environment of `docker compose up`. Leave them unset rather
+than empty, because an empty value locks the setting to empty. Model names in
+this guide, such as `qwen3:8b`, are examples that you choose; none is a default.
 
 ```sh
 docker compose exec ollama ollama pull <model>

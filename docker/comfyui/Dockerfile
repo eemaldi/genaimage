@@ -7,7 +7,7 @@ ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
 ARG TORCH_INDEX=cpu
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch "${COMFYUI_TAG}" https://github.com/Comfy-Org/ComfyUI.git /opt/comfyui \
     && test "$(git -C /opt/comfyui rev-parse HEAD)" = "${COMFYUI_COMMIT}" \
@@ -21,6 +21,9 @@ RUN pip install "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" 
     && python -c "import torch, torchvision"
 
 FROM ${PYTHON_IMAGE}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build --chown=65532:65532 /opt/comfyui /opt/comfyui
 COPY --chmod=755 entrypoint.sh /usr/local/bin/comfyui-entrypoint
