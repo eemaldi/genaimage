@@ -203,7 +203,7 @@ class ExactNumberReadError extends Error {
   }
 }
 
-function requireExactNumberReads() {
+export function requireExactNumberReads() {
   let source: string | undefined;
   JSON.parse('2.0', (_key, value: unknown, context?: { source?: string }) => {
     source = context?.source;
