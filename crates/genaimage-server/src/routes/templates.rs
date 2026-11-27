@@ -71,12 +71,6 @@ fn template_error(error: TemplateError) -> Problem {
         )
         .with_type("urn:genaimage:problem:template-changed")
         .with_current_sha256(current_sha256),
-        TemplateError::ReadOnly => Problem::new(
-            StatusCode::FORBIDDEN,
-            detail,
-            "Pack templates are read-only; copy it into a new user template instead.",
-        )
-        .with_type("urn:genaimage:problem:template-read-only"),
         TemplateError::RenderInvalid(issues) => Problem::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             detail,

@@ -602,17 +602,145 @@ fn a_symlinked_template_is_not_followed() {
     assert_eq!(listing.templates.len(), 1);
     assert_eq!(listing.diagnostics.len(), 1);
     assert!(listing.diagnostics[0].error.contains("not a regular file"));
-    assert!(store.get("link").is_err());
+    let refused = |result: Result<()>| match result {
+        Err(TemplateError::Invalid(issues)) => {
+            assert_eq!(issues[0].key, "file");
+            assert!(
+                issues[0].reason.contains("not a regular file"),
+                "{issues:?}"
+            );
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    };
+    refused(store.get("link").map(drop));
+    let sha = "0".repeat(64);
+    refused(
+        store
+            .replace("link", &sha, &definition("link", "x", &[]))
+            .map(drop),
+    );
+    refused(store.delete("link", &sha));
+    assert!(outside.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_special_template_file_is_invalid_not_an_io_failure() {
+    let (temp, store) = store();
+    store.create(&definition("a", "x", &[])).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        user_file(&temp, "pipe"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .unwrap();
+    assert!(matches!(store.get("pipe"), Err(TemplateError::Invalid(_))));
+    assert!(store
+        .list()
+        .diagnostics
+        .iter()
+        .any(|d| d.reference.as_deref() == Some("user:pipe")));
+}
+
+#[test]
+fn listing_sorts_before_capping_and_reports_the_unscanned_files() {
+    let (_temp, store) = store();
+    let total = MAX_SCANNED_FILES + 4;
+    for n in (0..total).rev() {
+        store
+            .create(&definition(&format!("t{n:04}"), "x", &[]))
+            .unwrap();
+    }
+    let listing = store.list();
+    assert_eq!(listing.templates.len(), MAX_SCANNED_FILES);
+    assert_eq!(listing.templates[0].id, "t0000");
+    assert_eq!(
+        listing.templates.last().unwrap().id,
+        format!("t{:04}", MAX_SCANNED_FILES - 1)
+    );
+    assert_eq!(listing.diagnostics.len(), 1);
+    assert!(
+        listing.diagnostics[0]
+            .error
+            .starts_with("4 more files were not scanned"),
+        "{:?}",
+        listing.diagnostics
+    );
+}
+
+#[test]
+fn render_bounds_the_variable_count_and_truncates_echoed_names() {
+    let t = template("{{a}}", &[("a", required())]);
+    let many: Map<String, Value> = (0..=MAX_SUPPLIED_VARIABLES)
+        .map(|n| (format!("v{n}"), json!("x")))
+        .collect();
+    let Err(TemplateError::RenderInvalid(issues)) = t.render(&many) else {
+        panic!("expected RenderInvalid");
+    };
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].key, "variables");
+    let long = "k".repeat(100_000);
+    let Err(TemplateError::RenderInvalid(issues)) =
+        t.render(&vars(json!({"a": "x", long.clone(): "y"})))
+    else {
+        panic!("expected RenderInvalid");
+    };
+    assert_eq!(issues.len(), 1);
+    assert!(
+        issues[0].key.len() <= MAX_ECHOED_KEY_CHARS + 3,
+        "{}",
+        issues[0].key.len()
+    );
+    assert!(issues[0].key.ends_with("..."));
+    let name = "n".repeat(100_000);
+    let definition = definition("t", "x", &[(name.as_str(), required())]);
+    assert!(definition
+        .problems(None)
+        .iter()
+        .all(|item| item.key.len() <= MAX_ECHOED_KEY_CHARS + "variables.".len() + 3));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_directory_lock_excludes_a_writer_with_its_own_file_descriptor() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let (temp, store) = store();
+    store.create(&definition("first", "x", &[])).unwrap();
+    let root = fs::canonicalize(temp.path().join("lib/templates")).unwrap();
+    let other_process = fs::OpenOptions::new()
+        .write(true)
+        .open(root.join(LOCK_FILE))
+        .unwrap();
+    rustix::fs::flock(&other_process, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let (done, finished) = mpsc::channel();
+    let writer = store.clone();
+    let handle = std::thread::spawn(move || {
+        let created = writer.create(&definition("second", "x", &[]));
+        done.send(()).unwrap();
+        created.is_ok()
+    });
+    assert!(finished.recv_timeout(Duration::from_millis(300)).is_err());
+    assert!(!user_file(&temp, "second").exists());
+    drop(other_process);
+    finished.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(handle.join().unwrap());
+    assert!(user_file(&temp, "second").exists());
 }
 
 #[test]
 fn concurrent_creates_of_one_id_have_exactly_one_winner() {
     let (_temp, store) = store();
+    let barrier = std::sync::Barrier::new(8);
     let winners: usize = std::thread::scope(|scope| {
         (0..8)
             .map(|n| {
                 let store = store.clone();
+                let barrier = &barrier;
                 scope.spawn(move || {
+                    barrier.wait();
                     store
                         .create(&definition("race", &format!("v{n}"), &[]))
                         .is_ok()
@@ -630,12 +758,15 @@ fn concurrent_creates_of_one_id_have_exactly_one_winner() {
 fn a_hash_pinned_replace_has_one_winner_among_concurrent_writers() {
     let (_temp, store) = store();
     let created = store.create(&definition("a", "start", &[])).unwrap();
+    let barrier = std::sync::Barrier::new(8);
     let winners: usize = std::thread::scope(|scope| {
         (0..8)
             .map(|n| {
                 let store = store.clone();
                 let sha = created.sha256.clone();
+                let barrier = &barrier;
                 scope.spawn(move || {
+                    barrier.wait();
                     store
                         .replace("a", &sha, &definition("a", &format!("v{n}"), &[]))
                         .is_ok()

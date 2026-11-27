@@ -65,7 +65,7 @@ Unknown fields are rejected at every level. `id` and `version` are required.
 | `version` | Non-blank text of at most 256 bytes. Always a string, never a number. |
 | `description` | Optional text of at most 2000 bytes. |
 | `workflows` | Manifest paths relative to the pack, each ending in `.genaimage.json`. At most 64. Only declared manifests are loaded. |
-| `templates` | Relative paths to [prompt template](templates.md) files, at most 64. They are read-only and are parsed strictly when `GET /api/v1/templates` lists them; a missing or escaping file is a pack diagnostic, an invalid one is reported in the template diagnostics. |
+| `templates` | Relative paths to [prompt template](templates.md) files, at most 64. They are read-only and are parsed strictly when `GET /api/v1/templates` lists them; a missing or escaping file is a pack diagnostic, an invalid one is reported in the template diagnostics and also as a pack problem, so the pack is never `ok` (a declared `.md` file that is not a TOML template counts as invalid). |
 | `requires.node_classes` | ComfyUI node classes the pack needs. At most 256. |
 | `requires.models` | A table from model folder to file names. At most 32 folders and 512 names in total. |
 

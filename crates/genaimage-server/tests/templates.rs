@@ -267,7 +267,12 @@ async fn delete_requires_the_current_hash() {
         .send()
         .await
         .unwrap();
-    assert!(response.status().is_client_error());
+    ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::BAD_REQUEST,
+        "urn:genaimage:problem:template-ref-invalid",
+    )
+    .await;
     api.shutdown().await;
 }
 

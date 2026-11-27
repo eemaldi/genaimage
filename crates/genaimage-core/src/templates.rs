@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{safe_file, workflow::read_regular_file_limited, Harness};
+use crate::{pack::LoadedPack, pack::PackTemplate, safe_file, Harness};
 
 pub const MAX_ID_LENGTH: usize = 64;
 pub const MAX_TITLE_BYTES: usize = 200;
@@ -33,7 +33,14 @@ pub const MAX_FILE_BYTES: u64 = 128 * 1024;
 /// Templates returned by one listing; the rest is reported in `diagnostics`.
 pub const MAX_LISTED: usize = 256;
 pub const MAX_DIAGNOSTICS: usize = 100;
-const MAX_SCANNED_ENTRIES: usize = 1024;
+/// Directory entries visited when listing user templates.
+const MAX_DIRECTORY_ENTRIES: usize = 4096;
+/// User template files read and parsed by one listing.
+const MAX_SCANNED_FILES: usize = 256;
+/// Variables a render request may supply; declared variables are fewer.
+pub const MAX_SUPPLIED_VARIABLES: usize = 64;
+/// Characters of a caller-controlled key echoed in an error.
+const MAX_ECHOED_KEY_CHARS: usize = 80;
 const MAX_ISSUES: usize = 20;
 const MAX_DIAGNOSTIC_CHARS: usize = 400;
 const FILE_EXTENSION: &str = "toml";
@@ -120,9 +127,17 @@ pub struct TemplateIssue {
     pub reason: String,
 }
 
+fn clip(text: &str) -> String {
+    let mut clipped: String = text.chars().take(MAX_ECHOED_KEY_CHARS).collect();
+    if clipped.len() < text.len() {
+        clipped.push_str("...");
+    }
+    clipped
+}
+
 fn issue(key: impl Into<String>, reason: impl Into<String>) -> TemplateIssue {
     TemplateIssue {
-        key: key.into(),
+        key: clip(&key.into()),
         reason: reason.into(),
     }
 }
@@ -148,8 +163,6 @@ pub enum TemplateError {
     Exists(String),
     #[error("the template changed since it was reviewed (current sha256 {current_sha256})")]
     Changed { current_sha256: String },
-    #[error("pack templates are read-only")]
-    ReadOnly,
     #[error("the template cannot be rendered ({} problem(s))", .0.len())]
     RenderInvalid(Vec<TemplateIssue>),
     #[error("template storage failed: {0}")]
@@ -329,7 +342,7 @@ impl TemplateDefinition {
             ));
         }
         for (name, variable) in &self.variables {
-            let key = format!("variables.{name}");
+            let key = format!("variables.{}", clip(name));
             if !is_variable_name(name) {
                 found.push(issue(&key, "use a name of lower-case letters, digits and '_', starting with a letter, at most 64 characters"));
             }
@@ -456,9 +469,27 @@ impl Template {
     /// default; an empty string is a value, not absence. Values are inserted
     /// verbatim and never scanned again. Nothing is trimmed or normalised.
     pub fn render(&self, supplied: &Map<String, Value>) -> Result<String> {
+        if supplied.len() > MAX_SUPPLIED_VARIABLES {
+            return Err(TemplateError::RenderInvalid(vec![issue(
+                "variables",
+                format!(
+                    "{} variables were supplied; at most {MAX_SUPPLIED_VARIABLES} are accepted",
+                    supplied.len()
+                ),
+            )]));
+        }
         let mut problems = Vec::new();
         let mut values: BTreeMap<&str, &str> = BTreeMap::new();
         for (name, value) in supplied {
+            if name.len() > MAX_ID_LENGTH {
+                problems.push(issue(
+                    name,
+                    format!(
+                        "is not a variable name; names have at most {MAX_ID_LENGTH} characters"
+                    ),
+                ));
+                continue;
+            }
             let Some(variable) = self.variables.iter().find(|v| &v.name == name) else {
                 problems.push(issue(name, "is not a variable of this template"));
                 continue;
@@ -533,6 +564,18 @@ struct DirectoryLock {
     _file: fs::File,
 }
 
+fn read_limited(file: fs::File, name: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(TemplateError::Invalid(vec![issue(
+            "file",
+            format!("'{name}' exceeds {MAX_FILE_BYTES} bytes"),
+        )]));
+    }
+    Ok(bytes)
+}
+
 fn file_name(id: &str) -> String {
     format!("{id}.{FILE_EXTENSION}")
 }
@@ -593,6 +636,7 @@ impl UserTemplates {
     }
 
     /// Reads one template file beneath the root without following symlinks.
+    /// A symlink or special file is `Invalid`, not an I/O failure.
     /// `None` when the file does not exist.
     fn read_file(root: &Path, id: &str) -> Result<Option<Vec<u8>>> {
         let name = file_name(id);
@@ -601,18 +645,16 @@ impl UserTemplates {
             Err(error) => return Err(error.into()),
             Ok(_) => {}
         }
-        let mut file = safe_file::open_regular_beneath(root, root, Path::new(&name))
-            .ok_or_else(|| TemplateError::Io(format!("'{name}' is not a regular file")))?;
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(MAX_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(TemplateError::Io(format!(
-                "'{name}' exceeds {MAX_FILE_BYTES} bytes"
-            )));
-        }
-        Ok(Some(bytes))
+        let file =
+            safe_file::open_regular_beneath(root, root, Path::new(&name)).ok_or_else(|| {
+                TemplateError::Invalid(vec![issue(
+                    "file",
+                    format!(
+                        "'{name}' is not a regular file; symlinks and special files are refused"
+                    ),
+                )])
+            })?;
+        read_limited(file, &name).map(Some)
     }
 
     fn user_template(root: &Path, id: &str) -> Result<Template> {
@@ -659,12 +701,40 @@ impl UserTemplates {
                 return listing;
             }
         };
-        let mut names: Vec<String> = entries
-            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .filter(|name| !name.starts_with('.') && name.ends_with(".toml"))
-            .take(MAX_SCANNED_ENTRIES)
-            .collect();
+        let mut visited = 0;
+        let mut names: Vec<String> = Vec::new();
+        let mut truncated = false;
+        for entry in entries {
+            visited += 1;
+            if visited > MAX_DIRECTORY_ENTRIES {
+                truncated = true;
+                break;
+            }
+            if let Some(name) = entry.ok().and_then(|e| e.file_name().into_string().ok()) {
+                if !name.starts_with('.') && name.ends_with(".toml") {
+                    names.push(name);
+                }
+            }
+        }
         names.sort();
+        let unscanned = names.len().saturating_sub(MAX_SCANNED_FILES);
+        names.truncate(MAX_SCANNED_FILES);
+        if unscanned > 0 || truncated {
+            let detail = if truncated {
+                format!("the directory holds more than {MAX_DIRECTORY_ENTRIES} entries, so some files were not scanned")
+            } else {
+                format!("{unscanned} more files were not scanned; a listing reads at most {MAX_SCANNED_FILES}")
+            };
+            listing.diagnostics.push(TemplateDiagnostic {
+                reference: None,
+                path: root.display().to_string(),
+                error: if truncated && unscanned > 0 {
+                    format!("{unscanned} more files were not scanned and {detail}")
+                } else {
+                    detail
+                },
+            });
+        }
         for name in names {
             let path = root.join(&name).display().to_string();
             let stem = name.trim_end_matches(".toml");
@@ -815,14 +885,63 @@ impl UserTemplates {
     }
 }
 
-fn pack_file(canonical_dir: &Path, file: &Path) -> io::Result<Vec<u8>> {
-    if !file.starts_with(canonical_dir) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "resolves outside the pack directory",
-        ));
-    }
-    read_regular_file_limited(file, MAX_FILE_BYTES)
+/// Reads a declared pack template beneath the canonical pack directory
+/// without following symlinks.
+fn pack_file(canonical_dir: &Path, file: &Path) -> Result<Vec<u8>> {
+    let relative = file.strip_prefix(canonical_dir).map_err(|_| {
+        TemplateError::Invalid(vec![issue("file", "resolves outside the pack directory")])
+    })?;
+    let file = safe_file::open_regular_beneath(canonical_dir, canonical_dir, relative).ok_or_else(
+        || {
+            TemplateError::Invalid(vec![issue(
+                "file",
+                "is not a regular file inside the pack directory",
+            )])
+        },
+    )?;
+    read_limited(file, &relative.display().to_string())
+}
+
+/// Reads a declared pack template once: its file hash and the parse result.
+fn pack_snapshot(pack: &LoadedPack, declared: &PackTemplate) -> Result<(String, Result<Template>)> {
+    let bytes = pack_file(&pack.canonical_dir, &declared.file)?;
+    let template = load(
+        TemplateRef::pack(&declared.pack_id, &declared.path),
+        TemplateScope::Pack,
+        Some(declared.pack_id.clone()),
+        None,
+        &bytes,
+    )
+    .map_err(TemplateError::Invalid);
+    Ok((sha256_hex(&bytes), template))
+}
+
+/// Loads and validates one declared pack template. Listing, rendering and
+/// pack validation (`validate`, `doctor`, `/packs`) all use this function, so
+/// a pack with an unusable template is never reported as `ok`.
+pub fn check_pack_template(
+    pack: &LoadedPack,
+    declared: &PackTemplate,
+) -> std::result::Result<Template, Vec<TemplateIssue>> {
+    let issues_of = |error: TemplateError| match error {
+        TemplateError::Invalid(issues) => issues,
+        other => vec![issue("file", other.to_string())],
+    };
+    pack_snapshot(pack, declared)
+        .and_then(|(_, template)| template)
+        .map_err(issues_of)
+}
+
+/// Problems for pack validation: one `path: issues` line per unusable template.
+pub fn pack_template_problems(pack: &LoadedPack) -> Vec<String> {
+    pack.templates
+        .iter()
+        .filter_map(|declared| {
+            check_pack_template(pack, declared)
+                .err()
+                .map(|issues| format!("{}: {}", declared.path, describe(&issues)))
+        })
+        .collect()
 }
 
 impl Harness {
@@ -838,17 +957,7 @@ impl Harness {
         for pack in &discovery.packs {
             for declared in &pack.templates {
                 let reference = TemplateRef::pack(&declared.pack_id, &declared.path);
-                let loaded = pack_file(&pack.canonical_dir, &declared.file)
-                    .map_err(|error| vec![issue("file", error.to_string())])
-                    .and_then(|bytes| {
-                        load(
-                            reference.clone(),
-                            TemplateScope::Pack,
-                            Some(declared.pack_id.clone()),
-                            None,
-                            &bytes,
-                        )
-                    });
+                let loaded = check_pack_template(pack, declared);
                 match loaded {
                     Ok(template) => listing.templates.push(template),
                     Err(issues) => listing.diagnostics.push(TemplateDiagnostic {
@@ -897,16 +1006,7 @@ impl Harness {
                             .map(|declared| (pack, declared))
                     })
                     .ok_or_else(|| TemplateError::NotFound(reference.to_owned()))?;
-                let bytes = pack_file(&pack.canonical_dir, &declared.file)?;
-                let template = load(
-                    reference.to_owned(),
-                    TemplateScope::Pack,
-                    Some(pack_id),
-                    None,
-                    &bytes,
-                )
-                .map_err(TemplateError::Invalid);
-                Ok((sha256_hex(&bytes), template))
+                pack_snapshot(pack, declared)
             }
         }
     }

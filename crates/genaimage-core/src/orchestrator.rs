@@ -230,6 +230,7 @@ impl WorkflowDiscovery {
             matches!(&workflow.source, WorkflowSource::Pack(source) if source == id)
                 .then(|| format!("{}: {reason}", workflow.manifest_path.display()))
         }));
+        problems.extend(crate::templates::pack_template_problems(pack));
         problems
     }
 }

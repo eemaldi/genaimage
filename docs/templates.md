@@ -88,18 +88,29 @@ A template reference (`ref`) names one template:
   database and outside the repository, and the directory is created on the
   first write. A configuration without `paths.templates` works unchanged. Only
   files ending in `.toml` and not starting with `.` are read, and symlinked
-  files are refused. At most 1024 directory entries are scanned.
+  files and other non-regular files are refused (`422 template-invalid`, and
+  a diagnostic in the listing). Names are sorted first, then at most 256 files
+  are read and parsed; the rest is reported as "N more files were not scanned".
+  At most 4096 directory entries are visited.
   `.templates.lock` in that directory is a lock file; leave it alone.
 - **Pack** templates are read-only. `<path>` is the relative path declared in
   `pack.toml` and is looked up in the declared list, never opened as a file
   name. The file must resolve inside its pack (see [packs](packs.md)). A pack
-  template is any valid template file, whatever its extension; its `id` needs
+  template is any valid template file, whatever its extension; its `id` need
   not match its file name.
 
 Pack template problems (invalid content, a symlink out of the pack) appear in
 `diagnostics` of `GET /api/v1/templates`. A missing declared file is a pack
-diagnostic as before. `GET /api/v1/packs/{id}/validate` does not parse
-templates, so its status does not reflect template validity.
+diagnostic as before. An invalid pack template also makes its pack report a
+problem, with one `path: issues` line per template, in `genaimage pack validate`
+(exit code 6), the `packs.requirements` doctor check and `GET /api/v1/packs`,
+through the same core function that the listing uses. A pack that declares a
+non-TOML template, such as `templates/portrait.md`, is therefore reported as
+having a problem until the declaration is removed or the file is converted.
+
+A render request may supply at most 64 variables; a longer variable name is
+refused with `422 template-render-invalid`. Names echoed in errors are cut to
+80 characters.
 
 ## API
 
