@@ -487,7 +487,7 @@ impl Harness {
                 });
             }
             WorkflowVisit::Manifest(Ok(loaded))
-                if matches!(loaded.manifest.id.as_str(), "." | ".." | "refresh") =>
+                if crate::workflow::is_reserved_workflow_id(&loaded.manifest.id) =>
             {
                 discovery.diagnostics.push(WorkflowDiagnostic {
                     path: path.to_path_buf(),

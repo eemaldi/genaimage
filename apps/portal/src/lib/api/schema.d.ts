@@ -750,6 +750,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflows/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Analyse a ComfyUI API-format graph and propose a version 2 manifest. Read-only: nothing is written. The ID `import` is reserved. Send `{graph, name?}`; the body is limited to 2 MiB. A UI-format export is refused with the problem type `urn:genaimage:problem:workflow-ui-format`. */
+        post: operations["workflows_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workflows/import/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Write a confirmed import as a new user workflow: `<paths.workflows>/<id>/api-workflow.json` and `workflow.genaimage.json`, the manifest last. The manifest is validated strictly with the discovery rules and never corrected. An existing id, in the user root or any pack, is refused with 409 `urn:genaimage:problem:workflow-exists` and a `suggested_id` field. A graph that differs from `graph_sha256` is refused with 409 `urn:genaimage:problem:workflow-graph-mismatch` and an `expected_graph_sha256` field. When another manifest declares the written ID, the 409 `urn:genaimage:problem:workflow-ambiguous` carries `id` and `manifest_path`: the workflow was written and stays unavailable until the duplicate is removed or renamed. Repeating an identical confirmation returns 200 with the same result. The body is limited to 4 MiB. */
+        post: operations["workflows_import_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workflows/refresh": {
         parameters: {
             query?: never;
@@ -759,7 +793,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Force a rebuild of the workflow catalogue, including every pack, and return the listing. The ID `refresh` is reserved. */
+        /** @description Force a rebuild of the workflow catalogue, including every pack, and return the listing. The IDs `refresh` and `import` are reserved. */
         post: operations["workflows_refresh"];
         delete?: never;
         options?: never;
@@ -1393,11 +1427,19 @@ export interface components {
         ProblemDetails: {
             detail: string;
             errors?: components["schemas"]["SettingError"][];
+            /** @description `workflow-graph-mismatch`: the SHA-256 of the normalised graph that was sent. */
+            expected_graph_sha256?: string | null;
+            /** @description `workflow-ambiguous` after an import: the workflow ID that was written. */
+            id?: string | null;
+            /** @description `workflow-ambiguous` after an import: the manifest that was written. */
+            manifest_path?: string | null;
             preview?: unknown;
             preview_token?: string | null;
             recovery: string;
             /** Format: int32 */
             status: number;
+            /** @description `workflow-exists`: an unused workflow ID to confirm with instead. */
+            suggested_id?: string | null;
             title: string;
             type: string;
         };
@@ -1716,6 +1758,116 @@ export interface components {
         WorkflowDiagnostic: {
             error: string;
             path: string;
+        };
+        WorkflowImportBoundInput: {
+            input: string;
+            /** @description The manifest parameter that controls this input. */
+            parameter: string;
+        };
+        /** @description The graph and the (possibly edited) manifest to write as a new workflow. */
+        WorkflowImportConfirmRequest: {
+            graph: Record<string, never>;
+            /** @description The `graph_sha256` of the proposal for this graph. */
+            graph_sha256: string;
+            manifest: components["schemas"]["WorkflowImportManifest"];
+        };
+        /** @description A version 2 manifest as proposed or confirmed. Unknown fields are rejected. */
+        WorkflowImportManifest: {
+            category?: string | null;
+            description?: string | null;
+            id: string;
+            outputs?: components["schemas"]["WorkflowImportOutput"][];
+            parameters?: {
+                [key: string]: components["schemas"]["WorkflowImportParameter"];
+            };
+            presets?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /** Format: int32 */
+            schema_version: number;
+            tags?: string[] | null;
+            thumbnail?: string | null;
+            title?: string;
+            version: string;
+            /** @description Must be `api-workflow.json`; the server chooses the file name. */
+            workflow: string;
+        };
+        WorkflowImportOutput: {
+            kind?: string;
+            node: string;
+        };
+        /** @description A parameter binding. Numeric values are exact JSON numbers. */
+        WorkflowImportParameter: {
+            advanced?: boolean | null;
+            allowed_values?: unknown[] | null;
+            default?: unknown;
+            description?: string;
+            group?: string | null;
+            input: string;
+            kind: string;
+            /** Format: double */
+            maximum?: number;
+            /** Format: double */
+            minimum?: number;
+            node: string;
+            options?: unknown[] | null;
+            placeholder?: string | null;
+            required?: boolean;
+            /** Format: double */
+            step?: number | null;
+            widget?: string | null;
+        };
+        /** @description A proposed manifest and what the importer did and did not recognise. */
+        WorkflowImportProposal: {
+            /** @description SHA-256 of the normalised graph bytes. Send it back unchanged with the graph on confirmation. */
+            graph_sha256: string;
+            /** @description A manifest the user may edit before confirming. It already passes validation. */
+            manifest: components["schemas"]["WorkflowImportManifest"];
+            /** @description Nodes with import rules, in node order, with the parameters they received. */
+            recognised: components["schemas"]["WorkflowImportRecognisedNode"][];
+            /** @description Inputs of recognised nodes that no parameter controls, including connections. */
+            unbound_inputs: components["schemas"]["WorkflowImportUnboundInput"][];
+            /** @description Nodes without import rules. Their inputs keep the workflow values. */
+            unknown_nodes: components["schemas"]["WorkflowImportUnknownNode"][];
+            warnings: string[];
+        };
+        WorkflowImportRecognisedNode: {
+            bound_inputs: components["schemas"]["WorkflowImportBoundInput"][];
+            class_type: string;
+            node: string;
+        };
+        /** @description An API-format ComfyUI graph to analyse. Nothing is written. */
+        WorkflowImportRequest: {
+            /**
+             * @description The ComfyUI API-format graph: an object keyed by node ID, each node
+             *     with `class_type` and `inputs`. UI-format exports are rejected.
+             */
+            graph: Record<string, never>;
+            /** @description Optional display name. It only seeds the suggested `title` and `id`. */
+            name?: string | null;
+        };
+        /** @description A workflow written to the user workflow root and verified loadable. */
+        WorkflowImportResponse: {
+            id: string;
+            manifest_path: string;
+            /** @description Opaque revision of the written graph and manifest. */
+            revision: string;
+            /** @description Always `user`. */
+            source: string;
+        };
+        WorkflowImportUnboundInput: {
+            class_type: string;
+            input: string;
+            /** @description `true` when the input is a connection to another node's output. */
+            linked: boolean;
+            node: string;
+            reason: string;
+        };
+        WorkflowImportUnknownNode: {
+            class_type: string;
+            node: string;
         };
         /** @description The graph value an unbound optional parameter leaves in place. */
         WorkflowInheritedInput: {
@@ -8106,6 +8258,223 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    workflows_import: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowImportRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowImportProposal"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description UI-format export (`workflow-ui-format`) or invalid graph (`workflow-import-invalid`) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    workflows_import_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowImportConfirmRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowImportResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description `workflow-exists`, `workflow-graph-mismatch` or `workflow-ambiguous` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description `workflow-manifest-invalid`, `workflow-import-invalid` or `workflow-ui-format` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };

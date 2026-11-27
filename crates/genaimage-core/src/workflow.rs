@@ -61,7 +61,11 @@ pub struct ParameterDefinition {
     pub required: bool,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "keep_explicit_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default: Option<Value>,
     #[serde(default)]
     pub allowed_values: Option<Vec<Value>>,
@@ -81,6 +85,14 @@ pub struct ParameterDefinition {
     pub advanced: Option<bool>,
     #[serde(default)]
     pub placeholder: Option<String>,
+}
+
+/// Keeps a JSON `null` as `Some(Value::Null)` instead of folding it into
+/// "absent", so validation can refuse it rather than drop it silently.
+fn keep_explicit_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -271,6 +283,34 @@ impl LoadedWorkflow {
         };
         loaded.validate()?;
         Ok(loaded)
+    }
+
+    /// Builds a loaded workflow from bytes that are not on disk yet and
+    /// returns it with every manifest problem, using the discovery rules.
+    pub(crate) fn from_bytes_unchecked(
+        manifest: WorkflowManifest,
+        manifest_bytes: Vec<u8>,
+        workflow_bytes: &[u8],
+        directory: &Path,
+    ) -> Result<(Self, Vec<ValidationIssue>)> {
+        let workflow: Value = serde_json::from_slice(workflow_bytes).map_err(|error| {
+            HarnessError::Workflow(format!("workflow is not valid JSON: {error}"))
+        })?;
+        let manifest_source = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            HarnessError::Workflow(format!("manifest is not valid JSON: {error}"))
+        })?;
+        let loaded = Self {
+            manifest_path: directory.join("workflow.genaimage.json"),
+            workflow_path: directory.join(&manifest.workflow),
+            manifest,
+            manifest_source,
+            workflow_sha256: sha256_hex(workflow_bytes),
+            manifest_sha256: sha256_hex(&manifest_bytes),
+            manifest_bytes,
+            workflow,
+        };
+        let issues = loaded.validation_issues();
+        Ok((loaded, issues))
     }
 
     /// Identifies the exact graph and sidecar snapshot loaded for binding.
@@ -475,57 +515,94 @@ impl LoadedWorkflow {
     }
 
     fn validate(&self) -> Result<()> {
+        match self.validation_issues().into_iter().next() {
+            Some(issue) => Err(HarnessError::Workflow(issue.message)),
+            None => Ok(()),
+        }
+    }
+
+    /// Every problem with the manifest against its graph, in a stable order.
+    /// Discovery fails on the first; the import wizard shows them all.
+    pub(crate) fn validation_issues(&self) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        let mut issue = |field: String, message: String| {
+            issues.push(ValidationIssue { field, message });
+        };
         if !self
             .manifest
             .workflow
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         {
-            return Err(HarnessError::Workflow(
+            issue(
+                "workflow".to_owned(),
                 "ComfyUI workflows must be JSON files".to_owned(),
-            ));
+            );
         }
-        let nodes = self.workflow.as_object().ok_or_else(|| {
-            HarnessError::Workflow(
+        let Some(nodes) = self.workflow.as_object() else {
+            issue(
+                "workflow".to_owned(),
                 "API workflow root must be an object keyed by node ID; export the workflow in API format"
                     .to_owned(),
-            )
-        })?;
+            );
+            return issues;
+        };
         if nodes.contains_key("nodes") || nodes.contains_key("links") {
-            return Err(HarnessError::Workflow(
+            issue(
+                "workflow".to_owned(),
                 "the file is a ComfyUI UI export; enable developer mode and export in API format"
                     .to_owned(),
-            ));
+            );
+            return issues;
         }
         for (name, parameter) in &self.manifest.parameters {
-            validate_node_input(nodes, &parameter.node, &parameter.input, name)?;
-            if let Some(default) = &parameter.default {
-                parameter.validate_value(name, default)?;
+            let field = format!("parameters.{name}");
+            if let Err(error) = validate_node_input(nodes, &parameter.node, &parameter.input, name)
+            {
+                issue(field, workflow_message(error));
+                continue;
             }
-            parameter.validate_hints(name)?;
+            if let Some(default) = &parameter.default {
+                if default.is_null() {
+                    issue(
+                        field,
+                        "default cannot be null; omit the field for a parameter without a default"
+                            .to_owned(),
+                    );
+                    continue;
+                }
+                if let Err(error) = parameter.validate_value(name, default) {
+                    issue(field.clone(), workflow_message(error));
+                    continue;
+                }
+            }
+            if let Err(error) = parameter.validate_hints(name) {
+                issue(field, workflow_message(error));
+            }
         }
-        for name in self.manifest.presets.keys() {
-            self.validate_values(
-                self.manifest
-                    .presets
-                    .get(name)
-                    .expect("preset exists because it was iterated"),
-                &format!("preset '{name}'"),
-            )?;
+        for (name, values) in &self.manifest.presets {
+            if let Err(error) = self.validate_values(values, &format!("preset '{name}'")) {
+                issue(format!("presets.{name}"), workflow_message(error));
+            }
         }
         let mut bindings = BTreeSet::new();
         for (name, parameter) in &self.manifest.parameters {
             let binding = (parameter.node.clone(), parameter.input.clone());
             if !bindings.insert(binding) {
-                return Err(HarnessError::Workflow(format!(
-                    "parameter '{name}' targets a node input already bound by another parameter"
-                )));
+                issue(
+                    format!("parameters.{name}"),
+                    format!(
+                        "parameter '{name}' targets a node input already bound by another parameter"
+                    ),
+                );
             }
         }
         for output in &self.manifest.outputs {
-            validate_node(nodes, &output.node, "output")?;
+            if let Err(error) = validate_node(nodes, &output.node, "output") {
+                issue("outputs".to_owned(), workflow_message(error));
+            }
         }
-        Ok(())
+        issues
     }
 
     fn validate_values(&self, values: &BTreeMap<String, Value>, context: &str) -> Result<()> {
@@ -686,6 +763,25 @@ pub struct ParameterSummary {
     pub allowed_values: Option<Vec<Value>>,
 }
 
+/// One manifest problem and the manifest field it belongs to.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidationIssue {
+    pub field: String,
+    pub message: String,
+}
+
+fn workflow_message(error: HarnessError) -> String {
+    match error {
+        HarnessError::Workflow(message) => message,
+        other => other.to_string(),
+    }
+}
+
+/// IDs that collide with a fixed `/workflows/{id}` URL segment.
+pub fn is_reserved_workflow_id(id: &str) -> bool {
+    matches!(id, "." | ".." | "refresh" | "import")
+}
+
 fn set_node_input(
     nodes: &mut Map<String, Value>,
     node_id: &str,
@@ -763,7 +859,7 @@ pub(crate) fn workflow_revision(graph_sha256: &str, manifest_sha256: &str) -> St
     )
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())

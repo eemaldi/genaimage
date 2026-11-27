@@ -26,6 +26,10 @@ impl Problem {
                 errors: Vec::new(),
                 preview: None,
                 preview_token: None,
+                suggested_id: None,
+                expected_graph_sha256: None,
+                id: None,
+                manifest_path: None,
             }),
         }
     }
@@ -76,12 +80,42 @@ impl Problem {
         .with_type("urn:genaimage:problem:workflow-ambiguous")
     }
 
+    /// An import was written, but another manifest declares its ID. The
+    /// written workflow stays on disk; a retry must not create another copy.
+    pub(crate) fn workflow_written_but_ambiguous(
+        id: &str,
+        manifest_path: &str,
+        reason: &str,
+    ) -> Self {
+        let mut problem = Self::new(
+            StatusCode::CONFLICT,
+            format!(
+                "Workflow '{id}' was written at '{manifest_path}' and stays unavailable until the duplicate is removed or renamed: {reason}"
+            ),
+            "Do not confirm the import again. Remove or rename the duplicate workflow so exactly one manifest declares the ID, then refresh the workflow catalogue.",
+        )
+        .with_type("urn:genaimage:problem:workflow-ambiguous");
+        problem.details.id = Some(id.to_owned());
+        problem.details.manifest_path = Some(manifest_path.to_owned());
+        problem
+    }
+
     pub(crate) fn invalid_path(error: PathRejection, recovery: &str) -> Self {
         Self::new(error.status(), error.body_text(), recovery)
     }
 
     pub(crate) fn with_type(mut self, problem_type: &str) -> Self {
         self.details.problem_type = problem_type.into();
+        self
+    }
+
+    pub(crate) fn with_suggested_id(mut self, suggested_id: String) -> Self {
+        self.details.suggested_id = Some(suggested_id);
+        self
+    }
+
+    pub(crate) fn with_expected_graph_sha256(mut self, sha256: String) -> Self {
+        self.details.expected_graph_sha256 = Some(sha256);
         self
     }
 

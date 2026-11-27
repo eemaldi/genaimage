@@ -2108,6 +2108,27 @@
             },
             "type": "array"
           },
+          "expected_graph_sha256": {
+            "description": "`workflow-graph-mismatch`: the SHA-256 of the normalised graph that was sent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`workflow-ambiguous` after an import: the workflow ID that was written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest_path": {
+            "description": "`workflow-ambiguous` after an import: the manifest that was written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "preview": {},
           "preview_token": {
             "type": [
@@ -2122,6 +2143,13 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "suggested_id": {
+            "description": "`workflow-exists`: an unused workflow ID to confirm with instead.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "type": "string"
@@ -3216,6 +3244,387 @@
         "required": [
           "path",
           "error"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportBoundInput": {
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The manifest parameter that controls this input.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input",
+          "parameter"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportConfirmRequest": {
+        "additionalProperties": false,
+        "description": "The graph and the (possibly edited) manifest to write as a new workflow.",
+        "properties": {
+          "graph": {
+            "type": "object"
+          },
+          "graph_sha256": {
+            "description": "The `graph_sha256` of the proposal for this graph.",
+            "type": "string"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/WorkflowImportManifest"
+          }
+        },
+        "required": [
+          "graph",
+          "graph_sha256",
+          "manifest"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportManifest": {
+        "additionalProperties": false,
+        "description": "A version 2 manifest as proposed or confirmed. Unknown fields are rejected.",
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowImportOutput"
+            },
+            "type": "array"
+          },
+          "parameters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WorkflowImportParameter"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "presets": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "schema_version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "thumbnail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workflow": {
+            "description": "Must be `api-workflow.json`; the server chooses the file name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "version",
+          "workflow"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportOutput": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportParameter": {
+        "additionalProperties": false,
+        "description": "A parameter binding. Numeric values are exact JSON numbers.",
+        "properties": {
+          "advanced": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "allowed_values": {
+            "items": {},
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "default": {},
+          "description": {
+            "type": "string"
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "maximum": {
+            "format": "double",
+            "type": "number"
+          },
+          "minimum": {
+            "format": "double",
+            "type": "number"
+          },
+          "node": {
+            "type": "string"
+          },
+          "options": {
+            "items": {},
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "placeholder": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "step": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "widget": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "node",
+          "input",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportProposal": {
+        "description": "A proposed manifest and what the importer did and did not recognise.",
+        "properties": {
+          "graph_sha256": {
+            "description": "SHA-256 of the normalised graph bytes. Send it back unchanged with the graph on confirmation.",
+            "type": "string"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/WorkflowImportManifest",
+            "description": "A manifest the user may edit before confirming. It already passes validation."
+          },
+          "recognised": {
+            "description": "Nodes with import rules, in node order, with the parameters they received.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowImportRecognisedNode"
+            },
+            "type": "array"
+          },
+          "unbound_inputs": {
+            "description": "Inputs of recognised nodes that no parameter controls, including connections.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowImportUnboundInput"
+            },
+            "type": "array"
+          },
+          "unknown_nodes": {
+            "description": "Nodes without import rules. Their inputs keep the workflow values.",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowImportUnknownNode"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "graph_sha256",
+          "manifest",
+          "recognised",
+          "unknown_nodes",
+          "unbound_inputs",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportRecognisedNode": {
+        "properties": {
+          "bound_inputs": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowImportBoundInput"
+            },
+            "type": "array"
+          },
+          "class_type": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "class_type",
+          "bound_inputs"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportRequest": {
+        "additionalProperties": false,
+        "description": "An API-format ComfyUI graph to analyse. Nothing is written.",
+        "properties": {
+          "graph": {
+            "description": "The ComfyUI API-format graph: an object keyed by node ID, each node\nwith `class_type` and `inputs`. UI-format exports are rejected.",
+            "type": "object"
+          },
+          "name": {
+            "description": "Optional display name. It only seeds the suggested `title` and `id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "graph"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportResponse": {
+        "description": "A workflow written to the user workflow root and verified loadable.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "manifest_path": {
+            "type": "string"
+          },
+          "revision": {
+            "description": "Opaque revision of the written graph and manifest.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Always `user`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "manifest_path",
+          "source"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportUnboundInput": {
+        "properties": {
+          "class_type": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "linked": {
+            "description": "`true` when the input is a connection to another node's output.",
+            "type": "boolean"
+          },
+          "node": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "class_type",
+          "input",
+          "linked",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WorkflowImportUnknownNode": {
+        "properties": {
+          "class_type": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "class_type"
         ],
         "type": "object"
       },
@@ -10693,9 +11102,261 @@
         ]
       }
     },
+    "/api/v1/workflows/import": {
+      "post": {
+        "description": "Analyse a ComfyUI API-format graph and propose a version 2 manifest. Read-only: nothing is written. The ID `import` is reserved. Send `{graph, name?}`; the body is limited to 2 MiB. A UI-format export is refused with the problem type `urn:genaimage:problem:workflow-ui-format`.",
+        "operationId": "workflows_import",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowImportProposal"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "UI-format export (`workflow-ui-format`) or invalid graph (`workflow-import-invalid`)"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "workflows"
+        ]
+      }
+    },
+    "/api/v1/workflows/import/confirm": {
+      "post": {
+        "description": "Write a confirmed import as a new user workflow: `<paths.workflows>/<id>/api-workflow.json` and `workflow.genaimage.json`, the manifest last. The manifest is validated strictly with the discovery rules and never corrected. An existing id, in the user root or any pack, is refused with 409 `urn:genaimage:problem:workflow-exists` and a `suggested_id` field. A graph that differs from `graph_sha256` is refused with 409 `urn:genaimage:problem:workflow-graph-mismatch` and an `expected_graph_sha256` field. When another manifest declares the written ID, the 409 `urn:genaimage:problem:workflow-ambiguous` carries `id` and `manifest_path`: the workflow was written and stays unavailable until the duplicate is removed or renamed. Repeating an identical confirmation returns 200 with the same result. The body is limited to 4 MiB.",
+        "operationId": "workflows_import_confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowImportConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowImportResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`workflow-exists`, `workflow-graph-mismatch` or `workflow-ambiguous`"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`workflow-manifest-invalid`, `workflow-import-invalid` or `workflow-ui-format`"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "workflows"
+        ]
+      }
+    },
     "/api/v1/workflows/refresh": {
       "post": {
-        "description": "Force a rebuild of the workflow catalogue, including every pack, and return the listing. The ID `refresh` is reserved.",
+        "description": "Force a rebuild of the workflow catalogue, including every pack, and return the listing. The IDs `refresh` and `import` are reserved.",
         "operationId": "workflows_refresh",
         "responses": {
           "200": {

@@ -20,6 +20,7 @@ pub mod setup;
 mod tool_schema;
 pub mod uploads;
 pub mod workflow;
+pub mod workflow_import;
 
 pub use assistant::{OutputAnnotation, VisionReviewService};
 pub use async_trait::async_trait;

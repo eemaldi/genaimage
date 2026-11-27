@@ -13,7 +13,7 @@ contract is the OpenAPI 3.1 document, checked in at
 | Settings | `GET`/`PUT /settings` (ETag with `If-Match`), `POST /settings/test` |
 | Setup wizard | `GET /setup/status`, `POST /setup/detect` |
 | Models | `GET /models/llm`, `GET /models/checkpoints`, LLM pulls under `/models/llm/pulls` (see [models](models.md)) |
-| Workflows | `GET /workflows`, `GET /workflows/{id}`, `POST /workflows/{id}/validate`, `GET /workflows/{id}/thumbnail` |
+| Workflows | `GET /workflows`, `GET /workflows/{id}`, `POST /workflows/{id}/validate`, `GET /workflows/{id}/thumbnail`, `POST /workflows/import`, `POST /workflows/import/confirm` (see [importing a workflow](workflow-manifest.md#importing-a-comfyui-workflow)) |
 | Uploads | `POST /uploads`, `GET /uploads/{id}` |
 | Runs | `GET`/`POST /runs`, `GET /runs/{id}`, `cancel`, `rerun`, `reconcile`, `events`, `manifest`, `resolved-workflow`; `POST /runs/reconcile` |
 | Outputs | `GET /outputs`, `GET /outputs/{id}`, `metadata`, `thumbnail`, `annotations`, `POST /outputs/{id}/review` |

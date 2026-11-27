@@ -24,7 +24,8 @@ use crate::{
     ReconcileRunResponse, ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery,
     RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch,
     SettingsResponse, SettingsTestResponse, SetupDetectResponse, SetupStatus, SubmitRunRequest,
-    UploadResponse, WorkflowDetails, WorkflowListResponse, WorkflowValidationRequest,
+    UploadResponse, WorkflowDetails, WorkflowImportConfirmRequest, WorkflowImportProposal,
+    WorkflowImportRequest, WorkflowImportResponse, WorkflowListResponse, WorkflowValidationRequest,
     WorkflowValidationResponse,
 };
 
@@ -150,6 +151,31 @@ impl Client {
     pub async fn refresh_workflows(&self) -> Result<WorkflowListResponse, Error> {
         self.json(self.request(Method::POST, &["workflows", "refresh"])?)
             .await
+    }
+
+    /// Analyses an API-format graph and proposes a manifest. Writes nothing.
+    pub async fn import_workflow(
+        &self,
+        body: &WorkflowImportRequest,
+    ) -> Result<WorkflowImportProposal, Error> {
+        self.json(
+            self.request(Method::POST, &["workflows", "import"])?
+                .json(body),
+        )
+        .await
+    }
+
+    /// Writes a confirmed import as a new user workflow. Never overwrites; an
+    /// identical repeat returns the same result.
+    pub async fn confirm_workflow_import(
+        &self,
+        body: &WorkflowImportConfirmRequest,
+    ) -> Result<WorkflowImportResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["workflows", "import", "confirm"])?
+                .json(body),
+        )
+        .await
     }
 
     pub async fn packs(&self) -> Result<PackListResponse, Error> {

@@ -11,7 +11,7 @@ mod settings;
 mod setup;
 mod suggestions;
 mod uploads;
-mod workflows;
+pub(crate) mod workflows;
 
 use axum::{http::StatusCode, Json, Router};
 use utoipa::{OpenApi, ToSchema};
@@ -113,6 +113,8 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(prompt::assist))
         .routes(routes!(workflows::list))
         .routes(routes!(workflows::refresh))
+        .routes(routes!(workflows::import))
+        .routes(routes!(workflows::import_confirm))
         .routes(routes!(packs::list))
         .routes(routes!(packs::validate))
         .routes(routes!(workflows::details))

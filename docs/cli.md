@@ -185,6 +185,11 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   diagnostic has `path` and `error`.
 - **`workflow refresh`** forces a catalogue rebuild, including every pack, and
   prints the same `{workflows, diagnostics}` shape.
+- **`workflow import <FILE> [--name NAME]`** sends a ComfyUI API-format file to
+  `POST /api/v1/workflows/import` and prints the proposal JSON
+  (`graph_sha256`, `manifest`, `recognised`, `unknown_nodes`, `unbound_inputs`,
+  `warnings`). It writes nothing; confirming is done through the API (the portal
+  wizard is not yet implemented).
 - **`packs list`** lists workflow packs. JSON is `{packs, diagnostics}`; each
   pack has `id`, `version`, `description`, `root`, `directory`, `workflow_ids`,
   `templates`, `requires` (`node_classes`, `models`) and `diagnostics`.
