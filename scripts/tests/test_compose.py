@@ -61,6 +61,10 @@ class ComposeTests(unittest.TestCase):
         self.assertNotRegex(text, r"(?m)^GENAIMAGE_LLM_(TEXT|VISION)_MODEL=")
         self.assertRegex(text, r"(?m)^# GENAIMAGE_LLM_TEXT_MODEL=")
 
+    def test_env_example_defaults_to_the_cpu_stack(self):
+        text = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertNotRegex(text, r"(?m)^COMPOSE_FILE=")
+
     def test_env_is_git_ignored(self):
         lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
         self.assertIn(".env", lines)

@@ -13,8 +13,9 @@ cp .env.example .env    # edit it: accelerator, group IDs, models
 docker compose up -d
 ```
 
-The default `.env.example` selects the AMD ROCm override; remove its
-`COMPOSE_FILE` line for the CPU stack. Then open `http://127.0.0.1:8190`. The first run builds the GenAImage and
+`.env.example` selects the CPU stack by default. For a GPU, uncomment the
+matching `COMPOSE_FILE` line in `.env` (see [Accelerators](#accelerators)).
+Then open `http://127.0.0.1:8190`. The first run builds the GenAImage and
 ComfyUI images from this repository, which takes several minutes and downloads
 the PyTorch wheels; there is no prebuilt image yet. This default stack runs
 ComfyUI on the CPU, which is slow but needs no GPU.
@@ -60,13 +61,15 @@ to the Ryzen integrated GPU, using the stock `rocm7.2` PyTorch 2.14.1 wheels and
 Ollama `0.40.18-rocm`. No `HSA_OVERRIDE_GFX_VERSION` was needed.
 
 ```sh
-getent group video render        # video:x:39: and render:x:105: on that machine
+getent group video render        # for example video:x:39: and render:x:105:
 # .env: COMPOSE_FILE=compose.yaml:compose.rocm.yaml, VIDEO_GID=39, RENDER_GID=105
 docker compose up -d --build --wait
 ```
 
-Use the numeric group IDs from your host (the user running Docker need not be a
-member, because the daemon opens the devices); keep them in `.env`. The ComfyUI image needs `libatomic1`, which the Dockerfile installs.
+Keep the numeric group IDs from your host in `.env`. The rootful Docker daemon
+opens the devices, so the user running Docker need not be in those groups; the
+containers receive the groups through `group_add`. The ComfyUI image needs
+`libatomic1`, which the Dockerfile installs.
 
 - **GPU selection.** ComfyUI lists the integrated GPU as a second device
   (`cuda:1`, named after the CPU) and uses `cuda:0`, the discrete card, by
@@ -80,8 +83,11 @@ member, because the daemon opens the devices); keep them in `.env`. The ComfyUI 
   prints `AMD Radeon Graphics` (the generic name of the RX 9070 XT here).
 - **Size.** The ROCm ComfyUI image is about 25 GB on disk.
 - **First models and image.** Verified with SDXL base 1.0 and `qwen3:8b`.
-  Copy the checkpoint in, check its SHA-256 against the Hugging Face file page,
-  then pull the LLM and recreate GenAImage with it as the text model:
+  Download `sd_xl_base_1.0.safetensors` yourself from
+  `stabilityai/stable-diffusion-xl-base-1.0` on Hugging Face. Run
+  `sha256sum sd_xl_base_1.0.safetensors` and compare the result with the SHA-256
+  that Hugging Face shows for that exact file. Then copy the checkpoint in, pull
+  the LLM and recreate GenAImage with it as the text model:
 
   ```sh
   docker compose cp sd_xl_base_1.0.safetensors comfyui:/opt/comfyui/models/checkpoints/
@@ -121,9 +127,10 @@ docker compose cp ./model.safetensors comfyui:/opt/comfyui/models/checkpoints/
 
 ComfyUI lists new files without a restart after a refresh. Pull an Ollama model
 yourself, then choose it in the portal settings. Alternatively set
-`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in `.env`
-or the environment of `docker compose up`, but leave them unset rather than empty: an
-empty value locks the setting to empty through the environment.
+`GENAIMAGE_LLM_TEXT_MODEL` (and optionally `GENAIMAGE_LLM_VISION_MODEL`) in
+`.env` or in the environment of `docker compose up`. Leave them unset rather
+than empty, because an empty value locks the setting to empty. Model names in
+this guide, such as `qwen3:8b`, are examples that you choose; none is a default.
 
 ```sh
 docker compose exec ollama ollama pull <model>
