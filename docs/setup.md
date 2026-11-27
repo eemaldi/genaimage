@@ -239,6 +239,48 @@ loopback URLs for new endpoints and probes; configure allow-listed private or
 Compose hosts through the file or environment. Public endpoints are never
 permitted.
 
+### Setup wizard
+
+The portal's first-run setup wizard (`#/setup`) opens automatically on the
+dashboard when `GET /api/v1/setup/status` reports `needs_setup`. You can dismiss
+it (remembered per browser only, per set of blocking reasons) and reopen it from
+the Setup link in the navigation. Its steps are: detect services, test ComfyUI,
+choose the LLM endpoint and text and optional vision model from the installed
+models, verify a checkpoint, review and save, apply changes, and run a test
+generation.
+
+Nothing is chosen for you and nothing is saved until you review every value.
+A step is marked done only when the server confirmed it for your current
+choices: "Ran" for detection, "Done" for a ComfyUI test or an LLM text model
+verified at the endpoint you chose, and "Saved" only for exactly the values that
+were saved; changing a choice afterwards shows "Changed since saved". Choosing a
+different LLM endpoint clears the models chosen for the old one. Checkpoints are
+listed by the running server, so a changed ComfyUI endpoint shows them as
+verified on the running server only. The review lists anything not verified
+before you save. Saving uses the settings ETag (`If-Match`); if a save fails
+with a network or server error, the outcome is reported as unknown and you
+reload the current settings. The new configuration is not live until you
+restart `genaimage serve` (or the Compose container). The wizard lists the
+pending `restart_required` keys and reports "no pending restart" only after a
+fresh status confirms it; if the status cannot be refreshed it tells you to
+assume a restart is needed. Endpoints owned by environment variables, as in
+Compose, are shown read-only and never written. `POST /api/v1/setup/detect`
+probes a fixed list of common local ports and Compose hosts. Hosts that are not
+allow-listed are reported with the setting to add, never probed. See the
+[architecture](architecture.md#local-http-server).
+
+The test generation step runs the `text-to-image` starter workflow once. It
+refuses to run until a checkpoint is chosen, the running server is confirmed to
+use the ComfyUI URL you chose (restart after saving, then use "Check again") and
+the workflow exists; each unmet check explains its fix. It lists every value it
+will send, including inherited workflow defaults, an editable test prompt and an
+exact seed, and asks the server to validate them. "Run test generation" then
+submits that reviewed request once, pinned to the workflow revision and with one
+idempotency key that is kept until the outcome is definitive, so a reload or an
+uncertain submission offers a retry with the same key and never a new one. The
+step is "Done" only after the server confirms the run produced outputs in this
+session. A successful technical run is not creative approval.
+
 ### Environment overrides
 
 `GENAIMAGE_CONTAINER=1` is not a setting: it only lets `server.host` be

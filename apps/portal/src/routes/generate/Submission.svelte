@@ -5,6 +5,7 @@
   export type SubmissionControls = {
     editingLocked: boolean;
     accepted: boolean;
+    pending?: PendingSubmission;
     submit: (snapshot: PendingSubmission, onRejected: Rejected) => void;
     resetSubmission: () => void;
   };
@@ -23,10 +24,12 @@
   let {
     workflowId,
     reloadWorkflow,
+    onConfirmed,
     children,
   }: {
     workflowId: string;
     reloadWorkflow: (problem: Problem) => void;
+    onConfirmed?: (runId: string, run: Run) => void;
     children: Snippet<[SubmissionControls]>;
   } = $props();
   const uid = $props.id();
@@ -229,8 +232,17 @@
     {/if}
   </section>
 {/if}
-{@render children({ editingLocked, accepted, submit, resetSubmission })}
-{#if run}{#key run.id}<RunProgress initial={run} />{/key}{/if}
+{@render children({
+  editingLocked,
+  accepted,
+  pending,
+  submit,
+  resetSubmission,
+})}
+{#if run}{#key run.id}<RunProgress
+      initial={run}
+      onconfirmed={onConfirmed}
+    />{/key}{/if}
 
 <style>
   .review {

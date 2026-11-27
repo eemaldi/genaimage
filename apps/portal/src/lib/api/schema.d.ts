@@ -626,6 +626,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/setup/detect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Probe a fixed list of local ComfyUI and OpenAI-compatible LLM addresses plus the saved URLs, concurrently, with a 1.5 s deadline each. Takes no body and no user-supplied hosts. Hosts outside the allow-list are reported as skipped with the setting to add, never probed. The LLM API key is sent only to the saved LLM URL. */
+        post: operations["setup_detect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/setup/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed. */
+        get: operations["setup_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed. */
+        head: operations["setup_status_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads": {
         parameters: {
             query?: never;
@@ -949,6 +984,25 @@ export interface components {
         CreateAssistantConversationRequest: {
             title: string;
         };
+        /** @enum {string} */
+        DetectStatus: "found" | "not_found" | "skipped" | "error";
+        /** @description The outcome for one fixed candidate or the configured URL. */
+        DetectedService: {
+            /** @description True when this is the currently saved endpoint. */
+            configured: boolean;
+            detail: string;
+            fix?: string | null;
+            flavour?: null | components["schemas"]["LlmFlavour"];
+            kind: components["schemas"]["DetectedServiceKind"];
+            /** @description Human label such as `Ollama` or `ComfyUI (Compose)`. */
+            label: string;
+            status: components["schemas"]["DetectStatus"];
+            url: string;
+            /** @description ComfyUI version reported by `/system_stats`, when present. */
+            version?: string | null;
+        };
+        /** @enum {string} */
+        DetectedServiceKind: "comfyui" | "llm";
         /** @description One diagnostic check. `fix` is present for every status except `ok`. */
         DoctorCheck: {
             /** @description A concrete action naming the setting, command or page to change. */
@@ -1096,6 +1150,8 @@ export interface components {
              */
             size_bytes?: number | null;
         };
+        /** @enum {string} */
+        LlmFlavour: "ollama" | "openai";
         LlmModel: {
             id: string;
             supports_tools: boolean;
@@ -1406,6 +1462,8 @@ export interface components {
             api_key_set: boolean;
             /** @description Existing selected configuration file or the default target for a first save. */
             config_file: string;
+            /** @description Whether `config_file` exists on disk now. False before a first save. */
+            config_file_exists: boolean;
             /** @description Keys whose saved and active values differ. */
             restart_required: string[];
             settings: {
@@ -1419,6 +1477,45 @@ export interface components {
             llm: components["schemas"]["HealthStatus"];
             llm_models?: components["schemas"]["LlmModel"][];
             llm_reason?: string | null;
+        };
+        SetupDetectResponse: {
+            services: components["schemas"]["DetectedService"][];
+        };
+        /** @description One saved endpoint and where its value comes from. */
+        SetupEndpoint: components["schemas"]["SettingSource"] & {
+            /** @description Empty when the optional LLM is not configured. */
+            configured_url: string;
+        };
+        SetupReason: {
+            /** @description Only blocking reasons make `needs_setup` true. */
+            blocking: boolean;
+            code: components["schemas"]["SetupReasonCode"];
+            fix?: string | null;
+            /** @description Offending settings, as `key: reason`. */
+            items?: string[];
+            summary: string;
+        };
+        /**
+         * @description Stable codes explaining the first-run assessment.
+         * @enum {string}
+         */
+        SetupReasonCode: "no_config_file" | "invalid_config" | "endpoints_from_environment" | "llm_not_configured" | "llm_text_model_unset";
+        /** @description Offline assessment of the saved configuration. It never probes a service. */
+        SetupStatus: {
+            comfyui: components["schemas"]["SetupEndpoint"];
+            config_file: string;
+            config_file_exists: boolean;
+            /** @description True when the environment owns `comfyui.base_url`, so saving cannot change it. */
+            endpoints_env_owned: boolean;
+            llm: components["schemas"]["SetupEndpoint"];
+            /**
+             * @description True when any reason is blocking: no config file and the ComfyUI endpoint
+             *     is not set by the environment, or the saved configuration is invalid.
+             */
+            needs_setup: boolean;
+            reasons: components["schemas"]["SetupReason"][];
+            /** @description Setting keys saved but not yet live; a restart applies them. */
+            restart_required: string[];
         };
         /** @description An explicit request to download one model. Nothing downloads without it. */
         StartModelPullRequest: {
@@ -6913,6 +7010,236 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
+            };
+        };
+    };
+    setup_detect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupDetectResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    setup_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupStatus"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    setup_status_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

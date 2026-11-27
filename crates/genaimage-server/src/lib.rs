@@ -6,6 +6,7 @@ mod problem;
 mod routes;
 mod security;
 mod settings;
+mod setup;
 mod workflow_index;
 
 use std::{

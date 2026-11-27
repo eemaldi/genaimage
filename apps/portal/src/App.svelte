@@ -9,6 +9,8 @@
     initialiseNavigation,
     navigateHash,
   } from './navigation';
+  import { api } from './lib/api/client';
+  import { isDismissed } from './routes/setup/model';
   import { createShortcutHandler, sections, shortcuts } from './shortcuts';
   import './styles/tokens.css';
   import './styles/ui.css';
@@ -104,6 +106,23 @@
 
   onMount(() => {
     if (assistantOpen) void loadAssistantPanel();
+    let mounted = true;
+    if (route.path === '/')
+      api
+        .setupStatus()
+        .then((status) => {
+          if (!mounted || route.path !== '/') return;
+          if (status.needs_setup && !isDismissed(status)) {
+            history.replaceState(history.state, '', '#/setup');
+            route = matchHash('#/setup');
+          }
+        })
+        .catch(() => {
+          /* Setup is only offered when the server says it is needed. */
+        });
+    return () => {
+      mounted = false;
+    };
   });
 
   function setShortcutPreference(

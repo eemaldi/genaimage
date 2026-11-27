@@ -831,6 +831,80 @@
         ],
         "type": "object"
       },
+      "DetectStatus": {
+        "enum": [
+          "found",
+          "not_found",
+          "skipped",
+          "error"
+        ],
+        "type": "string"
+      },
+      "DetectedService": {
+        "description": "The outcome for one fixed candidate or the configured URL.",
+        "properties": {
+          "configured": {
+            "description": "True when this is the currently saved endpoint.",
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flavour": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LlmFlavour",
+                "description": "A hint from the candidate's well-known port, not a protocol check. LLM only."
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DetectedServiceKind"
+          },
+          "label": {
+            "description": "Human label such as `Ollama` or `ComfyUI (Compose)`.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DetectStatus"
+          },
+          "url": {
+            "type": "string"
+          },
+          "version": {
+            "description": "ComfyUI version reported by `/system_stats`, when present.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "url",
+          "configured",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "DetectedServiceKind": {
+        "enum": [
+          "comfyui",
+          "llm"
+        ],
+        "type": "string"
+      },
       "DoctorCheck": {
         "description": "One diagnostic check. `fix` is present for every status except `ok`.",
         "properties": {
@@ -1419,6 +1493,13 @@
           "name"
         ],
         "type": "object"
+      },
+      "LlmFlavour": {
+        "enum": [
+          "ollama",
+          "openai"
+        ],
+        "type": "string"
       },
       "LlmModel": {
         "properties": {
@@ -2442,6 +2523,10 @@
             "description": "Existing selected configuration file or the default target for a first save.",
             "type": "string"
           },
+          "config_file_exists": {
+            "description": "Whether `config_file` exists on disk now. False before a first save.",
+            "type": "boolean"
+          },
           "restart_required": {
             "description": "Keys whose saved and active values differ.",
             "items": {
@@ -2462,6 +2547,7 @@
         "required": [
           "settings",
           "config_file",
+          "config_file_exists",
           "api_key_set",
           "api_key_read_only",
           "restart_required"
@@ -2501,6 +2587,133 @@
           }
         },
         "required": [
+          "comfyui",
+          "llm"
+        ],
+        "type": "object"
+      },
+      "SetupDetectResponse": {
+        "properties": {
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/DetectedService"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "services"
+        ],
+        "type": "object"
+      },
+      "SetupEndpoint": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SettingSource"
+          },
+          {
+            "properties": {
+              "configured_url": {
+                "description": "Empty when the optional LLM is not configured.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "configured_url"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "One saved endpoint and where its value comes from."
+      },
+      "SetupReason": {
+        "properties": {
+          "blocking": {
+            "description": "Only blocking reasons make `needs_setup` true.",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/SetupReasonCode"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "description": "Offending settings, as `key: reason`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "summary",
+          "blocking"
+        ],
+        "type": "object"
+      },
+      "SetupReasonCode": {
+        "description": "Stable codes explaining the first-run assessment.",
+        "enum": [
+          "no_config_file",
+          "invalid_config",
+          "endpoints_from_environment",
+          "llm_not_configured",
+          "llm_text_model_unset"
+        ],
+        "type": "string"
+      },
+      "SetupStatus": {
+        "description": "Offline assessment of the saved configuration. It never probes a service.",
+        "properties": {
+          "comfyui": {
+            "$ref": "#/components/schemas/SetupEndpoint"
+          },
+          "config_file": {
+            "type": "string"
+          },
+          "config_file_exists": {
+            "type": "boolean"
+          },
+          "endpoints_env_owned": {
+            "description": "True when the environment owns `comfyui.base_url`, so saving cannot change it.",
+            "type": "boolean"
+          },
+          "llm": {
+            "$ref": "#/components/schemas/SetupEndpoint"
+          },
+          "needs_setup": {
+            "description": "True when any reason is blocking: no config file and the ComfyUI endpoint\nis not set by the environment, or the saved configuration is invalid.",
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/SetupReason"
+            },
+            "type": "array"
+          },
+          "restart_required": {
+            "description": "Setting keys saved but not yet live; a restart applies them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "needs_setup",
+          "reasons",
+          "config_file",
+          "config_file_exists",
+          "endpoints_env_owned",
+          "restart_required",
           "comfyui",
           "llm"
         ],
@@ -9329,6 +9542,221 @@
         },
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/api/v1/setup/detect": {
+      "post": {
+        "description": "Probe a fixed list of local ComfyUI and OpenAI-compatible LLM addresses plus the saved URLs, concurrently, with a 1.5 s deadline each. Takes no body and no user-supplied hosts. Hosts outside the allow-list are reported as skipped with the setting to add, never probed. The LLM API key is sent only to the saved LLM URL.",
+        "operationId": "setup_detect",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupDetectResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/api/v1/setup/status": {
+      "get": {
+        "description": "Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed.",
+        "operationId": "setup_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "setup"
+        ]
+      },
+      "head": {
+        "description": "Offline first-run assessment of the saved configuration. `needs_setup` is true when no configuration file exists and the environment does not supply the ComfyUI endpoint, or when the saved endpoints fail validation. Advisory reasons are non-blocking. No service is probed.",
+        "operationId": "setup_status_head",
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "setup"
         ]
       }
     },

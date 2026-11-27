@@ -184,6 +184,22 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
+    /// Every configured endpoint that fails validation; the optional LLM is checked only when set.
+    pub fn endpoint_errors(&self) -> Vec<HarnessError> {
+        let mut errors = Vec::new();
+        if let Err(error) = self.comfyui.validate_base_url() {
+            errors.push(error);
+        }
+        if !self.llm.base_url.is_empty() {
+            if let Err(error) =
+                validate_endpoint("llm.base_url", &self.llm.base_url, &self.llm.allowed_hosts)
+            {
+                errors.push(error);
+            }
+        }
+        errors
+    }
+
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }

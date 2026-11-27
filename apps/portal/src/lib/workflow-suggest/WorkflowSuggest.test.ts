@@ -114,6 +114,7 @@ function mockGenerateApis() {
   vi.spyOn(api, 'getWorkflow').mockResolvedValue(currentWorkflow);
   vi.spyOn(api, 'getSettings').mockResolvedValue({
     config_file: '',
+    config_file_exists: true,
     api_key_set: false,
     api_key_read_only: false,
     restart_required: [],
@@ -301,6 +302,7 @@ it('does not apply an image newly bound by the current revision preset', async (
   });
   vi.spyOn(api, 'getSettings').mockResolvedValue({
     config_file: '',
+    config_file_exists: true,
     api_key_set: false,
     api_key_read_only: false,
     restart_required: [],

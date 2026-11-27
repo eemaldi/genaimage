@@ -106,6 +106,30 @@ callers must provide the intended port.
   each with its own deadline (at most about seven seconds in total). It is
   read-only, contacts only the configured endpoints, and never includes the
   LLM API key. See [troubleshooting](troubleshooting.md#doctor-checks).
+- `GET /api/v1/setup/status` is the offline first-run assessment (core `setup`
+  module); it probes nothing. `needs_setup` is true when any reason is
+  blocking: `no_config_file` while the environment does not own
+  `comfyui.base_url`, or `invalid_config` when a saved endpoint fails
+  validation. Advisory reasons (`endpoints_from_environment`,
+  `llm_not_configured`, `llm_text_model_unset`) never set it, so a Compose stack
+  with env-owned endpoints and no file does not need setup but may still
+  recommend the model steps. It also returns `config_file`,
+  `config_file_exists`, `endpoints_env_owned` and each endpoint's
+  `configured_url` and `source`. `config_file_exists` is also on
+  `GET /api/v1/settings`.
+- `POST /api/v1/setup/detect` takes no body and probes a fixed list: ComfyUI at
+  `127.0.0.1:8188`, `localhost:8188` and `comfyui:8188`; LLMs at Ollama
+  `127.0.0.1:11434/v1` and `ollama:11434/v1`, LM Studio `127.0.0.1:1234/v1` and
+  llama.cpp `127.0.0.1:8080/v1`; plus the saved URLs. Every candidate passes
+  endpoint validation and DNS-answer checks first; a host outside the allow-list
+  is reported as `skipped` with a `fix` naming `comfyui.allowed_hosts` or
+  `llm.allowed_hosts` (and the environment variable) instead of being probed.
+  Probes run concurrently with a 1.5 s deadline and a 256 KiB body cap, with no
+  proxy or redirects. `found` requires the expected protocol (ComfyUI
+  `/system_stats` with a `system` object; an OpenAI `/models` list); another
+  answer is `error`, silence or refusal is `not_found`. The LLM API key is sent
+  only to the saved LLM URL and never returned. It follows the same
+  same-origin protection as the other POST routes.
 - Requests get a generated `x-request-id` when the caller does not supply one;
   the server returns the ID and includes it in structured request tracing.
 - API routing errors use `application/problem+json` (RFC 9457) with a `recovery`

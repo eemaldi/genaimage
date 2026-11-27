@@ -7,6 +7,7 @@ mod outputs;
 pub(crate) mod prompt;
 mod runs;
 mod settings;
+mod setup;
 mod suggestions;
 mod uploads;
 mod workflows;
@@ -137,6 +138,8 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(models::checkpoints))
         .routes(routes!(settings::read, settings::save))
         .routes(routes!(settings::probe))
+        .routes(routes!(setup::status))
+        .routes(routes!(setup::detect))
 }
 
 pub(crate) fn router_and_openapi() -> (Router<AppState>, utoipa::openapi::OpenApi) {
