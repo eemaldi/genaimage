@@ -139,6 +139,12 @@ export type SubmitRunRequest = JsonBody<Operation<'/api/v1/runs', 'post'>>;
 export type WorkflowValidationRequest = JsonBody<
   Operation<'/api/v1/workflows/{id}/validate', 'post'>
 >;
+export type WorkflowImportRequest = JsonBody<
+  Operation<'/api/v1/workflows/import', 'post'>
+>;
+export type WorkflowImportConfirmRequest = JsonBody<
+  Operation<'/api/v1/workflows/import/confirm', 'post'>
+>;
 export type SettingsPatch = JsonBody<Operation<'/api/v1/settings', 'put'>>;
 export type PromptAssistRequest = JsonBody<
   Operation<'/api/v1/assistant/prompt', 'post'>
@@ -357,9 +363,11 @@ export function createApiClient(
       init.method === 'POST' &&
       (url === '/api/v1/runs' || /^\/api\/v1\/runs\/[^/]+\/rerun$/.test(url))
         ? 'The submission may have gone through. Check the run list and reconcile before submitting again.'
-        : init.method === 'POST' && url === '/api/v1/models/llm/pulls'
-          ? 'The pull may have started. Check the list of pulls before starting it again.'
-          : 'Check that the local GenAImage server is running and up to date.';
+        : init.method === 'POST' && url === '/api/v1/workflows/import/confirm'
+          ? 'The workflow may have been written. Send the same confirmation again: an identical repeat is safe.'
+          : init.method === 'POST' && url === '/api/v1/models/llm/pulls'
+            ? 'The pull may have started. Check the list of pulls before starting it again.'
+            : 'Check that the local GenAImage server is running and up to date.';
     let response: Response;
     try {
       init.signal?.throwIfAborted();
@@ -668,6 +676,22 @@ export function createApiClient(
       json('get', '/api/v1/workflows', options),
     refreshWorkflows: (options: RequestOptions = {}) =>
       json('post', '/api/v1/workflows/refresh', options),
+    /** Read-only analysis. Every number in the response keeps its source text. */
+    importWorkflow: (
+      body: WorkflowImportRequest,
+      options: RequestOptions = {},
+    ) =>
+      json(
+        'post',
+        '/api/v1/workflows/import',
+        { ...options, body },
+        readAssistantJson,
+      ) as Promise<unknown>,
+    /** One write. An identical repeat replays 200, so a retry re-sends the same body. */
+    confirmWorkflowImport: (
+      body: WorkflowImportConfirmRequest,
+      options: RequestOptions = {},
+    ) => json('post', '/api/v1/workflows/import/confirm', { ...options, body }),
     listPacks: (options: RequestOptions = {}) =>
       json('get', '/api/v1/packs', options),
     validatePack: (id: string, options: RequestOptions = {}) =>

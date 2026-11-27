@@ -34,6 +34,7 @@
     uploadStatus,
     workflowId,
     positivePrompt,
+    preview = false,
   }: {
     id: string;
     sharedDefault: boolean;
@@ -48,6 +49,7 @@
     uploadStatus: (message?: string) => void;
     workflowId: string;
     positivePrompt?: string;
+    preview?: boolean;
   } = $props();
 
   let preserveMultiline = $state(
@@ -60,7 +62,7 @@
       preserveMultiline = true;
   });
   let needed = $derived(parameter.required);
-  let promptAssist = $derived(isPromptParameter(name, parameter));
+  let promptAssist = $derived(!preview && isPromptParameter(name, parameter));
   let negativePrompt = $derived(isNegativePromptParameter(name, parameter));
   let hint = $derived(
     [
@@ -204,6 +206,11 @@
     {#if error}<p class="random-error" id={`${id}-random-error`}>
         {error}
       </p>{/if}
+  {:else if parameter.kind === 'image_upload' && preview}
+    <p>
+      {name}: an image is chosen on the Generate form. Uploads are not available
+      in this preview.
+    </p>
   {:else if parameter.kind === 'image_upload'}
     {#key imageEpoch}
       <ImageField
