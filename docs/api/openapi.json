@@ -1991,7 +1991,7 @@
             "type": "string"
           },
           "diagnostics": {
-            "description": "Declared files that are missing or unreadable.",
+            "description": "Declared files that are missing, rejected or unreadable, and workflow\nIDs that are duplicated or unavailable.",
             "items": {
               "type": "string"
             },
@@ -2045,6 +2045,13 @@
       "PackValidationResponse": {
         "description": "Result of checking one pack against ComfyUI `/object_info`.",
         "properties": {
+          "diagnostics": {
+            "description": "Problems with the pack's own files and workflows (missing, rejected or\nduplicated). The status is never `ok` while this is non-empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "models": {
             "items": {
               "$ref": "#/components/schemas/PackModelCheck"
@@ -2075,7 +2082,8 @@
           "pack_id",
           "status",
           "node_classes",
-          "models"
+          "models",
+          "diagnostics"
         ],
         "type": "object"
       },
@@ -3523,6 +3531,10 @@
       "WorkflowSummary": {
         "description": "Descriptive catalogue information for one workflow.",
         "properties": {
+          "available": {
+            "description": "`false` when another manifest claims the same ID, so it cannot be used.",
+            "type": "boolean"
+          },
           "category": {
             "type": [
               "string",
@@ -3564,6 +3576,13 @@
               "null"
             ]
           },
+          "unavailable_reason": {
+            "description": "Why the workflow is unavailable, naming the other claimants.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "version": {
             "type": "string"
           }
@@ -3573,6 +3592,8 @@
           "name",
           "version",
           "source",
+          "available",
+          "unavailable_reason",
           "revision"
         ],
         "type": "object"
@@ -4793,6 +4814,16 @@
               }
             },
             "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow ID declared by several manifests"
           },
           "413": {
             "content": {
@@ -7649,7 +7680,7 @@
     },
     "/api/v1/packs/{id}/validate": {
       "get": {
-        "description": "Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything.",
+        "description": "Check a pack's declared node classes and models against ComfyUI /object_info, and its declared files and workflows. Reports missing and unknown requirements, pack problems and an unreachable backend as such; the status is never ok while diagnostics is non-empty. Never installs anything.",
         "operationId": "packs_validate",
         "parameters": [
           {
@@ -7759,7 +7790,7 @@
         ]
       },
       "head": {
-        "description": "Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything.",
+        "description": "Check a pack's declared node classes and models against ComfyUI /object_info, and its declared files and workflows. Reports missing and unknown requirements, pack problems and an unreachable backend as such; the status is never ok while diagnostics is non-empty. Never installs anything.",
         "operationId": "packs_validate_head",
         "parameters": [
           {
@@ -8140,7 +8171,7 @@
                 }
               }
             },
-            "description": "Workflow revision mismatch or idempotency key conflict"
+            "description": "Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict"
           },
           "413": {
             "content": {
@@ -9268,7 +9299,7 @@
                 }
               }
             },
-            "description": "Fingerprint mismatch or idempotency key conflict"
+            "description": "Fingerprint mismatch, workflow ID declared by several manifests or idempotency key conflict"
           },
           "421": {
             "content": {
@@ -10819,6 +10850,16 @@
             },
             "description": "Problem details"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow ID declared by several manifests"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -10893,6 +10934,9 @@
           },
           "408": {
             "description": "Problem details"
+          },
+          "409": {
+            "description": "Workflow ID declared by several manifests"
           },
           "413": {
             "description": "Problem details"
@@ -10998,6 +11042,16 @@
             },
             "description": "Problem details"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Workflow ID declared by several manifests"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -11072,6 +11126,9 @@
           },
           "408": {
             "description": "Problem details"
+          },
+          "409": {
+            "description": "Workflow ID declared by several manifests"
           },
           "413": {
             "description": "Problem details"
@@ -11175,7 +11232,7 @@
                 }
               }
             },
-            "description": "Workflow revision mismatch"
+            "description": "Workflow revision mismatch or workflow ID declared by several manifests"
           },
           "413": {
             "content": {

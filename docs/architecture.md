@@ -331,7 +331,7 @@ The workflows API is read-only apart from validation, which does not submit a ru
 and `POST /api/v1/workflows/refresh`, which forces a catalogue rebuild:
 
 - `GET /api/v1/workflows` returns `workflows` (ID, name, version, description,
-  tags, category, `source`, `revision` and optional `thumbnail_url`) and non-fatal `diagnostics` for
+  tags, category, `source`, `available`, `unavailable_reason`, `revision` and optional `thumbnail_url`) and non-fatal `diagnostics` for
   manifests and references that cannot be inspected, including IDs `.` and `..`
   which browsers normalise as URL path segments. An unreadable directory or
   manifest makes the catalogue incomplete; its diagnostic identifies the problem.

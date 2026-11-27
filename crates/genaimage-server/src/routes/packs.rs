@@ -8,9 +8,9 @@ use genaimage_api::{
     PackSummary, PackValidationResponse, PackValidationStatus, WorkflowDiagnostic,
 };
 use genaimage_core::{
+    orchestrator::{WorkflowDiscovery, WorkflowSource},
     pack::LoadedPack,
     pack_requirements::{PackStatus, RequirementStatus},
-    LoadedWorkflow,
 };
 
 use crate::{AppState, Problem};
@@ -25,20 +25,16 @@ fn internal_error(error: impl std::fmt::Display) -> Problem {
     )
 }
 
-fn summarise(pack: &LoadedPack) -> PackSummary {
-    let mut diagnostics: Vec<String> = pack
-        .diagnostics
-        .iter()
-        .map(|item| item.message.clone())
-        .collect();
-    let mut workflow_ids = Vec::new();
-    for path in &pack.workflow_paths {
-        match LoadedWorkflow::load(path) {
-            Ok(loaded) => workflow_ids.push(loaded.manifest.id),
-            Err(error) => diagnostics.push(format!("{}: {error}", path.display())),
-        }
-    }
+fn summarise(pack: &LoadedPack, discovery: &WorkflowDiscovery) -> PackSummary {
     let manifest = &pack.manifest;
+    let workflow_ids = discovery
+        .workflows
+        .iter()
+        .filter(
+            |workflow| matches!(&workflow.source, WorkflowSource::Pack(id) if *id == manifest.id),
+        )
+        .map(|workflow| workflow.manifest.id.clone())
+        .collect();
     PackSummary {
         id: manifest.id.clone(),
         version: manifest.version.clone(),
@@ -51,7 +47,7 @@ fn summarise(pack: &LoadedPack) -> PackSummary {
             node_classes: manifest.requires.node_classes.clone(),
             models: manifest.requires.models.clone(),
         },
-        diagnostics,
+        diagnostics: discovery.pack_problems(pack),
     }
 }
 
@@ -74,8 +70,9 @@ fn summarise(pack: &LoadedPack) -> PackSummary {
 pub(super) async fn list(State(state): State<AppState>) -> Result<Json<PackListResponse>, Problem> {
     let harness = state.harness();
     let response = tokio::task::spawn_blocking(move || {
-        let discovery = harness.discover_packs();
+        let discovery = harness.discover_workflows()?;
         let mut diagnostics: Vec<WorkflowDiagnostic> = discovery
+            .packs
             .diagnostics
             .iter()
             .map(|item| WorkflowDiagnostic {
@@ -91,12 +88,18 @@ pub(super) async fn list(State(state): State<AppState>) -> Result<Json<PackListR
                 error: format!("{more} more diagnostics were omitted."),
             });
         }
-        PackListResponse {
-            packs: discovery.packs.iter().map(summarise).collect(),
+        Ok::<_, genaimage_core::HarnessError>(PackListResponse {
+            packs: discovery
+                .packs
+                .packs
+                .iter()
+                .map(|pack| summarise(pack, &discovery))
+                .collect(),
             diagnostics,
-        }
+        })
     })
     .await
+    .map_err(internal_error)?
     .map_err(internal_error)?;
     Ok(Json(response))
 }
@@ -105,7 +108,7 @@ pub(super) async fn list(State(state): State<AppState>) -> Result<Json<PackListR
     get, path = "/packs/{id}/validate",
     operation_id = "packs_validate",
     tag = "packs",
-    description = "Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything.",
+    description = "Check a pack's declared node classes and models against ComfyUI /object_info, and its declared files and workflows. Reports missing and unknown requirements, pack problems and an unreachable backend as such; the status is never ok while diagnostics is non-empty. Never installs anything.",
     params(("id" = String, Path, description = "Pack ID")),
     responses(
         (status = 200, body = genaimage_api::PackValidationResponse),
@@ -171,5 +174,6 @@ pub(super) async fn validate(
                 reason: model.reason,
             })
             .collect(),
+        diagnostics: validation.diagnostics,
     }))
 }

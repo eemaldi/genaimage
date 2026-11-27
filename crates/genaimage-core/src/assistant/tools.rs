@@ -105,6 +105,7 @@ impl AssistantTool for ListWorkflowsTool {
     async fn invoke(&self, _context: ToolContext, _arguments: Value) -> Result<Value> {
         let discovery = self.harness.discover_workflows()?;
         let mut workflows = discovery.workflows;
+        workflows.retain(|workflow| workflow.unavailable_reason.is_none());
         workflows.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
         let truncated = workflows.len() > WORKFLOW_LIST_LIMIT;
         workflows.truncate(WORKFLOW_LIST_LIMIT);

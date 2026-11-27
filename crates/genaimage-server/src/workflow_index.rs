@@ -316,6 +316,8 @@ fn discover(harness: &Harness, probe: &ScanProbe) -> WorkflowDiscovery {
 pub(crate) struct ThumbnailSource {
     pub(crate) manifest_path: PathBuf,
     pub(crate) thumbnail: Option<String>,
+    /// The pack directory a pack workflow's files must stay inside.
+    pub(crate) boundary: Option<PathBuf>,
 }
 
 struct IndexedWorkflow {
@@ -326,6 +328,8 @@ struct IndexedWorkflow {
 pub(crate) struct WorkflowIndex {
     entries: BTreeMap<String, IndexedWorkflow>,
     blocked: BTreeSet<String>,
+    /// IDs claimed by several manifests, with a message naming every claimant.
+    ambiguity: BTreeMap<String, String>,
     traversal_failure: Option<genaimage_core::orchestrator::WorkflowTraversalFailure>,
     references: BTreeSet<PathBuf>,
     fingerprint: Option<Fingerprint>,
@@ -387,6 +391,7 @@ impl WorkflowIndex {
                                 source: ThumbnailSource {
                                     manifest_path: path.clone(),
                                     thumbnail: manifest.thumbnail.clone(),
+                                    boundary: workflow.boundary.clone(),
                                 },
                                 manifest: state,
                             },
@@ -397,6 +402,7 @@ impl WorkflowIndex {
                     Self {
                         entries,
                         blocked: discovery.unresolvable_ids.clone(),
+                        ambiguity: discovery.ambiguity.clone(),
                         traversal_failure: discovery.traversal_failures.first().cloned(),
                         references: Self::references(&discovery),
                         fingerprint: (before == after).then_some(after),
@@ -418,8 +424,11 @@ impl WorkflowIndex {
         if let Some(failure) = &self.traversal_failure {
             return Err(failure.for_id(id));
         }
+        if let Some(reason) = self.ambiguity.get(id) {
+            return Err(HarnessError::WorkflowAmbiguous(reason.clone()));
+        }
         if self.blocked.contains(id) {
-            return Err(HarnessError::Workflow(format!("workflow id '{id}' is ambiguous or claimed by an invalid manifest; inspect the catalogue diagnostics and resolve duplicates")));
+            return Err(HarnessError::Workflow(format!("workflow id '{id}' is claimed by an invalid manifest; inspect the catalogue diagnostics and repair or remove it")));
         }
         let Some(cached) = self.entries.get(id) else {
             return Ok(None);
@@ -432,7 +441,11 @@ impl WorkflowIndex {
                 return Ok(None);
             }
         }
-        let Ok(workflow) = LoadedWorkflow::load(&cached.source.manifest_path) else {
+        let reloaded = match &cached.source.boundary {
+            Some(boundary) => LoadedWorkflow::load_within(&cached.source.manifest_path, boundary),
+            None => LoadedWorkflow::load(&cached.source.manifest_path),
+        };
+        let Ok(workflow) = reloaded else {
             return Ok(None);
         };
         if workflow.manifest.id != id {
@@ -441,6 +454,7 @@ impl WorkflowIndex {
         Ok(Some(ThumbnailSource {
             manifest_path: workflow.manifest_path,
             thumbnail: workflow.manifest.thumbnail,
+            boundary: cached.source.boundary.clone(),
         }))
     }
 }
@@ -753,6 +767,7 @@ mod tests {
                 },
             )]),
             blocked: BTreeSet::new(),
+            ambiguity: BTreeMap::new(),
             traversal_failure: None,
             references: BTreeSet::new(),
             fingerprint: Some(Fingerprint {

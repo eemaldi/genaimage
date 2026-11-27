@@ -1677,11 +1677,7 @@ fn a_pack_workflow_graph_outside_the_pack_is_rejected() {
     let (workspace, harness, _, _) = setup(false);
     let dir = install_pack(&harness, "leaky", "leaky-flow");
     let outside = workspace.path().join("outside.json");
-    fs::write(
-        &outside,
-        include_str!("../../tests/fixtures/contract-workflow.api.json"),
-    )
-    .unwrap();
+    fs::write(&outside, "OUTSIDE-SECRET-CONTENT").unwrap();
     fs::remove_file(dir.join("workflow.api.json")).unwrap();
     std::os::unix::fs::symlink(&outside, dir.join("workflow.api.json")).unwrap();
     let discovery = harness.discover_workflows().unwrap();
@@ -1690,10 +1686,126 @@ fn a_pack_workflow_graph_outside_the_pack_is_rejected() {
         .iter()
         .all(|w| w.manifest.id != "leaky-flow"));
     assert!(discovery.unresolvable_ids.contains("leaky-flow"));
+    let message = discovery
+        .diagnostics
+        .iter()
+        .map(|item| item.error.to_string())
+        .find(|message| message.contains("outside the pack directory"))
+        .expect("escape diagnostic");
+    assert!(!message.contains("OUTSIDE-SECRET-CONTENT"), "{message}");
+    assert!(!message.starts_with("workflow pack invalid: workflow pack invalid"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pack_workflow_manifest_symlinked_outside_the_pack_is_rejected_unread() {
+    let (workspace, harness, _, _) = setup(false);
+    let dir = install_pack(&harness, "leaky", "leaky-flow");
+    let outside = workspace.path().join("outside.genaimage.json");
+    fs::rename(dir.join("wf.genaimage.json"), &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("wf.genaimage.json")).unwrap();
+    let discovery = harness.discover_workflows().unwrap();
+    assert!(discovery
+        .workflows
+        .iter()
+        .all(|w| w.manifest.id != "leaky-flow"));
     assert!(discovery.diagnostics.iter().any(|item| item
         .error
         .to_string()
-        .contains("not a file inside the pack")));
+        .contains("outside the pack directory")));
+}
+
+#[test]
+fn duplicate_claimants_stay_listed_but_unavailable_and_name_each_other() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_pack(&harness, "extras", "contract-workflow");
+    let discovery = harness.discover_workflows().unwrap();
+    let claimants: Vec<_> = discovery
+        .workflows
+        .iter()
+        .filter(|w| w.manifest.id == "contract-workflow")
+        .collect();
+    assert_eq!(claimants.len(), 2);
+    for claimant in &claimants {
+        let reason = claimant.unavailable_reason.as_deref().expect("unavailable");
+        let other = if claimant.source == WorkflowSource::User {
+            "pack:extras '"
+        } else {
+            "user '"
+        };
+        assert!(reason.contains(other), "{reason}");
+    }
+    let error = harness
+        .load_workflow_by_id("contract-workflow")
+        .unwrap_err();
+    let HarnessError::WorkflowAmbiguous(message) = error else {
+        panic!("expected an ambiguity error, got {error}");
+    };
+    assert!(message.contains("user '") && message.contains("pack:extras '"));
+    let error = harness.load_api_workflow("contract-workflow", Some("any-revision"));
+    assert!(matches!(error, Err(HarnessError::WorkflowAmbiguous(_))));
+    let problems = discovery.pack_problems(discovery.packs.pack("extras").unwrap());
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("user '"));
+}
+
+#[test]
+fn a_pack_directory_in_the_user_root_keeps_its_workflows_and_is_explained() {
+    let (_workspace, harness, _, _) = setup(false);
+    let stray = harness.config().workflows.join("stray");
+    fs::create_dir_all(&stray).unwrap();
+    fs::write(stray.join("pack.toml"), "id = 'stray'\nversion = '1'\n").unwrap();
+    fs::write(
+        stray.join("workflow.api.json"),
+        include_str!("../../tests/fixtures/contract-workflow.api.json"),
+    )
+    .unwrap();
+    let mut manifest: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/contract-workflow.genaimage.json"
+    ))
+    .unwrap();
+    manifest["id"] = json!("stray-flow");
+    fs::write(
+        stray.join("stray.genaimage.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let discovery = harness.discover_workflows().unwrap();
+    let user: Vec<_> = discovery
+        .workflows
+        .iter()
+        .filter(|w| w.source == WorkflowSource::User)
+        .map(|w| w.manifest.id.as_str())
+        .collect();
+    assert!(user.contains(&"stray-flow"), "{user:?}");
+    assert!(discovery.packs.packs.is_empty());
+    assert!(discovery.diagnostics.iter().any(|item| {
+        item.path.ends_with("stray/pack.toml") && item.error.to_string().contains("`paths.packs`")
+    }));
+}
+
+#[tokio::test]
+async fn a_pack_with_missing_declared_files_is_never_validated_as_ok() {
+    let (_workspace, harness, _, _) = setup(false);
+    let dir = harness.config().packs[0].join("thin");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("pack.toml"),
+        "id = 'thin'\nversion = '1'\nworkflows = ['gone.genaimage.json']\ntemplates = ['gone.md']\n",
+    )
+    .unwrap();
+    let validation = harness.validate_pack("thin").await.unwrap().unwrap();
+    assert_eq!(
+        validation.status,
+        crate::pack_requirements::PackStatus::Missing
+    );
+    assert_eq!(
+        validation.diagnostics.len(),
+        2,
+        "{:?}",
+        validation.diagnostics
+    );
+    assert!(validation.node_classes.is_empty() && validation.models.is_empty());
 }
 
 #[test]

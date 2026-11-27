@@ -166,6 +166,10 @@ pub struct WorkflowDiscovery {
     /// Failures that prevent an authoritative uniqueness check.
     pub traversal_failures: Vec<WorkflowTraversalFailure>,
     pub diagnostics: Vec<WorkflowDiagnostic>,
+    /// For each ID claimed by several valid manifests, a message naming every claimant.
+    pub ambiguity: BTreeMap<String, String>,
+    /// The packs scanned for this snapshot.
+    pub packs: crate::pack::PackDiscovery,
 }
 
 /// Where a workflow was discovered: the writable user root or a read-only pack.
@@ -189,6 +193,60 @@ pub struct DiscoveredWorkflow {
     pub manifest: WorkflowManifest,
     pub revision: String,
     pub source: WorkflowSource,
+    pub manifest_path: PathBuf,
+    /// The pack directory a pack workflow, its graph and its thumbnail must stay inside.
+    pub boundary: Option<PathBuf>,
+    /// Set when another manifest claims the same ID, so none can be resolved.
+    pub unavailable_reason: Option<String>,
+}
+
+impl WorkflowDiscovery {
+    /// Everything wrong with one pack's declared files and workflows. A pack
+    /// with any problem must never be reported as fully valid.
+    pub fn pack_problems(&self, pack: &crate::pack::LoadedPack) -> Vec<String> {
+        let id = &pack.manifest.id;
+        let mut problems: Vec<String> = pack
+            .diagnostics
+            .iter()
+            .map(|item| item.message.clone())
+            .collect();
+        for path in pack
+            .workflow_paths
+            .iter()
+            .filter(|path| !self.workflows.iter().any(|w| w.manifest_path == **path))
+        {
+            problems.extend(
+                self.diagnostics
+                    .iter()
+                    .filter(|item| item.path == *path)
+                    .map(|item| format!("{}: {}", path.display(), item.error)),
+            );
+        }
+        problems.extend(self.workflows.iter().filter_map(|workflow| {
+            let reason = workflow.unavailable_reason.as_ref()?;
+            matches!(&workflow.source, WorkflowSource::Pack(source) if source == id)
+                .then(|| format!("{}: {reason}", workflow.manifest_path.display()))
+        }));
+        problems
+    }
+}
+
+fn describe_claim(path: &Path, source: &WorkflowSource) -> String {
+    format!("{source} '{}'", path.display())
+}
+
+fn ambiguous_error(
+    id: &str,
+    claims: impl Iterator<Item = (PathBuf, WorkflowSource)>,
+    hint: &str,
+) -> HarnessError {
+    let claimants: Vec<String> = claims
+        .map(|(path, source)| describe_claim(&path, &source))
+        .collect();
+    HarnessError::WorkflowAmbiguous(format!(
+        "workflow id '{id}' is ambiguous: declared by {}; {hint}",
+        claimants.join(", ")
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -383,33 +441,21 @@ impl Harness {
     }
 
     /// Visits the user root, then every pack's declared manifests. A pack
-    /// workflow whose API graph resolves outside its pack is an invalid manifest.
+    /// workflow whose manifest or API graph resolves outside its pack is an
+    /// invalid manifest, rejected before it is read.
     fn visit_all_workflows(
         &self,
         mut visitor: impl FnMut(&Path, &WorkflowSource, WorkflowVisit),
     ) -> crate::pack::PackDiscovery {
-        visit_workflows(&self.config.workflows, |path, visit| {
+        visit_workflows(&self.config.workflows, &self.config.packs, |path, visit| {
             visitor(path, &WorkflowSource::User, visit)
         });
         let packs = self.discover_packs();
         for pack in &packs.packs {
             let source = WorkflowSource::Pack(pack.manifest.id.clone());
-            let canonical = fs::canonicalize(&pack.dir);
             for path in &pack.workflow_paths {
-                let visit = match LoadedWorkflow::load(path) {
+                let visit = match pack.load_workflow(path) {
                     Err(HarnessError::Io(error)) => WorkflowVisit::Incomplete(error),
-                    Ok(loaded)
-                        if !canonical.as_ref().is_ok_and(|dir| {
-                            fs::canonicalize(&loaded.workflow_path)
-                                .is_ok_and(|graph| graph.starts_with(dir))
-                        }) =>
-                    {
-                        WorkflowVisit::Manifest(Err(HarnessError::Pack(format!(
-                            "workflow graph '{}' of pack '{}' is not a file inside the pack directory",
-                            loaded.workflow_path.display(),
-                            pack.manifest.id
-                        ))))
-                    }
                     result => WorkflowVisit::Manifest(result.map(Box::new)),
                 };
                 visitor(path, &source, visit);
@@ -422,6 +468,7 @@ impl Harness {
         let mut discovery = WorkflowDiscovery::default();
         let mut ambiguous = BTreeSet::new();
         let mut claims: BTreeMap<String, Vec<(PathBuf, WorkflowSource)>> = BTreeMap::new();
+        let mut invalid_claims: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         let packs = self.visit_all_workflows(|path, source, workflow| match workflow {
             WorkflowVisit::Incomplete(error) => {
                 discovery.traversal_failures.push(WorkflowTraversalFailure {
@@ -487,12 +534,19 @@ impl Harness {
                     revision: loaded.revision(),
                     manifest: loaded.manifest,
                     source: source.clone(),
+                    manifest_path: path.to_path_buf(),
+                    boundary: None,
+                    unavailable_reason: None,
                 });
             }
             WorkflowVisit::Manifest(Err(error)) => {
                 if let Some(source) = sidecar_source(path) {
                     if let Some(id) = source.get("id").and_then(Value::as_str) {
                         ambiguous.insert(id.to_owned());
+                        invalid_claims
+                            .entry(id.to_owned())
+                            .or_default()
+                            .push(path.to_path_buf());
                     }
                     if let Some(workflow) = source.get("workflow").and_then(Value::as_str) {
                         discovery.referenced_workflow_paths.insert(
@@ -510,6 +564,46 @@ impl Harness {
         });
         for id in &ambiguous {
             discovery.indexable_manifest_paths.remove(id);
+            let everyone: Vec<(PathBuf, String)> = claims
+                .get(id)
+                .into_iter()
+                .flatten()
+                .map(|(path, source)| (path.clone(), describe_claim(path, source)))
+                .chain(invalid_claims.get(id).into_iter().flatten().map(|path| {
+                    (
+                        path.clone(),
+                        format!("invalid manifest '{}'", path.display()),
+                    )
+                }))
+                .collect();
+            if everyone.len() > 1 {
+                let all = everyone
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if claims.get(id).is_some_and(|valid| valid.len() > 1) {
+                    discovery.ambiguity.insert(
+                        id.clone(),
+                        format!("workflow id '{id}' is ambiguous: declared by {all}; remove or rename all but one"),
+                    );
+                }
+                for workflow in discovery
+                    .workflows
+                    .iter_mut()
+                    .filter(|w| w.manifest.id == *id)
+                {
+                    let others = everyone
+                        .iter()
+                        .filter(|(path, _)| *path != workflow.manifest_path)
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    workflow.unavailable_reason = Some(format!(
+                        "workflow id '{id}' is also declared by {others}; none of them can be used until the duplicates are removed or renamed"
+                    ));
+                }
+            }
             let Some(claimants) = claims.get(id).filter(|claimants| claimants.len() > 1) else {
                 continue;
             };
@@ -536,6 +630,12 @@ impl Harness {
                         error: HarnessError::Pack(item.message),
                     }),
             );
+        for workflow in &mut discovery.workflows {
+            if let WorkflowSource::Pack(id) = &workflow.source {
+                workflow.boundary = packs.pack(id).map(|pack| pack.canonical_dir.clone());
+            }
+        }
+        discovery.packs = packs;
         discovery.unresolvable_ids = ambiguous;
         discovery
             .traversal_failures
@@ -567,13 +667,13 @@ impl Harness {
         let mut invalid_matches = Vec::new();
         let mut skipped = false;
         let mut incomplete = Vec::new();
-        self.visit_all_workflows(|path, _, result| match result {
+        self.visit_all_workflows(|path, source, result| match result {
             WorkflowVisit::Incomplete(error) => incomplete.push(WorkflowTraversalFailure {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
             }),
             WorkflowVisit::Manifest(Ok(loaded)) if loaded.manifest.id == workflow => {
-                matches.push(*loaded)
+                matches.push((*loaded, source.clone()))
             }
             WorkflowVisit::Manifest(Err(error)) => {
                 skipped = true;
@@ -617,10 +717,14 @@ impl Harness {
                     ""
                 }
             ))),
-            1 => Ok(matches.remove(0)),
-            _ => Err(HarnessError::Workflow(format!(
-                "workflow id '{workflow}' is ambiguous; select an explicit manifest path"
-            ))),
+            1 => Ok(matches.remove(0).0),
+            _ => Err(ambiguous_error(
+                workflow,
+                matches
+                    .into_iter()
+                    .map(|(loaded, source)| (loaded.manifest_path, source)),
+                "select an explicit manifest path",
+            )),
         }
     }
 
@@ -629,13 +733,13 @@ impl Harness {
         let mut matches = Vec::new();
         let mut invalid_matches = Vec::new();
         let mut incomplete = Vec::new();
-        self.visit_all_workflows(|path, _, result| match result {
+        self.visit_all_workflows(|path, source, result| match result {
             WorkflowVisit::Incomplete(error) => incomplete.push(WorkflowTraversalFailure {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
             }),
             WorkflowVisit::Manifest(Ok(loaded)) if loaded.manifest.id == id => {
-                matches.push(*loaded)
+                matches.push((*loaded, source.clone()))
             }
             WorkflowVisit::Manifest(Err(error)) if sidecar_declares_id(path, id) => {
                 invalid_matches.push((path.to_path_buf(), error));
@@ -653,10 +757,14 @@ impl Harness {
         }
         match matches.len() {
             0 => Ok(None),
-            1 => Ok(matches.pop()),
-            _ => Err(HarnessError::Workflow(format!(
-                "workflow id '{id}' is ambiguous; resolve duplicate manifests"
-            ))),
+            1 => Ok(matches.pop().map(|(loaded, _)| loaded)),
+            _ => Err(ambiguous_error(
+                id,
+                matches
+                    .into_iter()
+                    .map(|(loaded, source)| (loaded.manifest_path, source)),
+                "remove or rename all but one",
+            )),
         }
     }
 
@@ -1150,7 +1258,8 @@ impl Harness {
             let loaded = self
                 .load_workflow_by_id(&request.workflow)
                 .map_err(|error| match error {
-                    error @ HarnessError::WorkflowDiscoveryIncomplete { .. } => error,
+                    error @ (HarnessError::WorkflowDiscoveryIncomplete { .. }
+                    | HarnessError::WorkflowAmbiguous(_)) => error,
                     _ => WORKFLOW_MISMATCH,
                 })?
                 .ok_or(WORKFLOW_MISMATCH)?;
@@ -2255,23 +2364,36 @@ enum FileVisit {
     Incomplete(std::io::Error),
 }
 
-fn visit_workflows(directory: &Path, mut visitor: impl FnMut(&Path, WorkflowVisit)) {
-    visit_files(directory, &mut Vec::new(), &mut |path, visit| match visit {
-        FileVisit::Incomplete(error) => visitor(path, WorkflowVisit::Incomplete(error)),
-        FileVisit::Diagnostic(error) => visitor(path, WorkflowVisit::Diagnostic(error)),
-        FileVisit::File
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".genaimage.json")) =>
-        {
-            match LoadedWorkflow::load(path) {
-                Err(HarnessError::Io(error)) => visitor(path, WorkflowVisit::Incomplete(error)),
-                result => visitor(path, WorkflowVisit::Manifest(result.map(Box::new))),
+fn visit_workflows(
+    directory: &Path,
+    pack_roots: &[PathBuf],
+    mut visitor: impl FnMut(&Path, WorkflowVisit),
+) {
+    let pack_roots: Vec<PathBuf> = pack_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root).ok())
+        .collect();
+    visit_files(
+        directory,
+        &pack_roots,
+        &mut Vec::new(),
+        &mut |path, visit| match visit {
+            FileVisit::Incomplete(error) => visitor(path, WorkflowVisit::Incomplete(error)),
+            FileVisit::Diagnostic(error) => visitor(path, WorkflowVisit::Diagnostic(error)),
+            FileVisit::File
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".genaimage.json")) =>
+            {
+                match LoadedWorkflow::load(path) {
+                    Err(HarnessError::Io(error)) => visitor(path, WorkflowVisit::Incomplete(error)),
+                    result => visitor(path, WorkflowVisit::Manifest(result.map(Box::new))),
+                }
             }
-        }
-        FileVisit::File => {}
-    });
+            FileVisit::File => {}
+        },
+    );
 }
 
 fn broken_symlink(error: &std::io::Error) -> bool {
@@ -2287,6 +2409,7 @@ fn broken_symlink(error: &std::io::Error) -> bool {
 
 fn visit_files(
     directory: &Path,
+    pack_roots: &[PathBuf],
     ancestors: &mut Vec<PathBuf>,
     visitor: &mut dyn FnMut(&Path, FileVisit),
 ) {
@@ -2310,9 +2433,21 @@ fn visit_files(
         );
         return;
     }
-    // A pack owns its directory; scanning it here would report its workflows twice.
-    if directory.join(crate::pack::PACK_FILE).is_file() {
-        return;
+    let pack_file = directory.join(crate::pack::PACK_FILE);
+    if pack_file.is_file() {
+        // A pack inside a configured pack root owns its directory; scanning it
+        // here would report its workflows twice. Anywhere else the workflows
+        // stay visible and the stray pack is explained.
+        if pack_roots.iter().any(|root| canonical.starts_with(root)) {
+            return;
+        }
+        visitor(
+            &pack_file,
+            FileVisit::Diagnostic(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "this directory contains a pack.toml but is not inside a configured pack root; its pack is ignored. Move pack directories into `paths.packs` (see docs/packs.md)",
+            )),
+        );
     }
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -2339,10 +2474,12 @@ fn visit_files(
             }
         };
         if kind.is_dir() {
-            visit_files(&path, ancestors, visitor);
+            visit_files(&path, pack_roots, ancestors, visitor);
         } else if kind.is_symlink() {
             match fs::metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => visit_files(&path, ancestors, visitor),
+                Ok(metadata) if metadata.is_dir() => {
+                    visit_files(&path, pack_roots, ancestors, visitor)
+                }
                 Ok(_) => visitor(&path, FileVisit::File),
                 Err(error) if broken_symlink(&error) => {
                     visitor(&path, FileVisit::Diagnostic(error))

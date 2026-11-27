@@ -265,6 +265,8 @@ test('offers an explicit picker and follows a changed workflow query', async () 
         version: '1',
         revision: workflow.revision,
         source: 'user',
+        available: true,
+        unavailable_reason: null,
       },
     ],
     diagnostics: [],

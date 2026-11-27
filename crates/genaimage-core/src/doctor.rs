@@ -647,15 +647,16 @@ fn nodes_check(
 }
 
 struct DiscoveredPacks {
-    result: Result<crate::pack::PackDiscovery, String>,
+    result: Result<crate::orchestrator::WorkflowDiscovery, String>,
 }
 
 async fn discover_packs(harness: &Harness, options: &DoctorOptions) -> DiscoveredPacks {
     let harness = harness.clone();
-    let task = tokio::task::spawn_blocking(move || harness.discover_packs());
+    let task = tokio::task::spawn_blocking(move || harness.discover_workflows());
     DiscoveredPacks {
         result: match timeout(options.workflow_deadline, task).await {
-            Ok(Ok(discovery)) => Ok(discovery),
+            Ok(Ok(Ok(discovery))) => Ok(discovery),
+            Ok(Ok(Err(error))) => Err(clean(&error.to_string(), None)),
             Ok(Err(error)) => Err(clean(&error.to_string(), None)),
             Err(_) => Err(format!(
                 "pack discovery did not finish within {} s",
@@ -665,8 +666,11 @@ async fn discover_packs(harness: &Harness, options: &DoctorOptions) -> Discovere
     }
 }
 
-/// Requirements of every pack, checked with the same function as the validate endpoint.
+/// Pack problems and requirements, from the same domain functions as the
+/// validate endpoint. Pack problems are reported even when ComfyUI's node
+/// classes are unknown; only the node and model part is skipped then.
 fn packs_check(discovered: DiscoveredPacks, object_info: Option<&Value>) -> DoctorCheck {
+    use crate::pack_requirements::{check_requirements, PackStatus, RequirementStatus::Missing};
     let discovery = match discovered.result {
         Ok(discovery) => discovery,
         Err(error) => {
@@ -678,86 +682,117 @@ fn packs_check(discovered: DiscoveredPacks, object_info: Option<&Value>) -> Doct
         }
     };
     let mut items: Vec<String> = discovery
-        .all_diagnostics()
+        .packs
+        .diagnostics
         .iter()
         .map(|item| format!("{}: {}", item.path.display(), clean(&item.message, None)))
         .collect();
-    let problems = items.len();
-    let checking: Vec<_> = discovery
-        .packs
-        .iter()
-        .filter(|pack| !pack.manifest.requires.is_empty())
-        .collect();
-    if checking.is_empty() {
-        return if problems > 0 {
-            DoctorCheck::warning(
-                PACKS_REQUIREMENTS,
-                format!("{problems} workflow pack problems were found."),
-                "Repair or remove the listed packs; `genaimage packs list` shows the same diagnostics. See docs/packs.md.",
-            )
-            .with_items(items)
-        } else {
-            DoctorCheck::ok(
-                PACKS_REQUIREMENTS,
-                format!(
-                    "{} workflow packs declare no requirements to check.",
-                    discovery.packs.len()
-                ),
-            )
+    let broken = items.len();
+    let mut with_problems = 0;
+    let mut missing_requirements = 0;
+    let mut checked = 0;
+    let mut unchecked = 0;
+    for pack in &discovery.packs.packs {
+        let requires = &pack.manifest.requires;
+        let info = match (requires.is_empty(), object_info) {
+            (false, Some(info)) => Ok(info),
+            (false, None) => Err("ComfyUI node classes are unknown"),
+            (true, _) => Err(""),
         };
+        let validation = check_requirements(&pack.manifest.id, requires, info)
+            .with_problems(discovery.pack_problems(pack));
+        if !requires.is_empty() {
+            checked += 1;
+        }
+        if !validation.diagnostics.is_empty() {
+            with_problems += 1;
+        }
+        if validation
+            .node_classes
+            .iter()
+            .any(|node| node.status == Missing)
+            || validation
+                .models
+                .iter()
+                .any(|model| model.status == Missing)
+        {
+            missing_requirements += 1;
+        }
+        if matches!(
+            validation.status,
+            PackStatus::Unknown | PackStatus::Unavailable
+        ) {
+            unchecked += 1;
+        }
+        if object_info.is_some() {
+            items.extend(requirement_lines(&validation));
+        }
+        items.extend(
+            validation
+                .diagnostics
+                .iter()
+                .map(|problem| format!("{}: {}", validation.pack_id, clean(problem, None))),
+        );
     }
-    let Some(object_info) = object_info else {
+    let fix = "Install the missing nodes and models in ComfyUI yourself (GenAImage never installs or substitutes them), restart ComfyUI and run `genaimage doctor` again; `genaimage packs validate <ID>` rechecks one pack.";
+    let repair = "Repair or remove the listed packs and workflows; `genaimage packs validate <ID>` shows the same diagnostics. See docs/packs.md.";
+    let problems = broken + with_problems;
+    if object_info.is_none() && unchecked > 0 && problems == 0 && missing_requirements == 0 {
         return DoctorCheck::skipped(
             PACKS_REQUIREMENTS,
             "Not run: ComfyUI node classes are unknown.",
             "Fix `comfyui.reachable` and `comfyui.object_info` first.",
         );
-    };
-    let mut worst_missing = 0;
-    let mut unknown = 0;
-    for pack in &checking {
-        let validation = crate::pack_requirements::check_requirements(
-            &pack.manifest.id,
-            &pack.manifest.requires,
-            Ok(object_info),
-        );
-        let lines = requirement_lines(&validation);
-        match validation.status {
-            crate::pack_requirements::PackStatus::Missing => worst_missing += 1,
-            crate::pack_requirements::PackStatus::Ok => {}
-            _ => unknown += 1,
-        }
-        items.extend(lines);
     }
-    let fix = "Install the missing nodes and models in ComfyUI yourself (GenAImage never installs or substitutes them), restart ComfyUI and run `genaimage doctor` again; `genaimage packs validate <ID>` rechecks one pack.";
-    if worst_missing > 0 {
+    if missing_requirements > 0 {
         let summary = format!(
-            "{worst_missing} of {} workflow packs need nodes or models that ComfyUI does not provide.",
-            checking.len()
+            "{missing_requirements} of {checked} workflow packs need nodes or models that ComfyUI does not provide{}.",
+            if problems > 0 {
+                format!(", and {problems} have file or workflow problems")
+            } else {
+                String::new()
+            }
         );
-        let check = if worst_missing == checking.len() {
+        let check = if missing_requirements == checked && problems == 0 {
             DoctorCheck::error(PACKS_REQUIREMENTS, summary, fix)
         } else {
             DoctorCheck::warning(PACKS_REQUIREMENTS, summary, fix)
         };
         return check.with_items(items);
     }
-    if unknown > 0 || problems > 0 {
+    if problems > 0 {
+        let not_checked = if object_info.is_none() && unchecked > 0 {
+            " Their requirements were not checked because ComfyUI node classes are unknown."
+        } else {
+            ""
+        };
         return DoctorCheck::warning(
             PACKS_REQUIREMENTS,
-            format!(
-                "{unknown} workflow packs have requirements that could not be checked and {problems} pack problems were found."
-            ),
-            "Declare a model folder GenAImage can check (such as `checkpoints` or `loras`), and repair the listed packs; see docs/packs.md.",
+            format!("{problems} workflow packs have file or workflow problems.{not_checked}"),
+            repair,
         )
         .with_items(items);
     }
+    if unchecked > 0 {
+        return DoctorCheck::warning(
+            PACKS_REQUIREMENTS,
+            format!("{unchecked} workflow packs have requirements that could not be checked."),
+            "Declare a model folder GenAImage can check (such as `checkpoints` or `loras`); see docs/packs.md.",
+        )
+        .with_items(items);
+    }
+    if checked == 0 {
+        return DoctorCheck::ok(
+            PACKS_REQUIREMENTS,
+            format!(
+                "{} workflow packs declare no requirements to check.",
+                discovery.packs.packs.len()
+            ),
+        );
+    }
     DoctorCheck::ok(
         PACKS_REQUIREMENTS,
-        format!(
-            "All {} workflow packs have the nodes and models they require.",
-            checking.len()
-        ),
+        format!("All {checked} workflow packs have the nodes and models they require."),
     )
 }
 

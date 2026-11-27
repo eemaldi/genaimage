@@ -38,9 +38,11 @@ pub enum RequirementStatus {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackStatus {
-    /// Every declared requirement is confirmed present (or none is declared).
+    /// Every declared requirement is confirmed present (or none is declared)
+    /// and the pack has no file or workflow problems.
     Ok,
-    /// At least one requirement is confirmed missing.
+    /// A requirement is confirmed missing, or a declared file or workflow is
+    /// missing, rejected or duplicated.
     Missing,
     /// Nothing is missing, but at least one requirement could not be checked.
     Unknown,
@@ -73,6 +75,21 @@ pub struct PackValidation {
     pub reason: Option<String>,
     pub node_classes: Vec<NodeClassRequirement>,
     pub models: Vec<ModelRequirement>,
+    /// Problems with the pack's own files and workflows. Never empty for a
+    /// pack whose status is `ok`.
+    pub diagnostics: Vec<String>,
+}
+
+impl PackValidation {
+    /// Adds pack file and workflow problems. A pack with any problem is not
+    /// `ok`: declared files that are missing or rejected count as `missing`.
+    pub fn with_problems(mut self, problems: Vec<String>) -> Self {
+        if !problems.is_empty() && self.status == PackStatus::Ok {
+            self.status = PackStatus::Missing;
+        }
+        self.diagnostics = problems;
+        self
+    }
 }
 
 fn comparable(name: &str) -> String {
@@ -91,6 +108,7 @@ pub fn check_requirements(
         reason,
         node_classes,
         models,
+        diagnostics: Vec::new(),
     };
     if requires.is_empty() {
         return result(PackStatus::Ok, None, Vec::new(), Vec::new());
@@ -229,12 +247,12 @@ impl Harness {
     /// valid pack has that id. Never installs anything.
     pub async fn validate_pack(&self, id: &str) -> Result<Option<PackValidation>> {
         let harness = self.clone();
-        let discovery = tokio::task::spawn_blocking(move || harness.discover_packs())
+        let discovery = tokio::task::spawn_blocking(move || harness.discover_workflows())
             .await
             .map_err(|error| {
                 crate::HarnessError::Pack(format!("pack discovery failed: {error}"))
-            })?;
-        let Some(pack) = discovery.pack(id) else {
+            })??;
+        let Some(pack) = discovery.packs.pack(id) else {
             return Ok(None);
         };
         let requires = &pack.manifest.requires;
@@ -243,11 +261,10 @@ impl Harness {
         } else {
             self.fetch_object_info().await
         };
-        Ok(Some(check_requirements(
-            id,
-            requires,
-            info.as_ref().map_err(String::as_str),
-        )))
+        Ok(Some(
+            check_requirements(id, requires, info.as_ref().map_err(String::as_str))
+                .with_problems(discovery.pack_problems(pack)),
+        ))
     }
 }
 

@@ -456,13 +456,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything. */
+        /** @description Check a pack's declared node classes and models against ComfyUI /object_info, and its declared files and workflows. Reports missing and unknown requirements, pack problems and an unreachable backend as such; the status is never ok while diagnostics is non-empty. Never installs anything. */
         get: operations["packs_validate"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
-        /** @description Check a pack's declared node classes and models against ComfyUI /object_info. Reports missing and unknown requirements and an unreachable backend as such; never installs anything. */
+        /** @description Check a pack's declared node classes and models against ComfyUI /object_info, and its declared files and workflows. Reports missing and unknown requirements, pack problems and an unreachable backend as such; the status is never ok while diagnostics is non-empty. Never installs anything. */
         head: operations["packs_validate_head"];
         patch?: never;
         trace?: never;
@@ -1356,7 +1356,10 @@ export interface components {
         /** @description One valid pack with its declared contents. */
         PackSummary: {
             description: string;
-            /** @description Declared files that are missing or unreadable. */
+            /**
+             * @description Declared files that are missing, rejected or unreadable, and workflow
+             *     IDs that are duplicated or unavailable.
+             */
             diagnostics: string[];
             /** @description The pack directory. */
             directory: string;
@@ -1372,6 +1375,11 @@ export interface components {
         };
         /** @description Result of checking one pack against ComfyUI `/object_info`. */
         PackValidationResponse: {
+            /**
+             * @description Problems with the pack's own files and workflows (missing, rejected or
+             *     duplicated). The status is never `ok` while this is non-empty.
+             */
+            diagnostics: string[];
             models: components["schemas"]["PackModelCheck"][];
             node_classes: components["schemas"]["PackNodeCheck"][];
             pack_id: string;
@@ -1792,6 +1800,8 @@ export interface components {
         };
         /** @description Descriptive catalogue information for one workflow. */
         WorkflowSummary: {
+            /** @description `false` when another manifest claims the same ID, so it cannot be used. */
+            available: boolean;
             category?: string | null;
             description?: string | null;
             id: string;
@@ -1802,6 +1812,8 @@ export interface components {
             source: string;
             tags?: string[] | null;
             thumbnail_url?: string | null;
+            /** @description Why the workflow is unavailable, naming the other claimants. */
+            unavailable_reason: string | null;
             version: string;
         };
         /** @description Parameter overrides and an optional manifest preset to validate. */
@@ -2803,6 +2815,15 @@ export interface operations {
             };
             /** @description Problem details */
             408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Workflow ID declared by several manifests */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5675,7 +5696,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Workflow revision mismatch or idempotency key conflict */
+            /** @description Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6771,7 +6792,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Fingerprint mismatch or idempotency key conflict */
+            /** @description Fingerprint mismatch, workflow ID declared by several manifests or idempotency key conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -8226,6 +8247,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
+            /** @description Workflow ID declared by several manifests */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Problem details */
             413: {
                 headers: {
@@ -8305,6 +8335,13 @@ export interface operations {
             };
             /** @description Problem details */
             408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workflow ID declared by several manifests */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8401,6 +8438,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
+            /** @description Workflow ID declared by several manifests */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Problem details */
             413: {
                 headers: {
@@ -8481,6 +8527,13 @@ export interface operations {
             };
             /** @description Problem details */
             408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workflow ID declared by several manifests */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8576,7 +8629,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Workflow revision mismatch */
+            /** @description Workflow revision mismatch or workflow ID declared by several manifests */
             409: {
                 headers: {
                     [name: string]: unknown;

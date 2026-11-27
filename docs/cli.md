@@ -179,7 +179,8 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   for that shape.
 - **`workflow list`** lists catalogue entries and non-fatal discovery
   diagnostics. JSON is `{workflows, diagnostics}`. Each workflow has `id`,
-  `name`, `version`, `source` (`user` or `pack:<id>`), `revision`, `description`, `tags`,
+  `name`, `version`, `source` (`user` or `pack:<id>`), `available`,
+  `unavailable_reason`, `revision`, `description`, `tags`,
   `category` and `thumbnail_url`; the descriptive fields can be null. Each
   diagnostic has `path` and `error`.
 - **`workflow refresh`** forces a catalogue rebuild, including every pack, and
@@ -189,8 +190,11 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   `templates`, `requires` (`node_classes`, `models`) and `diagnostics`.
 - **`packs validate <ID>`** checks a pack's requirements against ComfyUI and
   never installs anything. JSON is `{pack_id, status, reason, node_classes,
-  models}` with `status` `ok`, `missing`, `unknown` or `unavailable`; exit `6`
-  unless it is `ok`. See [packs](packs.md#requirement-validation).
+  models, diagnostics}` with `status` `ok`, `missing`, `unknown` or
+  `unavailable`. Exit `0` only for `ok`; exit `6` for `missing`, `unknown` and
+  `unavailable`; exit `4` for a server problem such as an unknown pack ID
+  (`404`). The status is never `ok` while `diagnostics` is non-empty. See
+  [packs](packs.md#requirement-validation).
 - **`workflow inspect <ID>`** shows a catalogue workflow, its declared
   bindings and outputs. JSON is `WorkflowDetails`: `{schema_version, id,
   version, revision, title, workflow, description, tags, category, thumbnail, parameters,

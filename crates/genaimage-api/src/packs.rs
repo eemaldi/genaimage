@@ -28,7 +28,8 @@ pub struct PackSummary {
     /// Template paths relative to the pack. Listed only.
     pub templates: Vec<String>,
     pub requires: PackRequirements,
-    /// Declared files that are missing or unreadable.
+    /// Declared files that are missing, rejected or unreadable, and workflow
+    /// IDs that are duplicated or unavailable.
     pub diagnostics: Vec<String>,
 }
 
@@ -52,7 +53,9 @@ pub enum PackRequirementStatus {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PackValidationStatus {
+    /// Every requirement is present and the pack has no problems.
     Ok,
+    /// A requirement is missing, or a declared file or workflow is missing, rejected or duplicated.
     Missing,
     Unknown,
     /// ComfyUI could not be queried; nothing was confirmed.
@@ -85,4 +88,7 @@ pub struct PackValidationResponse {
     pub reason: Option<String>,
     pub node_classes: Vec<PackNodeCheck>,
     pub models: Vec<PackModelCheck>,
+    /// Problems with the pack's own files and workflows (missing, rejected or
+    /// duplicated). The status is never `ok` while this is non-empty.
+    pub diagnostics: Vec<String>,
 }

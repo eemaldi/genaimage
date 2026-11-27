@@ -164,6 +164,31 @@ pub(crate) fn read_regular_file_limited(path: &Path, limit: u64) -> io::Result<V
 
 impl LoadedWorkflow {
     pub fn load(manifest_path: &Path) -> Result<Self> {
+        Self::load_inner(manifest_path, None)
+    }
+
+    /// Loads a manifest and its API graph, refusing both unless they resolve
+    /// inside `boundary` (a canonical directory). Confinement is checked on the
+    /// canonical path before anything is read, and that path is what is read.
+    pub fn load_within(manifest_path: &Path, boundary: &Path) -> Result<Self> {
+        Self::load_inner(manifest_path, Some(boundary))
+    }
+
+    fn load_inner(manifest_path: &Path, boundary: Option<&Path>) -> Result<Self> {
+        let confined_manifest;
+        let manifest_path = match boundary {
+            None => manifest_path,
+            Some(boundary) => {
+                confined_manifest = fs::canonicalize(manifest_path)?;
+                if !confined_manifest.starts_with(boundary) {
+                    return Err(HarnessError::Pack(format!(
+                        "manifest '{}' resolves outside the pack directory through a symlink",
+                        manifest_path.display()
+                    )));
+                }
+                confined_manifest.as_path()
+            }
+        };
         let manifest_bytes = read_regular_file(manifest_path)?;
         let manifest_source: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
             HarnessError::Workflow(format!(
@@ -203,10 +228,25 @@ impl LoadedWorkflow {
                 "workflow id and version cannot be empty".to_owned(),
             ));
         }
-        let workflow_path = manifest_path
+        let mut workflow_path = manifest_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(&manifest.workflow);
+        if let Some(boundary) = boundary {
+            let real = fs::canonicalize(&workflow_path).map_err(|error| {
+                HarnessError::Workflow(format!(
+                    "cannot read workflow '{}': {error}",
+                    workflow_path.display()
+                ))
+            })?;
+            if !real.starts_with(boundary) {
+                return Err(HarnessError::Pack(format!(
+                    "workflow graph '{}' resolves outside the pack directory through a symlink",
+                    workflow_path.display()
+                )));
+            }
+            workflow_path = real;
+        }
         let workflow_bytes = read_regular_file(&workflow_path).map_err(|error| {
             HarnessError::Workflow(format!(
                 "cannot read workflow '{}': {error}",

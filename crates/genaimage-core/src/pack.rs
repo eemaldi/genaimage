@@ -13,7 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{workflow::read_regular_file_limited, Harness, HarnessError, Result};
+use crate::{workflow::read_regular_file_limited, Harness, HarnessError, LoadedWorkflow, Result};
 
 pub const PACK_FILE: &str = "pack.toml";
 pub const MAX_PACK_FILE_BYTES: u64 = 64 * 1024;
@@ -236,9 +236,11 @@ pub struct LoadedPack {
     pub manifest: PackManifest,
     /// The pack directory as found below its root.
     pub dir: PathBuf,
+    /// The resolved pack directory; every declared file resolves inside it.
+    pub canonical_dir: PathBuf,
     pub root: PathBuf,
     pub manifest_path: PathBuf,
-    /// Existing, confined workflow manifest files.
+    /// Existing workflow manifest files, as canonical paths inside the pack directory.
     pub workflow_paths: Vec<PathBuf>,
     pub templates: Vec<PackTemplate>,
     /// Declared files that are missing or unreadable; the pack still loads.
@@ -252,10 +254,10 @@ enum Confined {
 }
 
 /// Resolves `relative` below `dir`, rejecting symlinks that lead outside it.
+/// The canonical path is returned so that the file read is the file checked.
 fn confine(canonical_dir: &Path, dir: &Path, relative: &str) -> Result<Confined> {
-    let path = dir.join(relative);
-    match fs::canonicalize(&path) {
-        Ok(real) if real.starts_with(canonical_dir) => Ok(Confined::Inside(path)),
+    match fs::canonicalize(dir.join(relative)) {
+        Ok(real) if real.starts_with(canonical_dir) => Ok(Confined::Inside(real)),
         Ok(_) => Err(invalid(format!(
             "'{relative}' resolves outside the pack directory through a symlink"
         ))),
@@ -268,16 +270,24 @@ impl LoadedPack {
     /// Reads and validates the pack in `dir`, which must contain `pack.toml`.
     pub fn load(root: &Path, dir: &Path) -> Result<Self> {
         let manifest_path = dir.join(PACK_FILE);
-        let bytes = read_regular_file_limited(&manifest_path, MAX_PACK_FILE_BYTES)
+        let canonical = fs::canonicalize(dir)
+            .map_err(|error| invalid(format!("cannot resolve the pack directory: {error}")))?;
+        let real_manifest = fs::canonicalize(&manifest_path)
+            .map_err(|error| invalid(format!("cannot read {PACK_FILE}: {error}")))?;
+        if !real_manifest.starts_with(&canonical) {
+            return Err(invalid(format!(
+                "{PACK_FILE} resolves outside the pack directory through a symlink and was not read"
+            )));
+        }
+        let bytes = read_regular_file_limited(&real_manifest, MAX_PACK_FILE_BYTES)
             .map_err(|error| invalid(format!("cannot read {PACK_FILE}: {error}")))?;
         let source = String::from_utf8(bytes)
             .map_err(|_| invalid(format!("{PACK_FILE} is not valid UTF-8")))?;
         let manifest = PackManifest::parse(&source)?;
-        let canonical = fs::canonicalize(dir)
-            .map_err(|error| invalid(format!("cannot resolve the pack directory: {error}")))?;
         let mut pack = Self {
             manifest,
             dir: dir.to_path_buf(),
+            canonical_dir: canonical.clone(),
             root: root.to_path_buf(),
             manifest_path,
             workflow_paths: Vec::new(),
@@ -301,6 +311,12 @@ impl LoadedPack {
             }
         }
         Ok(pack)
+    }
+
+    /// Loads one declared workflow with its manifest and graph confined to the
+    /// pack directory. Discovery and every listing use this one function.
+    pub fn load_workflow(&self, manifest_path: &Path) -> Result<LoadedWorkflow> {
+        LoadedWorkflow::load_within(manifest_path, &self.canonical_dir)
     }
 
     fn declared_file_problem(&mut self, kind: &str, relative: &str, dir: &Path, outcome: Confined) {
@@ -396,6 +412,9 @@ pub fn discover_packs(roots: &[PathBuf]) -> PackDiscovery {
             }
             match LoadedPack::load(root, &dir) {
                 Ok(pack) => found.push(pack),
+                Err(HarnessError::Pack(message)) => {
+                    diagnostics.push(PackDiagnostic::new(&manifest, message))
+                }
                 Err(error) => diagnostics.push(PackDiagnostic::new(&manifest, error.to_string())),
             }
         }
@@ -622,6 +641,38 @@ loras = ["style.safetensors"]
         .unwrap();
         std::os::unix::fs::symlink(outside.join("t.md"), dir.join("t.md")).unwrap();
         assert!(LoadedPack::load(&root, &dir).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pack_toml_symlinked_outside_the_pack_is_never_read_or_echoed() {
+        let temp = tempfile::tempdir().unwrap();
+        let secret = temp.path().join("secret.txt");
+        fs::write(&secret, "TOPSECRET = not toml").unwrap();
+        let root = temp.path().join("root");
+        let dir = root.join("evil");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&secret, dir.join(PACK_FILE)).unwrap();
+        let error = LoadedPack::load(&root, &dir).unwrap_err().to_string();
+        assert!(error.contains("outside the pack directory"), "{error}");
+        assert!(!error.contains("TOPSECRET"), "{error}");
+        let found = discover_packs(&[root]);
+        assert!(found.packs.is_empty());
+        let message = &found.diagnostics[0].message;
+        assert!(!message.contains("TOPSECRET"), "{message}");
+        assert!(!message.contains("workflow pack invalid"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pack_toml_symlink_inside_the_pack_is_read_from_its_canonical_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let dir = root.join("ok");
+        fs::create_dir_all(dir.join("meta")).unwrap();
+        fs::write(dir.join("meta/real.toml"), "id='ok'\nversion='1'\n").unwrap();
+        std::os::unix::fs::symlink("meta/real.toml", dir.join(PACK_FILE)).unwrap();
+        assert_eq!(LoadedPack::load(&root, &dir).unwrap().manifest.id, "ok");
     }
 
     #[test]
