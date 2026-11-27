@@ -37,6 +37,7 @@
     type InsertMode,
     type Listing,
     type Template,
+    type TemplateVariable,
   } from './model';
 
   let {
@@ -178,6 +179,13 @@
   function setEntry(variable: string, entry: Entry) {
     entries = { ...entries, [variable]: entry };
     invalidatePreview(variable);
+  }
+
+  async function chooseValue(variable: TemplateVariable, entry: Entry) {
+    setEntry(variable.name, entry);
+    await focusAfterUpdate(
+      () => document.getElementById(fieldId(variable.name)) ?? undefined,
+    );
   }
 
   async function choose(template: Template) {
@@ -389,9 +397,7 @@
               <Input
                 id={fieldId(variable.name)}
                 label={`${variable.name} (${isRequired(variable) ? 'required' : 'optional'})`}
-                hint={[variable.description, entryStatus(variable, entry)]
-                  .filter(Boolean)
-                  .join(' ')}
+                hint={[variable.description, entryStatus(variable, entry)]}
                 error={fieldErrors[variable.name]}
                 multiline
                 rows={2}
@@ -404,7 +410,7 @@
                 {#if entry.kind === 'text' && variable.default != null}
                   <Button
                     aria-label={`Use the default for ${variable.name}`}
-                    onclick={() => setEntry(variable.name, absent)}
+                    onclick={() => chooseValue(variable, absent)}
                     >Use default</Button
                   >
                 {/if}
@@ -412,7 +418,7 @@
                   <Button
                     aria-label={`Use an empty value for ${variable.name}`}
                     onclick={() =>
-                      setEntry(variable.name, { kind: 'text', text: '' })}
+                      chooseValue(variable, { kind: 'text', text: '' })}
                     >Use empty value</Button
                   >
                 {/if}

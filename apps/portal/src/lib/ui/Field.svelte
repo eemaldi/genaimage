@@ -10,7 +10,7 @@
   }: {
     id?: string;
     label: string;
-    hint?: string;
+    hint?: string | Array<string | null | undefined>;
     error?: string;
     children: Snippet<
       [
@@ -23,7 +23,10 @@
     >;
   } = $props();
   const uid = $props.id();
-  const hintId = `${uid}-hint`;
+  const hints = $derived(
+    (Array.isArray(hint) ? hint : [hint]).filter((line) => !!line),
+  );
+  const hintIds = $derived(hints.map((_, index) => `${uid}-hint-${index}`));
   const errorId = `${uid}-error`;
 </script>
 
@@ -32,9 +35,9 @@
   {@render children({
     id: id ?? uid,
     'aria-describedby':
-      [hint && hintId, error && errorId].filter(Boolean).join(' ') || undefined,
+      [...hintIds, error && errorId].filter(Boolean).join(' ') || undefined,
     'aria-invalid': error ? true : undefined,
   })}
-  {#if hint}<p id={hintId}>{hint}</p>{/if}
+  {#each hints as line, index (index)}<p id={hintIds[index]}>{line}</p>{/each}
   {#if error}<p id={errorId} class="ui-field-error">{error}</p>{/if}
 </div>

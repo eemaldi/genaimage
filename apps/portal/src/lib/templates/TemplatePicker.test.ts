@@ -385,3 +385,39 @@ test('focus follows the step: the fill heading after choosing, the list heading 
   });
   await waitFor(() => expect(document.activeElement).toBe(list));
 });
+
+test('keeps the variable description and its status as separate hint lines', async () => {
+  const user = mount();
+  await openPicker(user);
+  await choose(user, 'Studio portrait');
+  const hints = (name: string) =>
+    (field(name).getAttribute('aria-describedby') ?? '')
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent);
+  expect(hints('subject (required)')).toEqual([
+    'Who or what',
+    'Required: enter a value or use an empty value.',
+  ]);
+  expect(hints('lighting (optional)')).toEqual([
+    'Not set: the default “soft” is used.',
+  ]);
+});
+
+test('keeps focus on the variable field after using the default or an empty value', async () => {
+  const user = mount();
+  await openPicker(user);
+  await choose(user, 'Studio portrait');
+  await user.type(field('lighting (optional)'), 'hard');
+  await user.click(
+    screen.getByRole('button', { name: 'Use the default for lighting' }),
+  );
+  await waitFor(() =>
+    expect(document.activeElement).toBe(field('lighting (optional)')),
+  );
+  await user.click(
+    screen.getByRole('button', { name: 'Use an empty value for lighting' }),
+  );
+  await waitFor(() =>
+    expect(document.activeElement).toBe(field('lighting (optional)')),
+  );
+});
