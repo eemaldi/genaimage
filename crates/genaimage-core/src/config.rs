@@ -166,6 +166,8 @@ pub struct HarnessPaths {
     pub packs: Option<Vec<PathBuf>>,
     pub runs: Option<PathBuf>,
     pub uploads: Option<PathBuf>,
+    /// Writable user prompt template library: one `<id>.toml` file per template.
+    pub templates: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -181,6 +183,8 @@ pub struct ResolvedConfig {
     pub packs: Vec<PathBuf>,
     pub runs: PathBuf,
     pub uploads: PathBuf,
+    /// Writable user prompt template directory; it may be missing.
+    pub templates: PathBuf,
     #[serde(skip)]
     pub(crate) data_dir: PathBuf,
     pub claim_legacy_state: bool,
@@ -420,6 +424,7 @@ impl HarnessConfig {
         }
         path!("GENAIMAGE_RUNS", config.paths.runs);
         path!("GENAIMAGE_UPLOADS", config.paths.uploads);
+        path!("GENAIMAGE_TEMPLATES", config.paths.templates);
         if let Some(error) = validate_fields(&config.server, &config.comfyui, &config.llm)
             .into_iter()
             .next()
@@ -477,6 +482,12 @@ impl HarnessConfig {
                 "paths.uploads",
                 config.paths.uploads,
                 data.join("uploads"),
+            )?,
+            templates: resolve_path(
+                &workspace,
+                "paths.templates",
+                config.paths.templates,
+                workspace_data.join("templates"),
             )?,
             data_dir: workspace_data,
             workspace,
