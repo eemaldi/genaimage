@@ -73,6 +73,10 @@ usage errors, help and version text normally, even with `--json`.
 `serve` and `config init` write `{status: "error", error: "<message>"}` to
 stderr for local failures in JSON mode.
 
+- **`healthcheck`** is used by the container health check. It succeeds when
+  `/api/v1/health` answers on `GENAIMAGE_SERVER_PORT` within two seconds and is
+  not meant for scripts; use `doctor`.
+
 ### Shell completions
 
 `genaimage completions <shell>` prints a completion script without starting the

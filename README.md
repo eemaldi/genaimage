@@ -1,188 +1,122 @@
 # GenAImage
 
-GenAImage is a thin, fast, local harness for controlled, inspectable ComfyUI
-image generation. The target is a loopback server with an embedded web portal,
-a thin CLI and local LLM assistance; see [ADR 0001](docs/adr/0001-target-architecture.md)
-and the [architecture](docs/architecture.md). The loopback server offers a health
-endpoint, workflows, runs, outputs, uploads, settings and a [live event stream](docs/architecture.md#live-event-stream).
-The server embeds the Svelte portal: dashboard, generate, jobs, gallery,
-workflows, run detail, diagnostics and settings. LLM assistance is still being
-built.
+GenAImage is a thin, fast, local harness for controlled, inspectable image
+generation. ComfyUI generates the images, local OpenAI-compatible LLMs (such as
+Ollama) assist, and every generation choice stays explicit: nothing silently
+substitutes a model, seed, prompt or setting, and the assistant never submits a
+run without your confirmation. It runs as a loopback server with an embedded web
+portal and a scripted CLI. See [ADR 0001](docs/adr/0001-target-architecture.md)
+and the [architecture](docs/architecture.md).
 
-Today it validates API-format workflows, submits explicit parameter values,
-tracks queue state, and captures outputs and provenance.
+ComfyUI, models, weights and custom nodes remain separate and external.
+GenAImage never installs, bundles or substitutes them, and downloads a model
+only when you ask. The server binds to loopback only and is not authenticated;
+do not expose it.
 
-ComfyUI remains a separate process. GenAImage does not install, start, bundle,
-or replace ComfyUI, models, weights, or custom nodes.
+<!-- Screenshot (component B): dashboard, docs/images/dashboard.png -->
 
-## Current interfaces
+## Quick start: Docker Compose
 
-`genaimage` is the Rust command-line application for scripts and reproducible
-operation. `genaimage serve` starts the local HTTP server. Health, workflow,
-preset, settings, run, job and `open` commands use that server.
-`genaimage open` opens the server root (the portal in default builds);
-`--print` prints its URL. Shell completion scripts do not need a running server.
-See the [CLI reference](docs/cli.md) for shell installation, server selection,
-image uploads and JSON.
+Needs Docker with Compose. The first start builds the GenAImage and ComfyUI
+images from this repository (several minutes). The default stack runs ComfyUI on
+the CPU; for AMD ROCm or NVIDIA, choose an accelerator in `.env` first (see
+[Docker Compose](docs/compose.md#accelerators)).
 
-## Current scope
+```bash
+cp .env.example .env
+docker compose up -d
+```
 
-- One local ComfyUI host on a loopback URL.
-- ComfyUI API-format workflow JSON, never an implicit prompt-only path.
-- Strict workflow manifests with typed node bindings, presets, uploads and outputs.
-- Queue inspection, WebSocket progress, queued deletion, active interruption,
-  and reconciliation after either process restarts.
-- SQLite operational state plus portable, checksummed run manifests.
+Open `http://127.0.0.1:8190`. The setup wizard opens automatically while setup
+is needed (also at `#/setup`). The stack contains no models, so you choose them:
 
-Remote/multi-host routing, cloud storage, model installation, and custom-node
-management are outside the current scope. The planned outbound endpoint policy
-allows explicitly configured private or Compose hosts; the server itself
-binds to loopback only.
+1. Add a checkpoint to ComfyUI, for example
+   `docker compose cp ./sd_xl_base_1.0.safetensors comfyui:/opt/comfyui/models/checkpoints/`.
+   Download it yourself and check its licence; see [models](docs/models.md).
+2. Pull an LLM on the portal's Models page (`#/models`) or with
+   `docker compose exec genaimage genaimage models pull <model>`. Model names
+   such as `qwen3:8b` are examples, not defaults.
+3. Select the LLM in the wizard, or set `GENAIMAGE_LLM_TEXT_MODEL` in `.env`.
+4. Run the wizard's test generation, then open Generate.
 
-## Docker Compose
+<!-- Screenshots (component B): setup wizard docs/images/setup-wizard.png; models docs/images/models.png -->
 
-`docker compose up -d` starts GenAImage, ComfyUI and Ollama on loopback; see
-[Docker Compose](docs/compose.md).
+## Quick start: binary with existing ComfyUI and Ollama
 
-## Prerequisites
+Prerequisites: a running ComfyUI (default `http://127.0.0.1:8188`) and, for the
+assistant, an OpenAI-compatible LLM such as Ollama.
 
-- A working local ComfyUI installation and server, normally at
-  `http://127.0.0.1:8188`.
-- Rust 1.80 or newer with `cargo`.
-- Node.js 24 and npm for building the embedded portal from source.
-- Python 3.11 or newer for repository checks.
-
-## Quick start
-
-Build the portal, create project configuration, then start the loopback server:
+Published release binaries and container images are not yet available: nothing
+is published until the first release tag exists (see [setup](docs/setup.md#releases)).
+Until then, build from source with Rust 1.80 or newer and Node.js 24:
 
 ```bash
 (cd apps/portal && npm ci && npm run build)
-cp genaimage.example.toml genaimage.toml
-cargo run -p genaimage -- serve
-```
-
-From a separate terminal, check its health:
-
-```bash
-cargo run -p genaimage -- doctor
-```
-
-Open `http://127.0.0.1:3000/` to view the embedded portal. The server starts
-without ComfyUI. Health reports the image backend as `unavailable` until it
-responds.
-
-List and inspect the bundled workflow examples:
-
-```bash
-cargo run -p genaimage -- workflow list
-cargo run -p genaimage -- workflow validate text-to-image --preset fast \
-  --set checkpoint='"my-local-checkpoint.safetensors"' \
-  --set positive_prompt='"an approved, specific visual description"'
-cargo run -p genaimage -- workflow inspect text-to-image
-```
-
-Submit a generic run with every non-default value explicit:
-
-```bash
-cargo run -p genaimage -- run text-to-image \
-  --preset fast \
-  --set checkpoint='"my-local-checkpoint.safetensors"' \
-  --set positive_prompt='"an approved, specific visual description"' \
-  --version v0.1 \
-  --wait
-```
-
-Values passed with `--set` must be valid JSON. Quote JSON strings as shown
-in the example and specify each parameter at most once.
-
-Useful job commands:
-
-```bash
-cargo run -p genaimage -- jobs list
-cargo run -p genaimage -- jobs show <run-id>
-cargo run -p genaimage -- jobs reconcile
-cargo run -p genaimage -- jobs wait <run-id>
-cargo run -p genaimage -- jobs cancel <run-id>
-cargo run -p genaimage -- open --print
-cargo run -p genaimage -- completions bash
-```
-
-Install the CLI and server binary after building the portal:
-
-```bash
 cargo install --locked --path crates/genaimage
 ```
 
-For an API-only source build without Node.js or portal assets, pass
-`--no-default-features` to `cargo run`, `cargo build` or `cargo install`.
-
-## HTTP API
-
-The local API publishes its [OpenAPI 3.1 contract](docs/api/openapi.json) at
-`GET /api/v1/openapi.json`. To pin a reviewed workflow, pass its `revision` as
-`workflow_revision` on validation and submission. A stale revision returns
-HTTP 409 (`urn:genaimage:problem:workflow-changed`); reload and review before
-submitting again. Omitting the field leaves the request unpinned. See the
-[Workflows API notes](docs/architecture.md#workflows-api) for details.
-
-Regenerate the checked-in contract after API changes:
+Then configure, serve and check:
 
 ```bash
-cargo run -p genaimage-server --no-default-features --example openapi
+genaimage config init        # writes ./genaimage.toml; edit the endpoints
+genaimage serve              # http://127.0.0.1:3000
+genaimage doctor             # in a second terminal
 ```
 
-The routes and contract are registered together; CI checks the generated
-contract, its structure and its operations against the real router. Run `npm ci`
-in `apps/portal` and `python3 scripts/generate_portal_types.py` from the
-repository root to regenerate `apps/portal/src/lib/api/schema.d.ts`. CI checks
-the generated file with `python3 scripts/generate_portal_types.py --check`,
-using the portal's pinned generator.
+The server starts without ComfyUI; `doctor` tells you what is missing and how
+to fix it ([troubleshooting](docs/troubleshooting.md#doctor-checks)). An API-only
+build without Node.js needs `--no-default-features`.
 
-## Persistent records
+## First generation
 
-When `XDG_DATA_HOME` is unset, it defaults to `~/.local/share`. See the
-[setup guide](docs/setup.md) for overrides and migration of existing data.
+Use the portal (Generate), or the CLI with every non-default value explicit:
 
-- `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/state.sqlite3` contains rebuildable operational state: run status,
-  ComfyUI IDs, events, cancellation, and outputs.
-- `$XDG_DATA_HOME/genaimage/workspaces/<workspace-hash>/runs/` contains resolved workflows, preflight records, checksummed outputs,
-  and `run-manifest.json`.
+```bash
+genaimage workflow list
+genaimage run text-to-image --preset fast \
+  --set checkpoint='"my-local-checkpoint.safetensors"' \
+  --set positive_prompt='"an approved, specific visual description"' --wait
+```
 
-An ambiguous prompt submission is never automatically replayed. Reconcile the
-run against ComfyUI queue/history first, then decide whether a new run is
-appropriate.
+<!-- Screenshots (component B): generate docs/images/generate.png; run detail with an image docs/images/run-detail.png; diagnostics docs/images/diagnostics.png -->
 
-## Add a workflow
+## Documentation
 
-Each workflow has an unmodified ComfyUI API export plus a sidecar manifest ending
-in `.genaimage.json`. The manifest maps named harness parameters to node inputs
-and declares presets, uploaded references, outputs and generation mode.
+The full index is in [docs/README.md](docs/README.md). Start with:
 
-See the [workflow manifest reference](docs/workflow-manifest.md) and
-[architecture](docs/architecture.md).
+- [Setup](docs/setup.md) and [Docker Compose](docs/compose.md)
+- [Models](docs/models.md): checkpoints and LLM pulls
+- [Configuration](docs/configuration.md), [CLI](docs/cli.md) and [API](docs/api.md) references
+- [Workflow manifest](docs/workflow-manifest.md)
+- [Troubleshooting](docs/troubleshooting.md)
+
+## What it does and does not do
+
+- One local ComfyUI host, with ComfyUI API-format workflows and strict
+  `*.genaimage.json` manifests; submission is explicit and idempotent.
+- Queue tracking, progress, cancellation and reconciliation after a restart;
+  an ambiguous submission is reconciled, never blindly retried.
+- SQLite state and checksummed run manifests for provenance.
+- Not in scope: remote or multi-host routing, cloud storage, installing models
+  or custom nodes, authentication.
 
 ## Development
 
-See the [testing guide](docs/testing.md) for focused assistant scenarios,
-opt-in local Ollama tests and the repository's test safety invariants.
-
-Run all repository checks:
+Run all repository checks (it installs portal dependencies and builds the portal
+first):
 
 ```bash
 python3 scripts/ci_check.py
 ```
 
-The command verifies repository links and skill mirrors, formats and lints the
-Rust workspace, runs Rust tests, and checks the Python skill helpers. It installs
-locked portal dependencies, checks generated API types, and runs portal lint,
-type-check, tests and the build **before** compiling Rust. The portal steps
-require Node.js 24 and npm.
+See the [testing guide](docs/testing.md), [releasing](docs/releasing.md) and
+[performance budgets](docs/performance.md). Contributors and agents also read
+[AGENTS.md](AGENTS.md).
 
 ### Portal development
 
-The Svelte 5 portal has responsive navigation, system light/dark themes and
-placeholder pages. For hot module replacement (HMR), run the server on the
+The Svelte 5 portal has responsive navigation and system light/dark themes. For
+hot module replacement (HMR), run the server on the
 port configured in Vite's `/api` proxy and open the loopback URL printed by Vite:
 
 ```bash
