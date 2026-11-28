@@ -225,6 +225,52 @@ sends no revision, as it has no review step.
 name, the `{pack, id, revision, label}` of each profile that lists it (an empty list when
 none does) and a `profile_note`.
 
+## Character-art pack
+
+`workflows/packs/character-art` is the bundled guided character-art pack. It
+uses only core ComfyUI nodes, so the doctor and `GET /api/v1/packs/character-art/validate`
+need no custom node. The checkpoint is never chosen for you: each workflow
+requires an exact checkpoint file name, and the pack declares no model file.
+
+| Workflow | Purpose | Image inputs (chosen by the user) |
+| --- | --- | --- |
+| `portrait` | Text-to-image character art on a portrait canvas. | None |
+| `sketch-to-image` | Paints over your sketch; `denoise` (default 0.6) sets how far the result may move from it. | `sketch` |
+| `inpaint` | Repaints the white areas of `mask_image` over `source_image`; `denoise` defaults to 1.0. | `source_image`, `mask_image` |
+| `turnaround` | Front, side and back views on a wide canvas. | None |
+
+Layout presets (`preset_info` kind `layout`) set the canvas. `portrait` offers
+`portrait-2x3` (Portrait 2:3, 832 by 1248), `portrait-3x4` (Portrait 3:4, 896 by
+1184) and `square` (Square 1:1, 1024 by 1024); `turnaround` offers
+`turnaround-3-view` (Turnaround 2:1, 1536 by 768). `sketch-to-image` and `inpaint`
+take their canvas from the image.
+
+Steps, cfg, seed, sampler, scheduler, filename prefix and the canvas size are
+advanced controls. Each workflow's negative prompt discourages photorealism,
+glossy rendering, and text or watermarks, so the default look stays painterly
+and unfinished.
+
+Checkpoint profiles in `checkpoints.toml` apply to exact file names only:
+
+| Profile | Checkpoint | Values |
+| --- | --- | --- |
+| `sdxl-base` | `sd_xl_base_1.0.safetensors` | 30 steps, cfg 7.0, `dpmpp_2m`, `karras` |
+| `sd15` | `v1-5-pruned-emaonly.safetensors` | 25 steps, cfg 7.5, `dpmpp_2m`, `karras` |
+
+Stable Diffusion 1.5 was trained at 512 pixels, so the SDXL-sized layouts give
+weaker results with it. Profiles never set the seed, an image or the checkpoint.
+
+The pack declares two prompt templates in `templates/`:
+
+- `concept-art` (`pack:character-art:templates/concept-art.toml`) takes `subject`
+  and `mandatory` (both required), and `flexible`, `palette` and `view` (optional)
+  to assemble painterly, unfinished concept-art wording.
+- `turnaround` (`pack:character-art:templates/turnaround.toml`) takes `subject`
+  (required) and `detail` (optional), and adds the turnaround sheet wording.
+
+The optional `palette` variable takes a phrase, such as `in muted earth tones`;
+left empty, it adds nothing to the prompt.
+
 ## API and CLI
 
 | Surface | Result |
