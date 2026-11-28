@@ -160,6 +160,32 @@ A preset is a named set of parameter values. CLI values override preset
 values, and the effective values are recorded in the run manifest. A preset does
 not approve content.
 
+### Preset presentation
+
+`preset_info` optionally labels presets for operator surfaces. Every key must
+name an existing preset, otherwise the manifest is invalid:
+
+```json
+"preset_info": {
+  "portrait": {"label": "Portrait 2:3", "description": "Tall canvas.", "kind": "layout"}
+}
+```
+
+`label` (1 to 80 bytes, one line) and `description` (1 to 500 bytes) are
+optional, and so is `kind`: `layout` for presets that set the canvas size,
+`style` or `quality`. The field is presentation only; it never changes a
+preset's values, and `presets` keeps its shape. A manifest without `preset_info`
+is unchanged, and so is its revision. The workflow details response carries
+`preset_info` as an object (empty when absent).
+
+### Effective values and their sources
+
+Precedence, lowest first: the parameter default, a [checkpoint profile](packs.md#checkpoint-profiles)
+that the request names, the preset, then the user's own value. The validate
+endpoint reports `effective_values` (`parameter`, `value`, `source` and, for a
+profile, `checkpoint_profile`); `source` is `default`, `checkpoint_profile`,
+`preset` or `user`.
+
 ## Importing a ComfyUI workflow
 
 Writing a manifest by hand is optional. The server can propose one from a

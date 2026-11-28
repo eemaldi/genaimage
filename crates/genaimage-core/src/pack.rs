@@ -13,7 +13,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{workflow::read_regular_file_limited, Harness, HarnessError, LoadedWorkflow, Result};
+use crate::{
+    checkpoint_profiles::CheckpointProfile, workflow::read_regular_file_limited, Harness,
+    HarnessError, LoadedWorkflow, Result,
+};
 
 pub const PACK_FILE: &str = "pack.toml";
 pub const MAX_PACK_FILE_BYTES: u64 = 64 * 1024;
@@ -61,6 +64,9 @@ pub struct PackManifest {
     pub templates: Vec<String>,
     #[serde(default)]
     pub requires: PackRequires,
+    /// Optional TOML file of checkpoint profiles, relative to the pack.
+    #[serde(default)]
+    pub checkpoint_profiles: Option<String>,
 }
 
 fn invalid(message: impl Into<String>) -> HarnessError {
@@ -163,6 +169,14 @@ impl PackManifest {
         for path in &self.templates {
             validate_relative("template", path)?;
         }
+        if let Some(path) = &self.checkpoint_profiles {
+            validate_relative("checkpoint profiles", path)?;
+            if !path.ends_with(".toml") {
+                return Err(invalid(format!(
+                    "checkpoint profiles path '{path}' must end in .toml"
+                )));
+            }
+        }
         check_unique("workflow", self.workflows.iter())?;
         check_unique("template", self.templates.iter())?;
         let requires = &self.requires;
@@ -243,6 +257,8 @@ pub struct LoadedPack {
     /// Existing workflow manifest files, as canonical paths inside the pack directory.
     pub workflow_paths: Vec<PathBuf>,
     pub templates: Vec<PackTemplate>,
+    /// Profiles from the declared file; empty when it is absent or invalid.
+    pub checkpoint_profiles: Vec<CheckpointProfile>,
     /// Declared files that are missing or unreadable; the pack still loads.
     pub diagnostics: Vec<PackDiagnostic>,
 }
@@ -292,6 +308,7 @@ impl LoadedPack {
             manifest_path,
             workflow_paths: Vec::new(),
             templates: Vec::new(),
+            checkpoint_profiles: Vec::new(),
             diagnostics: Vec::new(),
         };
         for relative in pack.manifest.workflows.clone() {
@@ -308,6 +325,23 @@ impl LoadedPack {
                     file,
                 }),
                 outcome => pack.declared_file_problem("template", &relative, dir, outcome),
+            }
+        }
+        if let Some(relative) = pack.manifest.checkpoint_profiles.clone() {
+            match confine(&canonical, dir, &relative)? {
+                Confined::Inside(file) => match read_profiles(&file) {
+                    Ok(profiles) => pack.checkpoint_profiles = profiles,
+                    Err(reason) => pack.diagnostics.push(PackDiagnostic::new(
+                        &dir.join(&relative),
+                        format!(
+                            "pack '{}' checkpoint profiles '{relative}' were not loaded: {reason}",
+                            pack.manifest.id
+                        ),
+                    )),
+                },
+                outcome => {
+                    pack.declared_file_problem("checkpoint profiles", &relative, dir, outcome)
+                }
             }
         }
         Ok(pack)
@@ -332,6 +366,12 @@ impl LoadedPack {
             ),
         ));
     }
+}
+
+fn read_profiles(file: &Path) -> std::result::Result<Vec<CheckpointProfile>, String> {
+    let bytes = read_regular_file_limited(file, MAX_PACK_FILE_BYTES).map_err(|e| e.to_string())?;
+    let source = String::from_utf8(bytes).map_err(|_| "the file is not valid UTF-8".to_owned())?;
+    crate::checkpoint_profiles::parse_profiles(&source)
 }
 
 #[derive(Clone, Debug, Default)]

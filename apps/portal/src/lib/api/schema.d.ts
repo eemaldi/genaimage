@@ -1317,10 +1317,37 @@ export interface components {
             environment: components["schemas"]["CheckpointEnvironment"];
             steps: string[];
         };
+        /** @description A pack checkpoint profile, identified by pack and profile ID. */
+        CheckpointProfileRef: {
+            id: string;
+            label: string;
+            pack: string;
+        };
+        /** @description A pack's checkpoint profile as it applies to one workflow. */
+        CheckpointProfileSummary: {
+            /** @description Exact checkpoint names the profile matches. */
+            checkpoints: string[];
+            id: string;
+            label: string;
+            note?: string | null;
+            /** @description Values for the parameters this workflow defines, exactly as declared. */
+            values: {
+                [key: string]: unknown;
+            };
+        };
         CheckpointsResponse: {
             /** @description `ckpt_name` options of ComfyUI's `CheckpointLoaderSimple`, sorted. */
             checkpoints: string[];
             locations: components["schemas"]["CheckpointLocation"][];
+            profile_note?: string;
+            /**
+             * @description For every checkpoint name, the pack profiles that list exactly that
+             *     name. An empty list means no profile matches; none is ever inferred
+             *     from the file name.
+             */
+            profiles?: {
+                [key: string]: components["schemas"]["CheckpointProfileRef"][];
+            };
             /** @description ComfyUI only sees new files after a refresh or restart. */
             refresh_note: string;
         };
@@ -1682,6 +1709,17 @@ export interface components {
         };
         /** @enum {string} */
         PackValidationStatus: "ok" | "missing" | "unknown" | "unavailable";
+        /** @description Presentation of one preset. */
+        PresetInfo: {
+            description?: string | null;
+            kind?: null | components["schemas"]["PresetKind"];
+            label?: string | null;
+        };
+        /**
+         * @description `layout` presets set the canvas size or arrangement.
+         * @enum {string}
+         */
+        PresetKind: "layout" | "style" | "quality";
         /** @description RFC 9457 problem details with a GenAImage recovery hint. */
         ProblemDetails: {
             /** @description `template-changed`: the SHA-256 of the template as it is now. */
@@ -1984,6 +2022,11 @@ export interface components {
         };
         /** @description Explicit bindings for a workflow configured in the local workspace. */
         SubmitRunRequest: {
+            /**
+             * @description A checkpoint profile of the workflow's pack. It applies only when named,
+             *     and only if the effective checkpoint is one of its exact names.
+             */
+            checkpoint_profile?: string | null;
             parameters?: {
                 [key: string]: unknown;
             };
@@ -2117,11 +2160,25 @@ export interface components {
         /** @description A version 2 workflow manifest, including its parameter UI hints. */
         WorkflowDetails: {
             category?: string | null;
+            /**
+             * @description The parameter bound to the checkpoint loader, which a checkpoint profile
+             *     is matched against. Absent when the workflow has none or several.
+             */
+            checkpoint_parameter?: string | null;
+            /**
+             * @description Checkpoint profiles of the workflow's pack. Empty for a user workflow.
+             *     A profile is applied only when a request names it.
+             */
+            checkpoint_profiles?: components["schemas"]["CheckpointProfileSummary"][];
             description?: string | null;
             id: string;
             outputs: components["schemas"]["WorkflowOutput"][];
             parameters: {
                 [key: string]: components["schemas"]["WorkflowParameter"];
+            };
+            /** @description Optional labels for presets, keyed by preset name. Never changes values. */
+            preset_info?: {
+                [key: string]: components["schemas"]["PresetInfo"];
             };
             presets: {
                 [key: string]: {
@@ -2142,6 +2199,14 @@ export interface components {
         WorkflowDiagnostic: {
             error: string;
             path: string;
+        };
+        /** @description One submitted value and its source. */
+        WorkflowEffectiveValue: {
+            /** @description The profile ID when `source` is `checkpoint_profile`. */
+            checkpoint_profile?: string | null;
+            parameter: string;
+            source: components["schemas"]["WorkflowValueSource"];
+            value: unknown;
         };
         WorkflowImportBoundInput: {
             input: string;
@@ -2354,6 +2419,8 @@ export interface components {
         };
         /** @description Parameter overrides and an optional manifest preset to validate. */
         WorkflowValidationRequest: {
+            /** @description Checkpoint profile to layer beneath the preset. Never implied. */
+            checkpoint_profile?: string | null;
             parameters?: {
                 [key: string]: unknown;
             };
@@ -2363,6 +2430,11 @@ export interface components {
         };
         /** @description The result of validating bindings and checking backend node availability. */
         WorkflowValidationResponse: {
+            /**
+             * @description Every parameter with a value, and where it comes from, in the order
+             *     default, checkpoint profile, preset, user value (later wins).
+             */
+            effective_values?: components["schemas"]["WorkflowEffectiveValue"][];
             /** @description Graph inputs left untouched by binding, not submitted parameter values. */
             inherited_inputs?: components["schemas"]["WorkflowInheritedInput"][];
             node_check: components["schemas"]["WorkflowNodeCheck"];
@@ -2371,6 +2443,8 @@ export interface components {
             revision: string;
             valid: boolean;
         };
+        /** @enum {string} */
+        WorkflowValueSource: "default" | "checkpoint_profile" | "preset" | "user";
     };
     responses: never;
     parameters: never;

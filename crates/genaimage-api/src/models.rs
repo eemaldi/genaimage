@@ -128,4 +128,19 @@ pub struct CheckpointsResponse {
     pub locations: Vec<CheckpointLocation>,
     /// ComfyUI only sees new files after a refresh or restart.
     pub refresh_note: String,
+    /// For every checkpoint name, the pack profiles that list exactly that
+    /// name. An empty list means no profile matches; none is ever inferred
+    /// from the file name.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, Vec<CheckpointProfileRef>>,
+    #[serde(default)]
+    pub profile_note: String,
+}
+
+/// A pack checkpoint profile, identified by pack and profile ID.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct CheckpointProfileRef {
+    pub pack: String,
+    pub id: String,
+    pub label: String,
 }

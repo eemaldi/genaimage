@@ -73,6 +73,13 @@
         }
       }
     },
+    "preset_info": {
+      "type": "object",
+      "description": "Optional presentation of presets. Every key must name an entry of presets.",
+      "additionalProperties": {
+        "$ref": "#/definitions/preset_info"
+      }
+    },
     "outputs": {
       "type": "array",
       "items": {
@@ -81,6 +88,29 @@
     }
   },
   "definitions": {
+    "preset_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "kind": {
+          "enum": [
+            "layout",
+            "style",
+            "quality"
+          ]
+        }
+      }
+    },
     "parameter": {
       "type": "object",
       "additionalProperties": false,

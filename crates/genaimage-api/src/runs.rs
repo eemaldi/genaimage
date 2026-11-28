@@ -16,6 +16,10 @@ pub struct SubmitRunRequest {
     pub workflow_revision: Option<String>,
     #[serde(default)]
     pub preset: Option<String>,
+    /// A checkpoint profile of the workflow's pack. It applies only when named,
+    /// and only if the effective checkpoint is one of its exact names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, Value>,
     /// Optional output version. Existing artefacts are never overwritten.

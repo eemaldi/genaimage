@@ -723,6 +723,7 @@ pub fn propose(graph: &Value, name: Option<&str>) -> Result<ImportProposal, Impo
         thumbnail: None,
         parameters,
         presets: BTreeMap::new(),
+        preset_info: BTreeMap::new(),
         outputs,
     };
     let (_, problems) = LoadedWorkflow::from_bytes_unchecked(

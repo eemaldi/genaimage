@@ -257,6 +257,7 @@ impl AssistantTool for SubmitRunTool {
                     preset: arguments.preset,
                     parameters: arguments.parameters,
                     version: None,
+                    checkpoint_profile: None,
                 },
             )
             .await?;

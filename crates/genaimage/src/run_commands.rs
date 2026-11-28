@@ -43,6 +43,7 @@ pub(crate) async fn run(
         workflow_revision: None,
         workflow: command.workflow.clone(),
         preset: command.preset.clone(),
+        checkpoint_profile: command.checkpoint_profile.clone(),
         parameters,
         version: command.version.clone(),
     };

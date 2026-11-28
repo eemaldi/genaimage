@@ -61,6 +61,11 @@ vision review, the ones tagged "vision". Pick one that fits your memory and set
 `ckpt_name` options of ComfyUI's `CheckpointLoaderSimple`. If ComfyUI is down or
 lacks that node, the answer is an error, not an empty list.
 
+The API response also maps every checkpoint name to the pack
+[checkpoint profiles](packs.md#checkpoint-profiles) that list exactly that name.
+An empty list means that no profile matches; a model family is never inferred
+from the file name.
+
 Put checkpoint files here:
 
 - Docker Compose: `/opt/comfyui/models/checkpoints` in the

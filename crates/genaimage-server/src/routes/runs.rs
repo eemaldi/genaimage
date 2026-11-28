@@ -59,6 +59,7 @@ pub(super) async fn submit(
                 .submit_keyed_until(
                     key,
                     RunRequest {
+                        checkpoint_profile: body.checkpoint_profile,
                         workflow: body.workflow,
                         preset: body.preset,
                         parameters: body.parameters,

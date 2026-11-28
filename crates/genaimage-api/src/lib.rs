@@ -198,7 +198,47 @@ pub struct WorkflowDetails {
     pub parameters: std::collections::BTreeMap<String, WorkflowParameter>,
     pub presets:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Optional labels for presets, keyed by preset name. Never changes values.
+    #[serde(default)]
+    pub preset_info: std::collections::BTreeMap<String, PresetInfo>,
     pub outputs: Vec<WorkflowOutput>,
+    /// The parameter bound to the checkpoint loader, which a checkpoint profile
+    /// is matched against. Absent when the workflow has none or several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_parameter: Option<String>,
+    /// Checkpoint profiles of the workflow's pack. Empty for a user workflow.
+    /// A profile is applied only when a request names it.
+    #[serde(default)]
+    pub checkpoint_profiles: Vec<CheckpointProfileSummary>,
+}
+
+/// Presentation of one preset.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct PresetInfo {
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub kind: Option<PresetKind>,
+}
+
+/// `layout` presets set the canvas size or arrangement.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PresetKind {
+    Layout,
+    Style,
+    Quality,
+}
+
+/// A pack's checkpoint profile as it applies to one workflow.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+pub struct CheckpointProfileSummary {
+    pub id: String,
+    pub label: String,
+    /// Exact checkpoint names the profile matches.
+    pub checkpoints: Vec<String>,
+    pub note: Option<String>,
+    /// Values for the parameters this workflow defines, exactly as declared.
+    pub values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -261,6 +301,9 @@ pub struct WorkflowValidationRequest {
     pub workflow_revision: Option<String>,
     #[serde(default)]
     pub preset: Option<String>,
+    /// Checkpoint profile to layer beneath the preset. Never implied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile: Option<String>,
     #[serde(default)]
     pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -277,7 +320,31 @@ pub struct WorkflowValidationResponse {
     /// Graph inputs left untouched by binding, not submitted parameter values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inherited_inputs: Vec<WorkflowInheritedInput>,
+    /// Every parameter with a value, and where it comes from, in the order
+    /// default, checkpoint profile, preset, user value (later wins).
+    #[serde(default)]
+    pub effective_values: Vec<WorkflowEffectiveValue>,
     pub node_check: WorkflowNodeCheck,
+}
+
+/// One submitted value and its source.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct WorkflowEffectiveValue {
+    pub parameter: String,
+    pub value: serde_json::Value,
+    pub source: WorkflowValueSource,
+    /// The profile ID when `source` is `checkpoint_profile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowValueSource {
+    Default,
+    CheckpointProfile,
+    Preset,
+    User,
 }
 
 /// The graph value an unbound optional parameter leaves in place.

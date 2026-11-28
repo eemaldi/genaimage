@@ -43,6 +43,9 @@ pub struct RunManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_workflow_sha256: Option<String>,
     pub preset: Option<String>,
+    /// The checkpoint profile the run was submitted with, if one was named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile: Option<String>,
     pub parameters: Value,
     pub comfyui_base_url: String,
     pub source_inputs: Vec<InputFileRecord>,
@@ -66,6 +69,7 @@ pub(crate) fn initialise_run_files(
     bound: &BoundWorkflow,
     loaded: &crate::workflow::LoadedWorkflow,
     preset: Option<&str>,
+    checkpoint_profile: Option<&str>,
     parameters: &Value,
     inputs: &[InputFileRecord],
 ) -> Result<(String, String)> {
@@ -78,7 +82,7 @@ pub(crate) fn initialise_run_files(
         &output_dir.join("resolved-workflow.json"),
         &resolved_workflow,
     )?;
-    let preflight = serde_json::json!({
+    let mut preflight = serde_json::json!({
         "schema_version": 1,
         "workflow_manifest_path": loaded.manifest_path.display().to_string(),
         "resolved_workflow_sha256": sha256_hex(&resolved_workflow),
@@ -86,6 +90,9 @@ pub(crate) fn initialise_run_files(
         "parameters": parameters,
         "source_inputs": inputs
     });
+    if let Some(profile) = checkpoint_profile {
+        preflight["checkpoint_profile"] = profile.into();
+    }
     let bytes = serde_json::to_vec_pretty(&preflight)?;
     create_new_atomic(&output_dir.join("preflight.json"), &bytes)?;
     Ok((sha256_hex(&bytes), sha256_hex(&resolved_workflow)))
@@ -164,6 +171,8 @@ pub(crate) async fn materialise_history(
         },
         resolved_workflow_sha256: run.resolved_workflow_sha256.clone(),
         preset: read_preflight_field(&output_dir, "preset")?
+            .and_then(|value| value.as_str().map(str::to_owned)),
+        checkpoint_profile: read_preflight_field(&output_dir, "checkpoint_profile")?
             .and_then(|value| value.as_str().map(str::to_owned)),
         parameters: run.parameters.clone(),
         comfyui_base_url: client.base_url().to_owned(),

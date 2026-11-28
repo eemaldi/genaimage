@@ -61,6 +61,7 @@ async fn completed(api: &ApiHarness, tag: &str) -> RunRecord {
     api.fake.complete.store(false, Ordering::SeqCst);
     let run = api
         .submit_run(RunRequest {
+            checkpoint_profile: None,
             workflow_revision: None,
             workflow: "contract-workflow".into(),
             preset: Some("fast".into()),

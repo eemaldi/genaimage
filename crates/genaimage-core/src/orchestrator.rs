@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{self, InputFileRecord},
     assistant::{ConversationService, ConversationStore, PromptTemplates},
+    checkpoint_profiles::LayeredBindings,
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse, UploadResponse},
@@ -48,6 +49,9 @@ pub struct RunRequest {
     // Omitting the field preserves idempotency fingerprints for unpinned requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_revision: Option<String>,
+    // Omitting the field preserves idempotency fingerprints; a profile is never implied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -87,6 +91,8 @@ enum SubmissionRequest {
 #[derive(Deserialize)]
 struct RecordedInputs {
     preset: Option<String>,
+    #[serde(default)]
+    checkpoint_profile: Option<String>,
     parameters: Value,
     source_inputs: Vec<InputFileRecord>,
 }
@@ -231,6 +237,10 @@ impl WorkflowDiscovery {
                 .then(|| format!("{}: {reason}", workflow.manifest_path.display()))
         }));
         problems.extend(crate::templates::pack_template_problems(pack));
+        problems.extend(crate::checkpoint_profiles::value_problems(
+            pack,
+            &self.workflows,
+        ));
         problems
     }
 }
@@ -1236,6 +1246,7 @@ impl Harness {
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
         let repository = self.repository.as_async();
+        let mut recorded_profile = None;
         let (request, source) = match submission {
             SubmissionRequest::New(request) => (request, None),
             SubmissionRequest::Rerun(id) => {
@@ -1244,6 +1255,8 @@ impl Harness {
                 if provenance.parameters != run.parameters {
                     return Err(MISSING_PROVENANCE);
                 }
+                // The recorded, resolved parameters are replayed; the profile file is never re-read.
+                recorded_profile = provenance.checkpoint_profile;
                 let request = RunRequest {
                     workflow: run.workflow_id.clone(),
                     preset: provenance.preset,
@@ -1251,6 +1264,7 @@ impl Harness {
                         .map_err(|_| MISSING_PROVENANCE)?,
                     version: None,
                     workflow_revision: None,
+                    checkpoint_profile: None,
                 };
                 (
                     request,
@@ -1299,9 +1313,25 @@ impl Harness {
             loaded.verify_revision(request.workflow_revision.as_deref())?;
             loaded
         };
+        let layered = if source.is_some() {
+            LayeredBindings {
+                overrides: request.parameters.clone(),
+                profile: None,
+            }
+        } else {
+            self.layer_bindings(
+                &loaded,
+                request.preset.as_deref(),
+                request.checkpoint_profile.as_deref(),
+                &request.parameters,
+            )?
+        };
+        if let Some(profile) = &layered.profile {
+            recorded_profile = Some(profile.id.clone());
+        }
         let stored = if keyed.is_some() && source.is_none() {
             let (errors, uploads) = self
-                .check_api_bindings(&loaded, request.preset.as_deref(), &request.parameters)
+                .check_api_bindings(&loaded, request.preset.as_deref(), &layered.overrides)
                 .await?;
             if !errors.is_empty() {
                 return Err(HarnessError::Workflow(
@@ -1317,7 +1347,7 @@ impl Harness {
             None
         };
         let mut bound = loaded
-            .bind(request.preset.as_deref(), &request.parameters)
+            .bind(request.preset.as_deref(), &layered.overrides)
             .map_err(|error| {
                 if source.is_some() {
                     WORKFLOW_MISMATCH
@@ -1381,6 +1411,7 @@ impl Harness {
                 &bound,
                 &loaded,
                 request.preset.as_deref(),
+                recorded_profile.as_deref(),
                 &parameters,
                 &source_inputs,
             )

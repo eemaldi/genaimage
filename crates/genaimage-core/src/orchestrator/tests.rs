@@ -100,7 +100,9 @@ impl ImageBackend for FakeImageBackend {
         if let Some(gate) = gate {
             gate.wait().await;
         }
-        Ok(json!({"KSampler": {}, "SaveImage": {}, "LoadImage": {}, "LoadImageMask": {}}))
+        Ok(
+            json!({"KSampler": {}, "CheckpointLoaderSimple": {}, "SaveImage": {}, "LoadImage": {}, "LoadImageMask": {}}),
+        )
     }
 
     async fn submit(
@@ -313,6 +315,7 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
     let harness = Harness::new(config, backend).unwrap();
     let request = RunRequest {
         workflow_revision: None,
+        checkpoint_profile: None,
         workflow: "contract-workflow".to_owned(),
         preset: Some("fast".to_owned()),
         parameters: BTreeMap::from([("seed".to_owned(), json!(123))]),
@@ -868,6 +871,7 @@ async fn workspaces_can_use_the_same_explicit_run_version() {
     }
     let request = RunRequest {
         workflow_revision: None,
+        checkpoint_profile: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),
         parameters: BTreeMap::new(),
@@ -1821,4 +1825,358 @@ fn the_refresh_id_is_reserved_for_the_route() {
         .diagnostics
         .iter()
         .any(|d| d.error.to_string().contains("reserved URL path segment")));
+}
+
+const PROFILED_GRAPH: &str = r#"{
+  "3": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 20, "cfg": 7.5, "sampler_name": "euler", "bias": 0.5, "denoise": 1.0}},
+  "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "base.safetensors"}},
+  "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "genaimage"}}
+}"#;
+
+fn profiled_manifest() -> Value {
+    json!({
+        "schema_version": 2, "id": "profiled", "version": "1", "workflow": "workflow.api.json",
+        "parameters": {
+            "seed": {"node": "3", "input": "seed", "kind": "seed", "default": 1},
+            "steps": {"node": "3", "input": "steps", "kind": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            "cfg": {"node": "3", "input": "cfg", "kind": "number", "default": 7.5, "minimum": 0, "maximum": 30},
+            "sampler": {"node": "3", "input": "sampler_name", "kind": "string", "default": "euler"},
+            "bias": {"node": "3", "input": "bias", "kind": "number", "default": 0.5, "minimum": -1, "maximum": 1},
+            "denoise": {"node": "3", "input": "denoise", "kind": "number", "default": 1.0},
+            "checkpoint": {"node": "4", "input": "ckpt_name", "kind": "string", "default": "base.safetensors"}
+        },
+        "presets": {"wide": {"steps": 30, "cfg": 5.0}},
+        "preset_info": {"wide": {"label": "Wide", "kind": "layout"}},
+        "outputs": [{"node": "9", "kind": "image"}]
+    })
+}
+
+const PROFILES: &str = r#"
+[[profiles]]
+id = "base-profile"
+label = "Base"
+checkpoints = ["base.safetensors"]
+note = "Tuned for the base checkpoint."
+
+[profiles.values]
+steps = 28
+cfg = 2.0
+sampler = "dpmpp_2m"
+seed = 9007199254740993
+bias = -0.0
+
+[[profiles]]
+id = "other-profile"
+label = "Other"
+checkpoints = ["other.safetensors"]
+
+[profiles.values]
+steps = 12
+"#;
+
+fn install_profiled_pack(harness: &Harness, profiles: &str) -> PathBuf {
+    let dir = harness.config().packs[0].join("chars");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("pack.toml"),
+        "id = 'chars'\nversion = '1'\nworkflows = ['wf.genaimage.json']\ncheckpoint_profiles = 'checkpoints.toml'\n",
+    )
+    .unwrap();
+    fs::write(dir.join("workflow.api.json"), PROFILED_GRAPH).unwrap();
+    fs::write(
+        dir.join("wf.genaimage.json"),
+        serde_json::to_vec(&profiled_manifest()).unwrap(),
+    )
+    .unwrap();
+    fs::write(dir.join("checkpoints.toml"), profiles).unwrap();
+    dir
+}
+
+fn profiled_request(preset: Option<&str>, profile: Option<&str>, user: Value) -> RunRequest {
+    RunRequest {
+        workflow: "profiled".into(),
+        preset: preset.map(str::to_owned),
+        parameters: serde_json::from_value(user).unwrap(),
+        version: None,
+        workflow_revision: None,
+        checkpoint_profile: profile.map(str::to_owned),
+    }
+}
+
+fn submitted_inputs(state: &Arc<Mutex<FakeState>>) -> Value {
+    state.lock().unwrap().submission.as_ref().unwrap().0["3"]["inputs"].clone()
+}
+
+#[tokio::test]
+async fn precedence_is_default_then_profile_then_preset_then_user_with_sources() {
+    let (_workspace, harness, state, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    let workflow = harness.load_workflow_by_id("profiled").unwrap().unwrap();
+    let user = BTreeMap::from([("cfg".to_owned(), json!(9.5))]);
+    let layered = harness
+        .layer_bindings(&workflow, Some("wide"), Some("base-profile"), &user)
+        .unwrap();
+    let profile = layered.profile.as_ref().unwrap();
+    let sources: BTreeMap<_, _> = workflow
+        .effective_values(Some("wide"), &profile.values, &user)
+        .unwrap()
+        .into_iter()
+        .map(|value| (value.parameter, (value.value.to_string(), value.source)))
+        .collect();
+    use crate::workflow::ValueSource::*;
+    let expect = |value: &str, source| (value.to_owned(), source);
+    assert_eq!(sources["cfg"], expect("9.5", User));
+    assert_eq!(sources["steps"], expect("30", Preset));
+    assert_eq!(
+        sources["sampler"],
+        expect("\"dpmpp_2m\"", CheckpointProfile)
+    );
+    assert_eq!(sources["denoise"], expect("1.0", Default));
+    assert_eq!(
+        sources["checkpoint"],
+        expect("\"base.safetensors\"", Default)
+    );
+
+    let run = harness
+        .submit(profiled_request(
+            Some("wide"),
+            Some("base-profile"),
+            json!({"cfg": 9.5}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(run.parameters["cfg"].to_string(), "9.5");
+    let inputs = submitted_inputs(&state);
+    assert_eq!(inputs["steps"].to_string(), "30");
+    assert_eq!(inputs["cfg"].to_string(), "9.5");
+    assert_eq!(inputs["sampler_name"], "dpmpp_2m");
+    assert_eq!(inputs["denoise"].to_string(), "1.0");
+}
+
+#[tokio::test]
+async fn profile_numbers_stay_exact_through_binding_and_provenance() {
+    let (_workspace, harness, state, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    let run = harness
+        .submit(profiled_request(None, Some("base-profile"), json!({})))
+        .await
+        .unwrap();
+    let inputs = submitted_inputs(&state);
+    assert_eq!(inputs["cfg"].to_string(), "2.0");
+    assert_eq!(inputs["seed"].to_string(), "9007199254740993");
+    assert_eq!(inputs["bias"].to_string(), "-0.0");
+    assert_eq!(inputs["steps"].to_string(), "28");
+    assert_eq!(run.parameters["cfg"].to_string(), "2.0");
+    assert_eq!(run.parameters["seed"].to_string(), "9007199254740993");
+    assert_eq!(run.parameters["bias"].to_string(), "-0.0");
+    let preflight = fs::read_to_string(Path::new(&run.output_dir).join("preflight.json")).unwrap();
+    assert!(preflight.contains("\"cfg\": 2.0"), "{preflight}");
+    assert!(preflight.contains("9007199254740993"), "{preflight}");
+}
+
+#[tokio::test]
+async fn a_profile_is_never_applied_unless_named() {
+    let (_workspace, harness, state, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    harness
+        .submit(profiled_request(
+            None,
+            None,
+            json!({"checkpoint": "base.safetensors"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        submitted_inputs(&state),
+        json!({"seed": 1, "steps": 20, "cfg": 7.5, "sampler_name": "euler", "bias": 0.5, "denoise": 1.0})
+    );
+    let run = harness.repository.list(10).unwrap().remove(0);
+    let preflight: Value = serde_json::from_slice(
+        &fs::read(Path::new(&run.output_dir).join("preflight.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(preflight.get("checkpoint_profile").is_none());
+}
+
+#[test]
+fn an_unnamed_profile_leaves_request_fingerprints_unchanged() {
+    let without = profiled_request(Some("wide"), None, json!({"cfg": 9.5}));
+    assert_eq!(
+        serde_json::to_string(&without).unwrap(),
+        r#"{"workflow":"profiled","preset":"wide","parameters":{"cfg":9.5},"version":null}"#
+    );
+    let with = profiled_request(Some("wide"), Some("base-profile"), json!({"cfg": 9.5}));
+    assert!(serde_json::to_string(&with)
+        .unwrap()
+        .ends_with(r#""checkpoint_profile":"base-profile"}"#));
+    let old: RunRequest =
+        serde_json::from_str(r#"{"workflow":"profiled","parameters":{}}"#).unwrap();
+    assert_eq!(old.checkpoint_profile, None);
+}
+
+#[tokio::test]
+async fn a_named_profile_needs_an_exact_checkpoint_match_and_writes_nothing_otherwise() {
+    let (_workspace, harness, state, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    for checkpoint in [
+        "Base.safetensors",
+        "base.safetensors ",
+        "base",
+        "other.safetensors",
+    ] {
+        let error = harness
+            .submit(profiled_request(
+                None,
+                Some("base-profile"),
+                json!({"checkpoint": checkpoint}),
+            ))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("matching is exact"), "{checkpoint}: {error}");
+        assert!(error.contains("base.safetensors"), "{error}");
+    }
+    let unknown = harness
+        .submit(profiled_request(None, Some("base"), json!({})))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unknown.contains("no checkpoint profile 'base'"),
+        "{unknown}"
+    );
+    assert!(state.lock().unwrap().submission.is_none());
+    assert!(harness.repository.list(10).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_profile_cannot_be_named_for_a_user_workflow() {
+    let (_workspace, harness, _, mut request) = setup(false);
+    request.checkpoint_profile = Some("base-profile".into());
+    let error = harness.submit(request).await.unwrap_err().to_string();
+    assert!(error.contains("does not belong to a pack"), "{error}");
+}
+
+#[tokio::test]
+async fn the_profile_is_recorded_and_a_rerun_replays_the_pinned_values() {
+    let (_workspace, harness, state, _) = setup(false);
+    let dir = install_profiled_pack(&harness, PROFILES);
+    let source = harness
+        .submit(profiled_request(None, Some("base-profile"), json!({})))
+        .await
+        .unwrap();
+    let first_prompt = state.lock().unwrap().submission.clone().unwrap().0;
+    let preflight = |run: &RunRecord| -> Value {
+        serde_json::from_slice(
+            &fs::read(Path::new(&run.output_dir).join("preflight.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(preflight(&source)["checkpoint_profile"], "base-profile");
+
+    fs::write(
+        dir.join("checkpoints.toml"),
+        "[[profiles]]\nid = 'x'\nlabel = 'X'\ncheckpoints = ['z']\n",
+    )
+    .unwrap();
+    state.lock().unwrap().submission = None;
+    let rerun = harness
+        .rerun("again".into(), source.id.clone())
+        .await
+        .unwrap()
+        .run;
+    assert_eq!(rerun.parameters, source.parameters);
+    let second_prompt = state.lock().unwrap().submission.clone().unwrap().0;
+    assert_eq!(
+        serde_json::to_string(&second_prompt).unwrap(),
+        serde_json::to_string(&first_prompt).unwrap()
+    );
+    assert_eq!(preflight(&rerun)["checkpoint_profile"], "base-profile");
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Completed;
+    }
+    harness.reconcile(&rerun.id).await.unwrap();
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(Path::new(&rerun.output_dir).join("run-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["checkpoint_profile"], "base-profile");
+}
+
+#[test]
+fn pack_problems_name_every_malformed_or_invalid_profile_file() {
+    let broken = [
+        ("not toml [", "expected"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\nfamily = 'sdxl'\n", "unknown field"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = []\n", "exact checkpoint names"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x','x']\n", "listed twice"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[[profiles]]\nid = 'a'\nlabel = 'B'\ncheckpoints = ['y']\n", "declared twice"),
+        ("[[profiles]]\nid = 'A b'\nlabel = 'A'\ncheckpoints = ['x']\n", "must be"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nsteps = [1]\n", "must be a string"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nsteps = 'many'\n", "is invalid for workflow 'profiled'"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nsteps = 101\n", "above maximum"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nstyle_prefix = 'x'\n", "no workflow of pack 'chars' defines"),
+    ];
+    for (source, expected) in broken {
+        let (_workspace, harness, _, _) = setup(false);
+        install_profiled_pack(&harness, source);
+        let discovery = harness.discover_workflows().unwrap();
+        let problems = discovery.pack_problems(discovery.packs.pack("chars").unwrap());
+        assert!(
+            problems.iter().any(|problem| problem.contains(expected)),
+            "{source}: {problems:?}"
+        );
+    }
+    let (_workspace, harness, _, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    let discovery = harness.discover_workflows().unwrap();
+    assert_eq!(
+        discovery.pack_problems(discovery.packs.pack("chars").unwrap()),
+        Vec::<String>::new()
+    );
+    let pack = discovery.packs.pack("chars").unwrap();
+    assert_eq!(pack.checkpoint_profiles.len(), 2);
+}
+
+#[test]
+fn a_malformed_profile_file_loads_no_profiles_at_all() {
+    let (_workspace, harness, _, _) = setup(false);
+    let source =
+        format!("{PROFILES}\n[[profiles]]\nid = 'broken'\nlabel = 'B'\ncheckpoints = []\n");
+    install_profiled_pack(&harness, &source);
+    let discovery = harness.discover_workflows().unwrap();
+    assert!(discovery
+        .packs
+        .pack("chars")
+        .unwrap()
+        .checkpoint_profiles
+        .is_empty());
+}
+
+#[test]
+fn profile_files_are_path_confined_and_missing_files_are_reported() {
+    let (workspace, harness, _, _) = setup(false);
+    let dir = install_profiled_pack(&harness, PROFILES);
+    fs::remove_file(dir.join("checkpoints.toml")).unwrap();
+    let discovery = harness.discover_workflows().unwrap();
+    let pack = discovery.packs.pack("chars").unwrap();
+    assert!(discovery
+        .pack_problems(pack)
+        .iter()
+        .any(|problem| problem.contains("checkpoint profiles 'checkpoints.toml'")));
+    #[cfg(unix)]
+    {
+        let outside = workspace.path().join("outside.toml");
+        fs::write(&outside, PROFILES).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("checkpoints.toml")).unwrap();
+        let discovery = harness.discover_workflows().unwrap();
+        assert!(discovery.packs.pack("chars").is_none());
+        assert!(discovery.diagnostics.iter().any(|item| item
+            .error
+            .to_string()
+            .contains("outside the pack directory")));
+    }
+    let _ = workspace;
 }

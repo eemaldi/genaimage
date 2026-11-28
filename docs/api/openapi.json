@@ -1166,6 +1166,65 @@
         ],
         "type": "object"
       },
+      "CheckpointProfileRef": {
+        "description": "A pack checkpoint profile, identified by pack and profile ID.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "pack": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pack",
+          "id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "CheckpointProfileSummary": {
+        "description": "A pack's checkpoint profile as it applies to one workflow.",
+        "properties": {
+          "checkpoints": {
+            "description": "Exact checkpoint names the profile matches.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "values": {
+            "additionalProperties": {},
+            "description": "Values for the parameters this workflow defines, exactly as declared.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "checkpoints",
+          "values"
+        ],
+        "type": "object"
+      },
       "CheckpointsResponse": {
         "properties": {
           "checkpoints": {
@@ -1180,6 +1239,22 @@
               "$ref": "#/components/schemas/CheckpointLocation"
             },
             "type": "array"
+          },
+          "profile_note": {
+            "type": "string"
+          },
+          "profiles": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/CheckpointProfileRef"
+              },
+              "type": "array"
+            },
+            "description": "For every checkpoint name, the pack profiles that list exactly that\nname. An empty list means no profile matches; none is ever inferred\nfrom the file name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "refresh_note": {
             "description": "ComfyUI only sees new files after a refresh or restart.",
@@ -2484,6 +2559,43 @@
         ],
         "type": "string"
       },
+      "PresetInfo": {
+        "description": "Presentation of one preset.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PresetKind"
+              }
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PresetKind": {
+        "description": "`layout` presets set the canvas size or arrangement.",
+        "enum": [
+          "layout",
+          "style",
+          "quality"
+        ],
+        "type": "string"
+      },
       "ProblemDetails": {
         "description": "RFC 9457 problem details with a GenAImage recovery hint.",
         "properties": {
@@ -3474,6 +3586,13 @@
         "additionalProperties": false,
         "description": "Explicit bindings for a workflow configured in the local workspace.",
         "properties": {
+          "checkpoint_profile": {
+            "description": "A checkpoint profile of the workflow's pack. It applies only when named,\nand only if the effective checkpoint is one of its exact names.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "parameters": {
             "additionalProperties": {},
             "propertyNames": {
@@ -3914,6 +4033,20 @@
               "null"
             ]
           },
+          "checkpoint_parameter": {
+            "description": "The parameter bound to the checkpoint loader, which a checkpoint profile\nis matched against. Absent when the workflow has none or several.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkpoint_profiles": {
+            "description": "Checkpoint profiles of the workflow's pack. Empty for a user workflow.\nA profile is applied only when a request names it.",
+            "items": {
+              "$ref": "#/components/schemas/CheckpointProfileSummary"
+            },
+            "type": "array"
+          },
           "description": {
             "type": [
               "string",
@@ -3933,6 +4066,16 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/WorkflowParameter"
             },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "preset_info": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PresetInfo"
+            },
+            "description": "Optional labels for presets, keyed by preset name. Never changes values.",
             "propertyNames": {
               "type": "string"
             },
@@ -4011,6 +4154,31 @@
         "required": [
           "path",
           "error"
+        ],
+        "type": "object"
+      },
+      "WorkflowEffectiveValue": {
+        "description": "One submitted value and its source.",
+        "properties": {
+          "checkpoint_profile": {
+            "description": "The profile ID when `source` is `checkpoint_profile`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parameter": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/WorkflowValueSource"
+          },
+          "value": {}
+        },
+        "required": [
+          "parameter",
+          "value",
+          "source"
         ],
         "type": "object"
       },
@@ -4778,6 +4946,13 @@
         "additionalProperties": false,
         "description": "Parameter overrides and an optional manifest preset to validate.",
         "properties": {
+          "checkpoint_profile": {
+            "description": "Checkpoint profile to layer beneath the preset. Never implied.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "parameters": {
             "additionalProperties": {},
             "propertyNames": {
@@ -4804,6 +4979,13 @@
       "WorkflowValidationResponse": {
         "description": "The result of validating bindings and checking backend node availability.",
         "properties": {
+          "effective_values": {
+            "description": "Every parameter with a value, and where it comes from, in the order\ndefault, checkpoint profile, preset, user value (later wins).",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEffectiveValue"
+            },
+            "type": "array"
+          },
           "inherited_inputs": {
             "description": "Graph inputs left untouched by binding, not submitted parameter values.",
             "items": {
@@ -4835,6 +5017,15 @@
           "node_check"
         ],
         "type": "object"
+      },
+      "WorkflowValueSource": {
+        "enum": [
+          "default",
+          "checkpoint_profile",
+          "preset",
+          "user"
+        ],
+        "type": "string"
       }
     }
   },
