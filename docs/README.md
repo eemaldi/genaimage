@@ -27,7 +27,7 @@
 | Document | Contents |
 | --- | --- |
 | [AGENTS.md](../AGENTS.md) | Shared rules for contributors and coding agents. |
-| [ADR 0001](adr/0001-target-architecture.md), [ADR 0002](adr/0002-comfyui-image.md) | Accepted architecture decisions. |
+| [ADR 0001](adr/0001-target-architecture.md), [ADR 0002](adr/0002-comfyui-image.md), [ADR 0003](adr/0003-runtime-plugin-model.md) | Architecture decisions (0003 is proposed). |
 | [Architecture](architecture.md) | Crates, server, API behaviour, state, portal, events. |
 | [Testing](testing.md) | Test strategy, assistant scenarios, opt-in live LLM tests. |
 | [Performance](performance.md) | Budgets and how they are measured. |
