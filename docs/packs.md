@@ -234,16 +234,19 @@ requires an exact checkpoint file name, and the pack declares no model file.
 
 | Workflow | Purpose | Image inputs (chosen by the user) |
 | --- | --- | --- |
-| `portrait` | Text-to-image character art on a portrait canvas. | None |
-| `sketch-to-image` | Paints over your sketch; `denoise` (default 0.6) sets how far the result may move from it. | `sketch` |
-| `inpaint` | Repaints the white areas of `mask_image` over `source_image`; `denoise` defaults to 1.0. | `source_image`, `mask_image` |
-| `turnaround` | Front, side and back views on a wide canvas. | None |
+| `character-portrait` | Text-to-image character art on a portrait canvas. | None |
+| `character-sketch-to-image` | Paints over your sketch; `denoise` (default 0.6) sets how far the result may move from it. | `sketch` |
+| `character-inpaint` | Repaints the white areas of `mask_image` over `source_image`. Use `denoise` 1.0, which is recommended: this method fills the masked area before sampling, and lower values can leave grey residue. | `source_image`, `mask_image` |
+| `character-turnaround` | Front, side and back views on a wide canvas. | None |
 
-Layout presets (`preset_info` kind `layout`) set the canvas. `portrait` offers
-`portrait-2x3` (Portrait 2:3, 832 by 1248), `portrait-3x4` (Portrait 3:4, 896 by
-1184) and `square` (Square 1:1, 1024 by 1024); `turnaround` offers
-`turnaround-3-view` (Turnaround 2:1, 1536 by 768). `sketch-to-image` and `inpaint`
-take their canvas from the image.
+Layout presets (`preset_info` kind `layout`) set the canvas. `character-portrait`
+offers `portrait-2x3` (Portrait 2:3, 832 by 1248), `portrait-3x4` (Portrait 3:4,
+864 by 1152), `square` (Square 1:1, 1024 by 1024), and the Stable Diffusion 1.5
+layouts `portrait-2x3-sd15` (Portrait 2:3 (SD 1.5), 512 by 768) and
+`portrait-3x4-sd15` (Portrait 3:4 (SD 1.5), 576 by 768). `character-turnaround`
+offers `turnaround-3-view` (Turnaround 2:1, 1536 by 768) and `turnaround-3-view-sd15`
+(Turnaround 2:1 (SD 1.5), 1024 by 512). `character-sketch-to-image` and
+`character-inpaint` take their canvas from the image.
 
 Steps, cfg, seed, sampler, scheduler, filename prefix and the canvas size are
 advanced controls. Each workflow's negative prompt discourages photorealism,
@@ -257,8 +260,10 @@ Checkpoint profiles in `checkpoints.toml` apply to exact file names only:
 | `sdxl-base` | `sd_xl_base_1.0.safetensors` | 30 steps, cfg 7.0, `dpmpp_2m`, `karras` |
 | `sd15` | `v1-5-pruned-emaonly.safetensors` | 25 steps, cfg 7.5, `dpmpp_2m`, `karras` |
 
-Stable Diffusion 1.5 was trained at 512 pixels, so the SDXL-sized layouts give
-weaker results with it. Profiles never set the seed, an image or the checkpoint.
+Stable Diffusion 1.5 was trained at 512 pixels, so pick a layout labelled
+(SD 1.5) with the `sd15` profile; the SDXL-sized layouts give weaker results with
+it. A profile never selects a layout, so choose one explicitly. Profiles never set
+the seed, an image or the checkpoint.
 
 The pack declares two prompt templates in `templates/`:
 

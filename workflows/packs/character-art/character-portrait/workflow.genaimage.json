@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "id": "sketch-to-image",
+  "id": "character-portrait",
   "version": "1.0.0",
-  "title": "Sketch to character art",
+  "title": "Character portrait",
   "workflow": "api-workflow.json",
-  "description": "Paint over your own sketch. The denoise strength sets how far the result may move from the sketch.",
-  "tags": ["character-art", "image-to-image"],
+  "description": "Painterly, unfinished character concept art from a text prompt on a portrait canvas.",
+  "tags": ["character-art", "text-to-image"],
   "category": "image generation",
   "parameters": {
     "checkpoint": {
@@ -17,15 +17,6 @@
       "group": "Model",
       "description": "Exact checkpoint file name as listed by the server. There is no default: choose a checkpoint, or a checkpoint profile that lists it."
     },
-    "sketch": {
-      "node": "10",
-      "input": "image",
-      "kind": "image_upload",
-      "required": true,
-      "widget": "file",
-      "group": "Input",
-      "description": "Your sketch. Choose it explicitly; there is no default image."
-    },
     "prompt": {
       "node": "6",
       "input": "text",
@@ -33,7 +24,7 @@
       "required": true,
       "widget": "textarea",
       "group": "Prompt",
-      "description": "Approved prompt describing the character and the painted look."
+      "description": "Approved positive prompt. Build it with the concept-art template or write it directly."
     },
     "negative_prompt": {
       "node": "7",
@@ -45,18 +36,33 @@
       "group": "Prompt",
       "description": "Exclusions. The default discourages photorealism, glossy rendering, and text or watermarks."
     },
-    "denoise": {
-      "node": "3",
-      "input": "denoise",
-      "kind": "number",
+    "width": {
+      "node": "5",
+      "input": "width",
+      "kind": "integer",
       "required": true,
-      "default": 0.6,
-      "minimum": 0,
-      "maximum": 1,
-      "widget": "slider",
-      "step": 0.05,
-      "group": "Input",
-      "description": "How far the result may move from the sketch: 0 keeps the sketch, 1 ignores it."
+      "default": 832,
+      "minimum": 64,
+      "maximum": 4096,
+      "widget": "number",
+      "step": 8,
+      "group": "Canvas",
+      "advanced": true,
+      "description": "Canvas width in pixels, a multiple of 8. The layout presets set it."
+    },
+    "height": {
+      "node": "5",
+      "input": "height",
+      "kind": "integer",
+      "required": true,
+      "default": 1248,
+      "minimum": 64,
+      "maximum": 4096,
+      "widget": "number",
+      "step": 8,
+      "group": "Canvas",
+      "advanced": true,
+      "description": "Canvas height in pixels, a multiple of 8. The layout presets set it."
     },
     "seed": {
       "node": "3",
@@ -123,10 +129,24 @@
       "input": "filename_prefix",
       "kind": "string",
       "required": false,
-      "default": "character-art-sketch",
+      "default": "character-art-portrait",
       "group": "Output",
       "advanced": true
     }
+  },
+  "presets": {
+    "portrait-2x3": {"width": 832, "height": 1248},
+    "portrait-3x4": {"width": 864, "height": 1152},
+    "square": {"width": 1024, "height": 1024},
+    "portrait-2x3-sd15": {"width": 512, "height": 768},
+    "portrait-3x4-sd15": {"width": 576, "height": 768}
+  },
+  "preset_info": {
+    "portrait-2x3": {"label": "Portrait 2:3", "description": "Tall canvas for a head and shoulders or a full figure, 832 by 1248 pixels.", "kind": "layout"},
+    "portrait-3x4": {"label": "Portrait 3:4", "description": "Slightly wider portrait canvas, 864 by 1152 pixels.", "kind": "layout"},
+    "square": {"label": "Square 1:1", "description": "Square canvas, 1024 by 1024 pixels.", "kind": "layout"},
+    "portrait-2x3-sd15": {"label": "Portrait 2:3 (SD 1.5)", "description": "Tall canvas sized for Stable Diffusion 1.5, 512 by 768 pixels.", "kind": "layout"},
+    "portrait-3x4-sd15": {"label": "Portrait 3:4 (SD 1.5)", "description": "Portrait canvas sized for Stable Diffusion 1.5, 576 by 768 pixels.", "kind": "layout"}
   },
   "outputs": [
     {"node": "9", "kind": "image"}

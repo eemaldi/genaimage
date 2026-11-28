@@ -10,7 +10,12 @@ use genaimage_core::{
 };
 use serde_json::{json, Value};
 
-const WORKFLOWS: [&str; 4] = ["portrait", "sketch-to-image", "inpaint", "turnaround"];
+const WORKFLOWS: [&str; 4] = [
+    "character-portrait",
+    "character-sketch-to-image",
+    "character-inpaint",
+    "character-turnaround",
+];
 const SDXL: &str = "sd_xl_base_1.0.safetensors";
 const SD15: &str = "v1-5-pruned-emaonly.safetensors";
 
@@ -34,7 +39,7 @@ fn profiles() -> Vec<genaimage_core::checkpoint_profiles::CheckpointProfile> {
 
 #[test]
 fn portrait_defaults_bind_to_their_node_inputs_with_exact_numbers() {
-    let bound = load("portrait")
+    let bound = load("character-portrait")
         .bind(
             None,
             &overrides(json!({"checkpoint": SDXL, "prompt": "a knight in a field"})),
@@ -64,16 +69,55 @@ fn portrait_defaults_bind_to_their_node_inputs_with_exact_numbers() {
 #[test]
 fn every_layout_preset_sets_its_canvas_and_is_labelled_as_a_layout() {
     let expected = [
-        ("portrait", "portrait-2x3", 832, 1248),
-        ("portrait", "portrait-3x4", 896, 1184),
-        ("portrait", "square", 1024, 1024),
-        ("turnaround", "turnaround-3-view", 1536, 768),
+        (
+            "character-portrait",
+            "portrait-2x3",
+            "Portrait 2:3",
+            832,
+            1248,
+        ),
+        (
+            "character-portrait",
+            "portrait-3x4",
+            "Portrait 3:4",
+            864,
+            1152,
+        ),
+        ("character-portrait", "square", "Square 1:1", 1024, 1024),
+        (
+            "character-portrait",
+            "portrait-2x3-sd15",
+            "Portrait 2:3 (SD 1.5)",
+            512,
+            768,
+        ),
+        (
+            "character-portrait",
+            "portrait-3x4-sd15",
+            "Portrait 3:4 (SD 1.5)",
+            576,
+            768,
+        ),
+        (
+            "character-turnaround",
+            "turnaround-3-view",
+            "Turnaround 2:1",
+            1536,
+            768,
+        ),
+        (
+            "character-turnaround",
+            "turnaround-3-view-sd15",
+            "Turnaround 2:1 (SD 1.5)",
+            1024,
+            512,
+        ),
     ];
-    for (workflow_id, preset, width, height) in expected {
+    for (workflow_id, preset, label, width, height) in expected {
         let workflow = load(workflow_id);
         let info = &workflow.manifest.preset_info[preset];
         assert_eq!(info.kind, Some(PresetKind::Layout), "{preset}");
-        assert!(info.label.as_deref().is_some_and(|label| !label.is_empty()));
+        assert_eq!(info.label.as_deref(), Some(label), "{preset}");
         let bound = workflow
             .bind(
                 Some(preset),
@@ -85,18 +129,11 @@ fn every_layout_preset_sets_its_canvas_and_is_labelled_as_a_layout() {
         assert_eq!(width % 8, 0);
         assert_eq!(height % 8, 0);
     }
-    let portrait = load("portrait");
-    assert_eq!(
-        portrait.manifest.preset_info["portrait-2x3"]
-            .label
-            .as_deref(),
-        Some("Portrait 2:3")
-    );
 }
 
 #[test]
 fn the_turnaround_workflow_uses_the_wide_canvas_by_default() {
-    let bound = load("turnaround")
+    let bound = load("character-turnaround")
         .bind(
             None,
             &overrides(json!({"checkpoint": SDXL, "prompt": "a turnaround"})),
@@ -112,7 +149,7 @@ fn the_turnaround_workflow_uses_the_wide_canvas_by_default() {
 
 #[test]
 fn sketch_and_inpaint_bind_their_uploads_to_load_image_nodes() {
-    let sketch = load("sketch-to-image");
+    let sketch = load("character-sketch-to-image");
     let bound = sketch
         .bind(
             None,
@@ -135,7 +172,7 @@ fn sketch_and_inpaint_bind_their_uploads_to_load_image_nodes() {
         .unwrap();
     assert_eq!(bound.workflow["10"]["inputs"]["image"], "sketch.png");
 
-    let inpaint = load("inpaint");
+    let inpaint = load("character-inpaint");
     let mut bound = inpaint
         .bind(
             None,
@@ -177,11 +214,11 @@ fn image_inputs_and_the_checkpoint_are_never_defaulted() {
             }
         }
     }
-    let error = load("portrait")
+    let error = load("character-portrait")
         .bind(None, &overrides(json!({"prompt": "no checkpoint"})))
         .unwrap_err();
     assert!(error.to_string().contains("checkpoint"), "{error}");
-    let error = load("sketch-to-image")
+    let error = load("character-sketch-to-image")
         .bind(
             None,
             &overrides(json!({"checkpoint": SDXL, "prompt": "no sketch"})),
@@ -222,7 +259,7 @@ fn profile_values_keep_their_exact_numbers_when_bound() {
     assert!(sdxl.matches(SDXL) && !sdxl.matches(SD15));
     assert!(sd15.matches(SD15));
     for (profile, checkpoint, steps, cfg) in [(sdxl, SDXL, 30, "7.0"), (sd15, SD15, 25, "7.5")] {
-        let workflow = load("turnaround");
+        let workflow = load("character-turnaround");
         let mut values = profile.values_for(&workflow.manifest);
         values.insert("checkpoint".to_owned(), json!(checkpoint));
         values.insert("prompt".to_owned(), json!("a turnaround"));
@@ -232,6 +269,7 @@ fn profile_values_keep_their_exact_numbers_when_bound() {
         assert_eq!(bound.workflow["4"]["inputs"]["ckpt_name"], checkpoint);
     }
     assert!(sd15.note.as_deref().unwrap().contains("512 pixels"));
+    assert!(sd15.note.as_deref().unwrap().contains("(SD 1.5)"));
 }
 
 #[test]

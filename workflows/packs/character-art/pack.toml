@@ -2,10 +2,10 @@ id = "character-art"
 version = "1.0.0"
 description = "Guided character art: portrait, sketch-to-image, inpaint and turnaround workflows built from core ComfyUI nodes."
 workflows = [
-  "portrait/workflow.genaimage.json",
-  "sketch-to-image/workflow.genaimage.json",
-  "inpaint/workflow.genaimage.json",
-  "turnaround/workflow.genaimage.json",
+  "character-portrait/workflow.genaimage.json",
+  "character-sketch-to-image/workflow.genaimage.json",
+  "character-inpaint/workflow.genaimage.json",
+  "character-turnaround/workflow.genaimage.json",
 ]
 templates = ["templates/concept-art.toml", "templates/turnaround.toml"]
 checkpoint_profiles = "checkpoints.toml"

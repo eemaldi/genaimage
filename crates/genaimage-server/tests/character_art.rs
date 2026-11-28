@@ -1,18 +1,28 @@
 mod common;
 
-use std::fs;
+use std::{fs, sync::atomic::Ordering};
 
 use common::ApiHarness;
 use genaimage_api::{
     PackListResponse, PackRequirementStatus, PackValidationResponse, PackValidationStatus,
-    RunResponse, WorkflowDetails, WorkflowListResponse, WorkflowValidationResponse,
+    RunResponse, UploadResponse, WorkflowDetails, WorkflowListResponse, WorkflowValidationResponse,
     WorkflowValueSource,
 };
-use reqwest::{Method, StatusCode};
+use reqwest::{
+    multipart::{Form, Part},
+    Method, Response, StatusCode,
+};
 use serde_json::{json, Value};
 
 const PACK: &str = "character-art";
-const WORKFLOW_IDS: [&str; 4] = ["portrait", "sketch-to-image", "inpaint", "turnaround"];
+const PNG: &[u8] = include_bytes!("fixtures/reference.png");
+const UPLOADED: &str = "uploaded-reference.png";
+const WORKFLOW_IDS: [&str; 4] = [
+    "character-portrait",
+    "character-sketch-to-image",
+    "character-inpaint",
+    "character-turnaround",
+];
 const SDXL: &str = "sd_xl_base_1.0.safetensors";
 const SD15: &str = "v1-5-pruned-emaonly.safetensors";
 const CLASSES: [&str; 10] = [
@@ -132,13 +142,15 @@ async fn each_workflow_declares_its_parameters_layouts_and_both_profiles() {
             .collect();
         assert_eq!(profiles, [("sdxl-base", true), ("sd15", true)], "{id}");
     }
-    let portrait: WorkflowDetails = api.get_json("/api/v1/workflows/portrait").await;
+    let portrait: WorkflowDetails = api.get_json("/api/v1/workflows/character-portrait").await;
     assert_eq!(
         portrait.preset_info["portrait-2x3"].label.as_deref(),
         Some("Portrait 2:3")
     );
-    assert_eq!(portrait.presets.len(), 3);
-    let sketch: WorkflowDetails = api.get_json("/api/v1/workflows/sketch-to-image").await;
+    assert_eq!(portrait.presets.len(), 5);
+    let sketch: WorkflowDetails = api
+        .get_json("/api/v1/workflows/character-sketch-to-image")
+        .await;
     assert!(sketch.presets.is_empty());
     assert_eq!(sketch.parameters["denoise"].default, Some(json!(0.6)));
     api.shutdown().await;
@@ -147,7 +159,7 @@ async fn each_workflow_declares_its_parameters_layouts_and_both_profiles() {
 #[tokio::test]
 async fn a_checkpoint_profile_applies_its_exact_values_and_reports_nothing_ignored() {
     let api = start().await;
-    let path = "/api/v1/workflows/portrait/validate";
+    let path = "/api/v1/workflows/character-portrait/validate";
     let sdxl: WorkflowValidationResponse = api
         .post_json(
             path,
@@ -169,7 +181,7 @@ async fn a_checkpoint_profile_applies_its_exact_values_and_reports_nothing_ignor
     );
     assert_eq!(
         effective(&sdxl, "width"),
-        ("896".into(), WorkflowValueSource::Preset)
+        ("864".into(), WorkflowValueSource::Preset)
     );
     assert_eq!(
         effective(&sdxl, "seed"),
@@ -221,7 +233,7 @@ async fn portrait_and_turnaround_runs_reach_comfyui_with_their_layouts_and_exact
 
     let missing_checkpoint = submit(
         "no-checkpoint",
-        json!({"workflow": "portrait", "parameters": {"prompt": "a figure"}}),
+        json!({"workflow": "character-portrait", "parameters": {"prompt": "a figure"}}),
     )
     .await;
     ApiHarness::assert_problem(missing_checkpoint, StatusCode::UNPROCESSABLE_ENTITY).await;
@@ -231,7 +243,7 @@ async fn portrait_and_turnaround_runs_reach_comfyui_with_their_layouts_and_exact
     let portrait = submit(
         "portrait-1",
         json!({
-            "workflow": "portrait", "preset": "portrait-2x3", "checkpoint_profile": "sdxl-base",
+            "workflow": "character-portrait", "preset": "portrait-2x3", "checkpoint_profile": "sdxl-base",
             "parameters": {"checkpoint": SDXL, "prompt": "a figure in a field"}
         }),
     )
@@ -250,7 +262,7 @@ async fn portrait_and_turnaround_runs_reach_comfyui_with_their_layouts_and_exact
     let turnaround = submit(
         "turnaround-1",
         json!({
-            "workflow": "turnaround", "preset": "turnaround-3-view",
+            "workflow": "character-turnaround", "preset": "turnaround-3-view",
             "parameters": {"checkpoint": SDXL, "prompt": "a knight, character turnaround sheet"}
         }),
     )
@@ -263,5 +275,112 @@ async fn portrait_and_turnaround_runs_reach_comfyui_with_their_layouts_and_exact
         graph["9"]["inputs"]["filename_prefix"],
         "character-art-turnaround"
     );
+    api.shutdown().await;
+}
+
+async fn upload_png(api: &ApiHarness) -> String {
+    let response = api
+        .request(Method::POST, "/api/v1/uploads")
+        .multipart(
+            Form::new().part(
+                "file",
+                Part::bytes(PNG)
+                    .file_name("input.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    response.json::<UploadResponse>().await.unwrap().upload_id
+}
+
+async fn submit_run(api: &ApiHarness, key: &str, body: Value) -> Response {
+    api.request(Method::POST, "/api/v1/runs")
+        .header("Idempotency-Key", key)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn sketch_and_inpaint_runs_submit_their_uploads_and_exact_values() {
+    let api = start().await;
+    let image = upload_png(&api).await;
+
+    let sketch = submit_run(
+        &api,
+        "sketch-1",
+        json!({
+            "workflow": "character-sketch-to-image", "checkpoint_profile": "sdxl-base",
+            "parameters": {
+                "checkpoint": SDXL, "sketch": image, "prompt": "a knight, painted over the sketch"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(sketch.status(), StatusCode::ACCEPTED);
+    let graph = api.fake.submitted_graph.lock().unwrap().clone().unwrap();
+    assert_eq!(graph["10"]["inputs"]["image"], UPLOADED);
+    assert_eq!(graph["3"]["inputs"]["denoise"].to_string(), "0.6");
+    assert_eq!(graph["3"]["inputs"]["steps"], 30);
+    assert_eq!(graph["4"]["inputs"]["ckpt_name"], SDXL);
+    assert_eq!(
+        graph["6"]["inputs"]["text"],
+        "a knight, painted over the sketch"
+    );
+
+    let inpaint = submit_run(
+        &api,
+        "inpaint-1",
+        json!({
+            "workflow": "character-inpaint", "checkpoint_profile": "sdxl-base",
+            "parameters": {
+                "checkpoint": SDXL, "source_image": image, "mask_image": image,
+                "prompt": "a new hat"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(inpaint.status(), StatusCode::ACCEPTED);
+    let graph = api.fake.submitted_graph.lock().unwrap().clone().unwrap();
+    assert_eq!(graph["10"]["inputs"]["image"], UPLOADED);
+    assert_eq!(graph["12"]["inputs"]["image"], UPLOADED);
+    assert_eq!(graph["3"]["inputs"]["denoise"].to_string(), "1.0");
+    assert_eq!(graph["11"]["inputs"]["grow_mask_by"], 6);
+    assert_eq!(graph["6"]["inputs"]["text"], "a new hat");
+}
+
+#[tokio::test]
+async fn sketch_and_inpaint_runs_without_their_image_are_rejected_and_write_nothing() {
+    let api = start().await;
+    let image = upload_png(&api).await;
+
+    let missing_sketch = submit_run(
+        &api,
+        "no-sketch",
+        json!({
+            "workflow": "character-sketch-to-image", "checkpoint_profile": "sdxl-base",
+            "parameters": {"checkpoint": SDXL, "prompt": "no sketch"}
+        }),
+    )
+    .await;
+    ApiHarness::assert_problem(missing_sketch, StatusCode::UNPROCESSABLE_ENTITY).await;
+    let missing_mask = submit_run(
+        &api,
+        "no-mask",
+        json!({
+            "workflow": "character-inpaint", "checkpoint_profile": "sdxl-base",
+            "parameters": {"checkpoint": SDXL, "source_image": image, "prompt": "no mask"}
+        }),
+    )
+    .await;
+    ApiHarness::assert_problem(missing_mask, StatusCode::UNPROCESSABLE_ENTITY).await;
+    assert_eq!(api.fake.prompt_calls.load(Ordering::SeqCst), 0);
+    let runs: Value = api.get_json("/api/v1/runs").await;
+    assert!(runs["runs"].as_array().unwrap().is_empty());
     api.shutdown().await;
 }
