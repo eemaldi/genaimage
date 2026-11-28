@@ -57,3 +57,4 @@ pedantic = "allow"
 
 [profile.release]
 strip = "symbols"
+codegen-units = 1

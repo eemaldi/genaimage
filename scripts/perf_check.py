@@ -216,6 +216,25 @@ def render_report(cold_start_ms, idle_rss_mb, binary_size_mb, samples, benchmark
     return "\n".join(rows)
 
 
+def budget_warnings(cold_start_ms, idle_rss_mb, binary_size_mb, portal_js_bytes):
+    checks = [
+        ("Cold start", cold_start_ms, COLD_START_BUDGET_MS, "ms"),
+        ("Idle RSS approximation", idle_rss_mb, IDLE_RSS_BUDGET_MB, "MB"),
+        ("Release binary size", binary_size_mb, BINARY_SIZE_BUDGET_MB, "MB"),
+        (
+            "Portal initial JavaScript",
+            None if portal_js_bytes is None else portal_js_bytes / 1_000,
+            PORTAL_JS_BUDGET_KB,
+            "KB gzip",
+        ),
+    ]
+    return [
+        f"::warning title=Performance budget exceeded::{name} is {value:.2f} {unit}, over the {budget:g} {unit} budget"
+        for name, value, budget, unit in checks
+        if budget_status(value, budget) == "OVER BUDGET"
+    ]
+
+
 def append_summary(report, summary_path):
     with summary_path.open("a", encoding="utf-8") as summary:
         summary.write("\n")
@@ -262,6 +281,8 @@ def main(argv=None):
         return 1
 
     print(report)
+    for warning in budget_warnings(cold_start_ms, idle_rss_mb, binary_size_mb, portal_js_bytes):
+        print(warning)
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         append_summary(report, Path(summary_path))
