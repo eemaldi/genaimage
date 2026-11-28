@@ -7,6 +7,7 @@ pub use batches::{
     BatchItemState, BatchPage, BatchRecord, BatchState, NewBatch, NewBatchItem, StoredBatchItem,
 };
 pub(crate) use batches::{BatchLink, BatchReservation};
+pub(crate) use media::parse_output_id;
 
 use std::{
     path::Path,
@@ -325,7 +326,7 @@ impl RunRepository {
     }
 
     pub fn insert(&self, run: &NewRun) -> Result<RunRecord> {
-        self.guarded(|connection| insert_run(connection, run, false))
+        self.guarded(|connection| insert_run(connection, run, false, None))
     }
 
     fn insert_owned_submission(
@@ -334,10 +335,7 @@ impl RunRepository {
         character: Option<&CharacterLink>,
     ) -> Result<RunRecord> {
         self.guarded(|connection| {
-            insert_run(connection, run, true)?;
-            if let Some(link) = character {
-                characters::link_run(connection, &run.id, link)?;
-            }
+            insert_run(connection, run, true, character)?;
             load_run(connection, &run.id)
         })
     }
@@ -373,15 +371,12 @@ impl RunRepository {
             if let Some(run) = find_submission(connection, key, fingerprint)? {
                 return Ok(SubmissionReservation::Existing(run));
             }
-            insert_run(connection, run, true)?;
+            insert_run(connection, run, true, character)?;
             if let Some(link) = batch {
                 connection.execute(
                     "UPDATE runs SET batch_id = ?2, batch_index = ?3 WHERE id = ?1",
                     params![run.id, link.batch_id, link.index],
                 )?;
-            }
-            if let Some(link) = character {
-                characters::link_run(connection, &run.id, link)?;
             }
             let run = load_run(connection, &run.id)?;
             connection.execute(
@@ -816,15 +811,26 @@ fn find_submission(
     }
 }
 
-fn insert_run(connection: &Connection, run: &NewRun, owned: bool) -> Result<RunRecord> {
+/// The character link is written with the row: the database refuses to set or
+/// change it afterwards.
+fn insert_run(
+    connection: &Connection,
+    run: &NewRun,
+    owned: bool,
+    character: Option<&CharacterLink>,
+) -> Result<RunRecord> {
+    if let Some(link) = character {
+        characters::verify_link(connection, link)?;
+    }
     let now = Utc::now().to_rfc3339();
     connection.execute(
         r#"
             INSERT INTO runs (
                 id, prompt_id, client_id, workflow_id, workflow_version,
                 workflow_sha256, generation_mode, status, parameters_json,
-                output_dir, created_at, updated_at, uses_submission_lock, workflow_manifest_sha256, rerun_of
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14)
+                output_dir, created_at, updated_at, uses_submission_lock, workflow_manifest_sha256, rerun_of,
+                linked_character_id, linked_character_spec_version
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
         params![
             run.id,
@@ -841,6 +847,8 @@ fn insert_run(connection: &Connection, run: &NewRun, owned: bool) -> Result<RunR
             owned,
             run.workflow_manifest_sha256,
             run.rerun_of,
+            character.map(|link| link.id.as_str()),
+            character.map(|link| link.spec_version),
         ],
     )?;
     load_run(connection, &run.id)
@@ -1109,7 +1117,9 @@ const MIGRATION_15: &str = r#"
         role TEXT NOT NULL CHECK (role IN ('sketch', 'reference', 'mask')),
         note TEXT,
         added_at TEXT NOT NULL,
-        removed_at TEXT
+        removed_at TEXT CHECK (removed_at IS NULL OR (typeof(removed_at) = 'text'
+            AND removed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*'
+            AND julianday(removed_at) IS NOT NULL))
     );
     CREATE INDEX character_references_character_idx ON character_references(character_id, seq);
     CREATE UNIQUE INDEX character_references_active_idx
@@ -1130,12 +1140,30 @@ const MIGRATION_15: &str = r#"
         ON character_output_decisions(character_id, output_id, seq);
     CREATE INDEX character_output_decisions_character_idx
         ON character_output_decisions(character_id, seq);
+    -- A key names one write. Its row is written in the same transaction as the
+    -- record it names, so a key exists only for a write that happened.
+    CREATE TABLE character_idempotency_keys (
+        key TEXT PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 128),
+        operation TEXT NOT NULL CHECK (operation IN (
+            'create_character', 'create_spec_version', 'add_reference',
+            'remove_reference', 'record_decision')),
+        fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64),
+        character_id TEXT NOT NULL REFERENCES characters(id),
+        record_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID;
     ALTER TABLE runs ADD COLUMN linked_character_id TEXT REFERENCES characters(id);
     ALTER TABLE runs ADD COLUMN linked_character_spec_version INTEGER
         CHECK (linked_character_spec_version IS NULL OR linked_character_spec_version >= 1);
     CREATE INDEX runs_linked_character_idx ON runs(linked_character_id, created_at, id)
         WHERE linked_character_id IS NOT NULL;
 
+    -- INSERT OR REPLACE deletes the row it replaces without firing delete
+    -- triggers, so every append-only table also refuses an insert that would
+    -- replace a row.
+    CREATE TRIGGER characters_no_replace BEFORE INSERT ON characters
+        WHEN EXISTS (SELECT 1 FROM characters WHERE id = NEW.id OR seq = NEW.seq)
+        BEGIN SELECT RAISE(ABORT, 'characters are append-only'); END;
     CREATE TRIGGER characters_no_update BEFORE UPDATE ON characters
         BEGIN SELECT RAISE(ABORT, 'characters are append-only'); END;
     CREATE TRIGGER characters_no_delete BEFORE DELETE ON characters
@@ -1148,10 +1176,28 @@ const MIGRATION_15: &str = r#"
         BEGIN SELECT RAISE(ABORT, 'character spec versions are append-only'); END;
     CREATE TRIGGER character_spec_versions_no_delete BEFORE DELETE ON character_spec_versions
         BEGIN SELECT RAISE(ABORT, 'character spec versions are append-only'); END;
+    CREATE TRIGGER character_output_decisions_no_replace BEFORE INSERT ON character_output_decisions
+        WHEN EXISTS (SELECT 1 FROM character_output_decisions WHERE id = NEW.id OR seq = NEW.seq)
+        BEGIN SELECT RAISE(ABORT, 'character output decisions are append-only'); END;
     CREATE TRIGGER character_output_decisions_no_update BEFORE UPDATE ON character_output_decisions
         BEGIN SELECT RAISE(ABORT, 'character output decisions are append-only'); END;
     CREATE TRIGGER character_output_decisions_no_delete BEFORE DELETE ON character_output_decisions
         BEGIN SELECT RAISE(ABORT, 'character output decisions are append-only'); END;
+    CREATE TRIGGER character_idempotency_keys_no_replace BEFORE INSERT ON character_idempotency_keys
+        WHEN EXISTS (SELECT 1 FROM character_idempotency_keys WHERE key = NEW.key)
+        BEGIN SELECT RAISE(ABORT, 'character idempotency keys are append-only'); END;
+    CREATE TRIGGER character_idempotency_keys_no_update BEFORE UPDATE ON character_idempotency_keys
+        BEGIN SELECT RAISE(ABORT, 'character idempotency keys are append-only'); END;
+    CREATE TRIGGER character_idempotency_keys_no_delete BEFORE DELETE ON character_idempotency_keys
+        BEGIN SELECT RAISE(ABORT, 'character idempotency keys are append-only'); END;
+    -- A reference starts active, and replacing it would also drop the active
+    -- reference that the unique index treats as its twin.
+    CREATE TRIGGER character_references_insert_active BEFORE INSERT ON character_references
+        WHEN NEW.removed_at IS NOT NULL
+            OR EXISTS (SELECT 1 FROM character_references WHERE id = NEW.id OR seq = NEW.seq
+                OR (removed_at IS NULL AND character_id = NEW.character_id
+                    AND upload_id = NEW.upload_id AND role = NEW.role))
+        BEGIN SELECT RAISE(ABORT, 'a character reference is added active and never replaced'); END;
     CREATE TRIGGER character_references_no_delete BEFORE DELETE ON character_references
         BEGIN SELECT RAISE(ABORT, 'character references are never deleted; remove them softly'); END;
     CREATE TRIGGER character_references_remove_once BEFORE UPDATE ON character_references
@@ -1161,21 +1207,24 @@ const MIGRATION_15: &str = r#"
             OR NEW.role IS NOT OLD.role OR NEW.note IS NOT OLD.note
             OR NEW.added_at IS NOT OLD.added_at
         BEGIN SELECT RAISE(ABORT, 'a character reference can only be removed, once'); END;
+    -- The link is written with the run and never changes: it is not set later
+    -- on an existing run, and a replacing insert cannot clear or add it.
     CREATE TRIGGER runs_character_link_insert BEFORE INSERT ON runs
         WHEN (NEW.linked_character_id IS NULL) <> (NEW.linked_character_spec_version IS NULL)
             OR (NEW.linked_character_id IS NOT NULL AND NOT EXISTS (
                 SELECT 1 FROM character_spec_versions
                 WHERE character_id = NEW.linked_character_id AND version = NEW.linked_character_spec_version))
         BEGIN SELECT RAISE(ABORT, 'a run must link an existing character spec version'); END;
+    CREATE TRIGGER runs_character_link_no_replace BEFORE INSERT ON runs
+        WHEN EXISTS (SELECT 1 FROM runs
+            WHERE (id = NEW.id OR prompt_id = NEW.prompt_id
+                OR (NEW.batch_id IS NOT NULL AND batch_id = NEW.batch_id AND batch_index IS NEW.batch_index))
+              AND (linked_character_id IS NOT NULL OR NEW.linked_character_id IS NOT NULL))
+        BEGIN SELECT RAISE(ABORT, 'a run''s character link cannot be replaced'); END;
     CREATE TRIGGER runs_character_link_update BEFORE UPDATE OF linked_character_id, linked_character_spec_version ON runs
-        WHEN (NEW.linked_character_id IS NULL) <> (NEW.linked_character_spec_version IS NULL)
-            OR (OLD.linked_character_id IS NOT NULL AND (
-                NEW.linked_character_id IS NOT OLD.linked_character_id
-                OR NEW.linked_character_spec_version IS NOT OLD.linked_character_spec_version))
-            OR (NEW.linked_character_id IS NOT NULL AND NOT EXISTS (
-                SELECT 1 FROM character_spec_versions
-                WHERE character_id = NEW.linked_character_id AND version = NEW.linked_character_spec_version))
-        BEGIN SELECT RAISE(ABORT, 'a run must link an existing character spec version, and the link is fixed once set'); END;
+        WHEN NEW.linked_character_id IS NOT OLD.linked_character_id
+            OR NEW.linked_character_spec_version IS NOT OLD.linked_character_spec_version
+        BEGIN SELECT RAISE(ABORT, 'a run''s character link is fixed when the run is created'); END;
 "#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
@@ -1196,7 +1245,7 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 18] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 19] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
@@ -1214,6 +1263,7 @@ const EXPECTED_TABLES: [(&str, i64, &str); 18] = [
     ("character_spec_versions", 15, "SELECT character_id, version, based_on, spec_json, note, created_at FROM character_spec_versions LIMIT 0"),
     ("character_references", 15, "SELECT seq, id, character_id, upload_id, role, note, added_at, removed_at FROM character_references LIMIT 0"),
     ("character_output_decisions", 15, "SELECT seq, id, character_id, output_id, spec_version, decision, note, decided_at FROM character_output_decisions LIMIT 0"),
+    ("character_idempotency_keys", 15, "SELECT key, operation, fingerprint, character_id, record_id, created_at FROM character_idempotency_keys LIMIT 0"),
     ("assistant_tool_call_audit", 13, "SELECT id, conversation_id, confirmation_id, tool_call_id, tool_name, proposed_arguments_json, validation_outcome, decision, invocation_ok, created_at FROM assistant_tool_call_audit LIMIT 0"),
 ];
 
@@ -1996,7 +2046,7 @@ mod submission_tests {
         );
 
         // The upgraded database accepts a character and a linked run.
-        let (character, _) = repository.create_character("Keeper", None).unwrap();
+        let (character, _) = repository.create_character("Keeper", None, None).unwrap();
         assert!(repository
             .create_spec_version(
                 &character.id,
@@ -2008,6 +2058,7 @@ mod submission_tests {
                     views: vec![],
                     style_notes: None,
                 },
+                None,
                 None,
             )
             .is_ok());
@@ -2054,6 +2105,7 @@ mod submission_tests {
                     },
                     None,
                 )),
+                None,
             )
             .unwrap();
         let reference = repository
@@ -2061,6 +2113,7 @@ mod submission_tests {
                 &character.id,
                 "sha256:abc",
                 crate::characters::ReferenceRole::Sketch,
+                None,
                 None,
             )
             .unwrap();
@@ -2144,10 +2197,206 @@ mod submission_tests {
             )
             .is_err());
         assert!(repository
-            .remove_reference(&character.id, &reference.id)
+            .remove_reference(&character.id, &reference.id, None)
             .unwrap()
             .removed_at
             .is_some());
+    }
+
+    #[test]
+    fn the_database_refuses_replacing_character_rows_and_linking_later() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let repository = RunRepository::open(&path).unwrap();
+        let spec = crate::characters::CharacterSpec {
+            summary: "v1".into(),
+            elements: vec![],
+            palette: vec![],
+            views: vec![],
+            style_notes: None,
+        };
+        let keyed = super::characters::Keyed::new(
+            "key",
+            super::characters::Operation::CreateCharacter,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let (character, _) = repository
+            .create_character("Keeper", Some((&spec, None)), Some(&keyed))
+            .unwrap();
+        repository
+            .add_reference(
+                &character.id,
+                "sha256:abc",
+                crate::characters::ReferenceRole::Sketch,
+                None,
+                None,
+            )
+            .unwrap();
+        let new_run = |id: &str| NewRun {
+            id: id.into(),
+            prompt_id: format!("prompt-{id}"),
+            client_id: "client".into(),
+            workflow_id: "wf".into(),
+            workflow_version: "1".into(),
+            workflow_sha256: "hash".into(),
+            workflow_manifest_sha256: None,
+            rerun_of: None,
+            generation_mode: GenerationMode::Generic,
+            status: RunStatus::Completed,
+            parameters: serde_json::json!({}),
+            output_dir: format!("runs/{id}"),
+        };
+        let link = CharacterLink {
+            id: character.id.clone(),
+            spec_version: 1,
+        };
+        repository
+            .insert_owned_submission(&new_run("linked"), Some(&link))
+            .unwrap();
+        repository.insert(&new_run("plain")).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO character_output_decisions (id, character_id, output_id, spec_version, decision, decided_at)
+                 VALUES ('d', ?1, 'linked:1', 1, 'approved', '2026-01-01T00:00:00+00:00')",
+                [&character.id],
+            )
+            .unwrap();
+
+        let run_columns =
+            "id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256,
+            generation_mode, status, parameters_json, output_dir, created_at, updated_at";
+        let refused = [
+            // Replacing by primary key, by the unique id, or by an active twin.
+            "INSERT OR REPLACE INTO characters (seq, id, name, created_at)
+                SELECT seq, id, 'Replaced', created_at FROM characters"
+                .to_owned(),
+            "REPLACE INTO characters (id, name, created_at)
+                SELECT id, 'Replaced', created_at FROM characters"
+                .to_owned(),
+            "INSERT OR REPLACE INTO character_spec_versions (character_id, version, based_on, spec_json, created_at)
+                SELECT character_id, 1, NULL, '{}', created_at FROM character_spec_versions"
+                .to_owned(),
+            "INSERT OR REPLACE INTO character_references (seq, id, character_id, upload_id, role, added_at)
+                SELECT seq, id, character_id, 'sha256:other', role, added_at FROM character_references"
+                .to_owned(),
+            "REPLACE INTO character_references (id, character_id, upload_id, role, added_at)
+                SELECT 'charref-twin', character_id, upload_id, role, added_at FROM character_references"
+                .to_owned(),
+            "INSERT OR REPLACE INTO character_output_decisions (seq, id, character_id, output_id, spec_version, decision, decided_at)
+                SELECT seq, id, character_id, output_id, spec_version, 'rejected', decided_at
+                FROM character_output_decisions"
+                .to_owned(),
+            "REPLACE INTO character_output_decisions (id, character_id, output_id, spec_version, decision, decided_at)
+                SELECT id, character_id, output_id, spec_version, 'rejected', decided_at
+                FROM character_output_decisions"
+                .to_owned(),
+            "INSERT OR REPLACE INTO character_idempotency_keys (key, operation, fingerprint, character_id, record_id, created_at)
+                SELECT key, 'add_reference', fingerprint, character_id, record_id, created_at
+                FROM character_idempotency_keys"
+                .to_owned(),
+            // A replacing run cannot clear or change a link, by any unique key.
+            format!(
+                "INSERT OR REPLACE INTO runs ({run_columns})
+                 SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256,
+                    generation_mode, status, parameters_json, output_dir, created_at, updated_at
+                 FROM runs WHERE id = 'linked'"
+            ),
+            format!(
+                "REPLACE INTO runs ({run_columns})
+                 SELECT 'other', prompt_id, client_id, workflow_id, workflow_version, workflow_sha256,
+                    generation_mode, status, parameters_json, output_dir, created_at, updated_at
+                 FROM runs WHERE id = 'linked'"
+            ),
+            // Nor can it link a run that already exists.
+            format!(
+                "INSERT OR REPLACE INTO runs ({run_columns}, linked_character_id, linked_character_spec_version)
+                 SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256,
+                    generation_mode, status, parameters_json, output_dir, created_at, updated_at,
+                    '{}', 1
+                 FROM runs WHERE id = 'plain'",
+                character.id
+            ),
+            format!(
+                "UPDATE runs SET linked_character_id = '{}', linked_character_spec_version = 1
+                 WHERE id = 'plain'",
+                character.id
+            ),
+            // The key row is as permanent as its record.
+            "UPDATE character_idempotency_keys SET record_id = 'other'".to_owned(),
+            "DELETE FROM character_idempotency_keys".to_owned(),
+            // A reference is added active, and its removal time is a timestamp.
+            "INSERT INTO character_references (id, character_id, upload_id, role, added_at, removed_at)
+                SELECT 'charref-born-removed', character_id, 'sha256:new', 'mask',
+                    '2026-01-01T00:00:00+00:00', '2026-01-02T00:00:00+00:00'
+                FROM characters"
+                .to_owned(),
+        ];
+        for statement in &refused {
+            assert!(
+                connection.execute(statement, []).is_err(),
+                "accepted: {statement}"
+            );
+        }
+        for removed_at in [
+            "'garbage'",
+            "''",
+            "'12345'",
+            "'now'",
+            "'2026-01-01'",
+            "'2026-13-01T00:00:00Z'",
+            "2461000.5",
+            "x'323032362d30312d30315430303a30303a30305a'",
+        ] {
+            assert!(
+                connection
+                    .execute(
+                        &format!("UPDATE character_references SET removed_at = {removed_at}"),
+                        [],
+                    )
+                    .is_err(),
+                "accepted removed_at {removed_at}"
+            );
+        }
+        let count = |table: &str| -> i64 {
+            connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            [
+                count("characters"),
+                count("character_spec_versions"),
+                count("character_references"),
+                count("character_output_decisions"),
+                count("character_idempotency_keys"),
+            ],
+            [1, 1, 1, 1, 1]
+        );
+        assert_eq!(repository.get("linked").unwrap().character, Some(link));
+        assert_eq!(repository.get("plain").unwrap().character, None);
+        // Plain inserts, links at creation and a valid removal are unaffected.
+        repository
+            .insert_owned_submission(
+                &new_run("second-linked"),
+                Some(&CharacterLink {
+                    id: character.id.clone(),
+                    spec_version: 1,
+                }),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE character_references SET removed_at = '2026-01-01T00:00:00.123456789+00:00'",
+                [],
+            )
+            .unwrap();
     }
 
     #[test]

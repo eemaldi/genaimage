@@ -29,6 +29,14 @@ pub(super) fn map_indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedOu
     })
 }
 
+/// Splits `{run_id}:{row}`, accepting only the spelling the index itself produces.
+/// `run:+1`, `run:01` and `run: 1` all parse as row 1, so they must not resolve.
+pub(crate) fn parse_output_id(id: &str) -> Option<(&str, i64)> {
+    let (run, row) = id.rsplit_once(':')?;
+    let parsed: i64 = row.parse().ok()?;
+    (!run.is_empty() && format!("{run}:{parsed}") == id).then_some((run, parsed))
+}
+
 // Keep the raw timestamp as the sort key, as for runs; the row ID resolves ties.
 #[derive(serde::Deserialize, serde::Serialize)]
 struct Cursor(String, i64);
@@ -150,8 +158,7 @@ impl AsyncRunRepository {
     }
 
     pub async fn output(&self, id: &str) -> Result<IndexedOutput> {
-        let (run, row) = id.rsplit_once(':').ok_or(HarnessError::OutputNotFound)?;
-        let row: i64 = row.parse().map_err(|_| HarnessError::OutputNotFound)?;
+        let (run, row) = parse_output_id(id).ok_or(HarnessError::OutputNotFound)?;
         let run = run.to_owned();
         self.call(move |repo| {
             repo.guarded_read(|connection| {

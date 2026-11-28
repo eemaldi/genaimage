@@ -18,8 +18,9 @@ mod tests;
 
 pub use service::{
     CharacterListQuery, CharacterPage, CharacterRunQuery, CharacterService, CreatedCharacter,
-    CurrentStateQuery, DecisionListQuery, DecisionPage, NewCharacter, NewDecision, NewReference,
-    NewSpecVersion, ReferenceListQuery, ReferencePage, SpecVersionListQuery, SpecVersionPage,
+    CurrentStateQuery, DecisionListQuery, DecisionOutputPage, DecisionPage, DecisionWithOutput,
+    NewCharacter, NewDecision, NewReference, NewSpecVersion, ReferenceListQuery, ReferencePage,
+    SpecVersionListQuery, SpecVersionPage,
 };
 
 pub const NAME_MAX_BYTES: usize = 200;
@@ -38,6 +39,37 @@ pub const OUTPUT_ID_MAX_BYTES: usize = 128;
 pub const SPEC_MAX_BYTES: usize = 64 * 1024;
 pub const DEFAULT_PAGE_LIMIT: usize = 50;
 pub const MAX_PAGE_LIMIT: usize = 200;
+pub const IDEMPOTENCY_KEY_MAX_BYTES: usize = 128;
+
+/// Names one write so that a retry replays it instead of repeating it.
+///
+/// The same key with the same request returns the record written the first
+/// time; the same key with another request is `IdempotencyConflict`. A key
+/// belongs to one operation on one character store, whichever method used it
+/// first. The assistant uses its confirmation ID; the server uses the
+/// `Idempotency-Key` header, which allows the same characters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencyKey(String);
+
+impl IdempotencyKey {
+    /// 1 to 128 visible ASCII characters, without commas.
+    pub fn parse(key: &str) -> Result<Self> {
+        let valid = !key.is_empty()
+            && key.len() <= IDEMPOTENCY_KEY_MAX_BYTES
+            && key.bytes().all(|b| b.is_ascii_graphic() && b != b',');
+        if valid {
+            Ok(Self(key.to_owned()))
+        } else {
+            Err(invalid(format!(
+                "An idempotency key must be 1 to {IDEMPOTENCY_KEY_MAX_BYTES} visible ASCII characters, without commas."
+            )))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// The spec version of a character that a run was submitted against.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -210,6 +242,40 @@ fn invalid(message: String) -> HarnessError {
     HarnessError::InvalidCharacterRequest(message)
 }
 
+/// Unicode format characters (category Cf) and the line and paragraph
+/// separators. Written as explicit ranges to avoid a dependency.
+fn is_invisible_formatting(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// Bidirectional overrides, embeddings and isolates can reorder text on screen.
+fn is_bidi_control(character: char) -> bool {
+    matches!(character, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 fn check_text(
     field: &str,
     value: &str,
@@ -226,17 +292,22 @@ fn check_text(
             value.len()
         )));
     }
-    let allowed = |character: char| {
-        !character.is_control() || (multiline && matches!(character, '\n' | '\r' | '\t'))
-    };
-    if !value.chars().all(allowed) {
+    if multiline {
+        let allowed = |character: char| {
+            (!character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+                && !is_bidi_control(character)
+        };
+        if !value.chars().all(allowed) {
+            return Err(invalid(format!(
+                "{field} must not contain control characters other than line breaks and tabs, or bidirectional overrides."
+            )));
+        }
+    } else if !value
+        .chars()
+        .all(|character| !character.is_control() && !is_invisible_formatting(character))
+    {
         return Err(invalid(format!(
-            "{field} must not contain control characters{}.",
-            if multiline {
-                " other than line breaks and tabs"
-            } else {
-                " or line breaks"
-            }
+            "{field} must be a single line without control, invisible formatting or line separator characters."
         )));
     }
     Ok(())
@@ -252,8 +323,16 @@ pub(crate) fn validate_note(field: &str, note: Option<&str>) -> Result<()> {
     })
 }
 
+/// An output ID has exactly one spelling, `{run_id}:{row}`, because it is a
+/// key: `run:+1` or `run:01` would otherwise split one output's history.
 pub(crate) fn validate_output_id(output_id: &str) -> Result<()> {
-    check_text("output_id", output_id, OUTPUT_ID_MAX_BYTES, true, false)
+    check_text("output_id", output_id, OUTPUT_ID_MAX_BYTES, true, false)?;
+    if crate::persistence::parse_output_id(output_id).is_none() {
+        return Err(invalid(
+            "output_id must be an output ID exactly as the output lists report it: {run_id}:{row}, with the row as plain decimal digits.".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn is_slug(value: &str) -> bool {
@@ -513,5 +592,75 @@ mod validation_tests {
         assert!(message.contains("serialises to"), "{message}");
         spec.elements.truncate(MAX_ELEMENTS / 2);
         spec.validate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    fn invalid_text(result: Result<()>) {
+        assert!(
+            matches!(result, Err(HarnessError::InvalidCharacterRequest(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn single_line_fields_reject_invisible_formatting_and_line_separators() {
+        for character in [
+            '\u{00AD}',
+            '\u{200B}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{202A}',
+            '\u{202E}',
+            '\u{2060}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{FEFF}',
+            '\u{061C}',
+            '\u{E0041}',
+            '\n',
+            '\u{85}',
+        ] {
+            let value = format!("Keeper{character}x");
+            invalid_text(validate_name(&value));
+            invalid_text(check_text("field", &value, 100, false, false));
+            invalid_text(validate_output_id(&format!("run{character}:1")));
+        }
+        for (start, end) in [('\u{202A}', '\u{202E}'), ('\u{2066}', '\u{2069}')] {
+            for character in start..=end {
+                invalid_text(validate_name(&format!("a{character}b")));
+            }
+        }
+        validate_name("Zoë Łukasz 日本語 \u{1F642} د").unwrap();
+    }
+
+    #[test]
+    fn free_text_rejects_bidirectional_controls_but_keeps_layout() {
+        for (start, end) in [('\u{202A}', '\u{202E}'), ('\u{2066}', '\u{2069}')] {
+            for character in start..=end {
+                let value = format!("harmless{character}text");
+                invalid_text(check_text("field", &value, 100, false, true));
+                invalid_text(validate_note("note", Some(&value)));
+                let spec = CharacterSpec {
+                    summary: value,
+                    elements: vec![],
+                    palette: vec![],
+                    views: vec![],
+                    style_notes: None,
+                };
+                invalid_text(spec.validate());
+            }
+        }
+        validate_note("note", Some("line one\r\nline two\tindented")).unwrap();
+        invalid_text(validate_note("note", Some("bell\u{7}")));
+        // Zero-width characters are layout-neutral in prose, unlike bidi controls.
+        validate_note("note", Some("zero\u{200B}width")).unwrap();
     }
 }

@@ -459,11 +459,14 @@ fn character_spec() -> crate::characters::CharacterSpec {
 async fn character_link(harness: &Harness) -> CharacterLink {
     let created = harness
         .characters()
-        .create_character(crate::characters::NewCharacter {
-            name: "Keeper".into(),
-            spec: Some(character_spec()),
-            note: None,
-        })
+        .create_character(
+            crate::characters::NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(character_spec()),
+                note: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     CharacterLink {
@@ -655,6 +658,7 @@ async fn a_key_cannot_be_reused_for_another_character_and_reruns_keep_the_link()
                 spec: character_spec(),
                 note: None,
             },
+            None,
         )
         .await
         .unwrap();
@@ -1078,7 +1082,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
+    db.execute_batch("DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_no_replace; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_idempotency_keys; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {
@@ -1819,7 +1823,7 @@ async fn legacy_submitting_record_requires_backend_evidence() {
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
+    db.execute_batch("DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_no_replace; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_idempotency_keys; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
     drop(db);
     let lock_dir = config.state_database.with_extension("sqlite3.submissions");
     fs::remove_dir_all(&lock_dir).unwrap();

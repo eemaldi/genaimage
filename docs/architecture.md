@@ -1060,10 +1060,18 @@ describes the core and persistence contract they build on.
 - Decisions (`approved`, `rejected`, `cleared`) are appended per output and spec
   version and are never changed. `cleared` is the undo. The current state of an
   output is its latest decision, and a cleared output has none. Only outputs of
-  completed runs can be approved or rejected.
+  completed runs can be approved or rejected, and an output of a run that was
+  submitted against another character is refused (an unlinked run is allowed).
+  The current state is the latest decision per character and output across all
+  spec versions, so a `cleared` decision recorded against version 2 undoes an
+  approval recorded against version 1. Output IDs are keys: only the canonical
+  `{run_id}:{row}` spelling is accepted, so `run:+1` and `run:01` are rejected
+  rather than resolved to `run:1`.
 - `RunRequest.character` (`{id, spec_version}`) is validated before anything is
   written, stored on the run (`runs.linked_character_id` and
-  `linked_character_spec_version`, fixed once set), and recorded in
+  `linked_character_spec_version`), written with the run row and fixed from then
+  on (triggers refuse a later link, change or clear, and a replacing insert),
+  and recorded in
   `preflight.json`, the `run_created` event and the completed run manifest.
   Omitting it leaves the request, its idempotency fingerprint and the written
   files byte-identical to earlier releases. A re-run keeps the source run's link.
@@ -1071,6 +1079,19 @@ describes the core and persistence contract they build on.
   of the retired gate system is untouched and unrelated.
 - Every write is a single transaction, so an error means nothing was written.
   Lists are newest first, bounded to 200 rows and paged with opaque cursors.
+  `list_decisions_with_outputs` and its siblings return each decision with its
+  indexed output from one read snapshot, so a client needs no per-row lookups.
+- Every write takes an optional idempotency key (`IdempotencyKey`; the assistant
+  uses its confirmation ID and the server will use `Idempotency-Key`). The key,
+  the operation and a fingerprint of the whole request are stored in
+  `character_idempotency_keys` in the same transaction as the record. Repeating
+  the same request replays the stored record and writes nothing; the same key
+  with another request, or for another operation, is `IdempotencyConflict`. A
+  failed write stores no key. SQLite triggers make the append-only tables refuse
+  `INSERT OR REPLACE` as well as updates and deletes.
+- The local store has no caps on the number of characters, spec versions or
+  decisions; it is append-only and single-user, and only each list and request
+  is bounded.
 
 ## Portal UI
 

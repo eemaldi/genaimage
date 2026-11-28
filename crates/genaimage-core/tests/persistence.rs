@@ -104,7 +104,7 @@ fn migrates_version_nine_runs_without_inventing_a_graph_digest() {
     drop(repository);
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(
-        "DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; PRAGMA user_version=9;",
+        "DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_no_replace; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_idempotency_keys; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; PRAGMA user_version=9;",
     )
     .unwrap();
     drop(conn);

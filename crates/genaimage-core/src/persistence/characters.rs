@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
     map_run,
-    media::{map_indexed, OUTPUT_SELECT},
+    media::{map_indexed, parse_output_id, OUTPUT_SELECT},
     parse_sqlite_time, AsyncRunRepository, RunCursor, RunPage, RunRepository, RunStatus,
 };
 use crate::{
@@ -13,7 +14,7 @@ use crate::{
         Decision, OutputDecision, ReferenceRole, DEFAULT_PAGE_LIMIT, MAX_ACTIVE_REFERENCES,
         MAX_PAGE_LIMIT,
     },
-    media::OutputPage,
+    media::{IndexedOutput, OutputPage},
     HarnessError, Result,
 };
 
@@ -84,6 +85,109 @@ fn stored_enum<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> r
 fn now_text() -> (DateTime<Utc>, String) {
     let now = Utc::now();
     (now, now.to_rfc3339())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Operation {
+    CreateCharacter,
+    CreateSpecVersion,
+    AddReference,
+    RemoveReference,
+    RecordDecision,
+}
+
+impl Operation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateCharacter => "create_character",
+            Self::CreateSpecVersion => "create_spec_version",
+            Self::AddReference => "add_reference",
+            Self::RemoveReference => "remove_reference",
+            Self::RecordDecision => "record_decision",
+        }
+    }
+}
+
+/// A caller's key and the fingerprint of the request it was first used with.
+#[derive(Clone, Debug)]
+pub(crate) struct Keyed {
+    key: String,
+    operation: Operation,
+    fingerprint: String,
+}
+
+impl Keyed {
+    /// The fingerprint covers the operation and every field of the request, so
+    /// reusing a key for anything else is a conflict.
+    pub(crate) fn new(key: &str, operation: Operation, request: serde_json::Value) -> Result<Self> {
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "operation": operation.as_str(),
+            "request": request,
+        }))?;
+        Ok(Self {
+            key: key.to_owned(),
+            operation,
+            fingerprint: hex::encode(Sha256::digest(canonical)),
+        })
+    }
+}
+
+/// What a key was first used for: the character and the record it created.
+struct Claimed {
+    character_id: String,
+    record_id: String,
+}
+
+/// The key's earlier outcome, if any. Runs inside the write transaction, so a
+/// concurrent caller with the same key finds the first caller's record.
+fn find_claim(connection: &Connection, keyed: Option<&Keyed>) -> Result<Option<Claimed>> {
+    let Some(keyed) = keyed else {
+        return Ok(None);
+    };
+    let found: Option<(String, String, String, String)> = connection
+        .query_row(
+            "SELECT operation, fingerprint, character_id, record_id
+             FROM character_idempotency_keys WHERE key = ?1",
+            [&keyed.key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    match found {
+        None => Ok(None),
+        Some((operation, fingerprint, character_id, record_id))
+            if operation == keyed.operation.as_str() && fingerprint == keyed.fingerprint =>
+        {
+            Ok(Some(Claimed {
+                character_id,
+                record_id,
+            }))
+        }
+        Some(_) => Err(HarnessError::IdempotencyConflict),
+    }
+}
+
+fn claim(
+    connection: &Connection,
+    keyed: Option<&Keyed>,
+    character_id: &str,
+    record_id: &str,
+) -> Result<()> {
+    if let Some(keyed) = keyed {
+        connection.execute(
+            "INSERT INTO character_idempotency_keys
+                (key, operation, fingerprint, character_id, record_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                keyed.key,
+                keyed.operation.as_str(),
+                keyed.fingerprint,
+                character_id,
+                record_id,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 const CHARACTER_SELECT: &str = "SELECT c.seq, c.id, c.name, c.created_at,
@@ -311,37 +415,115 @@ fn current_decision(
     Ok(latest.filter(|decision| decision.decision != Decision::Cleared))
 }
 
-/// Outputs are addressed as `{run_id}:{row}`. They are never deleted, so the
-/// existence check cannot go stale; it runs in the write transaction anyway.
-fn output_run_status(connection: &Connection, output_id: &str) -> Result<RunStatus> {
-    let (run, row) = output_id
-        .rsplit_once(':')
-        .ok_or(HarnessError::OutputNotFound)?;
-    let row: i64 = row.parse().map_err(|_| HarnessError::OutputNotFound)?;
-    let status: String = connection
+/// The run's status and the character it was submitted against, if any.
+/// Outputs are never deleted, so the existence check cannot go stale; it runs
+/// in the write transaction anyway.
+fn output_run(connection: &Connection, output_id: &str) -> Result<(RunStatus, Option<String>)> {
+    let (run, row) = parse_output_id(output_id).ok_or(HarnessError::OutputNotFound)?;
+    let (status, linked): (String, Option<String>) = connection
         .query_row(
-            "SELECT r.status FROM outputs o JOIN runs r ON r.id = o.run_id
+            "SELECT r.status, r.linked_character_id FROM outputs o JOIN runs r ON r.id = o.run_id
              WHERE o.id = ?1 AND o.run_id = ?2",
             params![row, run],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
         .ok_or(HarnessError::OutputNotFound)?;
-    RunStatus::parse(&status)
+    Ok((RunStatus::parse(&status)?, linked))
 }
 
+/// Checks that the link names an existing spec version. The link itself is
+/// written with the run row, and the database refuses to change it later.
 pub(crate) fn verify_link(connection: &Connection, link: &CharacterLink) -> Result<()> {
     require_character(connection, &link.id)?;
     load_version(connection, &link.id, link.spec_version).map(|_| ())
 }
 
-pub(crate) fn link_run(connection: &Connection, run_id: &str, link: &CharacterLink) -> Result<()> {
-    verify_link(connection, link)?;
-    connection.execute(
-        "UPDATE runs SET linked_character_id = ?2, linked_character_spec_version = ?3 WHERE id = ?1",
-        params![run_id, link.id, link.spec_version],
-    )?;
-    Ok(())
+fn load_decision(connection: &Connection, id: &str) -> Result<OutputDecision> {
+    connection
+        .query_row(
+            &format!("{DECISION_SELECT} WHERE d.id = ?1"),
+            [id],
+            map_decision,
+        )
+        .optional()?
+        .map(|(_, decision)| decision)
+        .ok_or_else(|| {
+            HarnessError::Database(format!(
+                "idempotency key refers to the missing decision '{id}'"
+            ))
+        })
+}
+
+fn stored_record_version(claimed: &Claimed) -> Result<u32> {
+    claimed.record_id.parse().map_err(|_| {
+        HarnessError::Database(format!(
+            "idempotency key refers to the invalid spec version '{}'",
+            claimed.record_id
+        ))
+    })
+}
+
+/// A page of decisions, each with its indexed output.
+pub(crate) type DecisionOutputRows = (Vec<(OutputDecision, IndexedOutput)>, Option<String>);
+
+fn decision_page(
+    connection: &Connection,
+    query: &DecisionQuery<'_>,
+    limit: usize,
+    cursor: Option<i64>,
+) -> Result<(Vec<OutputDecision>, Option<String>)> {
+    let (only_current, kind) = match query.current {
+        None => (false, None),
+        Some(CurrentFilter::Any) => (true, None),
+        Some(CurrentFilter::Only(kind)) => (true, Some(kind.as_str())),
+    };
+    require_character(connection, query.character_id)?;
+    let rows = connection
+        .prepare(&format!(
+            "{DECISION_SELECT}
+             WHERE d.character_id = ?1
+               AND (?2 IS NULL OR d.output_id = ?2)
+               AND (?3 IS NULL OR d.spec_version = ?3)
+               AND (?4 IS NULL OR d.seq < ?4)
+               AND (?5 = 0 OR (d.decision <> 'cleared'
+                    AND d.seq = (SELECT MAX(l.seq) FROM character_output_decisions l
+                                 WHERE l.character_id = d.character_id
+                                   AND l.output_id = d.output_id)))
+               AND (?6 IS NULL OR d.decision = ?6)
+             ORDER BY d.seq DESC LIMIT ?7"
+        ))?
+        .query_map(
+            params![
+                query.character_id,
+                query.output_id,
+                query.spec_version,
+                cursor,
+                only_current,
+                kind,
+                (limit + 1) as i64
+            ],
+            map_decision,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(into_page(rows, limit))
+}
+
+fn load_indexed_output(connection: &Connection, output_id: &str) -> Result<IndexedOutput> {
+    let corrupt = || {
+        HarnessError::Database(format!(
+            "a character decision refers to output '{output_id}', which is not indexed"
+        ))
+    };
+    let (run, row) = parse_output_id(output_id).ok_or_else(corrupt)?;
+    connection
+        .query_row(
+            &format!("{OUTPUT_SELECT} WHERE o.id = ?1 AND o.run_id = ?2"),
+            params![row, run],
+            map_indexed,
+        )
+        .optional()?
+        .ok_or_else(corrupt)
 }
 
 pub(crate) struct DecisionQuery<'a> {
@@ -365,9 +547,19 @@ impl RunRepository {
         &self,
         name: &str,
         first: Option<(&CharacterSpec, Option<&str>)>,
+        keyed: Option<&Keyed>,
     ) -> Result<(Character, Option<CharacterSpecVersion>)> {
         let id = format!("char-{}", Uuid::new_v4());
         self.guarded(|connection| {
+            if let Some(claimed) = find_claim(connection, keyed)? {
+                // Replay what the first call returned, not today's latest version.
+                let version = first
+                    .map(|_| load_version(connection, &claimed.record_id, 1))
+                    .transpose()?;
+                let mut character = load_character(connection, &claimed.record_id)?;
+                character.latest_spec_version = version.as_ref().map(|version| version.version);
+                return Ok((character, version));
+            }
             let (created_at, created_text) = now_text();
             connection.execute(
                 "INSERT INTO characters (id, name, created_at) VALUES (?1, ?2, ?3)",
@@ -376,6 +568,7 @@ impl RunRepository {
             let version = first
                 .map(|(spec, note)| insert_version(connection, &id, None, spec, note, created_at))
                 .transpose()?;
+            claim(connection, keyed, &id, &id)?;
             Ok((
                 Character {
                     id: id.clone(),
@@ -416,10 +609,26 @@ impl RunRepository {
         based_on: Option<u32>,
         spec: &CharacterSpec,
         note: Option<&str>,
+        keyed: Option<&Keyed>,
     ) -> Result<CharacterSpecVersion> {
         self.guarded(|connection| {
+            if let Some(claimed) = find_claim(connection, keyed)? {
+                return load_version(
+                    connection,
+                    &claimed.character_id,
+                    stored_record_version(&claimed)?,
+                );
+            }
             require_character(connection, character_id)?;
-            insert_version(connection, character_id, based_on, spec, note, Utc::now())
+            let version =
+                insert_version(connection, character_id, based_on, spec, note, Utc::now())?;
+            claim(
+                connection,
+                keyed,
+                character_id,
+                &version.version.to_string(),
+            )?;
+            Ok(version)
         })
     }
 
@@ -469,15 +678,30 @@ impl RunRepository {
         })
     }
 
+    /// Whether the key has been used. A mismatch is reported by the write itself.
+    pub(crate) fn has_claim(&self, key: &str) -> Result<bool> {
+        self.guarded_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM character_idempotency_keys WHERE key = ?1)",
+                [key],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     pub(crate) fn add_reference(
         &self,
         character_id: &str,
         upload_id: &str,
         role: ReferenceRole,
         note: Option<&str>,
+        keyed: Option<&Keyed>,
     ) -> Result<CharacterReference> {
         let id = format!("charref-{}", Uuid::new_v4());
         self.guarded(|connection| {
+            if let Some(claimed) = find_claim(connection, keyed)? {
+                return load_reference(connection, &claimed.character_id, &claimed.record_id);
+            }
             require_character(connection, character_id)?;
             let existing: Option<String> = connection
                 .query_row(
@@ -510,6 +734,7 @@ impl RunRepository {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![id, character_id, upload_id, role.as_str(), note, added_text],
             )?;
+            claim(connection, keyed, character_id, &id)?;
             Ok(CharacterReference {
                 id: id.clone(),
                 character_id: character_id.to_owned(),
@@ -527,17 +752,21 @@ impl RunRepository {
         &self,
         character_id: &str,
         reference_id: &str,
+        keyed: Option<&Keyed>,
     ) -> Result<CharacterReference> {
         self.guarded(|connection| {
+            if let Some(claimed) = find_claim(connection, keyed)? {
+                return load_reference(connection, &claimed.character_id, &claimed.record_id);
+            }
             require_character(connection, character_id)?;
             let reference = load_reference(connection, character_id, reference_id)?;
-            if reference.removed_at.is_some() {
-                return Ok(reference);
+            if reference.removed_at.is_none() {
+                connection.execute(
+                    "UPDATE character_references SET removed_at = ?2 WHERE id = ?1 AND removed_at IS NULL",
+                    params![reference_id, Utc::now().to_rfc3339()],
+                )?;
             }
-            connection.execute(
-                "UPDATE character_references SET removed_at = ?2 WHERE id = ?1 AND removed_at IS NULL",
-                params![reference_id, Utc::now().to_rfc3339()],
-            )?;
+            claim(connection, keyed, character_id, reference_id)?;
             load_reference(connection, character_id, reference_id)
         })
     }
@@ -576,12 +805,21 @@ impl RunRepository {
         spec_version: u32,
         decision: Decision,
         note: Option<&str>,
+        keyed: Option<&Keyed>,
     ) -> Result<OutputDecision> {
         let id = format!("chardec-{}", Uuid::new_v4());
         self.guarded(|connection| {
+            if let Some(claimed) = find_claim(connection, keyed)? {
+                return load_decision(connection, &claimed.record_id);
+            }
             require_character(connection, character_id)?;
             load_version(connection, character_id, spec_version)?;
-            let run_status = output_run_status(connection, output_id)?;
+            let (run_status, linked_to) = output_run(connection, output_id)?;
+            if let Some(other) = linked_to.filter(|linked| linked != character_id) {
+                return Err(HarnessError::CharacterConflict(format!(
+                    "Output '{output_id}' was generated for character '{other}', not '{character_id}'; nothing was written."
+                )));
+            }
             match decision {
                 Decision::Cleared => {
                     if current_decision(connection, character_id, output_id)?.is_none() {
@@ -614,6 +852,7 @@ impl RunRepository {
                     decided_text
                 ],
             )?;
+            claim(connection, keyed, character_id, &id)?;
             Ok(OutputDecision {
                 id: id.clone(),
                 character_id: character_id.to_owned(),
@@ -644,41 +883,28 @@ impl RunRepository {
     ) -> Result<(Vec<OutputDecision>, Option<String>)> {
         let limit = page_limit(query.limit)?;
         let cursor = decode_cursor(query.cursor)?;
-        let (only_current, kind) = match query.current {
-            None => (false, None),
-            Some(CurrentFilter::Any) => (true, None),
-            Some(CurrentFilter::Only(kind)) => (true, Some(kind.as_str())),
-        };
+        self.guarded_read(|connection| decision_page(connection, &query, limit, cursor))
+    }
+
+    /// The same page, with each decision's indexed output loaded in the same
+    /// read snapshot. An output that is not indexed is a corrupt store, not a
+    /// row to skip.
+    pub(crate) fn list_decisions_with_outputs(
+        &self,
+        query: DecisionQuery<'_>,
+    ) -> Result<DecisionOutputRows> {
+        let limit = page_limit(query.limit)?;
+        let cursor = decode_cursor(query.cursor)?;
         self.guarded_read(|connection| {
-            require_character(connection, query.character_id)?;
-            let rows = connection
-                .prepare(&format!(
-                    "{DECISION_SELECT}
-                     WHERE d.character_id = ?1
-                       AND (?2 IS NULL OR d.output_id = ?2)
-                       AND (?3 IS NULL OR d.spec_version = ?3)
-                       AND (?4 IS NULL OR d.seq < ?4)
-                       AND (?5 = 0 OR (d.decision <> 'cleared'
-                            AND d.seq = (SELECT MAX(l.seq) FROM character_output_decisions l
-                                         WHERE l.character_id = d.character_id
-                                           AND l.output_id = d.output_id)))
-                       AND (?6 IS NULL OR d.decision = ?6)
-                     ORDER BY d.seq DESC LIMIT ?7"
-                ))?
-                .query_map(
-                    params![
-                        query.character_id,
-                        query.output_id,
-                        query.spec_version,
-                        cursor,
-                        only_current,
-                        kind,
-                        (limit + 1) as i64
-                    ],
-                    map_decision,
-                )?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(into_page(rows, limit))
+            let (decisions, next) = decision_page(connection, &query, limit, cursor)?;
+            let joined = decisions
+                .into_iter()
+                .map(|decision| {
+                    let output = load_indexed_output(connection, &decision.output_id)?;
+                    Ok((decision, output))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok((joined, next))
         })
     }
 
@@ -781,11 +1007,13 @@ impl AsyncRunRepository {
         &self,
         name: String,
         first: Option<(CharacterSpec, Option<String>)>,
+        keyed: Option<Keyed>,
     ) -> Result<(Character, Option<CharacterSpecVersion>)> {
         self.call(move |repo| {
             repo.create_character(
                 &name,
                 first.as_ref().map(|(spec, note)| (spec, note.as_deref())),
+                keyed.as_ref(),
             )
         })
         .await
@@ -810,9 +1038,16 @@ impl AsyncRunRepository {
         based_on: Option<u32>,
         spec: CharacterSpec,
         note: Option<String>,
+        keyed: Option<Keyed>,
     ) -> Result<CharacterSpecVersion> {
         self.call(move |repo| {
-            repo.create_spec_version(&character_id, based_on, &spec, note.as_deref())
+            repo.create_spec_version(
+                &character_id,
+                based_on,
+                &spec,
+                note.as_deref(),
+                keyed.as_ref(),
+            )
         })
         .await
     }
@@ -850,17 +1085,31 @@ impl AsyncRunRepository {
         upload_id: String,
         role: ReferenceRole,
         note: Option<String>,
+        keyed: Option<Keyed>,
     ) -> Result<CharacterReference> {
-        self.call(move |repo| repo.add_reference(&character_id, &upload_id, role, note.as_deref()))
-            .await
+        self.call(move |repo| {
+            repo.add_reference(
+                &character_id,
+                &upload_id,
+                role,
+                note.as_deref(),
+                keyed.as_ref(),
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn has_claim(&self, key: String) -> Result<bool> {
+        self.call(move |repo| repo.has_claim(&key)).await
     }
 
     pub(crate) async fn remove_reference(
         &self,
         character_id: String,
         reference_id: String,
+        keyed: Option<Keyed>,
     ) -> Result<CharacterReference> {
-        self.call(move |repo| repo.remove_reference(&character_id, &reference_id))
+        self.call(move |repo| repo.remove_reference(&character_id, &reference_id, keyed.as_ref()))
             .await
     }
 
@@ -884,6 +1133,7 @@ impl AsyncRunRepository {
         spec_version: u32,
         decision: Decision,
         note: Option<String>,
+        keyed: Option<Keyed>,
     ) -> Result<OutputDecision> {
         self.call(move |repo| {
             repo.record_decision(
@@ -892,6 +1142,7 @@ impl AsyncRunRepository {
                 spec_version,
                 decision,
                 note.as_deref(),
+                keyed.as_ref(),
             )
         })
         .await
@@ -917,6 +1168,28 @@ impl AsyncRunRepository {
     ) -> Result<(Vec<OutputDecision>, Option<String>)> {
         self.call(move |repo| {
             repo.list_decisions(DecisionQuery {
+                character_id: &character_id,
+                output_id: output_id.as_deref(),
+                spec_version,
+                current,
+                limit,
+                cursor: cursor.as_deref(),
+            })
+        })
+        .await
+    }
+
+    pub(crate) async fn list_decisions_with_outputs(
+        &self,
+        character_id: String,
+        output_id: Option<String>,
+        spec_version: Option<u32>,
+        current: Option<CurrentFilter>,
+        limit: Option<usize>,
+        cursor: Option<String>,
+    ) -> Result<DecisionOutputRows> {
+        self.call(move |repo| {
+            repo.list_decisions_with_outputs(DecisionQuery {
                 character_id: &character_id,
                 output_id: output_id.as_deref(),
                 spec_version,

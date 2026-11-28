@@ -114,11 +114,14 @@ fn spec(summary: &str) -> CharacterSpec {
 async fn character(fixture: &Fixture) -> CreatedCharacter {
     fixture
         .service
-        .create_character(NewCharacter {
-            name: "Keeper".into(),
-            spec: Some(spec("v1")),
-            note: Some("first".into()),
-        })
+        .create_character(
+            NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(spec("v1")),
+                note: Some("first".into()),
+            },
+            None,
+        )
         .await
         .unwrap()
 }
@@ -151,6 +154,12 @@ async fn output(fixture: &Fixture, run_id: &str, status: RunStatus) -> String {
         })
         .await
         .unwrap();
+    index_output(fixture, run_id, status).await
+}
+
+/// Records one output for an existing run and returns its output ID.
+async fn index_output(fixture: &Fixture, run_id: &str, status: RunStatus) -> String {
+    let repository = fixture.harness.repository().as_async();
     repository
         .record_output(&OutputRecord {
             run_id: run_id.into(),
@@ -243,11 +252,14 @@ async fn creating_a_character_writes_it_and_version_one_together() {
 
     let bare = fixture
         .service
-        .create_character(NewCharacter {
-            name: "Bare".into(),
-            spec: None,
-            note: None,
-        })
+        .create_character(
+            NewCharacter {
+                name: "Bare".into(),
+                spec: None,
+                note: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(bare.character.latest_spec_version, None);
@@ -281,7 +293,7 @@ async fn invalid_creation_writes_nothing() {
             Some(&"n".repeat(NOTE_MAX_BYTES + 1)),
         ),
     ] {
-        assert_invalid(fixture.service.create_character(request).await);
+        assert_invalid(fixture.service.create_character(request, None).await);
     }
     let page = fixture
         .service
@@ -298,7 +310,7 @@ async fn spec_versions_are_append_only_and_conflicts_name_the_latest() {
     let id = &created.character.id;
     let second = fixture
         .service
-        .create_spec_version(id, new_version(Some(1), "v2"))
+        .create_spec_version(id, new_version(Some(1), "v2"), None)
         .await
         .unwrap();
     assert_eq!((second.version, second.based_on), (2, Some(1)));
@@ -320,7 +332,7 @@ async fn spec_versions_are_append_only_and_conflicts_name_the_latest() {
     for based_on in [None, Some(1), Some(3)] {
         match fixture
             .service
-            .create_spec_version(id, new_version(based_on, "rejected"))
+            .create_spec_version(id, new_version(based_on, "rejected"), None)
             .await
         {
             Err(HarnessError::CharacterSpecConflict {
@@ -345,17 +357,20 @@ async fn spec_versions_are_append_only_and_conflicts_name_the_latest() {
 
     let first_only = fixture
         .service
-        .create_character(NewCharacter {
-            name: "No spec yet".into(),
-            spec: None,
-            note: None,
-        })
+        .create_character(
+            NewCharacter {
+                name: "No spec yet".into(),
+                spec: None,
+                note: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(matches!(
         fixture
             .service
-            .create_spec_version(&first_only.character.id, new_version(Some(1), "x"))
+            .create_spec_version(&first_only.character.id, new_version(Some(1), "x"), None)
             .await,
         Err(HarnessError::CharacterSpecConflict {
             based_on: Some(1),
@@ -365,7 +380,7 @@ async fn spec_versions_are_append_only_and_conflicts_name_the_latest() {
     ));
     let first = fixture
         .service
-        .create_spec_version(&first_only.character.id, new_version(None, "first"))
+        .create_spec_version(&first_only.character.id, new_version(None, "first"), None)
         .await
         .unwrap();
     assert_eq!(first.version, 1);
@@ -388,6 +403,7 @@ async fn spec_validation_rejects_before_anything_is_written() {
                     spec: duplicate,
                     note: None,
                 },
+                None,
             )
             .await,
     );
@@ -404,6 +420,7 @@ async fn spec_validation_rejects_before_anything_is_written() {
                     spec: bad_hex,
                     note: None,
                 },
+                None,
             )
             .await,
     );
@@ -426,7 +443,11 @@ async fn spec_versions_list_newest_first_with_a_cursor() {
     for version in 2..=3 {
         fixture
             .service
-            .create_spec_version(id, new_version(Some(version - 1), &format!("v{version}")))
+            .create_spec_version(
+                id,
+                new_version(Some(version - 1), &format!("v{version}")),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -467,7 +488,7 @@ fn concurrent_creators_on_separate_connections_have_exactly_one_winner() {
     let path = directory.path().join("state.sqlite3");
     let repository = RunRepository::open(&path).unwrap();
     let (character, _) = repository
-        .create_character("Racing", Some((&spec("v1"), None)))
+        .create_character("Racing", Some((&spec("v1"), None)), None)
         .unwrap();
     const CREATORS: usize = 8;
     let barrier = std::sync::Barrier::new(CREATORS);
@@ -482,6 +503,7 @@ fn concurrent_creators_on_separate_connections_have_exactly_one_winner() {
                         id,
                         Some(1),
                         &spec(&format!("racer {index}")),
+                        None,
                         None,
                     )
                 })
@@ -539,8 +561,8 @@ async fn unknown_characters_are_rejected_by_every_operation() {
     not_found!(service.get_spec_version(missing, 1));
     not_found!(service.latest_spec_version(missing));
     not_found!(service.list_spec_versions(missing, Default::default()));
-    not_found!(service.create_spec_version(missing, new_version(None, "x")));
-    not_found!(service.remove_reference(missing, "charref-x"));
+    not_found!(service.create_spec_version(missing, new_version(None, "x"), None));
+    not_found!(service.remove_reference(missing, "charref-x", None));
     not_found!(service.list_references(missing, Default::default()));
     not_found!(service.list_decisions(missing, Default::default()));
     not_found!(service.list_current_states(missing, Default::default()));
@@ -555,6 +577,7 @@ async fn unknown_characters_are_rejected_by_every_operation() {
             role: ReferenceRole::Sketch,
             note: None,
         },
+        None,
     ));
     not_found!(service.record_decision(
         missing,
@@ -564,6 +587,7 @@ async fn unknown_characters_are_rejected_by_every_operation() {
             decision: Decision::Approved,
             note: None,
         },
+        None,
     ));
 }
 
@@ -585,7 +609,7 @@ async fn a_reference_needs_an_existing_upload_and_removal_keeps_history() {
     ] {
         assert!(fixture
             .service
-            .add_reference(id, add(unknown, ReferenceRole::Sketch))
+            .add_reference(id, add(unknown, ReferenceRole::Sketch), None)
             .await
             .is_err());
     }
@@ -606,7 +630,7 @@ async fn a_reference_needs_an_existing_upload_and_removal_keeps_history() {
     let upload_id = upload(&fixture, 10).await;
     let sketch = fixture
         .service
-        .add_reference(id, add(upload_id.clone(), ReferenceRole::Sketch))
+        .add_reference(id, add(upload_id.clone(), ReferenceRole::Sketch), None)
         .await
         .unwrap();
     assert!(sketch.id.starts_with("charref-"));
@@ -615,20 +639,20 @@ async fn a_reference_needs_an_existing_upload_and_removal_keeps_history() {
     // The same upload may serve another role, but not the same role twice.
     fixture
         .service
-        .add_reference(id, add(upload_id.clone(), ReferenceRole::Mask))
+        .add_reference(id, add(upload_id.clone(), ReferenceRole::Mask), None)
         .await
         .unwrap();
     assert!(matches!(
         fixture
             .service
-            .add_reference(id, add(upload_id.clone(), ReferenceRole::Sketch))
+            .add_reference(id, add(upload_id.clone(), ReferenceRole::Sketch), None)
             .await,
         Err(HarnessError::CharacterConflict(message)) if message.contains(&sketch.id)
     ));
 
     let removed = fixture
         .service
-        .remove_reference(id, &sketch.id)
+        .remove_reference(id, &sketch.id, None)
         .await
         .unwrap();
     assert!(removed.removed_at.is_some());
@@ -643,7 +667,7 @@ async fn a_reference_needs_an_existing_upload_and_removal_keeps_history() {
     assert_eq!(
         fixture
             .service
-            .remove_reference(id, &sketch.id)
+            .remove_reference(id, &sketch.id, None)
             .await
             .unwrap(),
         removed
@@ -672,24 +696,27 @@ async fn a_reference_needs_an_existing_upload_and_removal_keeps_history() {
     // A removed role can be attached again as a new reference.
     let again = fixture
         .service
-        .add_reference(id, add(upload_id, ReferenceRole::Sketch))
+        .add_reference(id, add(upload_id, ReferenceRole::Sketch), None)
         .await
         .unwrap();
     assert_ne!(again.id, sketch.id);
 
     let other = fixture
         .service
-        .create_character(NewCharacter {
-            name: "Other".into(),
-            spec: None,
-            note: None,
-        })
+        .create_character(
+            NewCharacter {
+                name: "Other".into(),
+                spec: None,
+                note: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(matches!(
         fixture
             .service
-            .remove_reference(&other.character.id, &again.id)
+            .remove_reference(&other.character.id, &again.id, None)
             .await,
         Err(HarnessError::CharacterReferenceNotFound { .. })
     ));
@@ -711,6 +738,7 @@ async fn active_references_are_bounded() {
                     role: ReferenceRole::Reference,
                     note: None,
                 },
+                None,
             )
             .await
             .unwrap();
@@ -726,6 +754,7 @@ async fn active_references_are_bounded() {
                     role: ReferenceRole::Reference,
                     note: None,
                 },
+                None,
             )
             .await,
     );
@@ -739,7 +768,7 @@ async fn decisions_are_append_only_and_clearing_is_the_undo() {
     let id = &created.character.id;
     fixture
         .service
-        .create_spec_version(id, new_version(Some(1), "v2"))
+        .create_spec_version(id, new_version(Some(1), "v2"), None)
         .await
         .unwrap();
     let output = output(&fixture, "run-a", RunStatus::Completed).await;
@@ -759,14 +788,14 @@ async fn decisions_are_append_only_and_clearing_is_the_undo() {
     assert!(matches!(
         fixture
             .service
-            .record_decision(id, decide(Decision::Cleared, 1))
+            .record_decision(id, decide(Decision::Cleared, 1), None)
             .await,
         Err(HarnessError::CharacterConflict(_))
     ));
 
     let approved = fixture
         .service
-        .record_decision(id, decide(Decision::Approved, 1))
+        .record_decision(id, decide(Decision::Approved, 1), None)
         .await
         .unwrap();
     assert_eq!(
@@ -775,7 +804,7 @@ async fn decisions_are_append_only_and_clearing_is_the_undo() {
     );
     let rejected = fixture
         .service
-        .record_decision(id, decide(Decision::Rejected, 2))
+        .record_decision(id, decide(Decision::Rejected, 2), None)
         .await
         .unwrap();
     assert_eq!(rejected.spec_version, 2);
@@ -785,7 +814,7 @@ async fn decisions_are_append_only_and_clearing_is_the_undo() {
     );
     let cleared = fixture
         .service
-        .record_decision(id, decide(Decision::Cleared, 2))
+        .record_decision(id, decide(Decision::Cleared, 2), None)
         .await
         .unwrap();
     assert!(fixture
@@ -815,7 +844,7 @@ async fn decisions_are_append_only_and_clearing_is_the_undo() {
     // Approving again after the undo is a new decision, never a revival of the old one.
     let again = fixture
         .service
-        .record_decision(id, decide(Decision::Approved, 2))
+        .record_decision(id, decide(Decision::Approved, 2), None)
         .await
         .unwrap();
     assert_ne!(again.id, approved.id);
@@ -850,7 +879,7 @@ async fn current_states_take_the_latest_decision_per_output_and_filter() {
     let id = &created.character.id;
     fixture
         .service
-        .create_spec_version(id, new_version(Some(1), "v2"))
+        .create_spec_version(id, new_version(Some(1), "v2"), None)
         .await
         .unwrap();
     let mut outputs = Vec::new();
@@ -866,6 +895,7 @@ async fn current_states_take_the_latest_decision_per_output_and_filter() {
                 decision,
                 note: None,
             },
+            None,
         )
     };
     decide(&outputs[0], Decision::Approved, 1).await.unwrap();
@@ -970,22 +1000,22 @@ async fn decisions_need_an_existing_version_and_output_of_a_completed_run() {
     assert!(matches!(
         fixture
             .service
-            .record_decision(id, decide(&completed, 2))
+            .record_decision(id, decide(&completed, 2), None)
             .await,
         Err(HarnessError::CharacterSpecVersionNotFound { version: 2, .. })
     ));
     assert!(matches!(
         fixture
             .service
-            .record_decision(id, decide(&completed, 0))
+            .record_decision(id, decide(&completed, 0), None)
             .await,
         Err(HarnessError::CharacterSpecVersionNotFound { version: 0, .. })
     ));
-    for unknown in ["run-ok:999", "missing:1", "no-colon", "run-ok:x"] {
+    for unknown in ["run-ok:999", "missing:1"] {
         assert!(matches!(
             fixture
                 .service
-                .record_decision(id, decide(unknown, 1))
+                .record_decision(id, decide(unknown, 1), None)
                 .await,
             Err(HarnessError::OutputNotFound)
         ));
@@ -993,7 +1023,7 @@ async fn decisions_need_an_existing_version_and_output_of_a_completed_run() {
     let message = assert_invalid(
         fixture
             .service
-            .record_decision(id, decide(&failed, 1))
+            .record_decision(id, decide(&failed, 1), None)
             .await,
     );
     assert!(
@@ -1003,7 +1033,7 @@ async fn decisions_need_an_existing_version_and_output_of_a_completed_run() {
     assert_invalid(
         fixture
             .service
-            .record_decision(id, decide(&"o".repeat(OUTPUT_ID_MAX_BYTES + 1), 1))
+            .record_decision(id, decide(&"o".repeat(OUTPUT_ID_MAX_BYTES + 1), 1), None)
             .await,
     );
     assert!(fixture
@@ -1022,7 +1052,7 @@ async fn runs_and_outputs_list_by_character_with_a_cursor() {
     let id = &created.character.id;
     fixture
         .service
-        .create_spec_version(id, new_version(Some(1), "v2"))
+        .create_spec_version(id, new_version(Some(1), "v2"), None)
         .await
         .unwrap();
     for (run, version) in [("run-1", 1), ("run-2", 2), ("run-3", 2)] {
@@ -1216,11 +1246,14 @@ async fn characters_list_newest_first_and_page() {
         ids.push(
             fixture
                 .service
-                .create_character(NewCharacter {
-                    name: name.into(),
-                    spec: None,
-                    note: None,
-                })
+                .create_character(
+                    NewCharacter {
+                        name: name.into(),
+                        spec: None,
+                        note: None,
+                    },
+                    None,
+                )
                 .await
                 .unwrap()
                 .character
@@ -1263,7 +1296,7 @@ async fn everything_survives_reopening_the_database() {
     let id = created.character.id.clone();
     fixture
         .service
-        .create_spec_version(&id, new_version(Some(1), "v2"))
+        .create_spec_version(&id, new_version(Some(1), "v2"), None)
         .await
         .unwrap();
     let upload_id = upload(&fixture, 7).await;
@@ -1276,6 +1309,7 @@ async fn everything_survives_reopening_the_database() {
                 role: ReferenceRole::Reference,
                 note: None,
             },
+            None,
         )
         .await
         .unwrap();
@@ -1288,12 +1322,13 @@ async fn everything_survives_reopening_the_database() {
                 role: ReferenceRole::Mask,
                 note: Some("mask".into()),
             },
+            None,
         )
         .await
         .unwrap();
     let removed = fixture
         .service
-        .remove_reference(&id, &removed.id)
+        .remove_reference(&id, &removed.id, None)
         .await
         .unwrap();
     let approved_output = output(&fixture, "run-1", RunStatus::Completed).await;
@@ -1313,6 +1348,7 @@ async fn everything_survives_reopening_the_database() {
                     decision,
                     note: None,
                 },
+                None,
             )
             .await
             .unwrap();
@@ -1378,4 +1414,651 @@ async fn everything_survives_reopening_the_database() {
         .is_none());
     let linked = reopened.list_runs(&id, Default::default()).await.unwrap();
     assert_eq!(linked.runs[0].character.as_ref(), Some(&link));
+}
+
+fn key(value: &str) -> IdempotencyKey {
+    IdempotencyKey::parse(value).unwrap()
+}
+
+fn row_counts(fixture: &Fixture) -> Vec<i64> {
+    let connection = rusqlite::Connection::open(&fixture.config.state_database).unwrap();
+    [
+        "characters",
+        "character_spec_versions",
+        "character_references",
+        "character_output_decisions",
+        "character_idempotency_keys",
+    ]
+    .iter()
+    .map(|table| {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    })
+    .collect()
+}
+
+fn decision(output_id: &str, decision: Decision, spec_version: u32) -> NewDecision {
+    NewDecision {
+        output_id: output_id.to_owned(),
+        spec_version,
+        decision,
+        note: None,
+    }
+}
+
+fn attach(upload_id: &str, role: ReferenceRole) -> NewReference {
+    NewReference {
+        upload_id: upload_id.to_owned(),
+        role,
+        note: None,
+    }
+}
+
+#[test]
+fn idempotency_keys_are_visible_ascii_without_commas() {
+    for valid in ["a", "confirmation-7f3a", "k:1/2_3", &"k".repeat(128)] {
+        assert_eq!(IdempotencyKey::parse(valid).unwrap().as_str(), valid);
+    }
+    for invalid in [
+        "",
+        "has space",
+        "a,b",
+        "tab\t",
+        "é",
+        "nul\0",
+        &"k".repeat(129),
+    ] {
+        assert_invalid(IdempotencyKey::parse(invalid));
+    }
+}
+
+#[tokio::test]
+async fn a_repeated_key_replays_each_write_and_writes_nothing() {
+    let fixture = fixture();
+    let service = &fixture.service;
+    let new_character = NewCharacter {
+        name: "Keeper".into(),
+        spec: Some(spec("v1")),
+        note: Some("first".into()),
+    };
+    let created = service
+        .create_character(new_character.clone(), Some(&key("create")))
+        .await
+        .unwrap();
+    let id = created.character.id.clone();
+    let after_create = row_counts(&fixture);
+    assert_eq!(after_create, [1, 1, 0, 0, 1]);
+
+    let v2 = service
+        .create_spec_version(&id, new_version(Some(1), "v2"), Some(&key("v2")))
+        .await
+        .unwrap();
+    service
+        .create_spec_version(&id, new_version(Some(2), "v3"), None)
+        .await
+        .unwrap();
+    let upload_id = upload(&fixture, 3).await;
+    let reference = service
+        .add_reference(
+            &id,
+            attach(&upload_id, ReferenceRole::Sketch),
+            Some(&key("attach")),
+        )
+        .await
+        .unwrap();
+    let removed = service
+        .remove_reference(&id, &reference.id, Some(&key("remove")))
+        .await
+        .unwrap();
+    assert!(removed.removed_at.is_some());
+    let output_id = output(&fixture, "run-a", RunStatus::Completed).await;
+    let approved = service
+        .record_decision(
+            &id,
+            decision(&output_id, Decision::Approved, 1),
+            Some(&key("approve")),
+        )
+        .await
+        .unwrap();
+    service
+        .record_decision(&id, decision(&output_id, Decision::Rejected, 3), None)
+        .await
+        .unwrap();
+    let before = row_counts(&fixture);
+    assert_eq!(before, [1, 3, 1, 2, 5]);
+
+    // Every replay returns what the first call returned, even though the
+    // latest version, the reference and the current decision have moved on.
+    assert_eq!(
+        service
+            .create_character(new_character, Some(&key("create")))
+            .await
+            .unwrap(),
+        created
+    );
+    assert_eq!(created.character.latest_spec_version, Some(1));
+    assert_eq!(
+        service
+            .create_spec_version(&id, new_version(Some(1), "v2"), Some(&key("v2")))
+            .await
+            .unwrap(),
+        v2
+    );
+    assert_eq!(
+        service
+            .add_reference(
+                &id,
+                attach(&upload_id, ReferenceRole::Sketch),
+                Some(&key("attach"))
+            )
+            .await
+            .unwrap(),
+        removed,
+        "a replay shows the reference as stored now"
+    );
+    assert_eq!(
+        service
+            .remove_reference(&id, &reference.id, Some(&key("remove")))
+            .await
+            .unwrap(),
+        removed
+    );
+    assert_eq!(
+        service
+            .record_decision(
+                &id,
+                decision(&output_id, Decision::Approved, 1),
+                Some(&key("approve"))
+            )
+            .await
+            .unwrap(),
+        approved
+    );
+    assert_eq!(row_counts(&fixture), before);
+}
+
+#[tokio::test]
+async fn a_key_with_another_request_conflicts_and_writes_nothing() {
+    let fixture = fixture();
+    let service = &fixture.service;
+    let created = service
+        .create_character(
+            NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(spec("v1")),
+                note: None,
+            },
+            Some(&key("create")),
+        )
+        .await
+        .unwrap();
+    let id = created.character.id.clone();
+    let other = character(&fixture).await.character.id;
+    let upload_id = upload(&fixture, 3).await;
+    let reference = service
+        .add_reference(
+            &id,
+            attach(&upload_id, ReferenceRole::Sketch),
+            Some(&key("attach")),
+        )
+        .await
+        .unwrap();
+    let second = service
+        .add_reference(&id, attach(&upload_id, ReferenceRole::Mask), None)
+        .await
+        .unwrap();
+    service
+        .remove_reference(&id, &reference.id, Some(&key("remove")))
+        .await
+        .unwrap();
+    service
+        .create_spec_version(&id, new_version(Some(1), "v2"), Some(&key("v2")))
+        .await
+        .unwrap();
+    let output_id = output(&fixture, "run-a", RunStatus::Completed).await;
+    service
+        .record_decision(
+            &id,
+            decision(&output_id, Decision::Approved, 1),
+            Some(&key("approve")),
+        )
+        .await
+        .unwrap();
+    let before = row_counts(&fixture);
+
+    let conflicts = [
+        service
+            .create_character(
+                NewCharacter {
+                    name: "Someone else".into(),
+                    spec: Some(spec("v1")),
+                    note: None,
+                },
+                Some(&key("create")),
+            )
+            .await
+            .map(drop),
+        service
+            .create_character(
+                NewCharacter {
+                    name: "Keeper".into(),
+                    spec: None,
+                    note: None,
+                },
+                Some(&key("create")),
+            )
+            .await
+            .map(drop),
+        service
+            .create_spec_version(&id, new_version(Some(1), "changed"), Some(&key("v2")))
+            .await
+            .map(drop),
+        service
+            .create_spec_version(&other, new_version(Some(1), "v2"), Some(&key("v2")))
+            .await
+            .map(drop),
+        service
+            .add_reference(
+                &id,
+                attach(&upload_id, ReferenceRole::Mask),
+                Some(&key("attach")),
+            )
+            .await
+            .map(drop),
+        service
+            .remove_reference(&id, &second.id, Some(&key("remove")))
+            .await
+            .map(drop),
+        service
+            .record_decision(
+                &id,
+                decision(&output_id, Decision::Rejected, 1),
+                Some(&key("approve")),
+            )
+            .await
+            .map(drop),
+        // A key belongs to one operation, whichever one used it first.
+        service
+            .record_decision(
+                &id,
+                decision(&output_id, Decision::Approved, 1),
+                Some(&key("create")),
+            )
+            .await
+            .map(drop),
+        service
+            .create_character(
+                NewCharacter {
+                    name: "Keeper".into(),
+                    spec: None,
+                    note: None,
+                },
+                Some(&key("approve")),
+            )
+            .await
+            .map(drop),
+    ];
+    for (index, conflict) in conflicts.into_iter().enumerate() {
+        assert!(
+            matches!(conflict, Err(HarnessError::IdempotencyConflict)),
+            "{index}: {conflict:?}"
+        );
+    }
+    assert_eq!(row_counts(&fixture), before);
+}
+
+#[tokio::test]
+async fn a_failed_write_records_no_key() {
+    let fixture = fixture();
+    let service = &fixture.service;
+    let created = character(&fixture).await;
+    let id = &created.character.id;
+    let output_id = output(&fixture, "run-a", RunStatus::Completed).await;
+    let before = row_counts(&fixture);
+
+    assert!(matches!(
+        service
+            .create_spec_version(id, new_version(Some(5), "stale"), Some(&key("retry")))
+            .await,
+        Err(HarnessError::CharacterSpecConflict { .. })
+    ));
+    assert!(matches!(
+        service
+            .record_decision(
+                id,
+                decision(&output_id, Decision::Cleared, 1),
+                Some(&key("retry"))
+            )
+            .await,
+        Err(HarnessError::CharacterConflict(_))
+    ));
+    assert_eq!(row_counts(&fixture), before);
+
+    // The key is still free, so it can name a different, valid request.
+    let v2 = service
+        .create_spec_version(id, new_version(Some(1), "v2"), Some(&key("retry")))
+        .await
+        .unwrap();
+    assert_eq!(v2.version, 2);
+    assert_eq!(row_counts(&fixture)[4], before[4] + 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_callers_with_one_key_write_one_record() {
+    let fixture = fixture();
+    let created = character(&fixture).await;
+    let id = created.character.id.clone();
+    let output_id = output(&fixture, "run-a", RunStatus::Completed).await;
+    let before = row_counts(&fixture);
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let (service, id, output_id) = (fixture.service.clone(), id.clone(), output_id.clone());
+            tokio::spawn(async move {
+                service
+                    .record_decision(
+                        &id,
+                        decision(&output_id, Decision::Approved, 1),
+                        Some(&key("one")),
+                    )
+                    .await
+            })
+        })
+        .collect();
+    let mut recorded = Vec::new();
+    for handle in handles {
+        recorded.push(handle.await.unwrap().unwrap());
+    }
+    assert!(recorded.windows(2).all(|pair| pair[0] == pair[1]));
+    let after = row_counts(&fixture);
+    assert_eq!(after[3], before[3] + 1);
+    assert_eq!(after[4], before[4] + 1);
+}
+
+#[test]
+fn concurrent_creators_on_separate_connections_with_one_key_write_one_row() {
+    use crate::persistence::characters::{Keyed, Operation};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.sqlite3");
+    let repository = RunRepository::open(&path).unwrap();
+    let (character, _) = repository
+        .create_character("Racing", Some((&spec("v1"), None)), None)
+        .unwrap();
+    const CREATORS: usize = 8;
+    let barrier = std::sync::Barrier::new(CREATORS);
+    let keyed = Keyed::new(
+        "same-key",
+        Operation::CreateSpecVersion,
+        json!({"character": character.id}),
+    )
+    .unwrap();
+    let outcomes: Vec<Result<CharacterSpecVersion>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..CREATORS)
+            .map(|_| {
+                let (barrier, path, id, keyed) = (&barrier, &path, &character.id, &keyed);
+                scope.spawn(move || {
+                    let repository = RunRepository::open(path).unwrap();
+                    barrier.wait();
+                    repository.create_spec_version(id, Some(1), &spec("racer"), None, Some(keyed))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    let versions: Vec<_> = outcomes
+        .iter()
+        .map(|outcome| outcome.as_ref().unwrap().clone())
+        .collect();
+    assert!(versions.iter().all(|version| version == &versions[0]));
+    assert_eq!(versions[0].version, 2);
+    assert!(repository.get_spec_version(&character.id, 3).is_err());
+}
+
+#[tokio::test]
+async fn output_ids_have_one_spelling() {
+    let fixture = fixture();
+    let created = character(&fixture).await;
+    let id = &created.character.id;
+    let canonical = output(&fixture, "run-a", RunStatus::Completed).await;
+    assert_eq!(canonical, "run-a:1");
+    fixture
+        .service
+        .record_decision(id, decision(&canonical, Decision::Approved, 1), None)
+        .await
+        .unwrap();
+    let before = row_counts(&fixture);
+
+    for alias in [
+        "run-a:+1", "run-a:01", "run-a: 1", "run-a:1 ", "run-a:-0", "run-a:١",
+    ] {
+        let message = assert_invalid(
+            fixture
+                .service
+                .record_decision(id, decision(alias, Decision::Cleared, 1), None)
+                .await,
+        );
+        assert!(message.contains("output_id"), "{alias}: {message}");
+        assert_invalid(fixture.service.current_state(id, alias).await);
+        assert_invalid(
+            fixture
+                .service
+                .list_decisions(
+                    id,
+                    DecisionListQuery {
+                        output_id: Some(alias.to_owned()),
+                        ..Default::default()
+                    },
+                )
+                .await,
+        );
+        assert!(
+            matches!(
+                fixture.harness.repository().as_async().output(alias).await,
+                Err(HarnessError::OutputNotFound)
+            ),
+            "{alias}"
+        );
+    }
+    for malformed in ["no-colon", "run-a:x", "run-a:", ":1"] {
+        assert_invalid(
+            fixture
+                .service
+                .record_decision(id, decision(malformed, Decision::Approved, 1), None)
+                .await,
+        );
+    }
+    assert_eq!(row_counts(&fixture), before);
+    assert!(fixture
+        .service
+        .current_state(id, &canonical)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        fixture
+            .harness
+            .repository()
+            .as_async()
+            .output(&canonical)
+            .await
+            .unwrap()
+            .id,
+        canonical
+    );
+}
+
+#[tokio::test]
+async fn a_decision_needs_an_output_that_is_not_another_characters() {
+    let fixture = fixture();
+    let first = character(&fixture).await.character.id;
+    let second = character(&fixture).await.character.id;
+    link_run(
+        &fixture,
+        "run-first",
+        &CharacterLink {
+            id: first.clone(),
+            spec_version: 1,
+        },
+    )
+    .await;
+    let firsts = index_output(&fixture, "run-first", RunStatus::Completed).await;
+    let unlinked = output(&fixture, "run-free", RunStatus::Completed).await;
+    let before = row_counts(&fixture);
+
+    let error = fixture
+        .service
+        .record_decision(&second, decision(&firsts, Decision::Approved, 1), None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, HarnessError::CharacterConflict(message)
+            if message.contains(&first) && message.contains("nothing was written")),
+        "{error:?}"
+    );
+    assert_eq!(row_counts(&fixture), before);
+
+    fixture
+        .service
+        .record_decision(&first, decision(&firsts, Decision::Approved, 1), None)
+        .await
+        .unwrap();
+    for character in [&first, &second] {
+        fixture
+            .service
+            .record_decision(character, decision(&unlinked, Decision::Approved, 1), None)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn decisions_list_with_their_outputs_in_one_page() {
+    let fixture = fixture();
+    let created = character(&fixture).await;
+    let id = &created.character.id;
+    let mut outputs = Vec::new();
+    for run in ["run-1", "run-2", "run-3"] {
+        outputs.push(output(&fixture, run, RunStatus::Completed).await);
+    }
+    for (output_id, verdict) in [
+        (&outputs[0], Decision::Approved),
+        (&outputs[1], Decision::Rejected),
+        (&outputs[2], Decision::Approved),
+        (&outputs[2], Decision::Cleared),
+    ] {
+        fixture
+            .service
+            .record_decision(id, decision(output_id, verdict, 1), None)
+            .await
+            .unwrap();
+    }
+
+    let history = fixture
+        .service
+        .list_decisions_with_outputs(id, Default::default())
+        .await
+        .unwrap();
+    let plain = fixture
+        .service
+        .list_decisions(id, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(history.decisions.len(), 4);
+    assert_eq!(
+        history
+            .decisions
+            .iter()
+            .map(|item| &item.decision)
+            .collect::<Vec<_>>(),
+        plain.decisions.iter().collect::<Vec<_>>()
+    );
+    for item in &history.decisions {
+        assert_eq!(item.output.id, item.decision.output_id);
+        assert_eq!(item.output.workflow_id, "workflow");
+        assert_eq!(item.output.output.sha256, "c".repeat(64));
+    }
+
+    let approved = fixture
+        .service
+        .list_approved_with_outputs(id, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(approved.decisions.len(), 1);
+    assert_eq!(approved.decisions[0].output.id, outputs[0]);
+    let current = fixture
+        .service
+        .list_current_states_with_outputs(id, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(current.decisions.len(), 2);
+    assert_invalid(
+        fixture
+            .service
+            .list_current_states_with_outputs(
+                id,
+                CurrentStateQuery {
+                    state: Some(Decision::Cleared),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|_| ()),
+    );
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = fixture
+            .service
+            .list_decisions_with_outputs(
+                id,
+                DecisionListQuery {
+                    limit: Some(3),
+                    cursor: cursor.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.decisions.len() <= 3);
+        seen.extend(page.decisions.into_iter().map(|item| item.decision.id));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        plain
+            .decisions
+            .iter()
+            .map(|decision| decision.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_invalid(
+        fixture
+            .service
+            .list_decisions_with_outputs(
+                id,
+                DecisionListQuery {
+                    limit: Some(MAX_PAGE_LIMIT + 1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|_| ()),
+    );
+    assert!(matches!(
+        fixture
+            .service
+            .list_decisions_with_outputs("char-missing", Default::default())
+            .await,
+        Err(HarnessError::CharacterNotFound { .. })
+    ));
 }
