@@ -1084,7 +1084,7 @@ contract they build on.
   `list_decisions_with_outputs` and its siblings return each decision with its
   indexed output from one read snapshot, so a client needs no per-row lookups.
 - Every write takes an optional idempotency key (`IdempotencyKey`; the assistant
-  uses its confirmation ID and the server will use `Idempotency-Key`). The key,
+  uses its confirmation ID and the server uses `Idempotency-Key`). The key,
   the operation and a fingerprint of the whole request are stored in
   `character_idempotency_keys` in the same transaction as the record. Repeating
   the same request replays the stored record and writes nothing; the same key

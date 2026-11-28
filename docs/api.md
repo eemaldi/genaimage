@@ -64,7 +64,7 @@ are in the [architecture](architecture.md#characters).
 | `GET /characters/{id}/specs?limit&cursor` | `{versions, next_cursor}`, newest first |
 | `GET /characters/{id}/specs/{version}` | One version; `version` is digits only, with no sign or leading zero |
 | `POST /characters/{id}/references` `{upload_id, role, note?}` | 201 `{id, character_id, upload_id, role, note, added_at, removed_at}`; `role` is `sketch`, `reference` or `mask` |
-| `POST /characters/{id}/references/{reference_id}/remove` | 200, the reference with `removed_at` set; the record stays and a repeat returns it unchanged |
+| `POST /characters/{id}/references/{reference_id}/remove` | 200, the reference with `removed_at` set; the record stays and a repeat returns it unchanged. Send no body (400 otherwise) |
 | `GET /characters/{id}/references?include_removed&limit&cursor` | `{references, next_cursor}`; removed ones only with `include_removed=true` |
 | `POST /characters/{id}/decisions` `{output_id, spec_version, decision, note?}` | 201 `{id, character_id, output_id, spec_version, decision, note, decided_at}`; `decision` is `approved`, `rejected` or `cleared` |
 | `GET /characters/{id}/decisions?output_id&spec_version&limit&cursor` | The history including `cleared`, newest first: `{decisions, next_cursor}` |
@@ -82,15 +82,18 @@ Rules:
   unknown output is 404, a run that has not completed cannot be approved or
   rejected (422), and an output of a run linked to another character is 409
   `urn:genaimage:problem:character-conflict`.
-- Numbers are exact whole numbers: `spec_version` and `based_on` reject `2.0`,
-  strings, signs and values beyond 32 bits (422 in a body, 400 in a path).
+- Numbers in a JSON body or a path are exact whole numbers: `spec_version` and
+  `based_on` reject `2.0`, strings, signs and values beyond 32 bits (422 in a
+  body, 400 in a path). Query-string numbers (`spec_version`, `limit`) are parsed
+  leniently, so `01` is read as `1`.
 - Lists are bounded: `limit` is 1 to 200 (default 50) and `cursor` is opaque
   (422 when invalid). Pass the same filters on every page.
 - A serialised spec is limited to 64 KiB (422), and a request body to 1 MiB (413).
 - Every `POST` takes an optional `Idempotency-Key` (1 to 128 visible ASCII
   characters, no commas; 400 when malformed). The first write is 201. Repeating
-  the same key and request writes nothing and returns the first record with
-  200. The same key with another request, or on another endpoint or character, is
+  the same key and request writes nothing and returns the record with 200. That
+  is the first record, except that a keyed reference replay returns the reference
+  as it is now, so `removed_at` may be set. The same key with another request, or on another endpoint or character, is
   409 `urn:genaimage:problem:idempotency-conflict`. A failed write stores no key.
   The character key space is separate from runs and batches. A removal is always
   200, because it creates nothing. `POST` of a character or version also sets
