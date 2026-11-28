@@ -235,6 +235,7 @@ stopped requiring tool support, so tool callers must call `check_request`.
      the watch immediately can report "no checks" and exit);
    - merges with `--merge` only if every check passes;
    - reports the issue state and the new `origin/main`.
+   - reports the merged PR's release binary size (or that it was not found).
 
    It rechecks the issue for 30 seconds, because GitHub closes it after the
    merge. Close it with a comment if it is still open (expected with `Refs`).
