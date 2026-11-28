@@ -78,15 +78,65 @@ fn parse_character_link(link: &str) -> Result<CharacterLink, Error> {
         ))
     };
     let (id, version) = link.rsplit_once(':').ok_or_else(invalid)?;
-    let canonical = !version.is_empty()
-        && version.bytes().all(|byte| byte.is_ascii_digit())
-        && (version == "0" || !version.starts_with('0'));
+    let canonical = version.bytes().all(|byte| byte.is_ascii_digit()) && !version.starts_with('0');
     match version.parse() {
         Ok(spec_version) if canonical && !id.is_empty() => Ok(CharacterLink {
             id: id.to_owned(),
             spec_version,
         }),
         _ => Err(invalid()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accepted(link: &str) -> (String, u32) {
+        let Ok(parsed) = parse_character_link(link) else {
+            panic!("{link:?} was rejected");
+        };
+        (parsed.id, parsed.spec_version)
+    }
+
+    fn rejected(link: &str) -> String {
+        match parse_character_link(link) {
+            Err(Error::Input(message)) => message,
+            _ => panic!("{link:?} was accepted"),
+        }
+    }
+
+    #[test]
+    fn accepts_an_id_and_a_canonical_version() {
+        assert_eq!(accepted("char-abc:1"), ("char-abc".to_owned(), 1));
+    }
+
+    #[test]
+    fn splits_at_the_last_colon_when_the_id_contains_colons() {
+        assert_eq!(accepted("team:char-abc:2"), ("team:char-abc".to_owned(), 2));
+    }
+
+    #[test]
+    fn rejects_versions_that_are_not_canonical_positive_whole_numbers() {
+        for link in [
+            "char-abc:0",
+            "char-abc:01",
+            "char-abc:+1",
+            "char-abc:",
+            "char-abc:1.0",
+            ":1",
+            "char-abc",
+        ] {
+            rejected(link);
+        }
+    }
+
+    #[test]
+    fn rejection_names_the_expected_form() {
+        assert_eq!(
+            rejected("char-abc:01"),
+            "'char-abc:01' is not a character link; use ID:VERSION such as char-…:2."
+        );
     }
 }
 
