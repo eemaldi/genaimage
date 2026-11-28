@@ -325,7 +325,10 @@ impl ConversationService {
                     "issues": [{"field": "preview", "reason": error.to_string()}]
                 })),
                 preview_token: None,
-                conflict: matches!(error, HarnessError::WorkflowChanged),
+                conflict: matches!(
+                    error,
+                    HarnessError::WorkflowChanged | HarnessError::CheckpointProfileChanged
+                ),
             }),
         }
     }
@@ -1525,7 +1528,10 @@ async fn verify_confirmation_preview(
                 "issues": [{"field": "preview", "reason": error.to_string()}]
             })),
             preview_token: None,
-            conflict: matches!(error, HarnessError::WorkflowChanged),
+            conflict: matches!(
+                error,
+                HarnessError::WorkflowChanged | HarnessError::CheckpointProfileChanged
+            ),
         }),
     }
 }

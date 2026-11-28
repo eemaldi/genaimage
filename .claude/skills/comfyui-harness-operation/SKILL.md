@@ -112,6 +112,10 @@ each role is available and why not.
   `POST .../confirmations/{id}` with the shown `preview_token`. An edit needs
   `POST .../confirmations/{id}/preview` first. Never decide on the user's
   behalf, and treat `awaiting_confirmation` as not submitted.
+- A profile is named with its revision, and a character with its spec version;
+  the preview shows every value with its source. `cancel_run` pauses the same
+  way, and its success means the cancellation was requested (`cancelling`), not
+  that the run is cancelled until `run_status` says so.
 - `outcome_unknown` means the submission must be reconciled through Jobs; it
   is never a success and must not be resubmitted blindly.
 - Vision review writes append-only annotations labelled as model opinion. They

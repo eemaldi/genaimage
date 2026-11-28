@@ -255,7 +255,22 @@ The serve entry point registers the built-in read and generation tools in the
 core registry. `list_workflows` and `inspect_workflow` expose the bounded local
 catalogue; `propose_run` validates a pinned proposal and resolves preset,
 default and inherited inputs; `submit_run` requires confirmation and reuses its
-single confirmation ID as the submission idempotency key; `run_status` only
+single confirmation ID as the submission idempotency key. Both accept an
+optional `checkpoint_profile` that must come with its
+`checkpoint_profile_revision` (the chat has a review step, so the assistant
+tools are stricter than the HTTP API) and an optional character link
+`character {id, spec_version}`. The preview shows every effective value with its
+source (`default`, `checkpoint_profile`, `preset` or `user`), the inherited
+workflow inputs, the profile and revision, and the character and spec version;
+submission pins the workflow and profile revisions and re-validates them, so a
+profile that changed after review is a 409 at decision time and nothing is
+submitted. An unknown character or spec version is refused before anything is
+written. A run that was recorded but failed, was cancelled or has an unknown
+outcome is an error that names the run, never a successful submission.
+`cancel_run` requires confirmation too: its preview shows the run, its workflow
+and its status, a finished run is refused, and a success means the cancellation
+was requested (the run is `cancelling` and is cancelled only when its status
+says so). `run_status` only
 exposes outputs for completed runs; `get_output` returns metadata without bytes;
 the read-only tools `list_checkpoints` (installed checkpoints with the
 profiles whose exact names match; an unreachable ComfyUI is an error),
@@ -266,11 +281,15 @@ last row they included, so a row is never hollowed while the cursor advances;
 a shortened page says so. `get_character` returns only a spec summary
 (version, `spec_bytes`, `element_count`); `get_character_spec` pages whole spec
 elements and reports `complete` only on the last page, and its content is
-never trimmed. `list_annotations` projects a `spec_review` annotation whole
-(`character_id`, `spec_version`, every checklist item, `dropped`, `summary`) and
-labels it a model opinion, not approval; a page that cannot hold the next
-annotation whole stops there and says so, and a single annotation too large for
-the page is an error. `list_checkpoints` and `inspect_workflow` report
+never trimmed; a continuation cursor at or past the last element is rejected,
+so a forged cursor cannot report `complete` with nothing read. `list_annotations`
+pages with `cursor` and `next_cursor` and projects a `spec_review` annotation
+whole (`character_id`, `spec_version`, every checklist item, `dropped`,
+`summary`), labelled a model opinion, not approval. An annotation too large for
+one page is a summary row (`complete: false`, verdict counts, the `dropped`
+count, the summary and a `read_with` pointer) and `get_annotation` reads it whole
+in pages of whole checklist items (cursor `ann.{id}.i{offset}`, `complete` only
+on the last page). `list_checkpoints` and `inspect_workflow` report
 `profile_pack_problems` when pack files failed to load, so an empty profile
 list is not read as "no profile". `inspect_workflow` also returns
 `preset_info` (layouts), the checkpoint parameter and the checkpoint

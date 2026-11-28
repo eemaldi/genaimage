@@ -57,14 +57,28 @@ The current scripted scenarios cover:
 - double confirmation creating one run;
 - cancellation during an active stream; and
 - a clear preflight error for a text model without tool support; and
+- the generation tools (`assistant_generation_tools.rs`): a fake-LLM chat that
+  reads a character spec to `complete: true`, inspects `character-portrait`,
+  proposes it with the `portrait-2x3` layout, the `sdxl-base` profile (with its
+  revision) and the character link, then pauses at `submit_run`, and after the
+  decision submits one run whose provenance records the profile revision and the
+  spec version; plus direct tests that every preview value carries its source,
+  a profile without a revision is rejected, a profile changed after review is a
+  409 at decision time with nothing submitted, an unknown character is refused
+  before submission, a repeated confirmation ID gives one run, a recorded
+  failure is an error, an interrupted invocation settles as `outcome_unknown`
+  and is never replayed, and `cancel_run` on a queued run, a running run, a
+  finished run and an unknown run; and
 - the read-only chat-only tools (`assistant_read_tools.rs`): a fake-LLM
   conversation that lists checkpoints with their exactly matching profiles,
   inspects a workflow for its layouts and profiles, and reads a character, plus
   direct tool tests for bounds, cursors, filters, exact numbers
   (`2.0`, `-0.0`, large seeds), an error rather than an empty list when ComfyUI
   is unreachable, paging that visits every row exactly once, whole-element
-  spec paging, pack problems for a malformed `checkpoints.toml`, a proof that
-  no tool writes, and model-opinion annotations.
+  spec paging with forged-cursor rejection, pack problems for a malformed
+  `checkpoints.toml`, a proof that no tool writes, model-opinion annotations,
+  `list_annotations` paging, and an oversized spec review read whole through
+  `get_annotation`.
 
 The suite protects these safety invariants: model output never submits a run;
 submission requires a valid confirm or edit decision; preview tokens are bound

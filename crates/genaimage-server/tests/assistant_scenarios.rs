@@ -1706,11 +1706,21 @@ fn inspect_workflow_result(revision: &str) -> Value {
 }
 
 fn run_preview(arguments: &Value) -> Value {
+    let effective_values: Vec<Value> = arguments["parameters"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, value)| json!({"parameter": name, "value": value, "source": "user"}))
+        .collect();
     json!({
         "workflow_id": arguments["workflow_id"],
         "workflow_revision": arguments["workflow_revision"],
         "preset": arguments["preset"],
+        "checkpoint_profile": null,
+        "character": null,
         "parameters": arguments["parameters"],
+        "effective_values": effective_values,
+        "inherited_inputs": [],
         "issues": []
     })
 }

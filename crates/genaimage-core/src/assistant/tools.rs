@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 use crate::{
     assistant::VisionReviewService,
     media::{IndexedOutput, OutputListQuery},
-    AssistantTool, Harness, HarnessError, LlmRoles, ParameterKind, Result, RunRequest, RunStatus,
-    ToolContext,
+    AssistantTool, Harness, HarnessError, LlmRoles, ParameterKind, Result, RunStatus, ToolContext,
 };
 
+mod generation;
 mod read;
 
 const WORKFLOW_LIST_LIMIT: usize = 50;
@@ -26,16 +26,6 @@ const MAX_TOOL_NOTES: usize = 64;
 #[serde(deny_unknown_fields)]
 struct WorkflowArguments {
     workflow_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunArguments {
-    workflow_id: String,
-    workflow_revision: String,
-    #[serde(default)]
-    preset: Option<String>,
-    parameters: BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -61,12 +51,6 @@ pub fn builtin_assistant_tools(
         Arc::new(InspectWorkflowTool {
             harness: Arc::clone(&harness),
         }),
-        Arc::new(ProposeRunTool {
-            harness: Arc::clone(&harness),
-        }),
-        Arc::new(SubmitRunTool {
-            harness: Arc::clone(&harness),
-        }),
         Arc::new(RunStatusTool {
             harness: Arc::clone(&harness),
         }),
@@ -83,6 +67,7 @@ pub fn builtin_assistant_tools(
         }),
     ];
     tools.extend(read::read_tools(&harness));
+    tools.extend(generation::generation_tools(&harness));
     tools
 }
 
@@ -221,96 +206,6 @@ impl AssistantTool for InspectWorkflowTool {
             result["profile_pack_problems"] = problems;
         }
         Ok(bounded_tool_result(result))
-    }
-}
-
-struct ProposeRunTool {
-    harness: Arc<Harness>,
-}
-
-#[async_trait]
-impl AssistantTool for ProposeRunTool {
-    fn name(&self) -> &str {
-        "propose_run"
-    }
-
-    fn description(&self) -> &str {
-        "Validate a pinned run proposal and return every effective value, including preset, default and inherited inputs. It never submits."
-    }
-
-    fn json_schema(&self) -> Value {
-        run_schema()
-    }
-
-    fn requires_confirmation(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, _context: ToolContext, arguments: Value) -> Result<Value> {
-        let arguments: RunArguments = serde_json::from_value(arguments)?;
-        resolve_run_proposal(&self.harness, arguments)
-            .await
-            .map(bounded_tool_result)
-    }
-}
-
-struct SubmitRunTool {
-    harness: Arc<Harness>,
-}
-
-#[async_trait]
-impl AssistantTool for SubmitRunTool {
-    fn name(&self) -> &str {
-        "submit_run"
-    }
-
-    fn description(&self) -> &str {
-        "Submit an exactly reviewed, revision-pinned run. The confirmation ID is reused as the idempotency key."
-    }
-
-    fn json_schema(&self) -> Value {
-        run_schema()
-    }
-
-    fn requires_confirmation(&self) -> bool {
-        true
-    }
-
-    async fn preview(&self, arguments: &Value) -> Result<Option<Value>> {
-        let arguments: RunArguments = serde_json::from_value(arguments.clone())?;
-        resolve_run_proposal(&self.harness, arguments)
-            .await
-            .map(Some)
-    }
-
-    async fn invoke(&self, context: ToolContext, arguments: Value) -> Result<Value> {
-        let confirmation_id = context.confirmation_id.ok_or_else(|| {
-            HarnessError::ToolConfirmationConflict(
-                "submit_run requires a confirmation ID and cannot be invoked automatically".into(),
-            )
-        })?;
-        let arguments: RunArguments = serde_json::from_value(arguments)?;
-        resolve_run_request(&self.harness, &arguments).await?;
-        let submission = self
-            .harness
-            .submit_keyed(
-                confirmation_id,
-                RunRequest {
-                    workflow: arguments.workflow_id,
-                    workflow_revision: Some(arguments.workflow_revision),
-                    character: None,
-                    preset: arguments.preset,
-                    parameters: arguments.parameters,
-                    version: None,
-                    checkpoint_profile: None,
-                    checkpoint_profile_revision: None,
-                },
-            )
-            .await?;
-        Ok(bounded_tool_result(json!({
-            "run_id": submission.run.id,
-            "status": submission.run.status.as_str()
-        })))
     }
 }
 
@@ -509,55 +404,6 @@ impl AssistantTool for ReviewAgainstSpecTool {
     }
 }
 
-async fn resolve_run_proposal(harness: &Harness, arguments: RunArguments) -> Result<Value> {
-    let workflow = load_workflow(
-        harness,
-        &arguments.workflow_id,
-        Some(&arguments.workflow_revision),
-    )?;
-    harness
-        .validate_proposal_with_uploads(
-            &workflow,
-            arguments.preset.as_deref(),
-            &arguments.parameters,
-        )
-        .await
-        .map_err(proposal_error)?;
-    let bound = workflow.bind(arguments.preset.as_deref(), &arguments.parameters)?;
-    let mut effective_parameters = bound.parameters;
-    for (name, _, value) in
-        workflow.inherited_inputs(arguments.preset.as_deref(), &arguments.parameters)?
-    {
-        effective_parameters
-            .entry(name.to_owned())
-            .or_insert_with(|| value.clone());
-    }
-    Ok(json!({
-        "workflow_id": workflow.manifest.id,
-        "workflow_revision": workflow.revision(),
-        "preset": arguments.preset,
-        "parameters": effective_parameters,
-        "issues": []
-    }))
-}
-
-async fn resolve_run_request(harness: &Harness, arguments: &RunArguments) -> Result<()> {
-    let workflow = load_workflow(
-        harness,
-        &arguments.workflow_id,
-        Some(&arguments.workflow_revision),
-    )?;
-    harness
-        .validate_proposal_with_uploads(
-            &workflow,
-            arguments.preset.as_deref(),
-            &arguments.parameters,
-        )
-        .await
-        .map_err(proposal_error)?;
-    Ok(())
-}
-
 fn load_workflow(
     harness: &Harness,
     workflow_id: &str,
@@ -600,20 +446,6 @@ fn workflow_schema() -> Value {
             "workflow_id": {"type": "string", "minLength": 1}
         },
         "required": ["workflow_id"],
-        "additionalProperties": false
-    })
-}
-
-fn run_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "workflow_id": {"type": "string", "minLength": 1},
-            "workflow_revision": {"type": "string", "minLength": 1},
-            "preset": {"type": "string", "minLength": 1},
-            "parameters": {"type": "object"}
-        },
-        "required": ["workflow_id", "workflow_revision", "parameters"],
         "additionalProperties": false
     })
 }
