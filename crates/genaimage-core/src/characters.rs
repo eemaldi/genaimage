@@ -71,6 +71,38 @@ impl IdempotencyKey {
     }
 }
 
+/// The outcome of a keyed write. `replayed` is true when the key had already
+/// been used for this exact request: the record is the one written the first
+/// time and nothing new was written.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Written<T> {
+    pub record: T,
+    pub replayed: bool,
+}
+
+impl<T> Written<T> {
+    pub(crate) fn first(record: T) -> Self {
+        Self {
+            record,
+            replayed: false,
+        }
+    }
+
+    pub(crate) fn replay(record: T) -> Self {
+        Self {
+            record,
+            replayed: true,
+        }
+    }
+
+    pub(crate) fn map<U>(self, convert: impl FnOnce(T) -> U) -> Written<U> {
+        Written {
+            record: convert(self.record),
+            replayed: self.replayed,
+        }
+    }
+}
+
 /// The spec version of a character that a run was submitted against.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

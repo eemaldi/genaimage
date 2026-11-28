@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     validate_name, validate_note, validate_output_id, Character, CharacterReference, CharacterSpec,
-    CharacterSpecVersion, Decision, IdempotencyKey, OutputDecision, ReferenceRole,
+    CharacterSpecVersion, Decision, IdempotencyKey, OutputDecision, ReferenceRole, Written,
 };
 use crate::{
     media::{IndexedOutput, OutputPage},
@@ -189,6 +189,15 @@ impl CharacterService {
         request: NewCharacter,
         key: Option<&IdempotencyKey>,
     ) -> Result<CreatedCharacter> {
+        Ok(self.create_character_written(request, key).await?.record)
+    }
+
+    /// `create_character`, saying whether the key replayed an earlier write.
+    pub async fn create_character_written(
+        &self,
+        request: NewCharacter,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<Written<CreatedCharacter>> {
         validate_name(&request.name)?;
         validate_note("note", request.note.as_deref())?;
         match (&request.spec, &request.note) {
@@ -202,14 +211,14 @@ impl CharacterService {
         }
         let keyed = keyed(key, Operation::CreateCharacter, None, &request)?;
         let first = request.spec.map(|spec| (spec, request.note));
-        let (character, spec_version) = self
+        let written = self
             .repository()
             .create_character(request.name, first, keyed)
             .await?;
-        Ok(CreatedCharacter {
+        Ok(written.map(|(character, spec_version)| CreatedCharacter {
             character,
             spec_version,
-        })
+        }))
     }
 
     pub async fn get_character(&self, character_id: &str) -> Result<Character> {
@@ -238,6 +247,19 @@ impl CharacterService {
         request: NewSpecVersion,
         key: Option<&IdempotencyKey>,
     ) -> Result<CharacterSpecVersion> {
+        Ok(self
+            .create_spec_version_written(character_id, request, key)
+            .await?
+            .record)
+    }
+
+    /// `create_spec_version`, saying whether the key replayed an earlier write.
+    pub async fn create_spec_version_written(
+        &self,
+        character_id: &str,
+        request: NewSpecVersion,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<Written<CharacterSpecVersion>> {
         request.spec.validate()?;
         validate_note("note", request.note.as_deref())?;
         let keyed = keyed(
@@ -299,6 +321,19 @@ impl CharacterService {
         request: NewReference,
         key: Option<&IdempotencyKey>,
     ) -> Result<CharacterReference> {
+        Ok(self
+            .add_reference_written(character_id, request, key)
+            .await?
+            .record)
+    }
+
+    /// `add_reference`, saying whether the key replayed an earlier write.
+    pub async fn add_reference_written(
+        &self,
+        character_id: &str,
+        request: NewReference,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<Written<CharacterReference>> {
         validate_note("note", request.note.as_deref())?;
         if request.upload_id.len() > UPLOAD_ID_MAX_BYTES {
             return Err(HarnessError::InvalidCharacterRequest(format!(
@@ -346,6 +381,19 @@ impl CharacterService {
         reference_id: &str,
         key: Option<&IdempotencyKey>,
     ) -> Result<CharacterReference> {
+        Ok(self
+            .remove_reference_written(character_id, reference_id, key)
+            .await?
+            .record)
+    }
+
+    /// `remove_reference`, saying whether the key replayed an earlier write.
+    pub async fn remove_reference_written(
+        &self,
+        character_id: &str,
+        reference_id: &str,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<Written<CharacterReference>> {
         let keyed = keyed(
             key,
             Operation::RemoveReference,
@@ -388,6 +436,19 @@ impl CharacterService {
         request: NewDecision,
         key: Option<&IdempotencyKey>,
     ) -> Result<OutputDecision> {
+        Ok(self
+            .record_decision_written(character_id, request, key)
+            .await?
+            .record)
+    }
+
+    /// `record_decision`, saying whether the key replayed an earlier write.
+    pub async fn record_decision_written(
+        &self,
+        character_id: &str,
+        request: NewDecision,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<Written<OutputDecision>> {
         validate_output_id(&request.output_id)?;
         validate_note("note", request.note.as_deref())?;
         let keyed = keyed(key, Operation::RecordDecision, Some(character_id), &request)?;

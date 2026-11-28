@@ -11,8 +11,8 @@ use super::{
 use crate::{
     characters::{
         Character, CharacterLink, CharacterReference, CharacterSpec, CharacterSpecVersion,
-        Decision, OutputDecision, ReferenceRole, DEFAULT_PAGE_LIMIT, MAX_ACTIVE_REFERENCES,
-        MAX_PAGE_LIMIT,
+        Decision, OutputDecision, ReferenceRole, Written, DEFAULT_PAGE_LIMIT,
+        MAX_ACTIVE_REFERENCES, MAX_PAGE_LIMIT,
     },
     media::{IndexedOutput, OutputPage},
     HarnessError, Result,
@@ -548,7 +548,7 @@ impl RunRepository {
         name: &str,
         first: Option<(&CharacterSpec, Option<&str>)>,
         keyed: Option<&Keyed>,
-    ) -> Result<(Character, Option<CharacterSpecVersion>)> {
+    ) -> Result<Written<(Character, Option<CharacterSpecVersion>)>> {
         let id = format!("char-{}", Uuid::new_v4());
         self.guarded(|connection| {
             if let Some(claimed) = find_claim(connection, keyed)? {
@@ -558,7 +558,7 @@ impl RunRepository {
                     .transpose()?;
                 let mut character = load_character(connection, &claimed.record_id)?;
                 character.latest_spec_version = version.as_ref().map(|version| version.version);
-                return Ok((character, version));
+                return Ok(Written::replay((character, version)));
             }
             let (created_at, created_text) = now_text();
             connection.execute(
@@ -569,7 +569,7 @@ impl RunRepository {
                 .map(|(spec, note)| insert_version(connection, &id, None, spec, note, created_at))
                 .transpose()?;
             claim(connection, keyed, &id, &id)?;
-            Ok((
+            Ok(Written::first((
                 Character {
                     id: id.clone(),
                     name: name.to_owned(),
@@ -577,7 +577,7 @@ impl RunRepository {
                     latest_spec_version: version.as_ref().map(|version| version.version),
                 },
                 version,
-            ))
+            )))
         })
     }
 
@@ -610,14 +610,15 @@ impl RunRepository {
         spec: &CharacterSpec,
         note: Option<&str>,
         keyed: Option<&Keyed>,
-    ) -> Result<CharacterSpecVersion> {
+    ) -> Result<Written<CharacterSpecVersion>> {
         self.guarded(|connection| {
             if let Some(claimed) = find_claim(connection, keyed)? {
                 return load_version(
                     connection,
                     &claimed.character_id,
                     stored_record_version(&claimed)?,
-                );
+                )
+                .map(Written::replay);
             }
             require_character(connection, character_id)?;
             let version =
@@ -628,7 +629,7 @@ impl RunRepository {
                 character_id,
                 &version.version.to_string(),
             )?;
-            Ok(version)
+            Ok(Written::first(version))
         })
     }
 
@@ -696,11 +697,12 @@ impl RunRepository {
         role: ReferenceRole,
         note: Option<&str>,
         keyed: Option<&Keyed>,
-    ) -> Result<CharacterReference> {
+    ) -> Result<Written<CharacterReference>> {
         let id = format!("charref-{}", Uuid::new_v4());
         self.guarded(|connection| {
             if let Some(claimed) = find_claim(connection, keyed)? {
-                return load_reference(connection, &claimed.character_id, &claimed.record_id);
+                return load_reference(connection, &claimed.character_id, &claimed.record_id)
+                    .map(Written::replay);
             }
             require_character(connection, character_id)?;
             let existing: Option<String> = connection
@@ -735,7 +737,7 @@ impl RunRepository {
                 params![id, character_id, upload_id, role.as_str(), note, added_text],
             )?;
             claim(connection, keyed, character_id, &id)?;
-            Ok(CharacterReference {
+            Ok(Written::first(CharacterReference {
                 id: id.clone(),
                 character_id: character_id.to_owned(),
                 upload_id: upload_id.to_owned(),
@@ -743,7 +745,7 @@ impl RunRepository {
                 note: note.map(str::to_owned),
                 added_at,
                 removed_at: None,
-            })
+            }))
         })
     }
 
@@ -753,10 +755,11 @@ impl RunRepository {
         character_id: &str,
         reference_id: &str,
         keyed: Option<&Keyed>,
-    ) -> Result<CharacterReference> {
+    ) -> Result<Written<CharacterReference>> {
         self.guarded(|connection| {
             if let Some(claimed) = find_claim(connection, keyed)? {
-                return load_reference(connection, &claimed.character_id, &claimed.record_id);
+                return load_reference(connection, &claimed.character_id, &claimed.record_id)
+                    .map(Written::replay);
             }
             require_character(connection, character_id)?;
             let reference = load_reference(connection, character_id, reference_id)?;
@@ -767,7 +770,7 @@ impl RunRepository {
                 )?;
             }
             claim(connection, keyed, character_id, reference_id)?;
-            load_reference(connection, character_id, reference_id)
+            load_reference(connection, character_id, reference_id).map(Written::first)
         })
     }
 
@@ -806,11 +809,11 @@ impl RunRepository {
         decision: Decision,
         note: Option<&str>,
         keyed: Option<&Keyed>,
-    ) -> Result<OutputDecision> {
+    ) -> Result<Written<OutputDecision>> {
         let id = format!("chardec-{}", Uuid::new_v4());
         self.guarded(|connection| {
             if let Some(claimed) = find_claim(connection, keyed)? {
-                return load_decision(connection, &claimed.record_id);
+                return load_decision(connection, &claimed.record_id).map(Written::replay);
             }
             require_character(connection, character_id)?;
             load_version(connection, character_id, spec_version)?;
@@ -853,7 +856,7 @@ impl RunRepository {
                 ],
             )?;
             claim(connection, keyed, character_id, &id)?;
-            Ok(OutputDecision {
+            Ok(Written::first(OutputDecision {
                 id: id.clone(),
                 character_id: character_id.to_owned(),
                 output_id: output_id.to_owned(),
@@ -861,7 +864,7 @@ impl RunRepository {
                 decision,
                 note: note.map(str::to_owned),
                 decided_at,
-            })
+            }))
         })
     }
 
@@ -1008,7 +1011,7 @@ impl AsyncRunRepository {
         name: String,
         first: Option<(CharacterSpec, Option<String>)>,
         keyed: Option<Keyed>,
-    ) -> Result<(Character, Option<CharacterSpecVersion>)> {
+    ) -> Result<Written<(Character, Option<CharacterSpecVersion>)>> {
         self.call(move |repo| {
             repo.create_character(
                 &name,
@@ -1039,7 +1042,7 @@ impl AsyncRunRepository {
         spec: CharacterSpec,
         note: Option<String>,
         keyed: Option<Keyed>,
-    ) -> Result<CharacterSpecVersion> {
+    ) -> Result<Written<CharacterSpecVersion>> {
         self.call(move |repo| {
             repo.create_spec_version(
                 &character_id,
@@ -1086,7 +1089,7 @@ impl AsyncRunRepository {
         role: ReferenceRole,
         note: Option<String>,
         keyed: Option<Keyed>,
-    ) -> Result<CharacterReference> {
+    ) -> Result<Written<CharacterReference>> {
         self.call(move |repo| {
             repo.add_reference(
                 &character_id,
@@ -1108,7 +1111,7 @@ impl AsyncRunRepository {
         character_id: String,
         reference_id: String,
         keyed: Option<Keyed>,
-    ) -> Result<CharacterReference> {
+    ) -> Result<Written<CharacterReference>> {
         self.call(move |repo| repo.remove_reference(&character_id, &reference_id, keyed.as_ref()))
             .await
     }
@@ -1134,7 +1137,7 @@ impl AsyncRunRepository {
         decision: Decision,
         note: Option<String>,
         keyed: Option<Keyed>,
-    ) -> Result<OutputDecision> {
+    ) -> Result<Written<OutputDecision>> {
         self.call(move |repo| {
             repo.record_decision(
                 &character_id,

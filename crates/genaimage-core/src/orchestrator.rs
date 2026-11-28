@@ -17,8 +17,8 @@ use uuid::Uuid;
 use crate::{
     artifacts::{self, InputFileRecord},
     assistant::{ConversationService, ConversationStore, PromptTemplates},
-    checkpoint_profiles::LayeredBindings,
     characters::{CharacterLink, CharacterService},
+    checkpoint_profiles::LayeredBindings,
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse, UploadResponse},

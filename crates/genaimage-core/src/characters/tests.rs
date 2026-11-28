@@ -489,7 +489,8 @@ fn concurrent_creators_on_separate_connections_have_exactly_one_winner() {
     let repository = RunRepository::open(&path).unwrap();
     let (character, _) = repository
         .create_character("Racing", Some((&spec("v1"), None)), None)
-        .unwrap();
+        .unwrap()
+        .record;
     const CREATORS: usize = 8;
     let barrier = std::sync::Barrier::new(CREATORS);
     let outcomes: Vec<Result<CharacterSpecVersion>> = std::thread::scope(|scope| {
@@ -499,13 +500,15 @@ fn concurrent_creators_on_separate_connections_have_exactly_one_winner() {
                 scope.spawn(move || {
                     let repository = RunRepository::open(path).unwrap();
                     barrier.wait();
-                    repository.create_spec_version(
-                        id,
-                        Some(1),
-                        &spec(&format!("racer {index}")),
-                        None,
-                        None,
-                    )
+                    repository
+                        .create_spec_version(
+                            id,
+                            Some(1),
+                            &spec(&format!("racer {index}")),
+                            None,
+                            None,
+                        )
+                        .map(|written| written.record)
                 })
             })
             .collect();
@@ -1786,7 +1789,8 @@ fn concurrent_creators_on_separate_connections_with_one_key_write_one_row() {
     let repository = RunRepository::open(&path).unwrap();
     let (character, _) = repository
         .create_character("Racing", Some((&spec("v1"), None)), None)
-        .unwrap();
+        .unwrap()
+        .record;
     const CREATORS: usize = 8;
     let barrier = std::sync::Barrier::new(CREATORS);
     let keyed = Keyed::new(
@@ -1802,7 +1806,9 @@ fn concurrent_creators_on_separate_connections_with_one_key_write_one_row() {
                 scope.spawn(move || {
                     let repository = RunRepository::open(path).unwrap();
                     barrier.wait();
-                    repository.create_spec_version(id, Some(1), &spec("racer"), None, Some(keyed))
+                    repository
+                        .create_spec_version(id, Some(1), &spec("racer"), None, Some(keyed))
+                        .map(|written| written.record)
                 })
             })
             .collect();

@@ -2046,7 +2046,10 @@ mod submission_tests {
         );
 
         // The upgraded database accepts a character and a linked run.
-        let (character, _) = repository.create_character("Keeper", None, None).unwrap();
+        let (character, _) = repository
+            .create_character("Keeper", None, None)
+            .unwrap()
+            .record;
         assert!(repository
             .create_spec_version(
                 &character.id,
@@ -2107,7 +2110,8 @@ mod submission_tests {
                 )),
                 None,
             )
-            .unwrap();
+            .unwrap()
+            .record;
         let reference = repository
             .add_reference(
                 &character.id,
@@ -2197,8 +2201,9 @@ mod submission_tests {
             )
             .is_err());
         assert!(repository
-            .remove_reference(&character.id, &reference.id, None)
+            .remove_reference(&character.id, &reference.record.id, None)
             .unwrap()
+            .record
             .removed_at
             .is_some());
     }
@@ -2223,7 +2228,8 @@ mod submission_tests {
         .unwrap();
         let (character, _) = repository
             .create_character("Keeper", Some((&spec, None)), Some(&keyed))
-            .unwrap();
+            .unwrap()
+            .record;
         repository
             .add_reference(
                 &character.id,
