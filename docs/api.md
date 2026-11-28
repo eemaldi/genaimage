@@ -16,7 +16,8 @@ contract is the OpenAPI 3.1 document, checked in at
 | Workflows | `GET /workflows`, `GET /workflows/{id}`, `POST /workflows/{id}/validate`, `GET /workflows/{id}/thumbnail`, `POST /workflows/import`, `POST /workflows/import/confirm` (see [importing a workflow](workflow-manifest.md#importing-a-comfyui-workflow)) |
 | Prompt templates | `GET /templates`, `POST /templates`, `GET /templates/user/{id}`, `PUT`/`DELETE /templates/user/{id}`, `GET /templates/pack/{pack_id}/{path}`, `POST /templates/render` (see [templates](templates.md#api)) |
 | Uploads | `POST /uploads`, `GET /uploads/{id}` |
-| Runs | `GET`/`POST /runs`, `GET /runs/{id}`, `cancel`, `rerun`, `reconcile`, `events`, `manifest`, `resolved-workflow`; `POST /runs/reconcile` |
+| Runs | `GET`/`POST /runs` (a run may carry `character: {id, spec_version}`), `GET /runs/{id}`, `cancel`, `rerun`, `reconcile`, `events`, `manifest`, `resolved-workflow`; `POST /runs/reconcile` |
+| Characters | `GET`/`POST /characters`, `GET /characters/{id}`, `GET`/`POST /characters/{id}/specs`, `GET /characters/{id}/specs/{version}`, `GET`/`POST /characters/{id}/references`, `POST /characters/{id}/references/{reference_id}/remove`, `GET`/`POST /characters/{id}/decisions`, `GET /characters/{id}/outputs`, `GET /characters/{id}/runs` (see [characters](#characters)) |
 | Batches | `POST /batches/preview`, `GET`/`POST /batches`, `GET /batches/{id}`, `POST /batches/{id}/resume`; runs gain `batch_id`/`batch_index` and `GET /runs?batch=` (see [batches](architecture.md#batches-api)) |
 | Outputs | `GET /outputs`, `GET /outputs/{id}`, `metadata`, `thumbnail`, `annotations`, `POST /outputs/{id}/review` |
 | Live events | `GET /events` (server-sent events) |
@@ -39,7 +40,69 @@ Rules that clients must keep, because the server enforces them:
   does, so such a run shows as `pending` in the list until the batch is read.
   Preview lists the `inherited_inputs` once for the whole batch, because every
   item shares them.
+- Link a run to a character with `character: {id, spec_version}` in
+  `POST /runs`. The link is verified before anything is written (404 and no run
+  otherwise), recorded in the run, `preflight.json` and the manifest, copied by
+  a re-run and shown in run details and lists. It never changes what is
+  generated. Batches carry no link, and a `character` field on a batch is a
+  422.
 - Mutating browser requests need a same-origin `Origin`; there is no CORS.
+
+## Characters
+
+A character is a durable record with append-only spec versions, references
+(attached uploads) and approve, reject or clear decisions. Nothing here edits or
+deletes a record, and none of it changes a generation by itself. The core rules
+are in the [architecture](architecture.md#characters).
+
+| Method and path | Result |
+| --- | --- |
+| `POST /characters` `{name, spec?, note?}` | 201 `{character, spec_version}`; `spec` writes version 1 in the same transaction |
+| `GET /characters?limit&cursor` | `{characters, next_cursor}`, newest first |
+| `GET /characters/{id}` | `{id, name, created_at, latest_spec_version}`; `latest_spec_version` is `null` until a version exists |
+| `POST /characters/{id}/specs` `{based_on?, spec, note?}` | 201 `{character_id, version, created_at, based_on, spec, note}` |
+| `GET /characters/{id}/specs?limit&cursor` | `{versions, next_cursor}`, newest first |
+| `GET /characters/{id}/specs/{version}` | One version; `version` is digits only, with no sign or leading zero |
+| `POST /characters/{id}/references` `{upload_id, role, note?}` | 201 `{id, character_id, upload_id, role, note, added_at, removed_at}`; `role` is `sketch`, `reference` or `mask` |
+| `POST /characters/{id}/references/{reference_id}/remove` | 200, the reference with `removed_at` set; the record stays and a repeat returns it unchanged |
+| `GET /characters/{id}/references?include_removed&limit&cursor` | `{references, next_cursor}`; removed ones only with `include_removed=true` |
+| `POST /characters/{id}/decisions` `{output_id, spec_version, decision, note?}` | 201 `{id, character_id, output_id, spec_version, decision, note, decided_at}`; `decision` is `approved`, `rejected` or `cleared` |
+| `GET /characters/{id}/decisions?output_id&spec_version&limit&cursor` | The history including `cleared`, newest first: `{decisions, next_cursor}` |
+| `GET /characters/{id}/outputs?state&spec_version&limit&cursor` | The current states joined with their outputs: `{outputs: [{decision, output}], next_cursor}`. `state` is `approved` or `rejected`; omit it for both. `output` is the shape of `GET /outputs/{id}/metadata`, so fetch images from `/outputs/{id}/thumbnail` and `/outputs/{id}` |
+| `GET /characters/{id}/runs?spec_version&status&limit&cursor` | `{runs, next_cursor}`, the runs linked to the character |
+
+Rules:
+
+- The current state of an output is its latest decision across all spec versions;
+  a `cleared` output has none and is not listed.
+- `based_on` must be the latest version the author saw (omit it for version 1).
+  A stale value is 409 `urn:genaimage:problem:character-spec-conflict` with the
+  problem field `latest`, and nothing is written.
+- Only the canonical output ID `{run_id}:{row}` is accepted (422 otherwise). An
+  unknown output is 404, a run that has not completed cannot be approved or
+  rejected (422), and an output of a run linked to another character is 409
+  `urn:genaimage:problem:character-conflict`.
+- Numbers are exact whole numbers: `spec_version` and `based_on` reject `2.0`,
+  strings, signs and values beyond 32 bits (422 in a body, 400 in a path).
+- Lists are bounded: `limit` is 1 to 200 (default 50) and `cursor` is opaque
+  (422 when invalid). Pass the same filters on every page.
+- A serialised spec is limited to 64 KiB (422), and a request body to 1 MiB (413).
+- Every `POST` takes an optional `Idempotency-Key` (1 to 128 visible ASCII
+  characters, no commas; 400 when malformed). The first write is 201. Repeating
+  the same key and request writes nothing and returns the first record with
+  200. The same key with another request, or on another endpoint or character, is
+  409 `urn:genaimage:problem:idempotency-conflict`. A failed write stores no key.
+  The character key space is separate from runs and batches. A removal is always
+  200, because it creates nothing. `POST` of a character or version also sets
+  `Location`.
+- Each write is one transaction, so a problem response means nothing was written;
+  the recovery text says so.
+
+Problem types, all `urn:genaimage:problem:`-prefixed: `character-not-found`,
+`character-spec-version-not-found`, `character-reference-not-found`,
+`character-upload-not-found` and `output-not-found` (404), `character-spec-conflict`,
+`character-conflict` and `idempotency-conflict` (409), and
+`invalid-character-request` (422).
 
 Regenerate the contract and portal types after an API change:
 

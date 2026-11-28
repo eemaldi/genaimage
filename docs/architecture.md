@@ -1037,9 +1037,11 @@ blocking-pool write may finish even if its async caller is cancelled.
 
 Characters are first-class records in SQLite (migration 15), owned by the core
 `characters` module (`CharacterService`, reached as `Harness::characters()`).
-They replace the retired `paths.characters` directory. The server API, assistant
-tools and portal that expose them are not yet implemented; this section
-describes the core and persistence contract they build on.
+They replace the retired `paths.characters` directory. The server API
+(`/api/v1/characters`, described in the [API reference](api.md#characters)) and
+the `character` field of `POST /runs` expose them. The assistant tools and the
+portal are not yet implemented; this section describes the core and persistence
+contract they build on.
 
 - A character has an opaque server-generated ID, a bounded name and an
   append-only series of spec versions numbered 1, 2, and so on. A spec holds a
@@ -1089,6 +1091,10 @@ describes the core and persistence contract they build on.
   with another request, or for another operation, is `IdempotencyConflict`. A
   failed write stores no key. SQLite triggers make the append-only tables refuse
   `INSERT OR REPLACE` as well as updates and deletes.
+- The server returns 201 for a first write and 200 for a keyed replay (the
+  core's `Written` record carries the `replayed` flag), maps every character
+  error to a typed 404, 409 or 422 problem, and converts between the API and core
+  types through their shared JSON shape.
 - The local store has no caps on the number of characters, spec versions or
   decisions; it is append-only and single-user, and only each list and request
   is bounded.
