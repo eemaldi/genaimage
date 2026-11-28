@@ -7,6 +7,7 @@ members = [
   "crates/genaimage-llm",
   "crates/genaimage-server",
   "crates/genaimage-test-support",
+  "crates/genaimage-webhook",
 ]
 resolver = "2"
 

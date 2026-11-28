@@ -1353,7 +1353,7 @@ export interface components {
             /**
              * @description Stable identifier, one of `server`, `config`, `comfyui.reachable`,
              *     `comfyui.version`, `comfyui.object_info`, `workflows.nodes`,
-             *     `packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.
+             *     `packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk`, `ports` and `event_sinks`.
              */
             id: string;
             /** @description Bounded detail lines, such as missing node classes per workflow. */

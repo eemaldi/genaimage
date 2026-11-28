@@ -1290,7 +1290,7 @@
             ]
           },
           "id": {
-            "description": "Stable identifier, one of `server`, `config`, `comfyui.reachable`,\n`comfyui.version`, `comfyui.object_info`, `workflows.nodes`,\n`packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`.",
+            "description": "Stable identifier, one of `server`, `config`, `comfyui.reachable`,\n`comfyui.version`, `comfyui.object_info`, `workflows.nodes`,\n`packs.requirements`, `llm.reachable`, `llm.text`, `llm.vision`, `gpu`, `disk`, `ports` and `event_sinks`.",
             "type": "string"
           },
           "items": {

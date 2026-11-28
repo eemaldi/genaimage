@@ -164,7 +164,7 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   lines; `fix` is a string for every check except `ok` (where it is `null`).
   The check ids are `server`, `config`, `comfyui.reachable`, `comfyui.version`,
   `comfyui.object_info`, `workflows.nodes`, `packs.requirements`, `llm.reachable`,
-  `llm.text`, `llm.vision`, `gpu`, `disk` and `ports`; see
+  `llm.text`, `llm.vision`, `gpu`, `disk`, `ports` and `event_sinks`; see
   [troubleshooting](troubleshooting.md#doctor-checks). Every id is always
   present. Exit `6` means at least one check is an `error`, including a server that
   accepts connections but does not answer within 20 s; warnings and skipped

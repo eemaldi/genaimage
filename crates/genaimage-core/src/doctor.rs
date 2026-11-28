@@ -36,9 +36,10 @@ pub const LLM_VISION: &str = "llm.vision";
 pub const GPU: &str = "gpu";
 pub const DISK: &str = "disk";
 pub const PORTS: &str = "ports";
+pub const EVENT_SINKS: &str = "event_sinks";
 
 /// Every check id, in report order. A report always contains each id once.
-pub const CHECK_IDS: [&str; 13] = [
+pub const CHECK_IDS: [&str; 14] = [
     SERVER,
     CONFIG,
     COMFYUI_REACHABLE,
@@ -52,6 +53,7 @@ pub const CHECK_IDS: [&str; 13] = [
     GPU,
     DISK,
     PORTS,
+    EVENT_SINKS,
 ];
 
 const MAX_ITEMS: usize = 20;
@@ -206,6 +208,7 @@ pub async fn run(
             gpu,
             disk,
             ports,
+            sinks_check(config, &harness.events().sink_statuses().snapshots()),
         ],
     }
 }
@@ -965,6 +968,91 @@ fn role_check(
     }
 }
 
+fn sinks_check(
+    config: &ResolvedConfig,
+    snapshots: &[crate::sinks::SinkStatusSnapshot],
+) -> DoctorCheck {
+    use crate::sinks::SinkState;
+
+    if config.sinks.is_empty() && snapshots.is_empty() {
+        return DoctorCheck::ok(EVENT_SINKS, "No event sinks are configured.");
+    }
+    let missing: Vec<String> = config
+        .sinks
+        .iter()
+        .filter(|sink| !snapshots.iter().any(|status| status.name == sink.name))
+        .map(|sink| format!("{}: configured but not running", sink.name))
+        .collect();
+    let items: Vec<String> = missing
+        .iter()
+        .cloned()
+        .chain(snapshots.iter().map(|status| {
+            let error = status
+                .last_error
+                .as_deref()
+                .map(|error| {
+                    let at = status
+                        .last_error_at
+                        .map(|at| format!(" at {}", at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
+                        .unwrap_or_default();
+                    format!("; last error{at}: {error}")
+                })
+                .unwrap_or_default();
+            let retrying = if status.retrying {
+                "; retrying the current event"
+            } else {
+                ""
+            };
+            format!(
+                "{} ({}): {}, delivered {}, failed {}, retries {}, dropped {}, dead-lettered {}, resyncs {}{retrying}{error}",
+                status.name,
+                status.kind,
+                status.state.as_str(),
+                status.delivered,
+                status.failed,
+                status.retries,
+                status.dropped,
+                status.dead_lettered,
+                status.resyncs,
+            )
+        }))
+        .collect();
+    let failing = snapshots
+        .iter()
+        .filter(|status| status.state == SinkState::Failing)
+        .count();
+    let degraded = snapshots
+        .iter()
+        .filter(|status| status.state == SinkState::Degraded)
+        .count();
+    if failing > 0 || !missing.is_empty() {
+        return DoctorCheck::error(
+            EVENT_SINKS,
+            format!(
+                "{} event sink(s) are failing or not running.",
+                failing + missing.len()
+            ),
+            "Check the sink endpoint or file path named below, then restart the server; dead-lettered events stay in <data dir>/sinks.",
+        )
+        .with_items(items);
+    }
+    if degraded > 0 {
+        return DoctorCheck::warning(
+            EVENT_SINKS,
+            format!(
+                "{degraded} event sink(s) are retrying, or dropped, dead-lettered, failed or resynchronised events since the server started."
+            ),
+            "Inspect the dead-letter logs in <data dir>/sinks and the receiver; restart the server to reset the counters.",
+        )
+        .with_items(items);
+    }
+    DoctorCheck::ok(
+        EVENT_SINKS,
+        format!("{} event sink(s) are delivering.", snapshots.len()),
+    )
+    .with_items(items)
+}
+
 fn disk_check(runs: &Path, options: &DoctorOptions) -> DoctorCheck {
     let fix = format!(
         "Free space on the volume that holds {0}, or move `paths.runs` (and `paths.state_database`) to a larger disk and restart `genaimage serve`.",
@@ -1162,6 +1250,45 @@ mod tests {
         )
         .unwrap();
         (directory, config)
+    }
+
+    #[test]
+    fn event_sink_statuses_map_to_check_statuses() {
+        use crate::sinks::{SinkStatus, FAILING_THRESHOLD};
+
+        let (_dir, none) = config_with("");
+        assert_eq!(sinks_check(&none, &[]).status, DoctorStatus::Ok);
+        let (_dir, config) =
+            config_with("[[sinks]]\nname = 'audit'\nkind = 'jsonl'\npath = 'a.jsonl'\n");
+        let missing = sinks_check(&config, &[]);
+        assert_eq!(missing.status, DoctorStatus::Error);
+        assert!(missing.items[0].contains("audit: configured but not running"));
+
+        let status = SinkStatus::new("audit", "jsonl");
+        let check = |status: &SinkStatus| sinks_check(&config, &[status.snapshot()]);
+        assert_eq!(check(&status).status, DoctorStatus::Ok);
+        status.record_dropped(2);
+        let warning = check(&status);
+        assert_eq!(warning.status, DoctorStatus::Warning);
+        assert!(warning.items[0].contains("dropped 2"));
+        for _ in 0..FAILING_THRESHOLD {
+            status.record_failure("disk full");
+        }
+        let error = check(&status);
+        assert_eq!(error.status, DoctorStatus::Error);
+        assert!(error.items[0].contains("last error at "));
+        assert!(error.items[0].contains(": disk full"));
+        assert!(error.fix.is_some());
+
+        let retrying = SinkStatus::new("audit", "jsonl");
+        retrying.record_retry("HTTP 503");
+        let warning = check(&retrying);
+        assert_eq!(warning.status, DoctorStatus::Warning);
+        assert!(warning.items[0].contains("degraded"));
+        assert!(
+            warning.items[0].contains("retries 1,")
+                && warning.items[0].contains("; retrying the current event")
+        );
     }
 
     #[test]

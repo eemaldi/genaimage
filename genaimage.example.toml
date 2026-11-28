@@ -26,6 +26,19 @@ idle_timeout_secs = 30
 # tools = true
 # vision = false
 
+# Event sinks, read-only in the settings API; see docs/configuration.md.
+# [[sinks]]
+# name = "audit"
+# kind = "jsonl"
+# path = "events.jsonl"   # below <data dir>/sinks
+# events = ["run_completed", "run_failed"]
+#
+# [[sinks]]
+# name = "local-hook"
+# kind = "webhook"
+# url = "http://127.0.0.1:9000/hooks/genaimage"
+# secret_env = "GENAIMAGE_HOOK_SECRET"
+
 [paths]
 # Omitted data paths default under $XDG_DATA_HOME/genaimage (or ~/.local/share/genaimage).
 # State and runs are scoped to the canonical workspace. Databases with runs

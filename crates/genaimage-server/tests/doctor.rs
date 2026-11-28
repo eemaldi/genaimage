@@ -650,3 +650,35 @@ async fn unloadable_workflows_are_counted_never_silently_dropped() {
     );
     api.shutdown().await;
 }
+
+#[tokio::test]
+async fn event_sink_failures_surface_in_the_endpoint_report() {
+    let api = ApiHarness::start().await;
+    assert_eq!(
+        check(&report(&api).await, "event_sinks").status,
+        DoctorStatus::Ok
+    );
+    let status = genaimage_core::sinks::SinkStatus::new("hook", "webhook");
+    api.core
+        .events()
+        .sink_statuses()
+        .register(std::sync::Arc::clone(&status));
+    assert_eq!(
+        check(&report(&api).await, "event_sinks").status,
+        DoctorStatus::Ok
+    );
+    status.record_dead_letter();
+    let warning = report(&api).await;
+    let warning = check(&warning, "event_sinks");
+    assert_eq!(warning.status, DoctorStatus::Warning);
+    assert!(warning.items[0].contains("dead-lettered 1"));
+    for _ in 0..genaimage_core::sinks::FAILING_THRESHOLD {
+        status.record_failure("HTTP 503 Service Unavailable");
+    }
+    let report = report(&api).await;
+    let failing = check(&report, "event_sinks");
+    assert_eq!(failing.status, DoctorStatus::Error);
+    assert!(failing.items[0].contains("HTTP 503"));
+    assert!(failing.fix.is_some());
+    api.shutdown().await;
+}

@@ -57,6 +57,38 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// Every `type` discriminator, as written in the JSON contract.
+    pub const KINDS: [&'static str; 10] = [
+        "run_queued",
+        "run_started",
+        "run_progress",
+        "run_output",
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_unknown_submission",
+        "backend_health_changed",
+        "settings_changed",
+    ];
+
+    /// The `type` discriminator of this event.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::RunQueued { .. } => Self::KINDS[0],
+            Self::RunStarted { .. } => Self::KINDS[1],
+            Self::RunProgress { .. } => Self::KINDS[2],
+            Self::RunOutput { .. } => Self::KINDS[3],
+            Self::RunCompleted { .. } => Self::KINDS[4],
+            Self::RunFailed { .. } => Self::KINDS[5],
+            Self::RunCancelled { .. } => Self::KINDS[6],
+            Self::RunUnknownSubmission { .. } => Self::KINDS[7],
+            Self::BackendHealthChanged { .. } => Self::KINDS[8],
+            Self::SettingsChanged { .. } => Self::KINDS[9],
+        }
+    }
+}
+
 /// IDs start at one and are unique and increasing for the lifetime of a bus.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventEnvelope {
@@ -139,6 +171,7 @@ struct Inner {
     capacity: usize,
     state: Mutex<State>,
     sender: broadcast::Sender<BusMessage>,
+    sinks: crate::sinks::SinkStatuses,
 }
 
 /// Publishing never waits for a subscriber or an event sink.
@@ -168,7 +201,13 @@ impl EventBus {
                 progress_subscribers: Vec::new(),
             }),
             sender,
+            sinks: crate::sinks::SinkStatuses::default(),
         }))
+    }
+
+    /// Delivery status of the event sinks attached to this bus, for diagnostics.
+    pub fn sink_statuses(&self) -> &crate::sinks::SinkStatuses {
+        &self.0.sinks
     }
 
     pub(crate) fn run_lock(
@@ -533,7 +572,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn slow_registered_sink_cannot_block_publishers_and_is_told_to_resync() {
+    async fn registered_sinks_are_forwarded_with_status_and_cannot_block_publishers() {
+        use crate::sinks::SinkRuntime;
+        use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
         let bus = EventBus::new(2);
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let (reports_tx, mut reports_rx) = mpsc::unbounded_channel();
@@ -544,21 +586,22 @@ mod tests {
         });
         let mut registry = ExtensionRegistry::default();
         registry.register_event_sink("slow", sink.clone()).unwrap();
-        let mut tasks = registry.forward_event_sinks(&bus);
-        let mut live = bus.subscribe();
+        let (shutdown, tracker) = (CancellationToken::new(), TaskTracker::new());
+        registry.forward_event_sinks(&bus, SinkRuntime::default(), &shutdown, &tracker);
+        let statuses = bus.sink_statuses().snapshots();
+        assert_eq!(
+            (
+                statuses.len(),
+                statuses[0].name.as_str(),
+                statuses[0].kind.as_str()
+            ),
+            (1, "slow", "extension")
+        );
         bus.publish(change(0));
         timeout(Duration::from_secs(1), started_rx.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            timeout(Duration::from_secs(1), live.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            1
-        );
         let publisher = {
             let bus = bus.clone();
             tokio::spawn(async move {
@@ -571,21 +614,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        sink.release.add_permits(1);
+        sink.release.add_permits(101);
         assert!(matches!(
             timeout(Duration::from_secs(1), reports_rx.recv())
                 .await
                 .unwrap(),
             Some(SinkNotification::Event(_))
         ));
-        assert!(matches!(
-            timeout(Duration::from_secs(1), reports_rx.recv())
-                .await
-                .unwrap(),
-            Some(SinkNotification::ResyncRequired(
-                ResyncReason::Lagged { .. }
-            ))
-        ));
-        tasks.remove("slow").unwrap().await.unwrap().unwrap();
+        shutdown.cancel();
+        tracker.close();
+        timeout(Duration::from_secs(5), tracker.wait())
+            .await
+            .unwrap();
     }
 }

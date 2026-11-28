@@ -18,6 +18,7 @@ export const DOCTOR_CHECK_IDS = [
   'gpu',
   'disk',
   'ports',
+  'event_sinks',
 ] as const;
 
 export type ReportValidation = {
@@ -67,6 +68,7 @@ const labels: Record<string, string> = {
   gpu: 'GPU',
   disk: 'Disk space',
   ports: 'Ports',
+  event_sinks: 'Event sinks',
 };
 
 export function checkLabel(id: string): string {

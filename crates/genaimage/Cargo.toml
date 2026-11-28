@@ -25,10 +25,12 @@ genaimage-comfyui = { path = "../genaimage-comfyui" }
 genaimage-core = { path = "../genaimage-core" }
 genaimage-llm = { path = "../genaimage-llm" }
 genaimage-server = { path = "../genaimage-server", default-features = false }
+genaimage-webhook = { path = "../genaimage-webhook" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 tokio.workspace = true
+tokio-util.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 

@@ -7,9 +7,13 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
 use crate::{
-    config::ComfyUiProfile, EventBus, EventEnvelope, HarnessError, ImageBackend, ReceiveError,
-    ResolvedConfig, Result, ResyncReason,
+    config::ComfyUiProfile,
+    sinks::{spawn_sink, SinkRuntime, SinkStatus},
+    Event, EventBus, EventEnvelope, HarnessError, ImageBackend, ResolvedConfig, Result,
+    ResyncReason,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -153,8 +157,17 @@ pub struct ExtensionRegistry {
     image_backends: BTreeMap<String, Arc<dyn ImageBackend>>,
     llm_providers: BTreeMap<String, Arc<dyn LlmProvider>>,
     assistant_tools: BTreeMap<String, Arc<dyn AssistantTool>>,
-    event_sinks: BTreeMap<String, Arc<dyn EventSink>>,
+    event_sinks: BTreeMap<String, RegisteredSink>,
 }
+
+struct RegisteredSink {
+    sink: Arc<dyn EventSink>,
+    status: Arc<SinkStatus>,
+    wants: EventFilter,
+}
+
+/// Chooses which events a sink receives.
+pub type EventFilter = Arc<dyn Fn(&Event) -> bool + Send + Sync>;
 
 pub const COMFYUI_BACKEND: &str = "comfyui";
 
@@ -213,45 +226,68 @@ impl ExtensionRegistry {
         self.assistant_tools.values().cloned().collect()
     }
 
+    /// Register a sink that receives every event, reported with kind
+    /// `extension`.
     pub fn register_event_sink(&mut self, name: &str, sink: Arc<dyn EventSink>) -> Result<()> {
-        register(&mut self.event_sinks, "event sink", name, sink)
+        let status = SinkStatus::new(name, "extension");
+        self.register_event_sink_with(name, sink, status, Arc::new(|_| true))
+    }
+
+    /// Register a sink with its own status, shared with the sink if it records
+    /// delivery detail, and an event filter.
+    pub fn register_event_sink_with(
+        &mut self,
+        name: &str,
+        sink: Arc<dyn EventSink>,
+        status: Arc<SinkStatus>,
+        wants: EventFilter,
+    ) -> Result<()> {
+        if self.event_sinks.contains_key(name) {
+            return Err(HarnessError::Configuration(format!(
+                "event sink '{name}' is already registered"
+            )));
+        }
+        self.event_sinks.insert(
+            name.to_owned(),
+            RegisteredSink {
+                sink,
+                status,
+                wants,
+            },
+        );
+        Ok(())
     }
 
     pub fn event_sink(&self, name: &str) -> Option<Arc<dyn EventSink>> {
-        self.event_sinks.get(name).cloned()
+        self.event_sinks
+            .get(name)
+            .map(|registered| Arc::clone(&registered.sink))
     }
 
-    /// Start one independent forwarding task per registered sink. Retain the
-    /// handles to observe sink errors; a lagging sink is notified and stops.
-    /// Call once per bus after registration, from a Tokio runtime.
+    /// Start the bounded queue and delivery loop of every registered sink
+    /// through [`crate::sinks::spawn_sink`], the only forwarding path. Call once
+    /// per bus after registration, from a Tokio runtime. Cancel `shutdown` and
+    /// wait on `tracker` to stop; read delivery state from
+    /// `EventBus::sink_statuses`.
     pub fn forward_event_sinks(
         &self,
         bus: &EventBus,
-    ) -> BTreeMap<String, tokio::task::JoinHandle<Result<()>>> {
-        self.event_sinks
-            .iter()
-            .map(|(name, sink)| {
-                let mut subscription = bus.subscribe();
-                let sink = Arc::clone(sink);
-                let task = tokio::spawn(async move {
-                    loop {
-                        match subscription.recv().await {
-                            Ok(event) => {
-                                sink.handle(&SinkNotification::Event(Box::new(event)))
-                                    .await?
-                            }
-                            Err(ReceiveError::ResyncRequired(reason)) => {
-                                sink.handle(&SinkNotification::ResyncRequired(reason))
-                                    .await?;
-                                return Ok(());
-                            }
-                            Err(ReceiveError::Closed) => return Ok(()),
-                        }
-                    }
-                });
-                (name.clone(), task)
-            })
-            .collect()
+        runtime: SinkRuntime,
+        shutdown: &CancellationToken,
+        tracker: &TaskTracker,
+    ) {
+        for registered in self.event_sinks.values() {
+            let wants = Arc::clone(&registered.wants);
+            spawn_sink(
+                bus,
+                Arc::clone(&registered.sink),
+                Arc::clone(&registered.status),
+                move |event| wants(event),
+                runtime,
+                shutdown,
+                tracker,
+            );
+        }
     }
 }
 

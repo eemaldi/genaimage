@@ -12,7 +12,9 @@ use url::{Host, Url};
 use crate::{HarnessError, Result};
 
 mod settings;
+mod sinks;
 pub use settings::{SettingIssue, SettingSource, SettingsUpdate};
+pub use sinks::{SinkConfig, SinkKind, SinkSecret};
 
 const PROJECT_CONFIG: &str = "genaimage.toml";
 
@@ -23,6 +25,8 @@ pub struct HarnessConfig {
     pub comfyui: ComfyUiProfile,
     pub llm: LlmConfig,
     pub paths: HarnessPaths,
+    /// Event sinks; read-only in the settings API.
+    pub sinks: Vec<SinkConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -176,6 +180,8 @@ pub struct ResolvedConfig {
     pub server: ServerConfig,
     pub comfyui: ComfyUiProfile,
     pub llm: LlmConfig,
+    /// Validated event sinks with their secrets resolved from the environment.
+    pub sinks: Vec<SinkConfig>,
     pub state_database: PathBuf,
     /// Writable user workflow root; it may be missing.
     pub workflows: PathBuf,
@@ -316,7 +322,7 @@ impl HarnessConfig {
             }
         }
         let mut config: Self = if let Some(source) = source {
-            toml::from_str(&source).map_err(|e| HarnessError::Configuration(format!("config '{}' is invalid: {e}; use the documented [server], [comfyui], [llm] and [paths] keys; migrate legacy profiles explicitly (see docs/setup.md)", settings.target.display())))?
+            toml::from_str(&source).map_err(|e| HarnessError::Configuration(format!("config '{}' is invalid: {e}; use the documented [server], [comfyui], [llm], [paths] and [[sinks]] keys; migrate legacy profiles explicitly (see docs/setup.md)", settings.target.display())))?
         } else {
             Self::default()
         };
@@ -431,6 +437,7 @@ impl HarnessConfig {
         {
             return Err(error);
         }
+        let sinks = sinks::resolve(std::mem::take(&mut config.sinks), &env)?;
         let data = xdg("XDG_DATA_HOME", ".local/share")?.join("genaimage");
         let claim = env("GENAIMAGE_CLAIM_LEGACY_STATE");
         let claim_legacy_state = match claim.as_deref() {
@@ -494,6 +501,7 @@ impl HarnessConfig {
             server: config.server,
             comfyui: config.comfyui,
             llm: config.llm,
+            sinks,
         })
     }
 
@@ -1293,5 +1301,91 @@ mod tests {
             &[public_mapped]
         )
         .is_err());
+    }
+
+    fn load_sinks(toml: &str, env: &[(&str, &str)]) -> std::result::Result<ResolvedConfig, String> {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("c.toml");
+        fs::write(&path, toml).unwrap();
+        let mut vars = values(&temp);
+        vars.extend(env.iter().map(|(k, v)| (*k, (*v).to_owned())));
+        load(&temp, Some(&path), &vars).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn sinks_parse_with_defaults_and_resolve_the_secret_from_the_environment() {
+        let config = load_sinks(
+            "[[sinks]]\nname = 'audit'\nkind = 'jsonl'\npath = 'a/events.jsonl'\nevents = ['run_failed']\n\n[[sinks]]\nname = 'hook'\nkind = 'webhook'\nurl = 'http://localhost:9000/x'\nsecret_env = 'HOOK'\n",
+            &[("HOOK", "hunter2")],
+        )
+        .unwrap();
+        assert_eq!(config.sinks.len(), 2);
+        assert_eq!(config.sinks[1].timeout_seconds(), 5);
+        assert_eq!(config.sinks[1].max_attempts(), 5);
+        assert_eq!(config.sinks[1].secret.as_ref().unwrap().expose(), "hunter2");
+        assert!(!format!("{config:?} {:?}", config.sinks).contains("hunter2"));
+        assert!(!serde_json::to_string(&config).unwrap().contains("hunter2"));
+    }
+
+    #[test]
+    fn invalid_sinks_are_rejected_with_actionable_errors() {
+        let hook = |extra: &str| format!("[[sinks]]\nname = 'h'\nkind = 'webhook'\n{extra}");
+        let cases = [
+            (
+                "[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = 'x'\nbogus = 1\n".to_owned(),
+                "bogus",
+            ),
+            (
+                "[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = 'x'\n[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = 'y'\n".into(),
+                "unique",
+            ),
+            ("[[sinks]]\nname = 'A!'\nkind = 'jsonl'\npath = 'x'\n".into(), "[a-z0-9_-]"),
+            ("[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = '../x'\n".into(), "without '..'"),
+            ("[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = '/etc/x'\n".into(), "relative"),
+            ("[[sinks]]\nname = 'a'\nkind = 'jsonl'\n".into(), "path"),
+            (
+                "[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = 'x'\nurl = 'http://127.0.0.1'\n".into(),
+                "webhook sinks only",
+            ),
+            (
+                "[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = 'x'\nevents = ['nope']\n".into(),
+                "event types from",
+            ),
+            (
+                "[[sinks]]\nname = 'a'\nkind = 'jsonl'\npath = 'x'\nevents = []\n".into(),
+                "at least one",
+            ),
+            (hook("url = 'https://example.com/hook'\n"), "private"),
+            (hook("url = 'http://93.184.216.34/hook'\n"), "non-local"),
+            (hook("url = 'http://hook.internal/x'\n"), "allowed_hosts"),
+            (hook("url = 'http://127.0.0.1/x'\nmax_attempts = 0\n"), "max_attempts"),
+            (hook("url = 'http://127.0.0.1/x'\ntimeout_seconds = 0\n"), "timeout_seconds"),
+            (hook("url = 'http://127.0.0.1/x'\npath = 'p'\n"), "jsonl sinks only"),
+            (
+                hook("url = 'http://127.0.0.1/x'\nsecret_env = 'MISSING_SECRET'\n"),
+                "MISSING_SECRET",
+            ),
+        ];
+        for (toml, expected) in cases {
+            let error = load_sinks(&toml, &[]).unwrap_err();
+            assert!(error.contains(expected), "{toml}: {error}");
+        }
+        let error = load_sinks(
+            &hook("url = 'http://127.0.0.1/x'\nsecret_env = 'EMPTY'\n"),
+            &[("EMPTY", "")],
+        )
+        .unwrap_err();
+        assert!(error.contains("EMPTY"));
+        let error = load_sinks("[bogus]\n", &[]).unwrap_err();
+        assert!(error.contains("[[sinks]]"));
+    }
+
+    #[test]
+    fn private_webhook_hosts_need_the_allow_list() {
+        let toml = |hosts: &str| {
+            format!("[[sinks]]\nname = 'h'\nkind = 'webhook'\nurl = 'http://hook.internal:9/x'\nallowed_hosts = {hosts}\n")
+        };
+        assert!(load_sinks(&toml("[]"), &[]).is_err());
+        assert!(load_sinks(&toml("['hook.internal']"), &[]).is_ok());
     }
 }
