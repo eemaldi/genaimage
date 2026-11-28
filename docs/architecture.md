@@ -257,7 +257,13 @@ catalogue; `propose_run` validates a pinned proposal and resolves preset,
 default and inherited inputs; `submit_run` requires confirmation and reuses its
 single confirmation ID as the submission idempotency key; `run_status` only
 exposes outputs for completed runs; `get_output` returns metadata without bytes;
-`review_image` calls the exact configured vision role and appends a
+the read-only tools `list_checkpoints` (installed checkpoints with the
+profiles whose exact names match; an unreachable ComfyUI is an error),
+`list_runs`, `list_outputs`, `list_characters`, `get_character` and
+`list_annotations` let the assistant see what the portal shows, each bounded
+with a cursor and an explicit truncation note, and `inspect_workflow` also
+returns `preset_info` (layouts), the checkpoint parameter and the checkpoint
+profiles; `review_image` calls the exact configured vision role and appends a
 model-opinion annotation; and `review_against_spec` does the same against one
 character spec version (`output_id`, `character_id`, `spec_version`). Review is automatic because it is an append-only
 operator assessment rather than a generation submission, does not alter run

@@ -56,7 +56,13 @@ The current scripted scenarios cover:
 - refusal of a stale preview token while the confirmation remains pending;
 - double confirmation creating one run;
 - cancellation during an active stream; and
-- a clear preflight error for a text model without tool support.
+- a clear preflight error for a text model without tool support; and
+- the read-only chat-only tools (`assistant_read_tools.rs`): a fake-LLM
+  conversation that lists checkpoints with their exactly matching profiles,
+  inspects a workflow for its layouts and profiles, and reads a character, plus
+  direct tool tests for bounds, cursors, filters, exact numbers
+  (`2.0`, `-0.0`, large seeds), an error rather than an empty list when ComfyUI
+  is unreachable, and model-opinion annotations.
 
 The suite protects these safety invariants: model output never submits a run;
 submission requires a valid confirm or edit decision; preview tokens are bound
