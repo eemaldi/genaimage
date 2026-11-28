@@ -1033,6 +1033,45 @@ runs or recover in-flight queue state. Newer schema versions require a
 compatible GenAImage version, rather than a downgrade. Once started, a
 blocking-pool write may finish even if its async caller is cancelled.
 
+### Characters
+
+Characters are first-class records in SQLite (migration 15), owned by the core
+`characters` module (`CharacterService`, reached as `Harness::characters()`).
+They replace the retired `paths.characters` directory. The server API, assistant
+tools and portal that expose them are not yet implemented; this section
+describes the core and persistence contract they build on.
+
+- A character has an opaque server-generated ID, a bounded name and an
+  append-only series of spec versions numbered 1, 2, and so on. A spec holds a
+  summary, elements (stable slug ID, category and a `mandatory`, `flexible` or
+  `unspecified` requirement), a palette (optional validated `#rrggbb`), required
+  views and style notes. Every list and string is bounded by count and bytes, and
+  validation rejects rather than trims.
+- A new version must name `based_on`, equal to the current latest version (none
+  for the first). The check and the insert share one immediate transaction, so of
+  several concurrent creators exactly one wins and the others receive
+  `CharacterSpecConflict` naming the latest version. SQLite triggers also refuse
+  to update or delete versions, and to insert a version that does not follow the
+  latest.
+- References attach an existing upload with a role (`sketch`, `reference` or
+  `mask`). Removal is soft: the row stays and `removed_at` is set once. At most
+  32 references may be active, and the same upload may not be attached twice in
+  the same role.
+- Decisions (`approved`, `rejected`, `cleared`) are appended per output and spec
+  version and are never changed. `cleared` is the undo. The current state of an
+  output is its latest decision, and a cleared output has none. Only outputs of
+  completed runs can be approved or rejected.
+- `RunRequest.character` (`{id, spec_version}`) is validated before anything is
+  written, stored on the run (`runs.linked_character_id` and
+  `linked_character_spec_version`, fixed once set), and recorded in
+  `preflight.json`, the `run_created` event and the completed run manifest.
+  Omitting it leaves the request, its idempotency fingerprint and the written
+  files byte-identical to earlier releases. A re-run keeps the source run's link.
+  Batches do not carry a character link yet. The legacy `runs.character_id` column
+  of the retired gate system is untouched and unrelated.
+- Every write is a single transaction, so an error means nothing was written.
+  Lists are newest first, bounded to 200 rows and paged with opaque cursors.
+
 ## Portal UI
 
 **Direction:** Make the active workspace obvious at a glance: a quiet, flat
