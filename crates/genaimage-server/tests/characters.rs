@@ -1228,6 +1228,48 @@ async fn problem_or_conflict(response: Response) {
 }
 
 #[tokio::test]
+async fn removing_a_reference_rejects_a_request_body_and_keeps_it_active() {
+    let api = ApiHarness::start().await;
+    let id = character(&api, "Mara").await;
+    let references = format!("{CHARACTERS}/{id}/references");
+    let upload_id = upload(&api).await;
+    let added = ok(
+        post(
+            &api,
+            &references,
+            None,
+            &json!({"upload_id": upload_id, "role": "sketch"}),
+        )
+        .await,
+        StatusCode::CREATED,
+    )
+    .await;
+    let remove = format!("{references}/{}/remove", added["id"].as_str().unwrap());
+    let rejected = ApiHarness::assert_problem(
+        send(
+            &api,
+            Method::POST,
+            &remove,
+            None,
+            Some(&json!({"note": "late"})),
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert!(rejected.detail.contains("does not accept a request body"));
+    let listed: ReferenceListResponse = api.get_json(&references).await;
+    assert_eq!(listed.references.len(), 1);
+    assert!(listed.references[0].removed_at.is_none());
+    ok(
+        send(&api, Method::POST, &remove, None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    api.shutdown().await;
+}
+
+#[tokio::test]
 async fn characters_and_links_survive_a_restart() {
     let mut api = ApiHarness::start().await;
     install_workflow(&api);

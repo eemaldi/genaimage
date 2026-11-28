@@ -62,7 +62,7 @@ pub(super) async fn create(
         .await
         .map_err(problem)?;
     let location = format!("/api/v1/characters/{}", written.record.character.id);
-    created(written, Some(location), |created| {
+    created(written, Some(location.as_str()), &location, |created| {
         Ok(api::CreateCharacterResponse {
             character: transcode(&created.character)?,
             spec_version: created.spec_version.as_ref().map(transcode).transpose()?,
@@ -223,7 +223,8 @@ pub(super) async fn create_spec(
     let location = format!("/api/v1/characters/{id}/specs/{}", written.record.version);
     created(
         written,
-        Some(location),
+        Some(location.as_str()),
+        &location,
         transcode::<_, api::SpecVersionResponse>,
     )
 }
@@ -344,7 +345,13 @@ pub(super) async fn add_reference(
         .add_reference_written(&id, request, key.as_ref())
         .await
         .map_err(problem)?;
-    created(written, None, transcode::<_, api::ReferenceResponse>)
+    let fetch = format!("/api/v1/characters/{id}/references?include_removed=true");
+    created(
+        written,
+        None,
+        &fetch,
+        transcode::<_, api::ReferenceResponse>,
+    )
 }
 
 #[utoipa::path(
@@ -381,7 +388,9 @@ pub(super) async fn remove_reference(
         .remove_reference_written(&id, &reference_id, key.as_ref())
         .await
         .map_err(problem)?;
-    Ok(Json(transcode(&written.record)?))
+    let fetch = format!("/api/v1/characters/{id}/references?include_removed=true");
+    let reference = transcode(&written.record).map_err(|_| written_but_unreadable(&fetch))?;
+    Ok(Json(reference))
 }
 
 #[utoipa::path(
@@ -467,7 +476,8 @@ pub(super) async fn record_decision(
         .record_decision_written(&id, request, key.as_ref())
         .await
         .map_err(problem)?;
-    created(written, None, transcode::<_, api::DecisionResponse>)
+    let fetch = format!("/api/v1/characters/{id}/decisions");
+    created(written, None, &fetch, transcode::<_, api::DecisionResponse>)
 }
 
 #[utoipa::path(
@@ -617,10 +627,11 @@ fn optional_key(headers: &HeaderMap) -> Result<Option<IdempotencyKey>, Problem> 
         .map_err(problem)
 }
 
-/// 201, or 200 when the key replayed the first write.
+/// 201, or 200 when the key replayed the first write. `fetch` is where to re-read the record.
 fn created<T, R: Serialize>(
     written: Written<T>,
-    location: Option<String>,
+    location: Option<&str>,
+    fetch: &str,
     convert: impl FnOnce(&T) -> Result<R, Problem>,
 ) -> Result<impl IntoResponse, Problem> {
     let status = if written.replayed {
@@ -629,10 +640,22 @@ fn created<T, R: Serialize>(
         StatusCode::CREATED
     };
     let mut headers = HeaderMap::new();
-    if let Some(location) = location.and_then(|location| HeaderValue::from_str(&location).ok()) {
+    if let Some(location) = location.and_then(|location| HeaderValue::from_str(location).ok()) {
         headers.insert(header::LOCATION, location);
     }
-    Ok((status, headers, Json(convert(&written.record)?)))
+    let body = convert(&written.record).map_err(|_| written_but_unreadable(fetch))?;
+    Ok((status, headers, Json(body)))
+}
+
+/// The write has committed, so a failed read-back must not look like a failed write.
+fn written_but_unreadable(fetch: &str) -> Problem {
+    Problem::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "The record was written, but the server could not build its response.",
+        format!(
+            "The record was written; fetch it again with GET {fetch}. Do not repeat the write."
+        ),
+    )
 }
 
 /// The API and core types share one JSON shape; this converts between them.
@@ -755,6 +778,19 @@ mod tests {
                 response.status()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_back_after_a_write_says_the_write_happened() {
+        let response = written_but_unreadable("/api/v1/characters/char-1").into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains(
+            "The record was written; fetch it again with GET /api/v1/characters/char-1."
+        ));
     }
 
     #[test]
