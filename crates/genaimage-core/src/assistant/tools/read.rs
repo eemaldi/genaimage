@@ -126,7 +126,7 @@ impl AssistantTool for ListCheckpointsTool {
             arguments
                 .cursor
                 .as_ref()
-                .is_none_or(|cursor| *name > cursor)
+                .map_or(true, |cursor| *name > cursor)
         });
         let page: Vec<&String> = remaining.by_ref().take(limit).collect();
         let more = remaining.next().is_some();
