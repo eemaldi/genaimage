@@ -9,6 +9,9 @@ pub use assistant::*;
 mod batches;
 pub use batches::*;
 
+mod characters;
+pub use characters::*;
+
 mod doctor;
 pub use doctor::*;
 
@@ -127,6 +130,10 @@ pub struct ProblemDetails {
     /// `template-changed`: the SHA-256 of the template as it is now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_sha256: Option<String>,
+    /// `character-spec-conflict`: the character's latest spec version now; absent
+    /// when it has none yet. Re-read it and base the new version on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<u32>,
 }
 
 /// A workflow catalogue and non-fatal discovery errors.

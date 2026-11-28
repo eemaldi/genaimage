@@ -44,6 +44,7 @@ fn fresh_database_has_no_gate_columns_and_enforces_foreign_keys() {
     assert!(!columns
         .iter()
         .any(|name| name.contains("gate") || name == "character_id"));
+    assert!(columns.contains(&"linked_character_id".to_owned()));
 }
 
 #[test]
@@ -74,8 +75,19 @@ fn unversioned_legacy_database_is_migrated_without_losing_runs() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
+    // The retired gate column keeps its name and stays unrelated to character links.
+    let legacy_columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('runs')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(legacy_columns.contains(&"character_id".to_owned()));
+    assert!(legacy_columns.contains(&"linked_character_id".to_owned()));
+    assert!(reopened.get("run-legacy").unwrap().character.is_none());
     assert_eq!(
         conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
             .unwrap(),
@@ -92,7 +104,7 @@ fn migrates_version_nine_runs_without_inventing_a_graph_digest() {
     drop(repository);
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(
-        "DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; PRAGMA user_version=9;",
+        "DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_no_replace; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_idempotency_keys; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; PRAGMA user_version=9;",
     )
     .unwrap();
     drop(conn);

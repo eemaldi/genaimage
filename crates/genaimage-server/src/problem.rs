@@ -33,6 +33,7 @@ impl Problem {
                 invalid_items: Vec::new(),
                 invalid_item_count: None,
                 current_sha256: None,
+                latest: None,
             }),
         }
     }
@@ -143,6 +144,11 @@ impl Problem {
 
     pub(crate) fn with_current_sha256(mut self, sha256: String) -> Self {
         self.details.current_sha256 = Some(sha256);
+        self
+    }
+
+    pub(crate) fn with_latest(mut self, latest: Option<u32>) -> Self {
+        self.details.latest = latest;
         self
     }
 

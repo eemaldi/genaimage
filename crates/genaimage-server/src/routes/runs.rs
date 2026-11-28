@@ -10,7 +10,7 @@ use axum::{
 use genaimage_api as api;
 use genaimage_core::{
     orchestrator::{ReconcileOutcome, ReconcileResult},
-    Harness, HarnessError, KeyedSubmission, RunRecord, RunRequest, RunStatus,
+    CharacterLink, Harness, HarnessError, KeyedSubmission, RunRecord, RunRequest, RunStatus,
 };
 
 use crate::{AppState, Problem};
@@ -27,6 +27,7 @@ use crate::{AppState, Problem};
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "The linked character or spec version does not exist; no run was written", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 409, description = "Workflow or checkpoint profile revision mismatch, workflow ID declared by several manifests or idempotency key conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -66,6 +67,10 @@ pub(super) async fn submit(
                         parameters: body.parameters,
                         version: body.version,
                         workflow_revision: body.workflow_revision,
+                        character: body.character.map(|link| CharacterLink {
+                            id: link.id,
+                            spec_version: link.spec_version,
+                        }),
                     },
                     &deadline,
                 )
@@ -476,6 +481,18 @@ pub(super) fn problem(error: HarnessError) -> Problem {
             StatusCode::NOT_FOUND,
             "Use a batch ID returned by the batches API.",
         ),
+        HarnessError::CharacterNotFound { .. } | HarnessError::CharacterSpecVersionNotFound { .. } => {
+            return Problem::new(
+                StatusCode::NOT_FOUND,
+                error.to_string(),
+                "Link the run to a character and spec version listed by the characters API. No run was written.",
+            )
+            .with_type(if matches!(error, HarnessError::CharacterNotFound { .. }) {
+                "urn:genaimage:problem:character-not-found"
+            } else {
+                "urn:genaimage:problem:character-spec-version-not-found"
+            })
+        }
         HarnessError::WorkflowChanged => return Problem::workflow_changed(),
         HarnessError::CheckpointProfileChanged => return Problem::checkpoint_profile_changed(),
         HarnessError::WorkflowAmbiguous(detail) => {
@@ -536,7 +553,7 @@ pub(super) fn problem(error: HarnessError) -> Problem {
     Problem::new(status, error.to_string(), recovery)
 }
 
-fn run_response(run: RunRecord) -> api::RunResponse {
+pub(super) fn run_response(run: RunRecord) -> api::RunResponse {
     let workflow_revision = run.workflow_revision();
     api::RunResponse {
         id: run.id,
@@ -552,6 +569,10 @@ fn run_response(run: RunRecord) -> api::RunResponse {
         node_warnings: run.node_warnings,
         batch_id: run.batch_id,
         batch_index: run.batch_index,
+        character: run.character.map(|link| api::CharacterLink {
+            id: link.id,
+            spec_version: link.spec_version,
+        }),
         created_at: run.created_at,
         updated_at: run.updated_at,
         completed_at: run.completed_at,

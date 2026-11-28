@@ -1033,6 +1033,72 @@ runs or recover in-flight queue state. Newer schema versions require a
 compatible GenAImage version, rather than a downgrade. Once started, a
 blocking-pool write may finish even if its async caller is cancelled.
 
+### Characters
+
+Characters are first-class records in SQLite (migration 15), owned by the core
+`characters` module (`CharacterService`, reached as `Harness::characters()`).
+They replace the retired `paths.characters` directory. The server API
+(`/api/v1/characters`, described in the [API reference](api.md#characters)) and
+the `character` field of `POST /runs` expose them. The assistant tools and the
+portal are not yet implemented; this section describes the core and persistence
+contract they build on.
+
+- A character has an opaque server-generated ID, a bounded name and an
+  append-only series of spec versions numbered 1, 2, and so on. A spec holds a
+  summary, elements (stable slug ID, category and a `mandatory`, `flexible` or
+  `unspecified` requirement), a palette (optional validated `#rrggbb`), required
+  views and style notes. Every list and string is bounded by count and bytes, and
+  validation rejects rather than trims.
+- A new version must name `based_on`, equal to the current latest version (none
+  for the first). The check and the insert share one immediate transaction, so of
+  several concurrent creators exactly one wins and the others receive
+  `CharacterSpecConflict` naming the latest version. SQLite triggers also refuse
+  to update or delete versions, and to insert a version that does not follow the
+  latest.
+- References attach an existing upload with a role (`sketch`, `reference` or
+  `mask`). Removal is soft: the row stays and `removed_at` is set once. At most
+  32 references may be active, and the same upload may not be attached twice in
+  the same role.
+- Decisions (`approved`, `rejected`, `cleared`) are appended per output and spec
+  version and are never changed. `cleared` is the undo. The current state of an
+  output is its latest decision, and a cleared output has none. Only outputs of
+  completed runs can be approved or rejected, and an output of a run that was
+  submitted against another character is refused (an unlinked run is allowed).
+  The current state is the latest decision per character and output across all
+  spec versions, so a `cleared` decision recorded against version 2 undoes an
+  approval recorded against version 1. Output IDs are keys: only the canonical
+  `{run_id}:{row}` spelling is accepted, so `run:+1` and `run:01` are rejected
+  rather than resolved to `run:1`.
+- `RunRequest.character` (`{id, spec_version}`) is validated before anything is
+  written, stored on the run (`runs.linked_character_id` and
+  `linked_character_spec_version`), written with the run row and fixed from then
+  on (triggers refuse a later link, change or clear, and a replacing insert),
+  and recorded in
+  `preflight.json`, the `run_created` event and the completed run manifest.
+  Omitting it leaves the request, its idempotency fingerprint and the written
+  files byte-identical to earlier releases. A re-run keeps the source run's link.
+  Batches do not carry a character link yet. The legacy `runs.character_id` column
+  of the retired gate system is untouched and unrelated.
+- Every write is a single transaction, so an error means nothing was written.
+  Lists are newest first, bounded to 200 rows and paged with opaque cursors.
+  `list_decisions_with_outputs` and its siblings return each decision with its
+  indexed output from one read snapshot, so a client needs no per-row lookups.
+- Every write takes an optional idempotency key (`IdempotencyKey`; the assistant
+  uses its confirmation ID and the server uses `Idempotency-Key`). The key,
+  the operation and a fingerprint of the whole request are stored in
+  `character_idempotency_keys` in the same transaction as the record. Repeating
+  the same request replays the stored record and writes nothing; the same key
+  with another request, or for another operation, is `IdempotencyConflict`. A
+  failed write stores no key. SQLite triggers make the append-only tables refuse
+  `INSERT OR REPLACE` as well as updates and deletes.
+- The server returns 201 for a first write and 200 for a keyed replay (the
+  core's `Written` record carries the `replayed` flag), maps every character
+  error to a typed 404, 409 or 422 problem, and converts between the API and core
+  types through their shared JSON shape.
+- The local store has no caps on the number of characters, spec versions or
+  decisions; it is append-only and single-user, and only each list and request
+  is bounded.
+
 ## Portal UI
 
 **Direction:** Make the active workspace obvious at a glance: a quiet, flat

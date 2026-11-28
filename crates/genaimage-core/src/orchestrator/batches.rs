@@ -434,6 +434,7 @@ impl Harness {
                 workflow_revision: Some(request.workflow_revision.clone()),
                 checkpoint_profile: None,
                 checkpoint_profile_revision: None,
+                character: None,
             };
             let link = BatchLink {
                 batch_id: id.to_owned(),

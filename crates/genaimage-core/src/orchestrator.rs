@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{self, InputFileRecord},
     assistant::{ConversationService, ConversationStore, PromptTemplates},
+    characters::{CharacterLink, CharacterService},
     checkpoint_profiles::LayeredBindings,
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
@@ -55,6 +56,10 @@ pub struct RunRequest {
     // Only valid with `checkpoint_profile`; a mismatch refuses the run before anything is written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_profile_revision: Option<String>,
+    /// The character spec version this run is for. Validated at submission and
+    /// recorded in provenance; omitting it preserves fingerprints too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharacterLink>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -160,6 +165,18 @@ pub(crate) async fn before_deadline<T>(
         _ = deadline.cancelled() => Err(HarnessError::ShuttingDown),
         result = operation => result,
     }
+}
+
+fn run_created_payload(
+    manifest_path: &Path,
+    preset: Option<&str>,
+    character: Option<&CharacterLink>,
+) -> Value {
+    let mut payload = json!({"manifest_path": manifest_path, "preset": preset});
+    if let Some(link) = character {
+        payload["character"] = json!(link);
+    }
+    payload
 }
 
 fn transition_task_error(error: tokio::task::JoinError) -> HarnessError {
@@ -440,6 +457,10 @@ impl Harness {
 
     pub fn repository(&self) -> &RunRepository {
         &self.repository
+    }
+
+    pub fn characters(&self) -> CharacterService {
+        CharacterService::new(self.clone())
     }
 
     pub fn conversation_store(&self) -> ConversationStore {
@@ -1273,6 +1294,7 @@ impl Harness {
                     workflow_revision: None,
                     checkpoint_profile: None,
                     checkpoint_profile_revision: None,
+                    character: run.character.clone(),
                 };
                 (
                     request,
@@ -1280,6 +1302,9 @@ impl Harness {
                 )
             }
         };
+        if let Some(link) = &request.character {
+            repository.verify_character_link(link.clone()).await?;
+        }
         let loaded = if let Some((run, manifest_hash, _)) = &source {
             if !single_path_component(&request.workflow) {
                 return Err(WORKFLOW_MISMATCH);
@@ -1432,11 +1457,12 @@ impl Harness {
                     .map(|(id, revision)| (id.as_str(), revision.as_deref())),
                 &parameters,
                 &source_inputs,
+                request.character.as_ref(),
             )
         };
         let (run, (preflight, resolved_checksum)) = if let Some((key, fingerprint)) = keyed {
             let run = match repository
-                .reserve_submission(key, fingerprint, new_run, batch)
+                .reserve_submission(key, fingerprint, new_run, batch, request.character.clone())
                 .await?
             {
                 SubmissionReservation::Existing(run) => {
@@ -1475,7 +1501,9 @@ impl Harness {
         } else {
             let preflight = prepare_files.await?;
             (
-                repository.insert_owned_submission(new_run).await?,
+                repository
+                    .insert_owned_submission(new_run, request.character.clone())
+                    .await?,
                 preflight,
             )
         };
@@ -1487,10 +1515,11 @@ impl Harness {
                 &run.id,
                 "run_created",
                 Some("Run files and preflight validation completed"),
-                &json!({
-                    "manifest_path": loaded.manifest_path,
-                    "preset": request.preset
-                }),
+                &run_created_payload(
+                    &loaded.manifest_path,
+                    request.preset.as_deref(),
+                    request.character.as_ref(),
+                ),
             )
             .await?;
 

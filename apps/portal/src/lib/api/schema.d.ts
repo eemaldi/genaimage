@@ -233,6 +233,171 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/characters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List characters, newest first. A page without `next_cursor` is the last one. */
+        get: operations["characters_list"];
+        put?: never;
+        /** @description Create a character and, when `spec` is given, its version 1 in one transaction. The optional `Idempotency-Key` makes a retry return the character written the first time (200 instead of 201) and write nothing; the same key with another body, or on another endpoint, is a 409 `idempotency-conflict`. */
+        post: operations["characters_create"];
+        delete?: never;
+        options?: never;
+        /** @description List characters, newest first. A page without `next_cursor` is the last one. */
+        head: operations["characters_list_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read a character and its latest spec version number. */
+        get: operations["characters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Read a character and its latest spec version number. */
+        head: operations["characters_get_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The append-only decision history, including `cleared` decisions, newest first. Filter by `output_id` (exactly `{run_id}:{row}`) and `spec_version`. */
+        get: operations["characters_list_decisions"];
+        put?: never;
+        /** @description Append an approve, reject or clear decision about an output against a spec version. Decisions are never edited; `cleared` undoes the current one. The output must exist (404), be exactly `{run_id}:{row}` (422), and to be approved or rejected belong to a completed run (422); an output generated for another character, or `cleared` without a current decision, is a 409 `character-conflict`. The optional `Idempotency-Key` makes a retry return the decision written the first time (200 instead of 201). */
+        post: operations["characters_record_decision"];
+        delete?: never;
+        options?: never;
+        /** @description The append-only decision history, including `cleared` decisions, newest first. Filter by `output_id` (exactly `{run_id}:{row}`) and `spec_version`. */
+        head: operations["characters_list_decisions_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/outputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Current decision states derived from the history (the latest decision per output, `cleared` ones omitted), each joined with its output, newest decision first. `state=approved` or `state=rejected` narrows them; omit it for both. */
+        get: operations["characters_list_outputs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Current decision states derived from the history (the latest decision per output, `cleared` ones omitted), each joined with its output, newest decision first. `state=approved` or `state=rejected` narrows them; omit it for both. */
+        head: operations["characters_list_outputs_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/references": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List references, newest first. Soft-removed references are listed only with `include_removed=true`. */
+        get: operations["characters_list_references"];
+        put?: never;
+        /** @description Attach an existing upload with a role. An unknown upload is a 404 `character-upload-not-found`; attaching the same upload in the same role twice, or more than 32 active references, is refused. The optional `Idempotency-Key` makes a retry return the reference written the first time (200 instead of 201), even if the upload store has changed since. */
+        post: operations["characters_add_reference"];
+        delete?: never;
+        options?: never;
+        /** @description List references, newest first. Soft-removed references are listed only with `include_removed=true`. */
+        head: operations["characters_list_references_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/references/{reference_id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Soft-remove a reference: the record stays, with `removed_at` set once. Removing an already removed reference returns it unchanged. Send an empty body. Always 200: nothing new is created, so a replayed `Idempotency-Key` is indistinguishable from a first removal. */
+        post: operations["characters_remove_reference"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Runs submitted against the character, newest first. Filter by `spec_version` and `status`. */
+        get: operations["characters_list_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Runs submitted against the character, newest first. Filter by `spec_version` and `status`. */
+        head: operations["characters_list_runs_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/specs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List spec versions, newest first. */
+        get: operations["characters_list_specs"];
+        put?: never;
+        /** @description Append a spec version. Versions are never edited. `based_on` must be the latest version the author saw (omitted for version 1); a stale value is a 409 `character-spec-conflict` carrying `latest`, and nothing is written. The serialised spec is limited to 64 KiB (422). The optional `Idempotency-Key` makes a retry return the version written the first time (200 instead of 201). */
+        post: operations["characters_create_spec"];
+        delete?: never;
+        options?: never;
+        /** @description List spec versions, newest first. */
+        head: operations["characters_list_specs_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/characters/{id}/specs/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read one spec version. `version` is a whole number without a sign or leading zeros. */
+        get: operations["characters_get_spec"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** @description Read one spec version. `version` is a whole number without a sign or leading zeros. */
+        head: operations["characters_get_spec_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/doctor": {
         parameters: {
             query?: never;
@@ -1003,6 +1168,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Attaches an existing upload to a character. */
+        AddReferenceRequest: {
+            /** @description At most 1,000 bytes. */
+            note?: string | null;
+            role: components["schemas"]["ReferenceRole"];
+            /** @description An upload ID from `POST /uploads`, at most 128 bytes. */
+            upload_id: string;
+        };
         /** @enum {boolean} */
         AppliedFalse: false;
         AssistantAwaitingConfirmationEvent: {
@@ -1309,6 +1482,66 @@ export interface components {
         };
         /** Format: binary */
         BinaryData: string;
+        /**
+         * @description `cleared` undoes the previous decision.
+         * @enum {string}
+         */
+        CharacterDecision: "approved" | "rejected" | "cleared";
+        /** @description The spec version of a character that a run is submitted against. */
+        CharacterLink: {
+            /** @description A character ID (`char-…`). */
+            id: string;
+            /**
+             * Format: int32
+             * @description An existing spec version of that character. A whole number, never a
+             *     string or `2.0`.
+             */
+            spec_version: number;
+        };
+        /** @description Newest characters first. A page without `next_cursor` is the last one. */
+        CharacterListResponse: {
+            characters: components["schemas"]["CharacterResponse"][];
+            next_cursor?: string | null;
+        };
+        /** @description Current states, newest decision first. Cleared outputs are not listed. */
+        CharacterOutputListResponse: {
+            next_cursor?: string | null;
+            outputs: components["schemas"]["CharacterOutputResponse"][];
+        };
+        /** @description A current decision and the output it is about. */
+        CharacterOutputResponse: {
+            decision: components["schemas"]["DecisionResponse"];
+            output: components["schemas"]["OutputResponse"];
+        };
+        CharacterResponse: {
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            /**
+             * Format: int32
+             * @description `null` until the first spec version exists.
+             */
+            latest_spec_version?: number | null;
+            name: string;
+        };
+        /**
+         * @description The content of one spec version. Rejected whole when any part is invalid;
+         *     nothing is trimmed, clamped or dropped.
+         */
+        CharacterSpec: {
+            /** @description At most 64 elements. */
+            elements?: components["schemas"]["SpecElement"][];
+            /** @description At most 32 entries. */
+            palette?: components["schemas"]["PaletteEntry"][];
+            /** @description At most 4,000 bytes. */
+            style_notes?: string | null;
+            /** @description At most 2,000 bytes. */
+            summary: string;
+            /** @description Required views, without repeats. */
+            views?: components["schemas"]["CharacterView"][];
+        };
+        /** @enum {string} */
+        CharacterView: "front" | "side" | "back" | "three_quarter";
         /** @enum {string} */
         CheckpointEnvironment: "compose" | "native";
         /** @description Where to put checkpoint files for one kind of installation. */
@@ -1359,6 +1592,51 @@ export interface components {
         };
         CreateAssistantConversationRequest: {
             title: string;
+        };
+        /** @description Creates a character and, when `spec` is given, its version 1 in one write. */
+        CreateCharacterRequest: {
+            /** @description One line, at most 200 bytes. */
+            name: string;
+            /** @description Recorded with version 1, at most 1,000 bytes. Rejected when `spec` is absent. */
+            note?: string | null;
+            spec?: null | components["schemas"]["CharacterSpec"];
+        };
+        CreateCharacterResponse: {
+            character: components["schemas"]["CharacterResponse"];
+            spec_version?: null | components["schemas"]["SpecVersionResponse"];
+        };
+        /** @description Appends a spec version. Versions are never edited. */
+        CreateSpecVersionRequest: {
+            /**
+             * Format: int32
+             * @description The latest version the author saw; omit it only for the first version.
+             *     A stale value is refused with 409 and `latest`.
+             */
+            based_on?: number | null;
+            /** @description At most 1,000 bytes. */
+            note?: string | null;
+            spec: components["schemas"]["CharacterSpec"];
+        };
+        /**
+         * @description The decisions that count as a current state.
+         * @enum {string}
+         */
+        CurrentDecisionState: "approved" | "rejected";
+        /** @description Every decision, including `cleared` ones, newest first. */
+        DecisionListResponse: {
+            decisions: components["schemas"]["DecisionResponse"][];
+            next_cursor?: string | null;
+        };
+        DecisionResponse: {
+            character_id: string;
+            /** Format: date-time */
+            decided_at: string;
+            decision: components["schemas"]["CharacterDecision"];
+            id: string;
+            note?: string | null;
+            output_id: string;
+            /** Format: int32 */
+            spec_version: number;
         };
         /** @enum {string} */
         DetectStatus: "found" | "not_found" | "skipped" | "error";
@@ -1715,6 +1993,14 @@ export interface components {
         };
         /** @enum {string} */
         PackValidationStatus: "ok" | "missing" | "unknown" | "unavailable";
+        PaletteEntry: {
+            /** @description `#rrggbb`, kept exactly as given. */
+            hex?: string | null;
+            /** @description At most 64 bytes, one line. */
+            name: string;
+            /** @description At most 64 bytes, one line. */
+            role?: string | null;
+        };
         /** @description Presentation of one preset. */
         PresetInfo: {
             description?: string | null;
@@ -1740,6 +2026,12 @@ export interface components {
             invalid_item_count?: number | null;
             /** @description `batch-items-invalid`: the invalid items (at most 20) with every problem in each. */
             invalid_items?: components["schemas"]["BatchItemProblem"][];
+            /**
+             * Format: int32
+             * @description `character-spec-conflict`: the character's latest spec version now; absent
+             *     when it has none yet. Re-read it and base the new version on it.
+             */
+            latest?: number | null;
             /** @description `workflow-ambiguous` after an import: the manifest that was written. */
             manifest_path?: string | null;
             preview?: unknown;
@@ -1819,6 +2111,40 @@ export interface components {
         ReconcileRunsWithOutcomesResponse: {
             runs: components["schemas"]["ReconcileRunResponse"][];
         };
+        /** @description Appends a decision about an output of a completed run. */
+        RecordDecisionRequest: {
+            decision: components["schemas"]["CharacterDecision"];
+            /** @description At most 1,000 bytes. */
+            note?: string | null;
+            /** @description An output ID exactly as the outputs API reports it (`{run_id}:{row}`). */
+            output_id: string;
+            /**
+             * Format: int32
+             * @description The spec version the author judged the output against. A whole number.
+             */
+            spec_version: number;
+        };
+        /** @description Newest reference first. */
+        ReferenceListResponse: {
+            next_cursor?: string | null;
+            references: components["schemas"]["ReferenceResponse"][];
+        };
+        ReferenceResponse: {
+            /** Format: date-time */
+            added_at: string;
+            character_id: string;
+            id: string;
+            note?: string | null;
+            /**
+             * Format: date-time
+             * @description Set once by a soft removal; the record is kept.
+             */
+            removed_at?: string | null;
+            role: components["schemas"]["ReferenceRole"];
+            upload_id: string;
+        };
+        /** @enum {string} */
+        ReferenceRole: "sketch" | "reference" | "mask";
         ResyncEvent: {
             /** Format: int64 */
             latest: number;
@@ -1873,6 +2199,7 @@ export interface components {
              * @description The run's position in its batch, starting at 0.
              */
             batch_index?: number | null;
+            character?: null | components["schemas"]["CharacterLink"];
             /** Format: date-time */
             completed_at?: string | null;
             /** Format: date-time */
@@ -1999,6 +2326,43 @@ export interface components {
             /** @description Setting keys saved but not yet live; a restart applies them. */
             restart_required: string[];
         };
+        SpecElement: {
+            category: components["schemas"]["SpecElementCategory"];
+            /** @description At most 1,000 bytes. */
+            description: string;
+            /**
+             * @description A stable slug, unique within one spec: lowercase letters, digits, `-`
+             *     and `_`, at most 48 bytes.
+             */
+            id: string;
+            requirement: components["schemas"]["SpecRequirement"];
+        };
+        /** @enum {string} */
+        SpecElementCategory: "silhouette" | "proportions" | "anatomy" | "clothing" | "equipment" | "materials" | "colour" | "other";
+        /**
+         * @description How strictly a generation must honour a spec element.
+         * @enum {string}
+         */
+        SpecRequirement: "mandatory" | "flexible" | "unspecified";
+        /** @description Newest version first. */
+        SpecVersionListResponse: {
+            next_cursor?: string | null;
+            versions: components["schemas"]["SpecVersionResponse"][];
+        };
+        SpecVersionResponse: {
+            /** Format: int32 */
+            based_on?: number | null;
+            character_id: string;
+            /** Format: date-time */
+            created_at: string;
+            note?: string | null;
+            spec: components["schemas"]["CharacterSpec"];
+            /**
+             * Format: int32
+             * @description 1, 2, 3 and so on, without gaps.
+             */
+            version: number;
+        };
         /** @description An explicit request to download one model. Nothing downloads without it. */
         StartModelPullRequest: {
             /** @description `[namespace/]name[:tag]`, for example `llama3.2:3b`. At most 255 bytes. */
@@ -2028,6 +2392,7 @@ export interface components {
         };
         /** @description Explicit bindings for a workflow configured in the local workspace. */
         SubmitRunRequest: {
+            character?: null | components["schemas"]["CharacterLink"];
             /**
              * @description A checkpoint profile of the workflow's pack. It applies only when named,
              *     and only if the effective checkpoint is one of its exact names.
@@ -4348,6 +4713,2174 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
+            };
+        };
+    };
+    characters_list: {
+        parameters: {
+            query?: {
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCharacterRequest"];
+            };
+        };
+        responses: {
+            /** @description Idempotent replay of the first write */
+            200: {
+                headers: {
+                    /** @description Character URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateCharacterResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    /** @description Character URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateCharacterResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_head: {
+        parameters: {
+            query?: {
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_get_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_list_decisions: {
+        parameters: {
+            query?: {
+                /** @description Only decisions about this output. */
+                output_id?: string;
+                /** @description Only decisions made against this spec version. */
+                spec_version?: number;
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_record_decision: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Idempotent replay of the first write */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionResponse"];
+                };
+            };
+            /** @description Recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_decisions_head: {
+        parameters: {
+            query?: {
+                /** @description Only decisions about this output. */
+                output_id?: string;
+                /** @description Only decisions made against this spec version. */
+                spec_version?: number;
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_list_outputs: {
+        parameters: {
+            query?: {
+                /** @description Only outputs whose current state is this. Omit for both. */
+                state?: components["schemas"]["CurrentDecisionState"];
+                /** @description Only states decided against this spec version. */
+                spec_version?: number;
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CharacterOutputListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_outputs_head: {
+        parameters: {
+            query?: {
+                /** @description Only outputs whose current state is this. Omit for both. */
+                state?: components["schemas"]["CurrentDecisionState"];
+                /** @description Only states decided against this spec version. */
+                spec_version?: number;
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_list_references: {
+        parameters: {
+            query?: {
+                /** @description Also list soft-removed references. Defaults to false. */
+                include_removed?: boolean;
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_add_reference: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddReferenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Idempotent replay of the first write */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_references_head: {
+        parameters: {
+            query?: {
+                /** @description Also list soft-removed references. Defaults to false. */
+                include_removed?: boolean;
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_remove_reference: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                /** @description Character ID */
+                id: string;
+                /** @description Reference ID */
+                reference_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_runs: {
+        parameters: {
+            query?: {
+                /** @description Only runs submitted against this spec version. */
+                spec_version?: number;
+                status?: components["schemas"]["RunStatus"];
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_runs_head: {
+        parameters: {
+            query?: {
+                /** @description Only runs submitted against this spec version. */
+                spec_version?: number;
+                status?: components["schemas"]["RunStatus"];
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_list_specs: {
+        parameters: {
+            query?: {
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecVersionListResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_create_spec: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional key, 1–128 visible ASCII characters excluding commas */
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSpecVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Idempotent replay of the first write */
+            200: {
+                headers: {
+                    /** @description Spec version URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecVersionResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    /** @description Spec version URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecVersionResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_list_specs_head: {
+        parameters: {
+            query?: {
+                /** @description Defaults to 50; 1 to 200. */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is well-formed but not valid (`invalid-character-request`). Nothing was written */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    characters_get_spec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+                /** @description Spec version */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecVersionResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    characters_get_spec_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Character ID */
+                id: string;
+                /** @description Spec version */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named character, spec version, reference or output does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -7023,6 +9556,15 @@ export interface operations {
             };
             /** @description Problem details */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The linked character or spec version does not exist; no run was written */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

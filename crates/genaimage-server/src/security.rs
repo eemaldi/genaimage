@@ -38,6 +38,29 @@ fn body_limit(path: &str, config: &SecurityConfig) -> usize {
     }
 }
 
+/// POST actions that take no body; a non-empty one is refused with this detail and recovery.
+fn bodyless_action(method: &Method, path: &str) -> Option<(&'static str, &'static str)> {
+    if *method != Method::POST {
+        return None;
+    }
+    let segments: Vec<&str> = path.strip_prefix("/api/v1/")?.split('/').collect();
+    match segments.as_slice() {
+        ["runs", id, "rerun"] if !id.is_empty() => Some((
+            "Re-run does not accept a request body.",
+            "Send an empty request, or use Remix to change the run parameters.",
+        )),
+        ["characters", id, "references", reference, "remove"]
+            if !id.is_empty() && !reference.is_empty() =>
+        {
+            Some((
+                "Removing a reference does not accept a request body.",
+                "Send an empty request.",
+            ))
+        }
+        _ => None,
+    }
+}
+
 fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, ()> {
     let mut values = headers.get_all(name).iter();
     let value = values
@@ -171,14 +194,8 @@ pub(crate) async fn protect(
         }
     }
 
-    let bodyless_rerun = request.method() == Method::POST
-        && request
-            .uri()
-            .path()
-            .strip_prefix("/api/v1/runs/")
-            .and_then(|path| path.split_once('/'))
-            .is_some_and(|(id, action)| !id.is_empty() && action == "rerun");
-    let limit = if bodyless_rerun {
+    let bodyless = bodyless_action(request.method(), request.uri().path());
+    let limit = if bodyless.is_some() {
         0
     } else {
         body_limit(request.uri().path(), &config)
@@ -225,25 +242,22 @@ pub(crate) async fn protect(
             let too_large = error
                 .source()
                 .is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
-            let (status, detail, recovery) = if too_large && bodyless_rerun {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Re-run does not accept a request body.",
-                    "Send an empty request, or use Remix to change the run parameters.",
-                )
-            } else if too_large {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "The request body exceeds this route's size limit.",
-                    "Send a smaller request or adjust the upload limit for uploads.",
-                )
-            } else {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "The request body could not be read.",
-                    "Check the request and try again.",
-                )
-            };
+            let (status, detail, recovery) =
+                if let Some((detail, recovery)) = bodyless.filter(|_| too_large) {
+                    (StatusCode::BAD_REQUEST, detail, recovery)
+                } else if too_large {
+                    (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "The request body exceeds this route's size limit.",
+                        "Send a smaller request or adjust the upload limit for uploads.",
+                    )
+                } else {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "The request body could not be read.",
+                        "Check the request and try again.",
+                    )
+                };
             Problem::new(status, detail, recovery).into_response()
         }
     }

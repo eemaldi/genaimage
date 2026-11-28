@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+use crate::CharacterLink;
+
 /// Explicit bindings for a workflow configured in the local workspace.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +32,11 @@ pub struct SubmitRunRequest {
     /// Optional output version. Existing artefacts are never overwritten.
     #[serde(default)]
     pub version: Option<String>,
+    /// The character spec version this run is for. It must exist and is
+    /// recorded in the run, its manifest and `preflight.json`; it never
+    /// changes what is generated. Omit it for an unlinked run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharacterLink>,
 }
 
 /// Durable lifecycle state of a run.
@@ -74,6 +81,10 @@ pub struct RunResponse {
     /// The run's position in its batch, starting at 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_index: Option<u32>,
+    /// The character spec version the run was submitted against; absent for
+    /// unlinked runs and for every batch run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharacterLink>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

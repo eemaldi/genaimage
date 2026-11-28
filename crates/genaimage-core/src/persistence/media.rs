@@ -6,7 +6,7 @@ use crate::{
     HarnessError, Result,
 };
 
-const OUTPUT_SELECT: &str = "
+pub(super) const OUTPUT_SELECT: &str = "
     SELECT o.run_id, o.node_id, o.kind, o.source_filename, o.source_subfolder,
            o.source_type, o.local_path, o.sha256, o.byte_size, o.created_at,
            o.id, r.workflow_id, COALESCE(m.tags_json, '[]')
@@ -14,7 +14,7 @@ const OUTPUT_SELECT: &str = "
     LEFT JOIN run_media m ON m.run_id = r.id
     ";
 
-fn map_indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedOutput> {
+pub(super) fn map_indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedOutput> {
     Ok(IndexedOutput {
         id: format!("{}:{}", row.get::<_, String>(0)?, row.get::<_, i64>(10)?),
         output: map_output(row)?,
@@ -27,6 +27,14 @@ fn map_indexed(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedOutput> {
             )
         })?,
     })
+}
+
+/// Splits `{run_id}:{row}`, accepting only the spelling the index itself produces.
+/// `run:+1`, `run:01` and `run: 1` all parse as row 1, so they must not resolve.
+pub(crate) fn parse_output_id(id: &str) -> Option<(&str, i64)> {
+    let (run, row) = id.rsplit_once(':')?;
+    let parsed: i64 = row.parse().ok()?;
+    (!run.is_empty() && format!("{run}:{parsed}") == id).then_some((run, parsed))
 }
 
 // Keep the raw timestamp as the sort key, as for runs; the row ID resolves ties.
@@ -150,8 +158,7 @@ impl AsyncRunRepository {
     }
 
     pub async fn output(&self, id: &str) -> Result<IndexedOutput> {
-        let (run, row) = id.rsplit_once(':').ok_or(HarnessError::OutputNotFound)?;
-        let row: i64 = row.parse().map_err(|_| HarnessError::OutputNotFound)?;
+        let (run, row) = parse_output_id(id).ok_or(HarnessError::OutputNotFound)?;
         let run = run.to_owned();
         self.call(move |repo| {
             repo.guarded_read(|connection| {

@@ -317,6 +317,7 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
         workflow_revision: None,
         checkpoint_profile: None,
         checkpoint_profile_revision: None,
+        character: None,
         workflow: "contract-workflow".to_owned(),
         preset: Some("fast".to_owned()),
         parameters: BTreeMap::from([("seed".to_owned(), json!(123))]),
@@ -443,6 +444,268 @@ async fn path_only_backend_uploads_verified_snapshots_for_submit_and_rerun() {
     let replay = harness.rerun("rerun".into(), source.id).await.unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.run.id, run.id);
+}
+
+fn character_spec() -> crate::characters::CharacterSpec {
+    crate::characters::CharacterSpec {
+        summary: "A lighthouse keeper".into(),
+        elements: vec![],
+        palette: vec![],
+        views: vec![],
+        style_notes: None,
+    }
+}
+
+async fn character_link(harness: &Harness) -> CharacterLink {
+    let created = harness
+        .characters()
+        .create_character(
+            crate::characters::NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(character_spec()),
+                note: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    CharacterLink {
+        id: created.character.id,
+        spec_version: 1,
+    }
+}
+
+#[test]
+fn a_request_without_a_character_keeps_its_idempotency_fingerprint_bytes() {
+    let (_workspace, _harness, _state, request) = setup(false);
+    assert!(request.character.is_none());
+    let unpinned = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        unpinned,
+        r#"{"workflow":"contract-workflow","preset":"fast","parameters":{"seed":123},"version":null}"#
+    );
+    let pinned = RunRequest {
+        workflow_revision: Some("rev".into()),
+        ..request.clone()
+    };
+    assert_eq!(
+        serde_json::to_string(&pinned).unwrap(),
+        r#"{"workflow":"contract-workflow","preset":"fast","parameters":{"seed":123},"version":null,"workflow_revision":"rev"}"#
+    );
+    let linked = RunRequest {
+        character: Some(CharacterLink {
+            id: "char-1".into(),
+            spec_version: 2,
+        }),
+        ..request
+    };
+    assert_eq!(
+        serde_json::to_string(&linked).unwrap(),
+        format!(
+            r#"{},"character":{{"id":"char-1","spec_version":2}}}}"#,
+            unpinned.trim_end_matches('}')
+        )
+    );
+    let parsed: RunRequest = serde_json::from_str(&unpinned).unwrap();
+    assert!(parsed.character.is_none());
+}
+
+#[tokio::test]
+async fn runs_record_their_character_link_in_provenance_and_the_manifest() {
+    let (_workspace, harness, state, mut request) = setup(false);
+    let link = character_link(&harness).await;
+    request.character = Some(link.clone());
+
+    let plain = harness
+        .submit(RunRequest {
+            character: None,
+            ..request.clone()
+        })
+        .await
+        .unwrap();
+    let plain_preflight: Value = serde_json::from_slice(
+        &fs::read(Path::new(&plain.output_dir).join("preflight.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(plain.character.is_none());
+    assert!(plain_preflight.get("character").is_none());
+    state.lock().unwrap().submission = None;
+
+    let run = harness.submit(request.clone()).await.unwrap();
+    assert_eq!(run.character.as_ref(), Some(&link));
+    let preflight: Value = serde_json::from_slice(
+        &fs::read(Path::new(&run.output_dir).join("preflight.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        preflight["character"],
+        json!({"id": link.id, "spec_version": 1})
+    );
+    let created = harness
+        .run_events(&run.id, 20)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "run_created")
+        .unwrap();
+    assert_eq!(created.payload["character"]["id"], json!(link.id));
+    let plain_created = harness
+        .run_events(&plain.id, 20)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "run_created")
+        .unwrap();
+    assert!(plain_created.payload.get("character").is_none());
+
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Completed;
+    }
+    let completed = harness.reconcile(&run.id).await.unwrap().run;
+    assert_eq!(completed.status, RunStatus::Completed);
+    let manifest: artifacts::RunManifest =
+        serde_json::from_slice(&fs::read(completed.manifest_path.unwrap()).unwrap()).unwrap();
+    assert_eq!(manifest.character.as_ref(), Some(&link));
+    let stored: Value = serde_json::from_slice(
+        &fs::read(Path::new(&run.output_dir).join("run-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["character"]["spec_version"], json!(1));
+
+    // The link is database state, not process memory.
+    let reopened = RunRepository::open(&harness.config().state_database).unwrap();
+    assert_eq!(reopened.get(&run.id).unwrap().character, Some(link.clone()));
+    assert_eq!(reopened.get(&plain.id).unwrap().character, None);
+    let listed = harness
+        .characters()
+        .list_runs(&link.id, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        listed
+            .runs
+            .iter()
+            .map(|run| run.id.as_str())
+            .collect::<Vec<_>>(),
+        [run.id.as_str()]
+    );
+    let outputs = harness
+        .characters()
+        .list_outputs(&link.id, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(outputs.outputs.len(), 1);
+    assert_eq!(outputs.outputs[0].output.run_id, run.id);
+}
+
+#[tokio::test]
+async fn an_unknown_character_or_version_is_rejected_before_anything_is_written() {
+    let (_workspace, harness, state, mut request) = setup(false);
+    let link = character_link(&harness).await;
+    for bad in [
+        CharacterLink {
+            id: "char-missing".into(),
+            spec_version: 1,
+        },
+        CharacterLink {
+            id: link.id.clone(),
+            spec_version: 2,
+        },
+        CharacterLink {
+            id: link.id.clone(),
+            spec_version: 0,
+        },
+    ] {
+        request.character = Some(bad.clone());
+        let keyed = harness
+            .submit_keyed("character-key".into(), request.clone())
+            .await;
+        let legacy = harness.submit(request.clone()).await;
+        for result in [keyed.map(|_| ()), legacy.map(|_| ())] {
+            match result {
+                Err(HarnessError::CharacterNotFound { character_id }) => {
+                    assert_eq!(character_id, bad.id)
+                }
+                Err(HarnessError::CharacterSpecVersionNotFound {
+                    character_id,
+                    version,
+                }) => assert_eq!((character_id, version), (bad.id.clone(), bad.spec_version)),
+                other => panic!("expected a character rejection, got {other:?}"),
+            }
+        }
+    }
+    assert!(harness.repository.list(10).unwrap().is_empty());
+    assert!(state.lock().unwrap().submission.is_none());
+    assert!(
+        !harness.config().runs.exists()
+            || fs::read_dir(&harness.config().runs)
+                .unwrap()
+                .next()
+                .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_key_cannot_be_reused_for_another_character_and_reruns_keep_the_link() {
+    let (_workspace, harness, state, mut request) = setup(false);
+    let link = character_link(&harness).await;
+    harness
+        .characters()
+        .create_spec_version(
+            &link.id,
+            crate::characters::NewSpecVersion {
+                based_on: Some(1),
+                spec: character_spec(),
+                note: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    request.character = Some(link.clone());
+    let first = harness
+        .submit_keyed("character-key".into(), request.clone())
+        .await
+        .unwrap();
+    assert!(!first.replayed);
+    assert_eq!(first.run.character.as_ref(), Some(&link));
+
+    let replay = harness
+        .submit_keyed("character-key".into(), request.clone())
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.run.id, first.run.id);
+    let other_version = RunRequest {
+        character: Some(CharacterLink {
+            spec_version: 2,
+            ..link.clone()
+        }),
+        ..request.clone()
+    };
+    assert!(matches!(
+        harness
+            .submit_keyed("character-key".into(), other_version)
+            .await,
+        Err(HarnessError::IdempotencyConflict)
+    ));
+    let without = RunRequest {
+        character: None,
+        ..request
+    };
+    assert!(matches!(
+        harness.submit_keyed("character-key".into(), without).await,
+        Err(HarnessError::IdempotencyConflict)
+    ));
+
+    state.lock().unwrap().submission = None;
+    let rerun = harness
+        .rerun("character-rerun".into(), first.run.id.clone())
+        .await
+        .unwrap();
+    assert_ne!(rerun.run.id, first.run.id);
+    assert_eq!(rerun.run.rerun_of.as_deref(), Some(first.run.id.as_str()));
+    assert_eq!(rerun.run.character.as_ref(), Some(&link));
 }
 
 #[test]
@@ -819,7 +1082,7 @@ async fn verified_legacy_state_reconciles_using_original_paths() {
     let original_dir = run.output_dir.clone();
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
+    db.execute_batch("DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_no_replace; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_idempotency_keys; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; ALTER TABLE runs DROP COLUMN node_warnings_json; DROP TABLE run_submission_keys; DROP INDEX runs_created_id_idx; DROP TABLE genaimage_database_identity; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=2;")
         .unwrap();
     drop(db);
     let make_backend = || {
@@ -874,6 +1137,7 @@ async fn workspaces_can_use_the_same_explicit_run_version() {
         workflow_revision: None,
         checkpoint_profile: None,
         checkpoint_profile_revision: None,
+        character: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),
         parameters: BTreeMap::new(),
@@ -1559,7 +1823,7 @@ async fn legacy_submitting_record_requires_backend_evidence() {
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     drop(harness);
     let db = rusqlite::Connection::open(&config.state_database).unwrap();
-    db.execute_batch("DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
+    db.execute_batch("DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_no_replace; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_idempotency_keys; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; ALTER TABLE runs DROP COLUMN rerun_of; ALTER TABLE runs DROP COLUMN workflow_manifest_sha256; ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256; ALTER TABLE runs DROP COLUMN uses_submission_lock; ALTER TABLE runs DROP COLUMN submission_acknowledged; DROP TABLE run_media; DROP INDEX outputs_created_id_idx; PRAGMA user_version=5;").unwrap();
     drop(db);
     let lock_dir = config.state_database.with_extension("sqlite3.submissions");
     fs::remove_dir_all(&lock_dir).unwrap();
@@ -1903,6 +2167,7 @@ fn profiled_request(preset: Option<&str>, profile: Option<&str>, user: Value) ->
         version: None,
         workflow_revision: None,
         checkpoint_profile: profile.map(str::to_owned),
+        character: None,
         checkpoint_profile_revision: None,
     }
 }

@@ -4,12 +4,12 @@ type Scalar = string | number | boolean | null | undefined;
 
 export function apiUrl(
   template: keyof paths,
-  path?: Record<string, string>,
+  path?: Record<string, string | number>,
   query?: Record<string, Scalar>,
 ): string {
   // Contract paths already include /api/v1.
   const url = template.replace(/\{(\w+)\}/g, (_, name: string) => {
-    const value = path?.[name];
+    const value = String(path?.[name] ?? '');
     if (!value || value === '.' || value === '..') {
       throw new TypeError(`Invalid API path parameter: ${name}.`);
     }

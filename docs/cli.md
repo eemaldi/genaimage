@@ -270,13 +270,13 @@ for where checkpoints go and which models to start with.
 
 All run records below use `RunResponse`: `{id, prompt_id, workflow_id,
 workflow_version, workflow_sha256, status, parameters, error, created_at,
-updated_at, completed_at}`, with optional `node_warnings`. `parameters`
+updated_at, completed_at}`, with optional `node_warnings` and `character` (`{id, spec_version}`). `parameters`
 contains the effective values; timestamps are RFC 3339 and `error` and
 `completed_at` may be null. Statuses are `created`, `submitting`,
 `unknown_submission`, `queued`, `running`, `completed`, `failed`, `cancelling`,
 and `cancelled`.
 
-- **`run <ID> [--preset <NAME>] [--checkpoint-profile <ID>] [--set NAME=JSON]… [--image NAME=PATH]… [--version <VERSION>] [--wait [--timeout <SECONDS>]]`**
+- **`run <ID> [--preset <NAME>] [--checkpoint-profile <ID>] [--set NAME=JSON]… [--image NAME=PATH]… [--version <VERSION>] [--character <ID:VERSION>] [--wait [--timeout <SECONDS>]]`**
   submits the server catalogue workflow once and prints its run record. Explicit
   bindings override the selected preset; the server applies declared defaults.
   The CLI does not pin the workflow revision: it uses the snapshot current at
@@ -288,6 +288,10 @@ and `cancelled`.
   or use `--set` with an existing upload ID. A path passed to `--set` is not
   uploaded. Do not bind the same image parameter through both options.
   `--version` selects the output version without overwriting existing artefacts.
+  `--character char-…:2` links the run to a character spec version. The link is
+  recorded only, never changes the generation, and an unknown character or
+  version is refused before anything is written. `ID:VERSION` splits at the last
+  colon and the version is a plain whole number.
   Without `--wait`, success means submission was accepted, not that generation
   completed. An unconfirmed or failed submission is never retried automatically;
   inspect `jobs list` or `jobs show` and use `jobs reconcile`.

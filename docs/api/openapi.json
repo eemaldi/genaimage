@@ -1,6 +1,31 @@
 {
   "components": {
     "schemas": {
+      "AddReferenceRequest": {
+        "additionalProperties": false,
+        "description": "Attaches an existing upload to a character.",
+        "properties": {
+          "note": {
+            "description": "At most 1,000 bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/ReferenceRole"
+          },
+          "upload_id": {
+            "description": "An upload ID from `POST /uploads`, at most 128 bytes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "role"
+        ],
+        "type": "object"
+      },
       "AppliedFalse": {
         "enum": [
           false
@@ -1136,6 +1161,174 @@
         "format": "binary",
         "type": "string"
       },
+      "CharacterDecision": {
+        "description": "`cleared` undoes the previous decision.",
+        "enum": [
+          "approved",
+          "rejected",
+          "cleared"
+        ],
+        "type": "string"
+      },
+      "CharacterLink": {
+        "additionalProperties": false,
+        "description": "The spec version of a character that a run is submitted against.",
+        "properties": {
+          "id": {
+            "description": "A character ID (`char-…`).",
+            "type": "string"
+          },
+          "spec_version": {
+            "description": "An existing spec version of that character. A whole number, never a\nstring or `2.0`.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "spec_version"
+        ],
+        "type": "object"
+      },
+      "CharacterListResponse": {
+        "description": "Newest characters first. A page without `next_cursor` is the last one.",
+        "properties": {
+          "characters": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterResponse"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "characters"
+        ],
+        "type": "object"
+      },
+      "CharacterOutputListResponse": {
+        "description": "Current states, newest decision first. Cleared outputs are not listed.",
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterOutputResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "outputs"
+        ],
+        "type": "object"
+      },
+      "CharacterOutputResponse": {
+        "description": "A current decision and the output it is about.",
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/DecisionResponse"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutputResponse"
+          }
+        },
+        "required": [
+          "decision",
+          "output"
+        ],
+        "type": "object"
+      },
+      "CharacterResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "latest_spec_version": {
+            "description": "`null` until the first spec version exists.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "CharacterSpec": {
+        "additionalProperties": false,
+        "description": "The content of one spec version. Rejected whole when any part is invalid;\nnothing is trimmed, clamped or dropped.",
+        "properties": {
+          "elements": {
+            "description": "At most 64 elements.",
+            "items": {
+              "$ref": "#/components/schemas/SpecElement"
+            },
+            "type": "array"
+          },
+          "palette": {
+            "description": "At most 32 entries.",
+            "items": {
+              "$ref": "#/components/schemas/PaletteEntry"
+            },
+            "type": "array"
+          },
+          "style_notes": {
+            "description": "At most 4,000 bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "description": "At most 2,000 bytes.",
+            "type": "string"
+          },
+          "views": {
+            "description": "Required views, without repeats.",
+            "items": {
+              "$ref": "#/components/schemas/CharacterView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "CharacterView": {
+        "enum": [
+          "front",
+          "side",
+          "back",
+          "three_quarter"
+        ],
+        "type": "string"
+      },
       "CheckpointEnvironment": {
         "enum": [
           "compose",
@@ -1294,6 +1487,157 @@
         },
         "required": [
           "title"
+        ],
+        "type": "object"
+      },
+      "CreateCharacterRequest": {
+        "additionalProperties": false,
+        "description": "Creates a character and, when `spec` is given, its version 1 in one write.",
+        "properties": {
+          "name": {
+            "description": "One line, at most 200 bytes.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Recorded with version 1, at most 1,000 bytes. Rejected when `spec` is absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CharacterSpec"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CreateCharacterResponse": {
+        "properties": {
+          "character": {
+            "$ref": "#/components/schemas/CharacterResponse"
+          },
+          "spec_version": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SpecVersionResponse",
+                "description": "Version 1 when the request carried a spec."
+              }
+            ]
+          }
+        },
+        "required": [
+          "character"
+        ],
+        "type": "object"
+      },
+      "CreateSpecVersionRequest": {
+        "additionalProperties": false,
+        "description": "Appends a spec version. Versions are never edited.",
+        "properties": {
+          "based_on": {
+            "description": "The latest version the author saw; omit it only for the first version.\nA stale value is refused with 409 and `latest`.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "note": {
+            "description": "At most 1,000 bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "$ref": "#/components/schemas/CharacterSpec"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "type": "object"
+      },
+      "CurrentDecisionState": {
+        "description": "The decisions that count as a current state.",
+        "enum": [
+          "approved",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "DecisionListResponse": {
+        "description": "Every decision, including `cleared` ones, newest first.",
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionResponse"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "decisions"
+        ],
+        "type": "object"
+      },
+      "DecisionResponse": {
+        "properties": {
+          "character_id": {
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/CharacterDecision"
+          },
+          "id": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_id": {
+            "type": "string"
+          },
+          "spec_version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "character_id",
+          "output_id",
+          "spec_version",
+          "decision",
+          "decided_at"
         ],
         "type": "object"
       },
@@ -2576,6 +2920,33 @@
         ],
         "type": "string"
       },
+      "PaletteEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "hex": {
+            "description": "`#rrggbb`, kept exactly as given.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "At most 64 bytes, one line.",
+            "type": "string"
+          },
+          "role": {
+            "description": "At most 64 bytes, one line.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "PresetInfo": {
         "description": "Presentation of one preset.",
         "properties": {
@@ -2660,6 +3031,15 @@
               "$ref": "#/components/schemas/BatchItemProblem"
             },
             "type": "array"
+          },
+          "latest": {
+            "description": "`character-spec-conflict`: the character's latest spec version now; absent\nwhen it has none yet. Re-read it and base the new version on it.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "manifest_path": {
             "description": "`workflow-ambiguous` after an import: the manifest that was written.",
@@ -2919,6 +3299,109 @@
         ],
         "type": "object"
       },
+      "RecordDecisionRequest": {
+        "additionalProperties": false,
+        "description": "Appends a decision about an output of a completed run.",
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/CharacterDecision"
+          },
+          "note": {
+            "description": "At most 1,000 bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_id": {
+            "description": "An output ID exactly as the outputs API reports it (`{run_id}:{row}`).",
+            "type": "string"
+          },
+          "spec_version": {
+            "description": "The spec version the author judged the output against. A whole number.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "output_id",
+          "spec_version",
+          "decision"
+        ],
+        "type": "object"
+      },
+      "ReferenceListResponse": {
+        "description": "Newest reference first.",
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "references"
+        ],
+        "type": "object"
+      },
+      "ReferenceResponse": {
+        "properties": {
+          "added_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "character_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "removed_at": {
+            "description": "Set once by a soft removal; the record is kept.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/ReferenceRole"
+          },
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "character_id",
+          "upload_id",
+          "role",
+          "added_at"
+        ],
+        "type": "object"
+      },
+      "ReferenceRole": {
+        "enum": [
+          "sketch",
+          "reference",
+          "mask"
+        ],
+        "type": "string"
+      },
       "ResyncEvent": {
         "oneOf": [
           {
@@ -3106,6 +3589,17 @@
             "type": [
               "integer",
               "null"
+            ]
+          },
+          "character": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CharacterLink",
+                "description": "The character spec version the run was submitted against; absent for\nunlinked runs and for every batch run."
+              }
             ]
           },
           "completed_at": {
@@ -3541,6 +4035,116 @@
         ],
         "type": "object"
       },
+      "SpecElement": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/SpecElementCategory"
+          },
+          "description": {
+            "description": "At most 1,000 bytes.",
+            "type": "string"
+          },
+          "id": {
+            "description": "A stable slug, unique within one spec: lowercase letters, digits, `-`\nand `_`, at most 48 bytes.",
+            "type": "string"
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/SpecRequirement"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "description",
+          "requirement"
+        ],
+        "type": "object"
+      },
+      "SpecElementCategory": {
+        "enum": [
+          "silhouette",
+          "proportions",
+          "anatomy",
+          "clothing",
+          "equipment",
+          "materials",
+          "colour",
+          "other"
+        ],
+        "type": "string"
+      },
+      "SpecRequirement": {
+        "description": "How strictly a generation must honour a spec element.",
+        "enum": [
+          "mandatory",
+          "flexible",
+          "unspecified"
+        ],
+        "type": "string"
+      },
+      "SpecVersionListResponse": {
+        "description": "Newest version first.",
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/SpecVersionResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "versions"
+        ],
+        "type": "object"
+      },
+      "SpecVersionResponse": {
+        "properties": {
+          "based_on": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "character_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "$ref": "#/components/schemas/CharacterSpec"
+          },
+          "version": {
+            "description": "1, 2, 3 and so on, without gaps.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character_id",
+          "version",
+          "created_at",
+          "spec"
+        ],
+        "type": "object"
+      },
       "StartModelPullRequest": {
         "additionalProperties": false,
         "description": "An explicit request to download one model. Nothing downloads without it.",
@@ -3603,6 +4207,17 @@
         "additionalProperties": false,
         "description": "Explicit bindings for a workflow configured in the local workspace.",
         "properties": {
+          "character": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CharacterLink",
+                "description": "The character spec version this run is for. It must exist and is\nrecorded in the run, its manifest and `preflight.json`; it never\nchanges what is generated. Omit it for an unlinked run."
+              }
+            ]
+          },
           "checkpoint_profile": {
             "description": "A checkpoint profile of the workflow's pack. It applies only when named,\nand only if the effective checkpoint is one of its exact names.",
             "type": [
@@ -7248,6 +7863,2543 @@
         ]
       }
     },
+    "/api/v1/characters": {
+      "get": {
+        "description": "List characters, newest first. A page without `next_cursor` is the last one.",
+        "operationId": "characters_list",
+        "parameters": [
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "List characters, newest first. A page without `next_cursor` is the last one.",
+        "operationId": "characters_list_head",
+        "parameters": [
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "422": {
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "post": {
+        "description": "Create a character and, when `spec` is given, its version 1 in one transaction. The optional `Idempotency-Key` makes a retry return the character written the first time (200 instead of 201) and write nothing; the same key with another body, or on another endpoint, is a 409 `idempotency-conflict`.",
+        "operationId": "characters_create",
+        "parameters": [
+          {
+            "description": "Optional key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCharacterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCharacterResponse"
+                }
+              }
+            },
+            "description": "Idempotent replay of the first write",
+            "headers": {
+              "Location": {
+                "description": "Character URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCharacterResponse"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "Location": {
+                "description": "Character URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}": {
+      "get": {
+        "description": "Read a character and its latest spec version number.",
+        "operationId": "characters_get",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "Read a character and its latest spec version number.",
+        "operationId": "characters_get_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/decisions": {
+      "get": {
+        "description": "The append-only decision history, including `cleared` decisions, newest first. Filter by `output_id` (exactly `{run_id}:{row}`) and `spec_version`.",
+        "operationId": "characters_list_decisions",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only decisions about this output.",
+            "in": "query",
+            "name": "output_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only decisions made against this spec version.",
+            "in": "query",
+            "name": "spec_version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "The append-only decision history, including `cleared` decisions, newest first. Filter by `output_id` (exactly `{run_id}:{row}`) and `spec_version`.",
+        "operationId": "characters_list_decisions_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only decisions about this output.",
+            "in": "query",
+            "name": "output_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only decisions made against this spec version.",
+            "in": "query",
+            "name": "spec_version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "422": {
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "post": {
+        "description": "Append an approve, reject or clear decision about an output against a spec version. Decisions are never edited; `cleared` undoes the current one. The output must exist (404), be exactly `{run_id}:{row}` (422), and to be approved or rejected belong to a completed run (422); an output generated for another character, or `cleared` without a current decision, is a 409 `character-conflict`. The optional `Idempotency-Key` makes a retry return the decision written the first time (200 instead of 201).",
+        "operationId": "characters_record_decision",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            },
+            "description": "Idempotent replay of the first write"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            },
+            "description": "Recorded"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/outputs": {
+      "get": {
+        "description": "Current decision states derived from the history (the latest decision per output, `cleared` ones omitted), each joined with its output, newest decision first. `state=approved` or `state=rejected` narrows them; omit it for both.",
+        "operationId": "characters_list_outputs",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only outputs whose current state is this. Omit for both.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CurrentDecisionState"
+            }
+          },
+          {
+            "description": "Only states decided against this spec version.",
+            "in": "query",
+            "name": "spec_version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterOutputListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "Current decision states derived from the history (the latest decision per output, `cleared` ones omitted), each joined with its output, newest decision first. `state=approved` or `state=rejected` narrows them; omit it for both.",
+        "operationId": "characters_list_outputs_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only outputs whose current state is this. Omit for both.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CurrentDecisionState"
+            }
+          },
+          {
+            "description": "Only states decided against this spec version.",
+            "in": "query",
+            "name": "spec_version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "422": {
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/references": {
+      "get": {
+        "description": "List references, newest first. Soft-removed references are listed only with `include_removed=true`.",
+        "operationId": "characters_list_references",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Also list soft-removed references. Defaults to false.",
+            "in": "query",
+            "name": "include_removed",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "List references, newest first. Soft-removed references are listed only with `include_removed=true`.",
+        "operationId": "characters_list_references_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Also list soft-removed references. Defaults to false.",
+            "in": "query",
+            "name": "include_removed",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "422": {
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "post": {
+        "description": "Attach an existing upload with a role. An unknown upload is a 404 `character-upload-not-found`; attaching the same upload in the same role twice, or more than 32 active references, is refused. The optional `Idempotency-Key` makes a retry return the reference written the first time (200 instead of 201), even if the upload store has changed since.",
+        "operationId": "characters_add_reference",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddReferenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceResponse"
+                }
+              }
+            },
+            "description": "Idempotent replay of the first write"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceResponse"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/references/{reference_id}/remove": {
+      "post": {
+        "description": "Soft-remove a reference: the record stays, with `removed_at` set once. Removing an already removed reference returns it unchanged. Send an empty body. Always 200: nothing new is created, so a replayed `Idempotency-Key` is indistinguishable from a first removal.",
+        "operationId": "characters_remove_reference",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Reference ID",
+            "in": "path",
+            "name": "reference_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/runs": {
+      "get": {
+        "description": "Runs submitted against the character, newest first. Filter by `spec_version` and `status`.",
+        "operationId": "characters_list_runs",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only runs submitted against this spec version.",
+            "in": "query",
+            "name": "spec_version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RunStatus"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "Runs submitted against the character, newest first. Filter by `spec_version` and `status`.",
+        "operationId": "characters_list_runs_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only runs submitted against this spec version.",
+            "in": "query",
+            "name": "spec_version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RunStatus"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "422": {
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/specs": {
+      "get": {
+        "description": "List spec versions, newest first.",
+        "operationId": "characters_list_specs",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecVersionListResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "List spec versions, newest first.",
+        "operationId": "characters_list_specs_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to 50; 1 to 200.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "422": {
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "post": {
+        "description": "Append a spec version. Versions are never edited. `based_on` must be the latest version the author saw (omitted for version 1); a stale value is a 409 `character-spec-conflict` carrying `latest`, and nothing is written. The serialised spec is limited to 64 KiB (422). The optional `Idempotency-Key` makes a retry return the version written the first time (200 instead of 201).",
+        "operationId": "characters_create_spec",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional key, 1–128 visible ASCII characters excluding commas",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSpecVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecVersionResponse"
+                }
+              }
+            },
+            "description": "Idempotent replay of the first write",
+            "headers": {
+              "Location": {
+                "description": "Spec version URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecVersionResponse"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "Location": {
+                "description": "Spec version URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A stale `based_on` (type `character-spec-conflict`, with `latest`), a conflicting state (`character-conflict`) or an idempotency key reused for another request (`idempotency-conflict`). Nothing was written"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request is well-formed but not valid (`invalid-character-request`). Nothing was written"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
+    "/api/v1/characters/{id}/specs/{version}": {
+      "get": {
+        "description": "Read one spec version. `version` is a whole number without a sign or leading zeros.",
+        "operationId": "characters_get_spec",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Spec version",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecVersionResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      },
+      "head": {
+        "description": "Read one spec version. `version` is a whole number without a sign or leading zeros.",
+        "operationId": "characters_get_spec_head",
+        "parameters": [
+          {
+            "description": "Character ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Spec version",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Problem details"
+          },
+          "403": {
+            "description": "Problem details"
+          },
+          "404": {
+            "description": "A named character, spec version, reference or output does not exist"
+          },
+          "408": {
+            "description": "Problem details"
+          },
+          "413": {
+            "description": "Problem details"
+          },
+          "421": {
+            "description": "Problem details"
+          },
+          "500": {
+            "description": "Problem details"
+          },
+          "503": {
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "characters"
+        ]
+      }
+    },
     "/api/v1/doctor": {
       "get": {
         "description": "Run diagnostics over the configuration, ComfyUI, workflows, the optional LLM, GPU, disk space and ports. Every check that is not ok has a suggested fix.",
@@ -10386,6 +13538,16 @@
               }
             },
             "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The linked character or spec version does not exist; no run was written"
           },
           "408": {
             "content": {

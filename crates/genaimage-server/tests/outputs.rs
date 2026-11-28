@@ -64,6 +64,7 @@ async fn completed(api: &ApiHarness, tag: &str) -> RunRecord {
             checkpoint_profile: None,
             checkpoint_profile_revision: None,
             workflow_revision: None,
+            character: None,
             workflow: "contract-workflow".into(),
             preset: Some("fast".into()),
             parameters: Default::default(),

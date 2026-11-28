@@ -254,6 +254,7 @@ impl AssistantTool for SubmitRunTool {
                 RunRequest {
                     workflow: arguments.workflow_id,
                     workflow_revision: Some(arguments.workflow_revision),
+                    character: None,
                     preset: arguments.preset,
                     parameters: arguments.parameters,
                     version: None,

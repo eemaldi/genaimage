@@ -191,6 +191,9 @@ struct RunCommand {
     images: Vec<String>,
     #[arg(long)]
     version: Option<String>,
+    /// Link the run to a character spec version; recorded only, never changes the generation.
+    #[arg(long, value_name = "ID:VERSION")]
+    character: Option<String>,
     #[arg(long)]
     wait: bool,
     /// Maximum observation time in seconds (default: 600).

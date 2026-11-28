@@ -19,17 +19,24 @@ use thiserror::Error;
 use url::{Host, Url};
 
 use crate::{
-    DoctorReport, HealthResponse, OutputAnnotationListResponse, OutputAnnotationResponse,
-    OutputListQuery, OutputListResponse, PackListResponse, PackValidationResponse, ProblemDetails,
-    ReconcileRunResponse, ReconcileRunsResponse, ReconcileRunsWithOutcomesResponse, RunEventsQuery,
-    RunEventsResponse, RunListQuery, RunListResponse, RunResponse, RunStatus, SettingsPatch,
-    SettingsResponse, SettingsTestResponse, SetupDetectResponse, SetupStatus, SubmitRunRequest,
-    Template, TemplateCreateRequest, TemplateListResponse, TemplateRenderRequest,
+    AddReferenceRequest, CharacterListQuery, CharacterListResponse, CharacterOutputListResponse,
+    CharacterOutputsQuery, CharacterResponse, CharacterRunsQuery, CreateCharacterRequest,
+    CreateCharacterResponse, CreateSpecVersionRequest, DecisionListQuery, DecisionListResponse,
+    DecisionResponse, DoctorReport, HealthResponse, OutputAnnotationListResponse,
+    OutputAnnotationResponse, OutputListQuery, OutputListResponse, PackListResponse,
+    PackValidationResponse, ProblemDetails, ReconcileRunResponse, ReconcileRunsResponse,
+    ReconcileRunsWithOutcomesResponse, RecordDecisionRequest, ReferenceListQuery,
+    ReferenceListResponse, ReferenceResponse, RunEventsQuery, RunEventsResponse, RunListQuery,
+    RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse, SettingsTestResponse,
+    SetupDetectResponse, SetupStatus, SpecVersionListResponse, SpecVersionResponse,
+    SubmitRunRequest, Template, TemplateCreateRequest, TemplateListResponse, TemplateRenderRequest,
     TemplateRenderResponse, TemplateReplaceRequest, UploadResponse, WorkflowDetails,
     WorkflowImportConfirmRequest, WorkflowImportProposal, WorkflowImportRequest,
     WorkflowImportResponse, WorkflowListResponse, WorkflowValidationRequest,
     WorkflowValidationResponse,
 };
+
+const IDEMPOTENCY_KEY: header::HeaderName = header::HeaderName::from_static("idempotency-key");
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:3000";
 
@@ -349,6 +356,138 @@ impl Client {
         &self,
     ) -> Result<ReconcileRunsWithOutcomesResponse, Error> {
         self.json(self.request(Method::POST, &["runs", "reconcile"])?)
+            .await
+    }
+
+    /// Creates a character. With a key, a retry returns the character written the first time.
+    pub async fn create_character(
+        &self,
+        idempotency_key: Option<&str>,
+        body: &CreateCharacterRequest,
+    ) -> Result<CreateCharacterResponse, Error> {
+        let request = self.request(Method::POST, &["characters"])?.json(body);
+        self.json(optional_header(request, IDEMPOTENCY_KEY, idempotency_key))
+            .await
+    }
+
+    pub async fn characters(
+        &self,
+        query: &CharacterListQuery,
+    ) -> Result<CharacterListResponse, Error> {
+        self.json(self.get(&["characters"])?.query(query)).await
+    }
+
+    pub async fn character(&self, id: &str) -> Result<CharacterResponse, Error> {
+        self.json(self.get(&["characters", id])?).await
+    }
+
+    pub async fn character_specs(
+        &self,
+        id: &str,
+        query: &CharacterListQuery,
+    ) -> Result<SpecVersionListResponse, Error> {
+        self.json(self.get(&["characters", id, "specs"])?.query(query))
+            .await
+    }
+
+    /// Appends a spec version. A stale `based_on` is a 409 problem with `latest`.
+    pub async fn create_character_spec(
+        &self,
+        id: &str,
+        idempotency_key: Option<&str>,
+        body: &CreateSpecVersionRequest,
+    ) -> Result<SpecVersionResponse, Error> {
+        let request = self
+            .request(Method::POST, &["characters", id, "specs"])?
+            .json(body);
+        self.json(optional_header(request, IDEMPOTENCY_KEY, idempotency_key))
+            .await
+    }
+
+    pub async fn character_spec(
+        &self,
+        id: &str,
+        version: u32,
+    ) -> Result<SpecVersionResponse, Error> {
+        self.json(self.get(&["characters", id, "specs", &version.to_string()])?)
+            .await
+    }
+
+    pub async fn character_references(
+        &self,
+        id: &str,
+        query: &ReferenceListQuery,
+    ) -> Result<ReferenceListResponse, Error> {
+        self.json(self.get(&["characters", id, "references"])?.query(query))
+            .await
+    }
+
+    pub async fn add_character_reference(
+        &self,
+        id: &str,
+        idempotency_key: Option<&str>,
+        body: &AddReferenceRequest,
+    ) -> Result<ReferenceResponse, Error> {
+        let request = self
+            .request(Method::POST, &["characters", id, "references"])?
+            .json(body);
+        self.json(optional_header(request, IDEMPOTENCY_KEY, idempotency_key))
+            .await
+    }
+
+    /// Soft-removes a reference; the record stays.
+    pub async fn remove_character_reference(
+        &self,
+        id: &str,
+        reference_id: &str,
+        idempotency_key: Option<&str>,
+    ) -> Result<ReferenceResponse, Error> {
+        let request = self.request(
+            Method::POST,
+            &["characters", id, "references", reference_id, "remove"],
+        )?;
+        self.json(optional_header(request, IDEMPOTENCY_KEY, idempotency_key))
+            .await
+    }
+
+    pub async fn character_decisions(
+        &self,
+        id: &str,
+        query: &DecisionListQuery,
+    ) -> Result<DecisionListResponse, Error> {
+        self.json(self.get(&["characters", id, "decisions"])?.query(query))
+            .await
+    }
+
+    pub async fn record_character_decision(
+        &self,
+        id: &str,
+        idempotency_key: Option<&str>,
+        body: &RecordDecisionRequest,
+    ) -> Result<DecisionResponse, Error> {
+        let request = self
+            .request(Method::POST, &["characters", id, "decisions"])?
+            .json(body);
+        self.json(optional_header(request, IDEMPOTENCY_KEY, idempotency_key))
+            .await
+    }
+
+    /// Current approved or rejected outputs, each with its output metadata.
+    pub async fn character_outputs(
+        &self,
+        id: &str,
+        query: &CharacterOutputsQuery,
+    ) -> Result<CharacterOutputListResponse, Error> {
+        self.json(self.get(&["characters", id, "outputs"])?.query(query))
+            .await
+    }
+
+    pub async fn character_runs(
+        &self,
+        id: &str,
+        query: &CharacterRunsQuery,
+    ) -> Result<RunListResponse, Error> {
+        self.json(self.get(&["characters", id, "runs"])?.query(query))
             .await
     }
 

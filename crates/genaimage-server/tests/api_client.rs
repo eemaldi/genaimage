@@ -6,7 +6,10 @@ use common::{install_workflow, ApiHarness};
 use futures_util::StreamExt;
 use genaimage_api::{
     client::{Client, Error, EventsQuery, HeadEndpoint, OutputRequest, StreamEvent},
-    Event, HealthStatus, OutputListQuery, ResyncEvent, RunEventsQuery, RunListQuery, RunStatus,
+    AddReferenceRequest, CharacterDecision, CharacterListQuery, CharacterOutputsQuery,
+    CharacterRunsQuery, CharacterSpec, CreateCharacterRequest, CreateSpecVersionRequest,
+    DecisionListQuery, Event, HealthStatus, OutputListQuery, RecordDecisionRequest,
+    ReferenceListQuery, ReferenceRole, ResyncEvent, RunEventsQuery, RunListQuery, RunStatus,
     SettingsPatch, SubmitRunRequest, ThumbnailQuery, WorkflowValidationRequest,
 };
 use reqwest::{header, StatusCode};
@@ -25,6 +28,7 @@ fn submission() -> SubmitRunRequest {
         preset: Some("fast".into()),
         parameters: [("seed".into(), json!(99))].into(),
         version: None,
+        character: None,
     }
 }
 
@@ -427,4 +431,127 @@ async fn legacy_reconciliation_responses_remain_compatible_and_inconclusive() {
     assert_eq!(bulk.runs[0].outcome, ReconcileOutcome::StillAmbiguous);
     assert!(bulk.runs[0].settles_at.is_none());
     server.abort();
+}
+
+#[tokio::test]
+async fn character_methods_cover_the_characters_api() {
+    let api = ApiHarness::start().await;
+    let client = Client::with_base_url(&api.origin).unwrap();
+    let spec = || CharacterSpec {
+        summary: "A lighthouse keeper".into(),
+        elements: Vec::new(),
+        palette: Vec::new(),
+        views: Vec::new(),
+        style_notes: None,
+    };
+    let created = client
+        .create_character(
+            Some("client-create"),
+            &CreateCharacterRequest {
+                name: "Mara".into(),
+                spec: Some(spec()),
+                note: None,
+            },
+        )
+        .await
+        .unwrap();
+    let id = created.character.id.clone();
+    assert_eq!(created.character.latest_spec_version, Some(1));
+    assert_eq!(client.character(&id).await.unwrap(), created.character);
+    assert_eq!(
+        client
+            .characters(&CharacterListQuery::default())
+            .await
+            .unwrap()
+            .characters,
+        [created.character]
+    );
+    let second = client
+        .create_character_spec(
+            &id,
+            None,
+            &CreateSpecVersionRequest {
+                based_on: Some(1),
+                spec: spec(),
+                note: Some("again".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(client.character_spec(&id, 2).await.unwrap(), second);
+    let stale = client
+        .create_character_spec(
+            &id,
+            None,
+            &CreateSpecVersionRequest {
+                based_on: Some(1),
+                spec: spec(),
+                note: None,
+            },
+        )
+        .await;
+    assert!(matches!(&stale, Err(Error::Problem(problem)) if problem.latest == Some(2)));
+    assert_eq!(
+        client
+            .character_specs(&id, &CharacterListQuery::default())
+            .await
+            .unwrap()
+            .versions
+            .len(),
+        2
+    );
+    let missing = client
+        .add_character_reference(
+            &id,
+            None,
+            &AddReferenceRequest {
+                upload_id: "sha256:feed".into(),
+                role: ReferenceRole::Sketch,
+                note: None,
+            },
+        )
+        .await;
+    assert!(matches!(&missing, Err(Error::Problem(problem)) if problem.status == 404));
+    assert!(client
+        .character_references(&id, &ReferenceListQuery::default())
+        .await
+        .unwrap()
+        .references
+        .is_empty());
+    let unknown = client
+        .record_character_decision(
+            &id,
+            None,
+            &RecordDecisionRequest {
+                output_id: "run-x:0".into(),
+                spec_version: 1,
+                decision: CharacterDecision::Approved,
+                note: None,
+            },
+        )
+        .await;
+    assert!(matches!(&unknown, Err(Error::Problem(problem)) if problem.status == 404));
+    assert!(client
+        .character_decisions(&id, &DecisionListQuery::default())
+        .await
+        .unwrap()
+        .decisions
+        .is_empty());
+    assert!(client
+        .character_outputs(&id, &CharacterOutputsQuery::default())
+        .await
+        .unwrap()
+        .outputs
+        .is_empty());
+    assert!(client
+        .character_runs(&id, &CharacterRunsQuery::default())
+        .await
+        .unwrap()
+        .runs
+        .is_empty());
+    let removed = client
+        .remove_character_reference(&id, "charref-none", None)
+        .await;
+    assert!(matches!(&removed, Err(Error::Problem(problem)) if problem.status == 404));
+    api.shutdown().await;
 }
