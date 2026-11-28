@@ -257,7 +257,24 @@ catalogue; `propose_run` validates a pinned proposal and resolves preset,
 default and inherited inputs; `submit_run` requires confirmation and reuses its
 single confirmation ID as the submission idempotency key; `run_status` only
 exposes outputs for completed runs; `get_output` returns metadata without bytes;
-`review_image` calls the exact configured vision role and appends a
+the read-only tools `list_checkpoints` (installed checkpoints with the
+profiles whose exact names match; an unreachable ComfyUI is an error),
+`list_runs`, `list_outputs`, `list_characters`, `get_character`,
+`get_character_spec` and `list_annotations` let the assistant see what the
+portal shows. Paged tools stop before about 24 KiB and set `next_cursor` to the
+last row they included, so a row is never hollowed while the cursor advances;
+a shortened page says so. `get_character` returns only a spec summary
+(version, `spec_bytes`, `element_count`); `get_character_spec` pages whole spec
+elements and reports `complete` only on the last page, and its content is
+never trimmed. `list_annotations` projects a `spec_review` annotation whole
+(`character_id`, `spec_version`, every checklist item, `dropped`, `summary`) and
+labels it a model opinion, not approval; a page that cannot hold the next
+annotation whole stops there and says so, and a single annotation too large for
+the page is an error. `list_checkpoints` and `inspect_workflow` report
+`profile_pack_problems` when pack files failed to load, so an empty profile
+list is not read as "no profile". `inspect_workflow` also returns
+`preset_info` (layouts), the checkpoint parameter and the checkpoint
+profiles; `review_image` calls the exact configured vision role and appends a
 model-opinion annotation; and `review_against_spec` does the same against one
 character spec version (`output_id`, `character_id`, `spec_version`). Review is automatic because it is an append-only
 operator assessment rather than a generation submission, does not alter run

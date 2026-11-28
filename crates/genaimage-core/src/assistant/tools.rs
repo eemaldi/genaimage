@@ -11,6 +11,8 @@ use crate::{
     ToolContext,
 };
 
+mod read;
+
 const WORKFLOW_LIST_LIMIT: usize = 50;
 const RUN_OUTPUT_LIMIT: usize = 50;
 const MAX_TOOL_RESULT_BYTES: usize = 32 * 1024;
@@ -52,7 +54,7 @@ pub fn builtin_assistant_tools(
     harness: Arc<Harness>,
     llm_roles: LlmRoles,
 ) -> Vec<Arc<dyn AssistantTool>> {
-    vec![
+    let mut tools: Vec<Arc<dyn AssistantTool>> = vec![
         Arc::new(ListWorkflowsTool {
             harness: Arc::clone(&harness),
         }),
@@ -75,8 +77,13 @@ pub fn builtin_assistant_tools(
             harness: Arc::clone(&harness),
             llm_roles: llm_roles.clone(),
         }),
-        Arc::new(ReviewImageTool { harness, llm_roles }),
-    ]
+        Arc::new(ReviewImageTool {
+            harness: Arc::clone(&harness),
+            llm_roles,
+        }),
+    ];
+    tools.extend(read::read_tools(&harness));
+    tools
 }
 
 struct ListWorkflowsTool {
@@ -137,7 +144,7 @@ impl AssistantTool for InspectWorkflowTool {
     }
 
     fn description(&self) -> &str {
-        "Inspect one workflow's parameter types, hints, presets and exact revision. Image inputs are explicitly user-supplied."
+        "Inspect one workflow's parameter types, hints, presets (with preset_info labels, descriptions and kinds such as layout, style or quality), exact revision, checkpoint parameter and checkpoint profiles (id, label, checkpoints, revision, ignored). When profile_pack_problems is present, pack files failed to load and an empty profile list does not mean there is no profile. Presets and profiles apply only when a run names them; a profile must be named with its revision. Image inputs are explicitly user-supplied."
     }
 
     fn json_schema(&self) -> Value {
@@ -175,12 +182,45 @@ impl AssistantTool for InspectWorkflowTool {
                 (name.clone(), parameter)
             })
             .collect::<BTreeMap<_, _>>();
-        Ok(bounded_tool_result(json!({
+        let profiled = workflow.clone();
+        let harness = Arc::clone(&self.harness);
+        let lookup = tokio::task::spawn_blocking(move || harness.pack_lookup_of(&profiled))
+            .await
+            .map_err(|error| HarnessError::Workflow(error.to_string()))?;
+        let checkpoint_profiles = lookup
+            .pack
+            .map(|pack| pack.checkpoint_profiles)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|profile| {
+                json!({
+                    "id": profile.id,
+                    "label": profile.label,
+                    "checkpoints": profile.checkpoints,
+                    "note": profile.note,
+                    "values": profile.values_for(&workflow.manifest),
+                    "ignored": profile.ignored_for(&workflow.manifest),
+                    "revision": profile.revision()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut result = json!({
             "workflow_id": workflow.manifest.id,
             "revision": workflow.revision(),
             "parameters": parameters,
-            "presets": workflow.manifest.presets
-        })))
+            "presets": workflow.manifest.presets,
+            "preset_info": workflow.manifest.preset_info,
+            "checkpoint_parameter": workflow.checkpoint_parameter(),
+            "checkpoint_profiles": checkpoint_profiles
+        });
+        let problems = read::pack_problems(&lookup.problems);
+        if !checkpoint_profiles.is_empty() || problems.is_some() {
+            result["profile_note"] = json!(read::PROFILE_NOTE);
+        }
+        if let Some(problems) = problems {
+            result["profile_pack_problems"] = problems;
+        }
+        Ok(bounded_tool_result(result))
     }
 }
 

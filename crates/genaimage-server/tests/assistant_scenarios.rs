@@ -1698,7 +1698,10 @@ fn inspect_workflow_result(revision: &str) -> Value {
         "workflow_id": "contract-workflow",
         "revision": revision,
         "parameters": {"seed": seed, "steps": steps},
-        "presets": {"fast": {"seed": 42, "steps": 10}}
+        "presets": {"fast": {"seed": 42, "steps": 10}},
+        "preset_info": {},
+        "checkpoint_parameter": null,
+        "checkpoint_profiles": []
     })
 }
 

@@ -1,4 +1,5 @@
 mod annotations;
+pub(crate) use annotations::OUTPUT_ANNOTATION_LIMIT;
 mod batches;
 pub(crate) mod characters;
 mod media;
