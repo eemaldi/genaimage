@@ -443,6 +443,7 @@ pub(super) async fn checkpoints(
                         .map(|profile| CheckpointProfileRef {
                             pack: pack.manifest.id.clone(),
                             id: profile.id.clone(),
+                            revision: profile.revision(),
                             label: profile.label.clone(),
                         })
                 })

@@ -233,12 +233,17 @@ pub enum PresetKind {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 pub struct CheckpointProfileSummary {
     pub id: String,
+    /// `sha256:<hex>` over the whole profile entry; send it back when submitting.
+    pub revision: String,
     pub label: String,
     /// Exact checkpoint names the profile matches.
     pub checkpoints: Vec<String>,
     pub note: Option<String>,
     /// Values for the parameters this workflow defines, exactly as declared.
     pub values: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Names of profile values this workflow does not define; not applied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored: Vec<String>,
 }
 
 fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -304,6 +309,11 @@ pub struct WorkflowValidationRequest {
     /// Checkpoint profile to layer beneath the preset. Never implied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_profile: Option<String>,
+    /// Revision (`sha256:<hex>`) of the reviewed profile, from the workflow
+    /// details or the validate response. Send it with `checkpoint_profile`;
+    /// a changed profile is refused with 409 and nothing is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile_revision: Option<String>,
     #[serde(default)]
     pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -324,6 +334,13 @@ pub struct WorkflowValidationResponse {
     /// default, checkpoint profile, preset, user value (later wins).
     #[serde(default)]
     pub effective_values: Vec<WorkflowEffectiveValue>,
+    /// Revision of the named checkpoint profile that these values were resolved from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile_revision: Option<String>,
+    /// Profile values naming parameters this workflow does not define. They
+    /// are not applied; other workflows of the pack may define them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_profile_values: Vec<String>,
     pub node_check: WorkflowNodeCheck,
 }
 

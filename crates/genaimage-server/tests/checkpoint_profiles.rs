@@ -10,6 +10,8 @@ use genaimage_api::{
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 
+const CHANGED: &str = "urn:genaimage:problem:checkpoint-profile-changed";
+
 const PROFILES: &str = r#"
 [[profiles]]
 id = "base"
@@ -89,6 +91,11 @@ async fn the_checkpoints_listing_names_profiles_that_match_exactly() {
     assert_eq!(ids(&response, "c.ckpt"), ["chars/base-and-c"]);
     assert!(ids(&response, "B.safetensors").is_empty(), "case differs");
     assert!(ids(&response, "a.ckpt").is_empty());
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/chars-flow").await;
+    assert_eq!(
+        response.profiles["b.safetensors"][0].revision,
+        details.checkpoint_profiles[0].revision
+    );
     assert_eq!(response.profiles.len(), response.checkpoints.len());
     assert!(response
         .profile_note
@@ -136,6 +143,9 @@ async fn details_validation_and_submission_use_the_named_profile_only() {
         "values for parameters the workflow lacks are not applied to it"
     );
     assert_eq!(base.values["cfg"].to_string(), "2.0");
+    assert_eq!(base.ignored, ["unrelated"]);
+    assert!(base.revision.starts_with("sha256:") && base.revision.len() == 71);
+    assert!(details.checkpoint_profiles[1].ignored.is_empty());
 
     let path = "/api/v1/workflows/chars-flow/validate";
     let body = json!({
@@ -143,6 +153,11 @@ async fn details_validation_and_submission_use_the_named_profile_only() {
         "parameters": {"checkpoint": "b.safetensors"}
     });
     let validation: WorkflowValidationResponse = api.post_json(path, &body).await;
+    assert_eq!(validation.ignored_profile_values, ["unrelated"]);
+    assert_eq!(
+        validation.checkpoint_profile_revision.as_deref(),
+        Some(base.revision.as_str())
+    );
     let source = |name: &str| {
         let value = validation
             .effective_values
@@ -189,6 +204,36 @@ async fn details_validation_and_submission_use_the_named_profile_only() {
         .unwrap();
     assert_eq!(cfg.value.to_string(), "7.5");
     assert_eq!(cfg.source, WorkflowValueSource::Default);
+    assert!(unnamed.checkpoint_profile_revision.is_none());
+    assert!(unnamed.ignored_profile_values.is_empty());
+
+    let mut pinned = body.clone();
+    pinned["checkpoint_profile_revision"] = base.revision.clone().into();
+    let accepted: WorkflowValidationResponse = api.post_json(path, &pinned).await;
+    assert_eq!(
+        accepted.effective_values.len(),
+        validation.effective_values.len()
+    );
+    pinned["checkpoint_profile_revision"] = "sha256:stale".into();
+    let stale = api
+        .request(Method::POST, path)
+        .json(&pinned)
+        .send()
+        .await
+        .unwrap();
+    let problem = ApiHarness::assert_typed_problem(stale, StatusCode::CONFLICT, CHANGED).await;
+    assert!(
+        problem.detail.contains("checkpoint profile changed"),
+        "{}",
+        problem.detail
+    );
+    let orphan = api
+        .request(Method::POST, path)
+        .json(&json!({"checkpoint_profile_revision": base.revision}))
+        .send()
+        .await
+        .unwrap();
+    ApiHarness::assert_problem(orphan, StatusCode::BAD_REQUEST).await;
 
     let mismatch = api
         .request(Method::POST, path)
@@ -238,4 +283,59 @@ async fn a_run_with_a_profile_is_pinned_idempotent_and_a_mismatch_creates_nothin
     let without = json!({"workflow": "chars-flow", "parameters": {"checkpoint": "b.safetensors"}});
     let conflict = submit("k1", without).await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn a_changed_profile_is_refused_with_a_conflict_and_a_matching_revision_is_recorded() {
+    let api = ApiHarness::start().await;
+    install_pack(&api, PROFILES);
+    let details: WorkflowDetails = api.get_json("/api/v1/workflows/chars-flow").await;
+    let revision = details.checkpoint_profiles[0].revision.clone();
+    let submit = |key: &'static str, revision: &str| {
+        let request = api
+            .request(Method::POST, "/api/v1/runs")
+            .header("Idempotency-Key", key)
+            .json(&json!({
+                "workflow": "chars-flow", "checkpoint_profile": "base",
+                "checkpoint_profile_revision": revision,
+                "parameters": {"checkpoint": "b.safetensors"}
+            }));
+        async move { request.send().await.unwrap() }
+    };
+    let stale = submit("s1", "sha256:stale").await;
+    let problem = ApiHarness::assert_typed_problem(stale, StatusCode::CONFLICT, CHANGED).await;
+    assert!(
+        problem.detail.contains("checkpoint profile changed"),
+        "{}",
+        problem.detail
+    );
+    let runs: RunListResponse = api.get_json("/api/v1/runs").await;
+    assert!(runs.runs.is_empty(), "a refused submission writes nothing");
+
+    let created = submit("s2", &revision).await;
+    assert_eq!(created.status(), StatusCode::ACCEPTED);
+    let run: RunResponse = created.json().await.unwrap();
+    let run_dir = fs::read_dir(api.core.config().runs.join("chars-flow"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(run_dir.to_string_lossy().contains(&run.id));
+    let preflight: Value =
+        serde_json::from_slice(&fs::read(run_dir.join("preflight.json")).unwrap()).unwrap();
+    assert_eq!(preflight["checkpoint_profile_revision"], revision.as_str());
+
+    let edited = PROFILES.replace("steps = 28", "steps = 29");
+    fs::write(
+        api.core.config().packs[0]
+            .join("chars")
+            .join("checkpoints.toml"),
+        edited,
+    )
+    .unwrap();
+    let late = submit("s3", &revision).await;
+    ApiHarness::assert_typed_problem(late, StatusCode::CONFLICT, CHANGED).await;
+    let runs: RunListResponse = api.get_json("/api/v1/runs").await;
+    assert_eq!(runs.runs.len(), 1);
 }

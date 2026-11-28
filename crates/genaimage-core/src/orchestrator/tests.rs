@@ -316,6 +316,7 @@ fn setup(lose_submit_response: bool) -> (TempDir, Harness, Arc<Mutex<FakeState>>
     let request = RunRequest {
         workflow_revision: None,
         checkpoint_profile: None,
+        checkpoint_profile_revision: None,
         workflow: "contract-workflow".to_owned(),
         preset: Some("fast".to_owned()),
         parameters: BTreeMap::from([("seed".to_owned(), json!(123))]),
@@ -872,6 +873,7 @@ async fn workspaces_can_use_the_same_explicit_run_version() {
     let request = RunRequest {
         workflow_revision: None,
         checkpoint_profile: None,
+        checkpoint_profile_revision: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),
         parameters: BTreeMap::new(),
@@ -1828,7 +1830,7 @@ fn the_refresh_id_is_reserved_for_the_route() {
 }
 
 const PROFILED_GRAPH: &str = r#"{
-  "3": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 20, "cfg": 7.5, "sampler_name": "euler", "bias": 0.5, "denoise": 1.0}},
+  "3": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 20, "cfg": 7.5, "sampler_name": "euler", "bias": 0.5, "denoise": 1.0, "grain": 1}},
   "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "base.safetensors"}},
   "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "genaimage"}}
 }"#;
@@ -1843,6 +1845,7 @@ fn profiled_manifest() -> Value {
             "sampler": {"node": "3", "input": "sampler_name", "kind": "string", "default": "euler"},
             "bias": {"node": "3", "input": "bias", "kind": "number", "default": 0.5, "minimum": -1, "maximum": 1},
             "denoise": {"node": "3", "input": "denoise", "kind": "number", "default": 1.0},
+            "grain": {"node": "3", "input": "grain", "kind": "integer", "default": 1},
             "checkpoint": {"node": "4", "input": "ckpt_name", "kind": "string", "default": "base.safetensors"}
         },
         "presets": {"wide": {"steps": 30, "cfg": 5.0}},
@@ -1862,7 +1865,7 @@ note = "Tuned for the base checkpoint."
 steps = 28
 cfg = 2.0
 sampler = "dpmpp_2m"
-seed = 9007199254740993
+grain = 9007199254740993
 bias = -0.0
 
 [[profiles]]
@@ -1900,6 +1903,7 @@ fn profiled_request(preset: Option<&str>, profile: Option<&str>, user: Value) ->
         version: None,
         workflow_revision: None,
         checkpoint_profile: profile.map(str::to_owned),
+        checkpoint_profile_revision: None,
     }
 }
 
@@ -1914,7 +1918,7 @@ async fn precedence_is_default_then_profile_then_preset_then_user_with_sources()
     let workflow = harness.load_workflow_by_id("profiled").unwrap().unwrap();
     let user = BTreeMap::from([("cfg".to_owned(), json!(9.5))]);
     let layered = harness
-        .layer_bindings(&workflow, Some("wide"), Some("base-profile"), &user)
+        .layer_bindings(&workflow, Some("wide"), Some("base-profile"), None, &user)
         .unwrap();
     let profile = layered.profile.as_ref().unwrap();
     let sources: BTreeMap<_, _> = workflow
@@ -1963,11 +1967,11 @@ async fn profile_numbers_stay_exact_through_binding_and_provenance() {
         .unwrap();
     let inputs = submitted_inputs(&state);
     assert_eq!(inputs["cfg"].to_string(), "2.0");
-    assert_eq!(inputs["seed"].to_string(), "9007199254740993");
+    assert_eq!(inputs["grain"].to_string(), "9007199254740993");
     assert_eq!(inputs["bias"].to_string(), "-0.0");
     assert_eq!(inputs["steps"].to_string(), "28");
     assert_eq!(run.parameters["cfg"].to_string(), "2.0");
-    assert_eq!(run.parameters["seed"].to_string(), "9007199254740993");
+    assert_eq!(run.parameters["grain"].to_string(), "9007199254740993");
     assert_eq!(run.parameters["bias"].to_string(), "-0.0");
     let preflight = fs::read_to_string(Path::new(&run.output_dir).join("preflight.json")).unwrap();
     assert!(preflight.contains("\"cfg\": 2.0"), "{preflight}");
@@ -1988,7 +1992,7 @@ async fn a_profile_is_never_applied_unless_named() {
         .unwrap();
     assert_eq!(
         submitted_inputs(&state),
-        json!({"seed": 1, "steps": 20, "cfg": 7.5, "sampler_name": "euler", "bias": 0.5, "denoise": 1.0})
+        json!({"seed": 1, "steps": 20, "cfg": 7.5, "sampler_name": "euler", "bias": 0.5, "denoise": 1.0, "grain": 1})
     );
     let run = harness.repository.list(10).unwrap().remove(0);
     let preflight: Value = serde_json::from_slice(
@@ -2118,6 +2122,11 @@ fn pack_problems_name_every_malformed_or_invalid_profile_file() {
         ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nsteps = 'many'\n", "is invalid for workflow 'profiled'"),
         ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nsteps = 101\n", "above maximum"),
         ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nstyle_prefix = 'x'\n", "no workflow of pack 'chars' defines"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\ncfg = nan\n", "must be a string"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\ncfg = inf\n", "must be a string"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\ncfg = -inf\n", "must be a string"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\nseed = 5\n", "must not set 'seed' of workflow 'profiled': it is a seed"),
+        ("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n[profiles.values]\ncheckpoint = 'y.safetensors'\n", "must not set the checkpoint parameter 'checkpoint' of workflow 'profiled'"),
     ];
     for (source, expected) in broken {
         let (_workspace, harness, _, _) = setup(false);
@@ -2179,4 +2188,252 @@ fn profile_files_are_path_confined_and_missing_files_are_reported() {
             .contains("outside the pack directory")));
     }
     let _ = workspace;
+}
+
+fn pack_profile(harness: &Harness, id: &str) -> crate::checkpoint_profiles::CheckpointProfile {
+    harness
+        .discover_workflows()
+        .unwrap()
+        .packs
+        .pack("chars")
+        .unwrap()
+        .checkpoint_profiles
+        .iter()
+        .find(|profile| profile.id == id)
+        .unwrap()
+        .clone()
+}
+
+#[tokio::test]
+async fn a_profile_that_sets_a_seed_an_image_or_the_checkpoint_is_refused_at_run_time_too() {
+    for (value, expected) in [
+        ("seed = 5", "must not set 'seed'"),
+        (
+            "checkpoint = 'base.safetensors'",
+            "must not set the checkpoint parameter",
+        ),
+    ] {
+        let (_workspace, harness, state, _) = setup(false);
+        install_profiled_pack(
+            &harness,
+            &format!("[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['base.safetensors']\n[profiles.values]\n{value}\n"),
+        );
+        let error = harness
+            .submit(profiled_request(None, Some("a"), json!({})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{value}: {error}");
+        assert!(state.lock().unwrap().submission.is_none());
+        assert!(harness.repository.list(10).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn values_for_parameters_a_workflow_lacks_are_dropped_but_reported() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_profiled_pack(
+        &harness,
+        "[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['base.safetensors']\n[profiles.values]\nsteps = 12\nstyle_prefix = 'x'\n",
+    );
+    let workflow = harness.load_workflow_by_id("profiled").unwrap().unwrap();
+    let user = BTreeMap::new();
+    let layered = harness
+        .layer_bindings(&workflow, None, Some("a"), None, &user)
+        .unwrap();
+    let profile = layered.profile.unwrap();
+    assert_eq!(profile.ignored, ["style_prefix"]);
+    assert_eq!(profile.values.keys().collect::<Vec<_>>(), ["steps"]);
+    assert_eq!(
+        layered.overrides,
+        BTreeMap::from([("steps".to_owned(), json!(12))])
+    );
+}
+
+#[test]
+fn the_revision_covers_every_field_and_the_exact_number_text() {
+    let base = |extra: &str| {
+        crate::checkpoint_profiles::parse_profiles(&format!(
+            "[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['x']\n{extra}"
+        ))
+        .unwrap()
+        .remove(0)
+        .revision()
+    };
+    let plain = base("");
+    assert!(
+        plain.starts_with("sha256:") && plain.len() == 7 + 64,
+        "{plain}"
+    );
+    assert_eq!(plain, base(""));
+    let revisions = [
+        base("note = 'n'\n"),
+        base("[profiles.values]\ncfg = 2.0\n"),
+        base("[profiles.values]\ncfg = 2\n"),
+        base("[profiles.values]\ncfg = 2.5\n"),
+        base("[profiles.values]\nsteps = 9007199254740993\n"),
+        base("[profiles.values]\nsteps = 9007199254740992\n"),
+    ];
+    let mut all: Vec<_> = revisions.iter().chain([&plain]).collect();
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 7, "{revisions:?}");
+}
+
+#[tokio::test]
+async fn a_matching_revision_is_accepted_and_recorded_and_a_mismatch_writes_nothing() {
+    let (_workspace, harness, state, _) = setup(false);
+    let dir = install_profiled_pack(&harness, PROFILES);
+    let revision = pack_profile(&harness, "base-profile").revision();
+    let mut request = profiled_request(None, Some("base-profile"), json!({}));
+    request.checkpoint_profile_revision = Some(format!("{revision}0"));
+    let error = harness.submit(request.clone()).await.unwrap_err();
+    assert!(
+        matches!(error, HarnessError::CheckpointProfileChanged),
+        "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "The checkpoint profile changed since it was reviewed."
+    );
+    assert!(state.lock().unwrap().submission.is_none());
+    assert!(harness.repository.list(10).unwrap().is_empty());
+
+    request.checkpoint_profile_revision = Some(revision.clone());
+    let run = harness.submit(request.clone()).await.unwrap();
+    let preflight: Value = serde_json::from_slice(
+        &fs::read(Path::new(&run.output_dir).join("preflight.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(preflight["checkpoint_profile_revision"], revision.as_str());
+    {
+        let mut state = state.lock().unwrap();
+        state.queue_position = None;
+        state.history_outcome = HistoryOutcome::Completed;
+    }
+    harness.reconcile(&run.id).await.unwrap();
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(Path::new(&run.output_dir).join("run-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["checkpoint_profile_revision"], revision.as_str());
+
+    let edited = PROFILES.replace("steps = 28", "steps = 29");
+    fs::write(dir.join("checkpoints.toml"), edited).unwrap();
+    state.lock().unwrap().submission = None;
+    let error = harness.submit(request).await.unwrap_err();
+    assert!(
+        matches!(error, HarnessError::CheckpointProfileChanged),
+        "{error}"
+    );
+    assert!(state.lock().unwrap().submission.is_none());
+    assert_eq!(harness.repository.list(10).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_revision_without_a_profile_is_an_invalid_request() {
+    let (_workspace, harness, state, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    let mut request = profiled_request(None, None, json!({}));
+    request.checkpoint_profile_revision = Some("sha256:00".into());
+    let error = harness.submit(request).await.unwrap_err();
+    assert!(
+        matches!(error, HarnessError::InvalidRunRequest(_)),
+        "{error}"
+    );
+    assert!(state.lock().unwrap().submission.is_none());
+}
+
+#[tokio::test]
+async fn a_rerun_records_the_original_revision_even_after_the_profile_changed() {
+    let (_workspace, harness, state, _) = setup(false);
+    let dir = install_profiled_pack(&harness, PROFILES);
+    let revision = pack_profile(&harness, "base-profile").revision();
+    let mut request = profiled_request(None, Some("base-profile"), json!({}));
+    request.checkpoint_profile_revision = Some(revision.clone());
+    let source = harness.submit(request).await.unwrap();
+    fs::write(
+        dir.join("checkpoints.toml"),
+        PROFILES.replace("steps = 28", "steps = 29"),
+    )
+    .unwrap();
+    state.lock().unwrap().submission = None;
+    let rerun = harness.rerun("again".into(), source.id).await.unwrap().run;
+    let preflight: Value = serde_json::from_slice(
+        &fs::read(Path::new(&rerun.output_dir).join("preflight.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(preflight["checkpoint_profile_revision"], revision.as_str());
+}
+
+#[tokio::test]
+async fn a_non_string_checkpoint_is_not_reported_as_missing() {
+    let (_workspace, harness, state, _) = setup(false);
+    install_profiled_pack(&harness, PROFILES);
+    let error = harness
+        .submit(profiled_request(
+            None,
+            Some("base-profile"),
+            json!({"checkpoint": 5}),
+        ))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("to be a checkpoint name (a string); got 5"),
+        "{error}"
+    );
+    assert!(!error.contains("none was given"), "{error}");
+    assert!(state.lock().unwrap().submission.is_none());
+}
+
+#[tokio::test]
+async fn a_pack_whose_profile_file_failed_to_load_says_so() {
+    let (_workspace, harness, _, _) = setup(false);
+    install_profiled_pack(
+        &harness,
+        "[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = []\n",
+    );
+    let error = harness
+        .submit(profiled_request(None, Some("a"), json!({})))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("failed to load") && error.contains("doctor"),
+        "{error}"
+    );
+    assert!(!error.contains("list the profiles"), "{error}");
+}
+
+#[tokio::test]
+async fn a_profile_that_sets_an_image_upload_is_a_pack_problem_and_refused_at_run_time() {
+    let (_workspace, harness, state, _) = setup(false);
+    let dir = install_profiled_pack(
+        &harness,
+        "[[profiles]]\nid = 'a'\nlabel = 'A'\ncheckpoints = ['base.safetensors']\n[profiles.values]\nreference = 'cat.png'\n",
+    );
+    let mut graph: Value = serde_json::from_str(PROFILED_GRAPH).unwrap();
+    graph["5"] = json!({"class_type": "LoadImage", "inputs": {"image": "example.png"}});
+    fs::write(dir.join("workflow.api.json"), graph.to_string()).unwrap();
+    let mut manifest = profiled_manifest();
+    manifest["parameters"]["reference"] =
+        json!({"node": "5", "input": "image", "kind": "image_upload"});
+    fs::write(dir.join("wf.genaimage.json"), manifest.to_string()).unwrap();
+
+    let discovery = harness.discover_workflows().unwrap();
+    let problems = discovery.pack_problems(discovery.packs.pack("chars").unwrap());
+    assert!(
+        problems.iter().any(|problem| problem
+            .contains("must not set 'reference' of workflow 'profiled': it is an image upload")),
+        "{problems:?}"
+    );
+    let error = harness
+        .submit(profiled_request(None, Some("a"), json!({})))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must not set 'reference'"), "{error}");
+    assert!(state.lock().unwrap().submission.is_none());
+    assert!(harness.repository.list(10).unwrap().is_empty());
 }

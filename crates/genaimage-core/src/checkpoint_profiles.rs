@@ -7,11 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{
     orchestrator::WorkflowSource,
     pack::{validate_pack_id, LoadedPack},
-    workflow::{LoadedWorkflow, WorkflowManifest},
+    workflow::{LoadedWorkflow, ParameterKind, WorkflowManifest},
     Harness, HarnessError, Result,
 };
 
@@ -104,6 +105,21 @@ impl CheckpointProfile {
         Ok(())
     }
 
+    /// `sha256:<hex>` over a canonical serialisation of the whole entry: ID,
+    /// label, checkpoints, note and values with their exact number text. A
+    /// client sends it back so that an edited profile is never applied unseen.
+    pub fn revision(&self) -> String {
+        let canonical = serde_json::json!({
+            "id": self.id,
+            "label": self.label,
+            "checkpoints": self.checkpoints,
+            "note": self.note,
+            "values": self.values,
+        });
+        let bytes = serde_json::to_vec(&canonical).expect("a JSON value always serialises");
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
     pub fn matches(&self, checkpoint: &str) -> bool {
         self.checkpoints.iter().any(|name| name == checkpoint)
     }
@@ -115,6 +131,26 @@ impl CheckpointProfile {
             .filter(|(name, _)| manifest.parameters.contains_key(*name))
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect()
+    }
+
+    /// Names of the values that this workflow does not define, so they are not applied.
+    pub fn ignored_for(&self, manifest: &WorkflowManifest) -> Vec<String> {
+        self.values
+            .keys()
+            .filter(|name| !manifest.parameters.contains_key(*name))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Why a profile must not set a parameter of this kind, if it must not.
+fn forbidden_kind(kind: ParameterKind) -> Option<&'static str> {
+    match kind {
+        ParameterKind::Seed => Some("a seed; set it per request so that runs stay reproducible"),
+        ParameterKind::ImageUpload => {
+            Some("an image upload; images are chosen by the user for each request")
+        }
+        _ => None,
     }
 }
 
@@ -145,19 +181,52 @@ pub(crate) fn value_problems(
         .iter()
         .filter(|w| matches!(&w.source, WorkflowSource::Pack(source) if source == id))
         .collect();
+    let loaded: Vec<_> = members
+        .iter()
+        .map(|workflow| {
+            let graph = match &workflow.boundary {
+                Some(boundary) => LoadedWorkflow::load_within(&workflow.manifest_path, boundary),
+                None => LoadedWorkflow::load(&workflow.manifest_path),
+            };
+            (workflow, graph)
+        })
+        .collect();
     let mut problems = Vec::new();
     for profile in &pack.checkpoint_profiles {
         for (name, value) in &profile.values {
             let mut defined = false;
-            for workflow in &members {
-                if let Some(definition) = workflow.manifest.parameters.get(name) {
-                    defined = true;
-                    if let Err(error) = definition.validate_value(name, value) {
+            for (workflow, graph) in &loaded {
+                let Some(definition) = workflow.manifest.parameters.get(name) else {
+                    continue;
+                };
+                defined = true;
+                let workflow_id = &workflow.manifest.id;
+                if let Some(reason) = forbidden_kind(definition.kind) {
+                    problems.push(format!(
+                        "checkpoint profile '{}' must not set '{name}' of workflow '{workflow_id}': it is {reason}",
+                        profile.id
+                    ));
+                    continue;
+                }
+                match graph {
+                    Ok(graph) if graph.checkpoint_parameter() == Some(name.as_str()) => {
                         problems.push(format!(
-                            "checkpoint profile '{}' is invalid for workflow '{}': {error}",
-                            profile.id, workflow.manifest.id
+                            "checkpoint profile '{}' must not set the checkpoint parameter '{name}' of workflow '{workflow_id}'; the request chooses the checkpoint",
+                            profile.id
                         ));
+                        continue;
                     }
+                    Ok(_) => {}
+                    Err(error) => problems.push(format!(
+                        "checkpoint profile '{}' could not be checked against workflow '{workflow_id}': {error}",
+                        profile.id
+                    )),
+                }
+                if let Err(error) = definition.validate_value(name, value) {
+                    problems.push(format!(
+                        "checkpoint profile '{}' is invalid for workflow '{workflow_id}': {error}",
+                        profile.id
+                    ));
                 }
             }
             if !defined && !members.is_empty() {
@@ -175,7 +244,11 @@ pub(crate) fn value_problems(
 #[derive(Clone, Debug)]
 pub struct AppliedProfile {
     pub id: String,
+    /// The revision of the entry these values were resolved from.
+    pub revision: String,
     pub values: BTreeMap<String, Value>,
+    /// Profile values naming parameters this workflow lacks; they are not applied.
+    pub ignored: Vec<String>,
 }
 
 /// User overrides with the profile values beneath them: precedence is
@@ -210,9 +283,15 @@ impl Harness {
         workflow: &LoadedWorkflow,
         preset: Option<&str>,
         profile: Option<&str>,
+        expected_revision: Option<&str>,
         user: &BTreeMap<String, Value>,
     ) -> Result<LayeredBindings> {
         let Some(profile_id) = profile else {
+            if expected_revision.is_some() {
+                return Err(HarnessError::InvalidRunRequest(
+                    "A checkpoint profile revision was sent without a checkpoint profile; name the profile it belongs to or drop the revision.".into(),
+                ));
+            }
             return Ok(LayeredBindings {
                 overrides: user.clone(),
                 profile: None,
@@ -230,27 +309,42 @@ impl Harness {
             .iter()
             .find(|candidate| candidate.id == profile_id)
             .ok_or_else(|| {
-                fail(format!(
-                    "pack '{}' has no checkpoint profile '{profile_id}'; list the profiles of workflow '{workflow_id}' and name one exactly",
-                    pack.manifest.id
-                ))
+                if pack.checkpoint_profiles.is_empty() && pack.manifest.checkpoint_profiles.is_some() {
+                    fail(format!(
+                        "pack '{}' declares a checkpoint profiles file, but no profile was loaded from it, so there is no profile '{profile_id}'; the file failed to load, so run the doctor for the reason",
+                        pack.manifest.id
+                    ))
+                } else {
+                    fail(format!(
+                        "pack '{}' has no checkpoint profile '{profile_id}'; list the profiles of workflow '{workflow_id}' and name one exactly",
+                        pack.manifest.id
+                    ))
+                }
             })?;
+        let revision = chosen.revision();
+        if expected_revision.is_some_and(|expected| expected != revision) {
+            return Err(HarnessError::CheckpointProfileChanged);
+        }
         let checkpoint_parameter = workflow.checkpoint_parameter().ok_or_else(|| {
             fail(format!(
                 "workflow '{workflow_id}' has no single checkpoint parameter, so checkpoint profile '{profile_id}' cannot be matched to a checkpoint"
             ))
         })?;
         let preset_values = workflow.preset_values(preset)?;
-        let checkpoint = user
+        let given = user
             .get(checkpoint_parameter)
             .or_else(|| preset_values.get(checkpoint_parameter))
             .or_else(|| workflow.manifest.parameters[checkpoint_parameter].default.as_ref())
-            .and_then(Value::as_str)
             .ok_or_else(|| {
                 fail(format!(
                     "checkpoint profile '{profile_id}' needs an explicit value for '{checkpoint_parameter}'; none was given"
                 ))
             })?;
+        let checkpoint = given.as_str().ok_or_else(|| {
+            fail(format!(
+                "checkpoint profile '{profile_id}' needs '{checkpoint_parameter}' to be a checkpoint name (a string); got {given}"
+            ))
+        })?;
         if !chosen.matches(checkpoint) {
             return Err(fail(format!(
                 "checkpoint profile '{profile_id}' does not list checkpoint '{checkpoint}' (matching is exact); it lists: {}",
@@ -262,6 +356,13 @@ impl Harness {
             return Err(fail(format!(
                 "checkpoint profile '{profile_id}' must not set the checkpoint parameter '{checkpoint_parameter}'"
             )));
+        }
+        for name in values.keys() {
+            if let Some(reason) = forbidden_kind(workflow.manifest.parameters[name].kind) {
+                return Err(fail(format!(
+                    "checkpoint profile '{profile_id}' must not set '{name}': it is {reason}"
+                )));
+            }
         }
         let mut overrides: BTreeMap<String, Value> = values
             .iter()
@@ -276,7 +377,9 @@ impl Harness {
             overrides,
             profile: Some(AppliedProfile {
                 id: chosen.id.clone(),
+                revision,
                 values,
+                ignored: chosen.ignored_for(&workflow.manifest),
             }),
         })
     }

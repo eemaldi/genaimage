@@ -20,6 +20,11 @@ pub struct SubmitRunRequest {
     /// and only if the effective checkpoint is one of its exact names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_profile: Option<String>,
+    /// Revision (`sha256:<hex>`) of the reviewed profile, from the workflow
+    /// details or the validate response. Send it with `checkpoint_profile`;
+    /// a changed profile is refused with 409 and nothing is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile_revision: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, Value>,
     /// Optional output version. Existing artefacts are never overwritten.

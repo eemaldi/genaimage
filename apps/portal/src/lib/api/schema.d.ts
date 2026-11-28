@@ -1322,14 +1322,20 @@ export interface components {
             id: string;
             label: string;
             pack: string;
+            /** @description `sha256:<hex>` over the whole profile entry. */
+            revision: string;
         };
         /** @description A pack's checkpoint profile as it applies to one workflow. */
         CheckpointProfileSummary: {
             /** @description Exact checkpoint names the profile matches. */
             checkpoints: string[];
             id: string;
+            /** @description Names of profile values this workflow does not define; not applied. */
+            ignored?: string[];
             label: string;
             note?: string | null;
+            /** @description `sha256:<hex>` over the whole profile entry; send it back when submitting. */
+            revision: string;
             /** @description Values for the parameters this workflow defines, exactly as declared. */
             values: {
                 [key: string]: unknown;
@@ -2027,6 +2033,12 @@ export interface components {
              *     and only if the effective checkpoint is one of its exact names.
              */
             checkpoint_profile?: string | null;
+            /**
+             * @description Revision (`sha256:<hex>`) of the reviewed profile, from the workflow
+             *     details or the validate response. Send it with `checkpoint_profile`;
+             *     a changed profile is refused with 409 and nothing is written.
+             */
+            checkpoint_profile_revision?: string | null;
             parameters?: {
                 [key: string]: unknown;
             };
@@ -2421,6 +2433,12 @@ export interface components {
         WorkflowValidationRequest: {
             /** @description Checkpoint profile to layer beneath the preset. Never implied. */
             checkpoint_profile?: string | null;
+            /**
+             * @description Revision (`sha256:<hex>`) of the reviewed profile, from the workflow
+             *     details or the validate response. Send it with `checkpoint_profile`;
+             *     a changed profile is refused with 409 and nothing is written.
+             */
+            checkpoint_profile_revision?: string | null;
             parameters?: {
                 [key: string]: unknown;
             };
@@ -2430,11 +2448,18 @@ export interface components {
         };
         /** @description The result of validating bindings and checking backend node availability. */
         WorkflowValidationResponse: {
+            /** @description Revision of the named checkpoint profile that these values were resolved from. */
+            checkpoint_profile_revision?: string | null;
             /**
              * @description Every parameter with a value, and where it comes from, in the order
              *     default, checkpoint profile, preset, user value (later wins).
              */
             effective_values?: components["schemas"]["WorkflowEffectiveValue"][];
+            /**
+             * @description Profile values naming parameters this workflow does not define. They
+             *     are not applied; other workflows of the pack may define them.
+             */
+            ignored_profile_values?: string[];
             /** @description Graph inputs left untouched by binding, not submitted parameter values. */
             inherited_inputs?: components["schemas"]["WorkflowInheritedInput"][];
             node_check: components["schemas"]["WorkflowNodeCheck"];
@@ -7014,7 +7039,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict */
+            /** @description Workflow or checkpoint profile revision mismatch, workflow ID declared by several manifests or idempotency key conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -11137,7 +11162,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Workflow revision mismatch or workflow ID declared by several manifests */
+            /** @description Workflow or checkpoint profile revision mismatch, or workflow ID declared by several manifests */
             409: {
                 headers: {
                     [name: string]: unknown;

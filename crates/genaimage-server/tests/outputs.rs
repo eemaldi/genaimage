@@ -62,6 +62,7 @@ async fn completed(api: &ApiHarness, tag: &str) -> RunRecord {
     let run = api
         .submit_run(RunRequest {
             checkpoint_profile: None,
+            checkpoint_profile_revision: None,
             workflow_revision: None,
             workflow: "contract-workflow".into(),
             preset: Some("fast".into()),

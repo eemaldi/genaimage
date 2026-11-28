@@ -45,6 +45,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
     let submitted = harness
         .submit(RunRequest {
             checkpoint_profile: None,
+            checkpoint_profile_revision: None,
             workflow_revision: None,
             workflow: "text-to-image".to_owned(),
             preset: Some("fast".to_owned()),
@@ -238,6 +239,7 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
     let run = harness
         .submit(RunRequest {
             checkpoint_profile: None,
+            checkpoint_profile_revision: None,
             workflow_revision: None,
             workflow: "image-input".to_owned(),
             preset: None,
@@ -309,6 +311,7 @@ fn create_harness_workflow(temp: &TempDir) {
 fn test_run_request(workflow: &str) -> RunRequest {
     RunRequest {
         checkpoint_profile: None,
+        checkpoint_profile_revision: None,
         workflow_revision: None,
         workflow: workflow.to_owned(),
         preset: Some("fast".to_owned()),

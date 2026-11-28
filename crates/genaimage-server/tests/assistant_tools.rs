@@ -594,6 +594,7 @@ async fn inspect_get_output_and_review_use_the_vision_role_only() {
         .core
         .submit(RunRequest {
             checkpoint_profile: None,
+            checkpoint_profile_revision: None,
             workflow: "contract-workflow".into(),
             preset: Some("fast".into()),
             parameters: [("ratio".into(), json!(2.0))].into_iter().collect(),

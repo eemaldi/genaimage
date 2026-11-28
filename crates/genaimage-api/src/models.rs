@@ -142,5 +142,7 @@ pub struct CheckpointsResponse {
 pub struct CheckpointProfileRef {
     pub pack: String,
     pub id: String,
+    /// `sha256:<hex>` over the whole profile entry.
+    pub revision: String,
     pub label: String,
 }

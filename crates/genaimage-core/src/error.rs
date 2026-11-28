@@ -30,6 +30,8 @@ pub enum HarnessError {
     WorkflowAmbiguous(String),
     #[error("The workflow changed since you reviewed it.")]
     WorkflowChanged,
+    #[error("The checkpoint profile changed since it was reviewed.")]
+    CheckpointProfileChanged,
     #[error("cannot resolve workflow ID '{id}' unambiguously: workflow directory or entry '{}' could not be inspected ({reason}); fix permissions or repair the path and retry", path.display())]
     WorkflowDiscoveryIncomplete {
         id: String,

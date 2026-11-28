@@ -46,6 +46,9 @@ pub struct RunManifest {
     /// The checkpoint profile the run was submitted with, if one was named.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_profile: Option<String>,
+    /// The revision of that profile entry when the run was submitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile_revision: Option<String>,
     pub parameters: Value,
     pub comfyui_base_url: String,
     pub source_inputs: Vec<InputFileRecord>,
@@ -69,7 +72,7 @@ pub(crate) fn initialise_run_files(
     bound: &BoundWorkflow,
     loaded: &crate::workflow::LoadedWorkflow,
     preset: Option<&str>,
-    checkpoint_profile: Option<&str>,
+    checkpoint_profile: Option<(&str, Option<&str>)>,
     parameters: &Value,
     inputs: &[InputFileRecord],
 ) -> Result<(String, String)> {
@@ -90,8 +93,11 @@ pub(crate) fn initialise_run_files(
         "parameters": parameters,
         "source_inputs": inputs
     });
-    if let Some(profile) = checkpoint_profile {
+    if let Some((profile, revision)) = checkpoint_profile {
         preflight["checkpoint_profile"] = profile.into();
+        if let Some(revision) = revision {
+            preflight["checkpoint_profile_revision"] = revision.into();
+        }
     }
     let bytes = serde_json::to_vec_pretty(&preflight)?;
     create_new_atomic(&output_dir.join("preflight.json"), &bytes)?;
@@ -174,6 +180,11 @@ pub(crate) async fn materialise_history(
             .and_then(|value| value.as_str().map(str::to_owned)),
         checkpoint_profile: read_preflight_field(&output_dir, "checkpoint_profile")?
             .and_then(|value| value.as_str().map(str::to_owned)),
+        checkpoint_profile_revision: read_preflight_field(
+            &output_dir,
+            "checkpoint_profile_revision",
+        )?
+        .and_then(|value| value.as_str().map(str::to_owned)),
         parameters: run.parameters.clone(),
         comfyui_base_url: client.base_url().to_owned(),
         source_inputs,

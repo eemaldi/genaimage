@@ -318,6 +318,7 @@ async fn an_item_has_the_fingerprint_of_the_same_request_submitted_normally() {
         version: None,
         workflow_revision: Some(revision),
         checkpoint_profile: None,
+        checkpoint_profile_revision: None,
     };
     let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&normal).unwrap()));
     let key = super::batches::batch_item_key(&batch.record.id, 1);

@@ -185,6 +185,9 @@ that the request names, the preset, then the user's own value. The validate
 endpoint reports `effective_values` (`parameter`, `value`, `source` and, for a
 profile, `checkpoint_profile`); `source` is `default`, `checkpoint_profile`,
 `preset` or `user`.
+The response also carries `checkpoint_profile_revision` and
+`ignored_profile_values` (profile values naming parameters the workflow lacks,
+which are not applied) when a profile is named.
 
 ## Importing a ComfyUI workflow
 
