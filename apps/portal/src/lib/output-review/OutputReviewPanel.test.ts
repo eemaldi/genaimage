@@ -118,6 +118,30 @@ describe('output review panel', () => {
     expect(screen.queryByText('Adherence critique')).toBeNull();
   });
 
+  it('renders duplicate dropped notes without crashing', async () => {
+    fake.api.getOutputAnnotations.mockResolvedValue({
+      annotations: [
+        {
+          ...annotation('run-1:1', 7, 'Close match'),
+          kind: 'spec_review',
+          adherence_critique: '',
+          tags: [],
+          spec_review: {
+            character_id: 'char-1',
+            spec_version: 1,
+            checklist: [],
+            dropped: ['same note', 'same note', 'same note'],
+            summary: 'Close match',
+            label: 'Model opinion, not approval.',
+          },
+        },
+      ],
+    });
+    render(OutputReviewPanel, { outputId: 'run-1:1', ...media });
+
+    expect(await screen.findAllByText('same note')).toHaveLength(3);
+  });
+
   it('renders a successful review as a labelled model opinion', async () => {
     const user = userEvent.setup();
     render(OutputReviewPanel, { outputId: 'run-1:1', ...media });

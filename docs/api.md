@@ -121,13 +121,17 @@ asks the configured **vision** model to check an output against one exact spec
 version (`spec_version` is a whole number; `1.0`, `"1"` and unknown fields are
 rejected with 4xx). The text role is never used: an unconfigured vision role
 returns 503 (`urn:genaimage:problem:assistant-unavailable`) before any model
-request. An unknown output, character or spec version returns 404. A model
-answer that is not the required JSON, is truncated, assesses none of the
-reviewed elements or has an oversized summary returns 502 and stores nothing.
+request. An unknown output, character or spec version returns 404. A spec
+with no mandatory or flexible elements returns 422 before any model request;
+add some in a new spec version. A model answer that is not the required JSON,
+is truncated, assesses none of the reviewed elements, has an oversized summary
+or lists more than 4 x the reviewed elements + 16 entries returns 502 and stores
+nothing.
 
 The 200 response is the stored annotation (`kind` is `spec_review`). `caption`
-holds the summary, `adherence_critique` is empty and `tags` is empty; the
-checklist is in `spec_review`:
+mirrors the summary and `adherence_critique` is empty, both for compatibility
+with `vision_review` clients, and `tags` is empty. Clients should read
+`spec_review`:
 
 ```json
 {
@@ -146,7 +150,11 @@ checklist is in `spec_review`:
 `verdict` is `met`, `deviation` or `unclear`. Every mandatory element appears
 exactly once; one the model left out (or listed twice, or gave an invalid
 verdict or an oversized note) is reported as `unclear` with the note
-`not assessed by the model`, and `dropped` says why. Flexible elements appear
+`not assessed by the model`, or `conflicting duplicate entries; not recorded`
+when it was listed more than once (all copies are dropped, never picked
+between), and `dropped` says why. `dropped` holds at most 50 notes followed by
+one `N further items dropped` note; the unknown-ids note lists the first 20 ids
+then `and N more`. Flexible elements appear
 only when assessed. Notes are at most 500 bytes and the summary 1,000 bytes;
 nothing is truncated. A review never records an approval or rejection; use
 the decisions endpoint for that. `GET /outputs/{id}/annotations` lists both

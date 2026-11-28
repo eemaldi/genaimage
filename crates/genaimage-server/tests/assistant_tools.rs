@@ -774,6 +774,68 @@ async fn review_image_returns_an_error_when_vision_is_unavailable_without_text_f
 }
 
 #[tokio::test]
+async fn review_against_spec_reports_an_unconfigured_vision_role_without_a_model_call() {
+    let llm = FakeLlmServer::start(text_script("ready")).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_builtin_assistant_tools(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", TEXT_MODEL),
+        ],
+    )
+    .await;
+    let character = genaimage_core::characters::CharacterService::new(api.core.as_ref().clone())
+        .create_character(
+            genaimage_core::characters::NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(
+                    serde_json::from_value(json!({
+                        "summary": "A keeper",
+                        "elements": [{"id": "cloak", "category": "clothing", "description": "Crimson cloak", "requirement": "mandatory"}]
+                    }))
+                    .unwrap(),
+                ),
+                note: None,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .character
+        .id;
+    llm.set_scripts([
+        tool_script(
+            "spec-unavailable",
+            "review_against_spec",
+            json!({"output_id": "run-missing:1", "character_id": character, "spec_version": 1}),
+        ),
+        text_script("reported the unavailable vision role"),
+    ]);
+    let client = client(&api);
+    let conversation = create(&client).await;
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &message("check it against the spec"))
+        .await
+        .unwrap();
+    let mut error = None;
+    while let Some(event) = stream.next().await {
+        match event.unwrap() {
+            AssistantStreamEvent::ToolResult(result) if !result.ok => error = result.error,
+            AssistantStreamEvent::Done(_) => break,
+            AssistantStreamEvent::Error(event) => panic!("assistant failed: {event:?}"),
+            _ => {}
+        }
+    }
+    assert!(error.unwrap().contains("llm.vision_model is empty"));
+    let requests = llm.recorded_requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(
+        |request| request["model"] == TEXT_MODEL && !request.to_string().contains("image_url")
+    ));
+}
+
+#[tokio::test]
 async fn edit_requires_a_fresh_token_bound_to_its_arguments() {
     let (_api, llm) = configured_with_builtin_tools().await;
     let api = _api;

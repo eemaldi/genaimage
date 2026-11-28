@@ -11,9 +11,9 @@ use axum::{
 };
 use genaimage_api as api;
 use genaimage_core::{
-    characters::CharacterService,
+    characters::{CharacterService, ElementCategory, Requirement},
     media::{MediaFile, OutputListQuery, ThumbnailSize},
-    HarnessError, OutputAnnotation, VisionReviewService,
+    HarnessError, OutputAnnotation, SpecReview, SpecVerdict, VisionReviewService,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -259,6 +259,52 @@ pub(super) async fn annotations(
     }))
 }
 
+fn category_response(category: ElementCategory) -> api::SpecElementCategory {
+    match category {
+        ElementCategory::Silhouette => api::SpecElementCategory::Silhouette,
+        ElementCategory::Proportions => api::SpecElementCategory::Proportions,
+        ElementCategory::Anatomy => api::SpecElementCategory::Anatomy,
+        ElementCategory::Clothing => api::SpecElementCategory::Clothing,
+        ElementCategory::Equipment => api::SpecElementCategory::Equipment,
+        ElementCategory::Materials => api::SpecElementCategory::Materials,
+        ElementCategory::Colour => api::SpecElementCategory::Colour,
+        ElementCategory::Other => api::SpecElementCategory::Other,
+    }
+}
+
+fn requirement_response(requirement: Requirement) -> api::SpecRequirement {
+    match requirement {
+        Requirement::Mandatory => api::SpecRequirement::Mandatory,
+        Requirement::Flexible => api::SpecRequirement::Flexible,
+        Requirement::Unspecified => api::SpecRequirement::Unspecified,
+    }
+}
+
+fn spec_review_response(review: SpecReview) -> api::SpecReviewResponse {
+    api::SpecReviewResponse {
+        character_id: review.character_id,
+        spec_version: review.spec_version,
+        checklist: review
+            .checklist
+            .into_iter()
+            .map(|item| api::SpecReviewItemResponse {
+                id: item.id,
+                category: category_response(item.category),
+                requirement: requirement_response(item.requirement),
+                verdict: match item.verdict {
+                    SpecVerdict::Met => api::SpecVerdict::Met,
+                    SpecVerdict::Deviation => api::SpecVerdict::Deviation,
+                    SpecVerdict::Unclear => api::SpecVerdict::Unclear,
+                },
+                note: item.note,
+            })
+            .collect(),
+        dropped: review.dropped,
+        summary: review.summary,
+        label: review.label,
+    }
+}
+
 fn annotation_response(annotation: OutputAnnotation) -> api::OutputAnnotationResponse {
     api::OutputAnnotationResponse {
         id: annotation.id,
@@ -272,11 +318,7 @@ fn annotation_response(annotation: OutputAnnotation) -> api::OutputAnnotationRes
         tags: annotation.tags,
         prompt: annotation.prompt,
         raw_response: annotation.raw_response,
-        spec_review: annotation.spec_review.map(|review| {
-            serde_json::to_value(review)
-                .and_then(serde_json::from_value)
-                .expect("the API and core spec review types share one JSON shape")
-        }),
+        spec_review: annotation.spec_review.map(spec_review_response),
     }
 }
 
@@ -701,6 +743,10 @@ fn review_problem(error: HarnessError) -> Problem {
         HarnessError::VisionReviewUnsupportedImage(_) => (
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "Use an indexed PNG, JPEG or WebP; GenAImage never transcodes it for review.",
+        ),
+        HarnessError::SpecReviewNothingToReview => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The spec has no mandatory or flexible elements to review. Add some in a new spec version, then review against that version.",
         ),
         HarnessError::VisionReviewInput(_) | HarnessError::Configuration(_) => (
             StatusCode::UNPROCESSABLE_ENTITY,

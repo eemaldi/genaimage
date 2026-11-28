@@ -821,12 +821,42 @@ mod tests {
         let ChatContent::Text(prompt) = &contents[0] else {
             panic!("expected the prompt first")
         };
-        assert!(prompt.contains("\"id\": \"hat\"") && prompt.contains("lantern"));
-        assert!(prompt.contains("#1f4e79"));
-        assert!(
-            !prompt.contains("mood"),
-            "unspecified elements are not shown"
-        );
+        let block = prompt
+            .split("<character_spec>\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n</character_spec>").next())
+            .unwrap();
+        let expected = r##"{
+  "elements": [
+    {
+      "category": "clothing",
+      "description": "hat description",
+      "id": "hat",
+      "requirement": "mandatory"
+    },
+    {
+      "category": "clothing",
+      "description": "cloak description",
+      "id": "cloak",
+      "requirement": "mandatory"
+    },
+    {
+      "category": "clothing",
+      "description": "lantern description",
+      "id": "lantern",
+      "requirement": "flexible"
+    }
+  ],
+  "palette": [
+    {
+      "hex": "#1f4e79",
+      "name": "Sea blue",
+      "role": null
+    }
+  ],
+  "summary": "A lighthouse keeper"
+}"##;
+        assert_eq!(block, expected);
     }
 
     #[tokio::test]
@@ -880,7 +910,12 @@ mod tests {
             ]
         );
         assert_eq!(review.checklist[0].verdict, SpecVerdict::Unclear);
+        assert_eq!(
+            review.checklist[0].note,
+            "conflicting duplicate entries; not recorded"
+        );
         assert_eq!(review.checklist[1].verdict, SpecVerdict::Unclear);
+        assert_eq!(review.checklist[1].note, "not assessed by the model");
         assert_eq!(review.checklist[2].id, "lantern");
     }
 
@@ -963,5 +998,101 @@ mod tests {
 
         assert_eq!(listed, vec![second, first]);
         assert_eq!(listed[1].spec_review, None);
+    }
+
+    async fn many_element_character(fixture: &Fixture, count: usize) -> String {
+        let created = CharacterService::new(fixture.harness.clone())
+            .create_character(
+                NewCharacter {
+                    name: "Crowd".into(),
+                    spec: Some(CharacterSpec {
+                        summary: "Many".into(),
+                        elements: (0..count)
+                            .map(|index| element(&format!("e{index}"), Requirement::Mandatory))
+                            .collect(),
+                        palette: vec![],
+                        views: vec![],
+                        style_notes: None,
+                    }),
+                    note: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        created.character.id
+    }
+
+    #[tokio::test]
+    async fn adversarial_answers_are_capped_before_storage() {
+        let fixture = fixture().await;
+        let id = many_element_character(&fixture, 60).await;
+        let item = |id: &str, verdict: &str| {
+            format!(r#"{{"id":"{id}","verdict":"{verdict}","note":"x"}}"#)
+        };
+        let answer =
+            |items: Vec<String>| format!(r#"{{"elements":[{}],"summary":"s"}}"#, items.join(","));
+
+        let too_many = answer(
+            (0..257)
+                .map(|n| item(&format!("e{}", n % 60), "met"))
+                .collect(),
+        );
+        let (result, _) = spec_review(&fixture, &id, &too_many).await;
+        assert!(matches!(result, Err(HarnessError::VisionReviewResponse(_))));
+        assert!(stored(&fixture).await.is_empty());
+
+        let mut items = vec![item("e0", "met")];
+        items.extend((1..60).map(|n| item(&format!("e{n}"), "bogus")));
+        let (result, _) = spec_review(&fixture, &id, &answer(items)).await;
+        let review = result.unwrap().spec_review.unwrap();
+        assert_eq!(review.dropped.len(), 51);
+        assert_eq!(review.dropped[50], "9 further items dropped");
+
+        let mut items = vec![item("e0", "met")];
+        items.extend((0..80).map(|n| item(&format!("{}{n}", "z".repeat(12_000)), "met")));
+        let response = answer(items);
+        assert!(response.len() > 900_000 && response.len() < 1_048_576);
+        let (result, _) = spec_review(&fixture, &id, &response).await;
+        let review = result.unwrap().spec_review.unwrap();
+        assert_eq!(review.dropped.len(), 1);
+        let unknown = &review.dropped[0];
+        assert!(unknown.starts_with("unknown element ids dropped: "));
+        assert!(unknown.ends_with(" and 60 more"), "{unknown}");
+        assert!(unknown.len() < 20 * 70 + 100);
+        assert!(serde_json::to_string(&review).unwrap().len() < 40_000);
+        assert_eq!(stored(&fixture).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_spec_without_reviewable_elements_is_refused_before_the_model() {
+        let fixture = fixture().await;
+        let service = CharacterService::new(fixture.harness.clone());
+        for elements in [vec![], vec![element("mood", Requirement::Unspecified)]] {
+            let created = service
+                .create_character(
+                    NewCharacter {
+                        name: "Blank".into(),
+                        spec: Some(CharacterSpec {
+                            summary: "s".into(),
+                            elements,
+                            palette: vec![],
+                            views: vec![],
+                            style_notes: None,
+                        }),
+                        note: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            let (result, provider) = spec_review(&fixture, &created.character.id, "{}").await;
+            assert!(matches!(
+                result,
+                Err(HarnessError::SpecReviewNothingToReview)
+            ));
+            assert!(provider.requests.lock().unwrap().is_empty());
+        }
+        assert!(stored(&fixture).await.is_empty());
     }
 }

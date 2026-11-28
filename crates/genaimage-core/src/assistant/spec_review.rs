@@ -23,6 +23,11 @@ pub const SPEC_REVIEW_SUMMARY_MAX_BYTES: usize = 1_000;
 pub const SPEC_REVIEW_LABEL: &str =
     "Model opinion, not approval. Record an approval or rejection separately.";
 pub const NOT_ASSESSED_NOTE: &str = "not assessed by the model";
+pub const CONFLICTING_DUPLICATE_NOTE: &str = "conflicting duplicate entries; not recorded";
+pub const SPEC_REVIEW_DROPPED_MAX: usize = 50;
+pub const SPEC_REVIEW_UNKNOWN_IDS_LISTED: usize = 20;
+const ELEMENTS_PER_REVIEWED_ELEMENT: usize = 4;
+const ELEMENTS_SLACK: usize = 16;
 
 const DEFAULT_SPEC_REVIEW_PROMPT: &str = r#"Review the supplied generated image against the character specification below.
 
@@ -75,9 +80,7 @@ fn response_error(message: impl Into<String>) -> HarnessError {
 pub(super) async fn spec_review_prompt(data_dir: &Path, spec: &CharacterSpec) -> Result<String> {
     let shown: Vec<&SpecElement> = reviewed_elements(spec);
     if shown.is_empty() {
-        return Err(HarnessError::VisionReviewInput(
-            "the spec has no mandatory or flexible elements to review".to_owned(),
-        ));
+        return Err(HarnessError::SpecReviewNothingToReview);
     }
     let rendered = serde_json::to_string_pretty(&serde_json::json!({
         "summary": spec.summary,
@@ -135,6 +138,15 @@ pub(super) fn validate_spec_review(
         .into_iter()
         .map(|element| (element.id.as_str(), element))
         .collect();
+
+    let element_limit = shown.len() * ELEMENTS_PER_REVIEWED_ELEMENT + ELEMENTS_SLACK;
+    if parsed.elements.len() > element_limit {
+        return Err(response_error(format!(
+            "the checklist has {} entries for {} reviewed elements; the limit is {element_limit}; nothing was stored",
+            parsed.elements.len(),
+            shown.len()
+        )));
+    }
 
     let mut dropped = Vec::new();
     let mut unknown = Vec::new();
@@ -195,19 +207,29 @@ pub(super) fn validate_spec_review(
         });
     }
     if !unknown.is_empty() {
-        dropped.push(format!(
-            "unknown element ids dropped: {}",
-            unknown.join(", ")
-        ));
+        let listed = unknown
+            .iter()
+            .take(SPEC_REVIEW_UNKNOWN_IDS_LISTED)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = unknown.len().saturating_sub(SPEC_REVIEW_UNKNOWN_IDS_LISTED);
+        dropped.push(if more == 0 {
+            format!("unknown element ids dropped: {listed}")
+        } else {
+            format!("unknown element ids dropped: {listed} and {more} more")
+        });
     }
 
     let mut assessed = 0;
     let mut mandatory = Vec::new();
     let mut flexible = Vec::new();
     for element in shown.values().copied() {
+        let mut conflicting = false;
         let claim = match claims.remove(&element.id) {
             Some(mut list) if list.len() == 1 => list.pop(),
             Some(list) => {
+                conflicting = true;
                 dropped.push(format!(
                     "element '{}' dropped: listed {} times",
                     element.id,
@@ -233,7 +255,12 @@ pub(super) fn validate_spec_review(
                 category: element.category,
                 requirement: element.requirement,
                 verdict: SpecVerdict::Unclear,
-                note: NOT_ASSESSED_NOTE.to_owned(),
+                note: if conflicting {
+                    CONFLICTING_DUPLICATE_NOTE
+                } else {
+                    NOT_ASSESSED_NOTE
+                }
+                .to_owned(),
             },
         };
         match element.requirement {
@@ -261,6 +288,7 @@ pub(super) fn validate_spec_review(
     mandatory.sort_by_key(|item| order[item.id.as_str()]);
     flexible.sort_by_key(|item| order[item.id.as_str()]);
     mandatory.extend(flexible);
+    cap_dropped(&mut dropped);
     Ok(SpecReview {
         character_id: version.character_id.clone(),
         spec_version: version.version,
@@ -269,6 +297,14 @@ pub(super) fn validate_spec_review(
         summary: parsed.summary,
         label: SPEC_REVIEW_LABEL.to_owned(),
     })
+}
+
+fn cap_dropped(dropped: &mut Vec<String>) {
+    if dropped.len() > SPEC_REVIEW_DROPPED_MAX {
+        let further = dropped.len() - SPEC_REVIEW_DROPPED_MAX;
+        dropped.truncate(SPEC_REVIEW_DROPPED_MAX);
+        dropped.push(format!("{further} further items dropped"));
+    }
 }
 
 const ELEMENT_ID_NOTE_CHARS: usize = 64;

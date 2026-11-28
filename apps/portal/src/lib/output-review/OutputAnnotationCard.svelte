@@ -36,7 +36,7 @@
     {#if review.dropped.length}
       <p class="label">Dropped from the model answer:</p>
       <ul>
-        {#each review.dropped as note (note)}<li>{note}</li>{/each}
+        {#each review.dropped as note, index (index)}<li>{note}</li>{/each}
       </ul>
     {/if}
     <dl>
