@@ -71,6 +71,7 @@ pub struct WorkflowManifestRecord {
     pub manifest_path: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn initialise_run_files(
     output_dir: &Path,
     bound: &BoundWorkflow,
