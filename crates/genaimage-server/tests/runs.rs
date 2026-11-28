@@ -346,7 +346,7 @@ async fn rerun_refuses_migrated_completed_run_even_with_indexed_manifest() {
     let path = &api.core.config().state_database;
     let db = rusqlite::Connection::open(path).unwrap();
     db.execute_batch(
-        "DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; 
+        "DROP TRIGGER runs_character_link_insert; DROP TRIGGER runs_character_link_update; DROP INDEX runs_linked_character_idx; ALTER TABLE runs DROP COLUMN linked_character_spec_version; ALTER TABLE runs DROP COLUMN linked_character_id; DROP TABLE character_output_decisions; DROP TABLE character_references; DROP TABLE character_spec_versions; DROP TABLE characters; DROP INDEX runs_batch_item_idx; ALTER TABLE runs DROP COLUMN batch_index; ALTER TABLE runs DROP COLUMN batch_id; DROP TABLE batch_items; DROP TABLE batches; 
         ALTER TABLE runs DROP COLUMN rerun_of;
         ALTER TABLE runs DROP COLUMN workflow_manifest_sha256;
         ALTER TABLE runs DROP COLUMN preflight_sha256; ALTER TABLE runs DROP COLUMN resolved_workflow_sha256;

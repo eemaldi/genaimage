@@ -319,6 +319,7 @@ async fn an_item_has_the_fingerprint_of_the_same_request_submitted_normally() {
         workflow_revision: Some(revision),
         checkpoint_profile: None,
         checkpoint_profile_revision: None,
+        character: None,
     };
     let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&normal).unwrap()));
     let key = super::batches::batch_item_key(&batch.record.id, 1);
@@ -332,6 +333,7 @@ async fn an_item_has_the_fingerprint_of_the_same_request_submitted_normally() {
     // Unpinned run requests serialise exactly as before batches existed.
     let unpinned = RunRequest {
         workflow_revision: None,
+        character: None,
         ..normal
     };
     assert_eq!(

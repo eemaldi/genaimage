@@ -47,6 +47,7 @@ async fn fake_comfyui_run_survives_repository_reopen_and_materialises_output() {
             checkpoint_profile: None,
             checkpoint_profile_revision: None,
             workflow_revision: None,
+            character: None,
             workflow: "text-to-image".to_owned(),
             preset: Some("fast".to_owned()),
             parameters: BTreeMap::from([
@@ -241,6 +242,7 @@ async fn image_input_is_uploaded_and_recorded_before_submission() {
             checkpoint_profile: None,
             checkpoint_profile_revision: None,
             workflow_revision: None,
+            character: None,
             workflow: "image-input".to_owned(),
             preset: None,
             parameters: BTreeMap::from([(
@@ -313,6 +315,7 @@ fn test_run_request(workflow: &str) -> RunRequest {
         checkpoint_profile: None,
         checkpoint_profile_revision: None,
         workflow_revision: None,
+        character: None,
         workflow: workflow.to_owned(),
         preset: Some("fast".to_owned()),
         parameters: BTreeMap::new(),

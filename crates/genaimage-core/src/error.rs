@@ -48,6 +48,28 @@ pub enum HarnessError {
     RunNotFound { run_id: String },
     #[error("batch '{batch_id}' was not found")]
     BatchNotFound { batch_id: String },
+    #[error("character '{character_id}' was not found")]
+    CharacterNotFound { character_id: String },
+    #[error("character '{character_id}' has no spec version {version}")]
+    CharacterSpecVersionNotFound { character_id: String, version: u32 },
+    #[error("character '{character_id}' has no reference '{reference_id}'")]
+    CharacterReferenceNotFound {
+        character_id: String,
+        reference_id: String,
+    },
+    #[error("upload '{upload_id}' was not found; upload the image before attaching it")]
+    CharacterUploadNotFound { upload_id: String },
+    /// Nothing was written. Re-read the character and base the new version on `latest`.
+    #[error("{}", spec_conflict_message(character_id, *based_on, *latest))]
+    CharacterSpecConflict {
+        character_id: String,
+        based_on: Option<u32>,
+        latest: Option<u32>,
+    },
+    #[error("{0}")]
+    CharacterConflict(String),
+    #[error("{0}")]
+    InvalidCharacterRequest(String),
     #[error("{0}")]
     InvalidBatchRequest(String),
     #[error("{0}")]
@@ -143,4 +165,18 @@ pub enum HarnessError {
     Url(#[from] url::ParseError),
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+}
+
+fn spec_conflict_message(character_id: &str, based_on: Option<u32>, latest: Option<u32>) -> String {
+    let describe = |version: Option<u32>| {
+        version.map_or_else(
+            || "no version".to_owned(),
+            |version| format!("version {version}"),
+        )
+    };
+    format!(
+        "The new spec of character '{character_id}' is based on {}, but its latest is {}; nothing was written. Review the latest version and base the new one on it.",
+        describe(based_on),
+        describe(latest)
+    )
 }

@@ -437,6 +437,7 @@ mod tests {
             rerun_of: None,
             checkpoint_profile: None,
             checkpoint_profile_revision: None,
+            character: None,
             prompt_id: run.prompt_id,
             client_id: run.client_id,
             workflow: WorkflowManifestRecord {

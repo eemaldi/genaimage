@@ -26,6 +26,7 @@ fn run_request() -> RunRequest {
         checkpoint_profile: None,
         checkpoint_profile_revision: None,
         workflow_revision: None,
+        character: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),
         parameters: BTreeMap::new(),

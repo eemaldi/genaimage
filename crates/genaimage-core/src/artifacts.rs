@@ -9,6 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    characters::CharacterLink,
     image_backend::{HistorySnapshot, ImageBackend},
     persistence::{AsyncRunRepository, OutputRecord, RunRecord},
     workflow::BoundWorkflow,
@@ -37,6 +38,9 @@ pub struct RunManifest {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerun_of: Option<String>,
+    /// The character spec version the run was submitted against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharacterLink>,
     pub prompt_id: String,
     pub client_id: String,
     pub workflow: WorkflowManifestRecord,
@@ -75,6 +79,7 @@ pub(crate) fn initialise_run_files(
     checkpoint_profile: Option<(&str, Option<&str>)>,
     parameters: &Value,
     inputs: &[InputFileRecord],
+    character: Option<&CharacterLink>,
 ) -> Result<(String, String)> {
     create_new_atomic(
         &output_dir.join("workflow-manifest.json"),
@@ -85,6 +90,7 @@ pub(crate) fn initialise_run_files(
         &output_dir.join("resolved-workflow.json"),
         &resolved_workflow,
     )?;
+    // Keys are absent without a profile or link, so unlinked runs keep their checksums.
     let mut preflight = serde_json::json!({
         "schema_version": 1,
         "workflow_manifest_path": loaded.manifest_path.display().to_string(),
@@ -98,6 +104,9 @@ pub(crate) fn initialise_run_files(
         if let Some(revision) = revision {
             preflight["checkpoint_profile_revision"] = revision.into();
         }
+    }
+    if let Some(link) = character {
+        preflight["character"] = serde_json::json!(link);
     }
     let bytes = serde_json::to_vec_pretty(&preflight)?;
     create_new_atomic(&output_dir.join("preflight.json"), &bytes)?;
@@ -163,6 +172,7 @@ pub(crate) async fn materialise_history(
         schema_version: RUN_MANIFEST_VERSION,
         run_id: run.id.clone(),
         rerun_of: run.rerun_of.clone(),
+        character: run.character.clone(),
         prompt_id: run.prompt_id.clone(),
         client_id: run.client_id.clone(),
         workflow: WorkflowManifestRecord {

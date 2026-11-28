@@ -169,6 +169,7 @@ async fn filters_replay_and_live_events_by_run_id() {
             node_warnings: None,
             batch_id: None,
             batch_index: None,
+            character: None,
             created_at: now,
             updated_at: now,
             completed_at: None,

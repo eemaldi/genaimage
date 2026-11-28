@@ -66,6 +66,7 @@ pub(super) async fn submit(
                         parameters: body.parameters,
                         version: body.version,
                         workflow_revision: body.workflow_revision,
+                        character: None,
                     },
                     &deadline,
                 )

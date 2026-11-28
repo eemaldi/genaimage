@@ -1,5 +1,6 @@
 mod annotations;
 mod batches;
+pub(crate) mod characters;
 mod media;
 
 pub use batches::{
@@ -17,9 +18,9 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, Transactio
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{workflow::GenerationMode, HarnessError, Result};
+use crate::{characters::CharacterLink, workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -109,6 +110,9 @@ pub struct RunRecord {
     pub batch_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_index: Option<u32>,
+    /// The character spec version the run was submitted against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharacterLink>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -324,8 +328,18 @@ impl RunRepository {
         self.guarded(|connection| insert_run(connection, run, false))
     }
 
-    fn insert_owned_submission(&self, run: &NewRun) -> Result<RunRecord> {
-        self.guarded(|connection| insert_run(connection, run, true))
+    fn insert_owned_submission(
+        &self,
+        run: &NewRun,
+        character: Option<&CharacterLink>,
+    ) -> Result<RunRecord> {
+        self.guarded(|connection| {
+            insert_run(connection, run, true)?;
+            if let Some(link) = character {
+                characters::link_run(connection, &run.id, link)?;
+            }
+            load_run(connection, &run.id)
+        })
     }
 
     fn uses_submission_lock(&self, id: &str) -> Result<bool> {
@@ -353,6 +367,7 @@ impl RunRepository {
         fingerprint: &str,
         run: &NewRun,
         batch: Option<&BatchLink>,
+        character: Option<&CharacterLink>,
     ) -> Result<SubmissionReservation> {
         self.guarded(|connection| {
             if let Some(run) = find_submission(connection, key, fingerprint)? {
@@ -364,6 +379,9 @@ impl RunRepository {
                     "UPDATE runs SET batch_id = ?2, batch_index = ?3 WHERE id = ?1",
                     params![run.id, link.batch_id, link.index],
                 )?;
+            }
+            if let Some(link) = character {
+                characters::link_run(connection, &run.id, link)?;
             }
             let run = load_run(connection, &run.id)?;
             connection.execute(
@@ -1065,6 +1083,100 @@ const MIGRATION_14: &str = r#"
     CREATE UNIQUE INDEX IF NOT EXISTS runs_batch_item_idx
         ON runs(batch_id, batch_index) WHERE batch_id IS NOT NULL;
 "#;
+const MIGRATION_15: &str = r#"
+    CREATE TABLE characters (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL CHECK (length(name) > 0),
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE character_spec_versions (
+        character_id TEXT NOT NULL REFERENCES characters(id),
+        version INTEGER NOT NULL CHECK (version >= 1),
+        based_on INTEGER,
+        spec_json TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (character_id, version),
+        CHECK ((version = 1 AND based_on IS NULL)
+            OR (version > 1 AND based_on IS NOT NULL AND based_on = version - 1))
+    ) WITHOUT ROWID;
+    CREATE TABLE character_references (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        character_id TEXT NOT NULL REFERENCES characters(id),
+        upload_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('sketch', 'reference', 'mask')),
+        note TEXT,
+        added_at TEXT NOT NULL,
+        removed_at TEXT
+    );
+    CREATE INDEX character_references_character_idx ON character_references(character_id, seq);
+    CREATE UNIQUE INDEX character_references_active_idx
+        ON character_references(character_id, upload_id, role) WHERE removed_at IS NULL;
+    CREATE TABLE character_output_decisions (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        character_id TEXT NOT NULL REFERENCES characters(id),
+        output_id TEXT NOT NULL,
+        spec_version INTEGER NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected', 'cleared')),
+        note TEXT,
+        decided_at TEXT NOT NULL,
+        FOREIGN KEY (character_id, spec_version)
+            REFERENCES character_spec_versions(character_id, version)
+    );
+    CREATE INDEX character_output_decisions_output_idx
+        ON character_output_decisions(character_id, output_id, seq);
+    CREATE INDEX character_output_decisions_character_idx
+        ON character_output_decisions(character_id, seq);
+    ALTER TABLE runs ADD COLUMN linked_character_id TEXT REFERENCES characters(id);
+    ALTER TABLE runs ADD COLUMN linked_character_spec_version INTEGER
+        CHECK (linked_character_spec_version IS NULL OR linked_character_spec_version >= 1);
+    CREATE INDEX runs_linked_character_idx ON runs(linked_character_id, created_at, id)
+        WHERE linked_character_id IS NOT NULL;
+
+    CREATE TRIGGER characters_no_update BEFORE UPDATE ON characters
+        BEGIN SELECT RAISE(ABORT, 'characters are append-only'); END;
+    CREATE TRIGGER characters_no_delete BEFORE DELETE ON characters
+        BEGIN SELECT RAISE(ABORT, 'characters are append-only'); END;
+    CREATE TRIGGER character_spec_versions_next_only BEFORE INSERT ON character_spec_versions
+        WHEN NEW.version IS NOT COALESCE(
+            (SELECT MAX(version) FROM character_spec_versions WHERE character_id = NEW.character_id), 0) + 1
+        BEGIN SELECT RAISE(ABORT, 'a character spec version must follow the latest one'); END;
+    CREATE TRIGGER character_spec_versions_no_update BEFORE UPDATE ON character_spec_versions
+        BEGIN SELECT RAISE(ABORT, 'character spec versions are append-only'); END;
+    CREATE TRIGGER character_spec_versions_no_delete BEFORE DELETE ON character_spec_versions
+        BEGIN SELECT RAISE(ABORT, 'character spec versions are append-only'); END;
+    CREATE TRIGGER character_output_decisions_no_update BEFORE UPDATE ON character_output_decisions
+        BEGIN SELECT RAISE(ABORT, 'character output decisions are append-only'); END;
+    CREATE TRIGGER character_output_decisions_no_delete BEFORE DELETE ON character_output_decisions
+        BEGIN SELECT RAISE(ABORT, 'character output decisions are append-only'); END;
+    CREATE TRIGGER character_references_no_delete BEFORE DELETE ON character_references
+        BEGIN SELECT RAISE(ABORT, 'character references are never deleted; remove them softly'); END;
+    CREATE TRIGGER character_references_remove_once BEFORE UPDATE ON character_references
+        WHEN OLD.removed_at IS NOT NULL OR NEW.removed_at IS NULL
+            OR NEW.seq IS NOT OLD.seq OR NEW.id IS NOT OLD.id
+            OR NEW.character_id IS NOT OLD.character_id OR NEW.upload_id IS NOT OLD.upload_id
+            OR NEW.role IS NOT OLD.role OR NEW.note IS NOT OLD.note
+            OR NEW.added_at IS NOT OLD.added_at
+        BEGIN SELECT RAISE(ABORT, 'a character reference can only be removed, once'); END;
+    CREATE TRIGGER runs_character_link_insert BEFORE INSERT ON runs
+        WHEN (NEW.linked_character_id IS NULL) <> (NEW.linked_character_spec_version IS NULL)
+            OR (NEW.linked_character_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM character_spec_versions
+                WHERE character_id = NEW.linked_character_id AND version = NEW.linked_character_spec_version))
+        BEGIN SELECT RAISE(ABORT, 'a run must link an existing character spec version'); END;
+    CREATE TRIGGER runs_character_link_update BEFORE UPDATE OF linked_character_id, linked_character_spec_version ON runs
+        WHEN (NEW.linked_character_id IS NULL) <> (NEW.linked_character_spec_version IS NULL)
+            OR (OLD.linked_character_id IS NOT NULL AND (
+                NEW.linked_character_id IS NOT OLD.linked_character_id
+                OR NEW.linked_character_spec_version IS NOT OLD.linked_character_spec_version))
+            OR (NEW.linked_character_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM character_spec_versions
+                WHERE character_id = NEW.linked_character_id AND version = NEW.linked_character_spec_version))
+        BEGIN SELECT RAISE(ABORT, 'a run must link an existing character spec version, and the link is fixed once set'); END;
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -1080,10 +1192,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_12,
     MIGRATION_13,
     MIGRATION_14,
+    MIGRATION_15,
 ];
 
 // The first version that must already contain each table before migration.
-const EXPECTED_TABLES: [(&str, i64, &str); 14] = [
+const EXPECTED_TABLES: [(&str, i64, &str); 18] = [
     ("runs", 0, "SELECT id, prompt_id, client_id, workflow_id, workflow_version, workflow_sha256, generation_mode, status, parameters_json, output_dir, manifest_path, error, created_at, updated_at, completed_at FROM runs LIMIT 0"),
     ("run_events", 2, "SELECT id, run_id, event_type, message, payload_json, created_at FROM run_events LIMIT 0"),
     ("outputs", 2, "SELECT id, run_id, node_id, kind, source_filename, source_subfolder, source_type, local_path, sha256, byte_size, created_at FROM outputs LIMIT 0"),
@@ -1097,10 +1210,18 @@ const EXPECTED_TABLES: [(&str, i64, &str); 14] = [
     ("assistant_tool_confirmations", 13, "SELECT id, conversation_id, tool_call_id, tool_name, proposed_arguments_json, json_schema, source_message_id, user_message_id, model_step, status, decision, effective_arguments_json, decision_reason, created_at, decided_at FROM assistant_tool_confirmations LIMIT 0"),
     ("batches", 14, "SELECT id, idempotency_key, fingerprint, workflow_id, workflow_revision, request_json, item_count, state, created_at, updated_at FROM batches LIMIT 0"),
     ("batch_items", 14, "SELECT batch_id, item_index, parameters_json, state, error FROM batch_items LIMIT 0"),
+    ("characters", 15, "SELECT seq, id, name, created_at FROM characters LIMIT 0"),
+    ("character_spec_versions", 15, "SELECT character_id, version, based_on, spec_json, note, created_at FROM character_spec_versions LIMIT 0"),
+    ("character_references", 15, "SELECT seq, id, character_id, upload_id, role, note, added_at, removed_at FROM character_references LIMIT 0"),
+    ("character_output_decisions", 15, "SELECT seq, id, character_id, output_id, spec_version, decision, note, decided_at FROM character_output_decisions LIMIT 0"),
     ("assistant_tool_call_audit", 13, "SELECT id, conversation_id, confirmation_id, tool_call_id, tool_name, proposed_arguments_json, validation_outcome, decision, invocation_ok, created_at FROM assistant_tool_call_audit LIMIT 0"),
 ];
 
 const RUN_COLUMNS_BY_VERSION: &[(i64, &str)] = &[
+    (
+        15,
+        "SELECT linked_character_id, linked_character_spec_version FROM runs LIMIT 0",
+    ),
     (14, "SELECT batch_id, batch_index FROM runs LIMIT 0"),
     (10, "SELECT resolved_workflow_sha256 FROM runs LIMIT 0"),
     (
@@ -1325,8 +1446,12 @@ impl AsyncRunRepository {
         self.call(move |repo| repo.insert(&run)).await
     }
 
-    pub(crate) async fn insert_owned_submission(&self, run: NewRun) -> Result<RunRecord> {
-        self.call(move |repo| repo.insert_owned_submission(&run))
+    pub(crate) async fn insert_owned_submission(
+        &self,
+        run: NewRun,
+        character: Option<CharacterLink>,
+    ) -> Result<RunRecord> {
+        self.call(move |repo| repo.insert_owned_submission(&run, character.as_ref()))
             .await
     }
 
@@ -1382,9 +1507,12 @@ impl AsyncRunRepository {
         fingerprint: String,
         run: NewRun,
         batch: Option<BatchLink>,
+        character: Option<CharacterLink>,
     ) -> Result<SubmissionReservation> {
-        self.call(move |repo| repo.reserve_submission(&key, &fingerprint, &run, batch.as_ref()))
-            .await
+        self.call(move |repo| {
+            repo.reserve_submission(&key, &fingerprint, &run, batch.as_ref(), character.as_ref())
+        })
+        .await
     }
 
     pub async fn get(&self, run_id: &str) -> Result<RunRecord> {
@@ -1556,6 +1684,20 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         error: row.get("error")?,
         batch_id: row.get("batch_id")?,
         batch_index: row.get("batch_index")?,
+        character: match (
+            row.get::<_, Option<String>>("linked_character_id")?,
+            row.get::<_, Option<u32>>("linked_character_spec_version")?,
+        ) {
+            (Some(id), Some(spec_version)) => Some(CharacterLink { id, spec_version }),
+            (None, None) => None,
+            _ => {
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                    HarnessError::Database(
+                        "a run has half of a character link; its character id and spec version must be set together".into(),
+                    ),
+                )))
+            }
+        },
         node_warnings: row
             .get::<_, Option<String>>("node_warnings_json")?
             .map(|value| {
@@ -1728,7 +1870,7 @@ mod submission_tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, SCHEMA_VERSION);
         connection
             .prepare("SELECT id, idempotency_key, fingerprint, workflow_id, workflow_revision, request_json, item_count, state FROM batches")
             .unwrap();
@@ -1775,10 +1917,10 @@ mod submission_tests {
             index: 0,
         };
         repository
-            .reserve_submission("item-a", "fp", &run("a"), Some(&link()))
+            .reserve_submission("item-a", "fp", &run("a"), Some(&link()), None)
             .unwrap();
         assert!(repository
-            .reserve_submission("item-b", "fp", &run("b"), Some(&link()))
+            .reserve_submission("item-b", "fp", &run("b"), Some(&link()), None)
             .is_err());
         assert_eq!(
             repository.get("a").unwrap().batch_id.as_deref(),
@@ -1796,6 +1938,216 @@ mod submission_tests {
             2,
             "run-old is still listed"
         );
+    }
+
+    #[test]
+    fn migration_from_version_14_adds_characters_and_leaves_runs_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        for migration in MIGRATIONS.iter().take(14) {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO runs (id, prompt_id, client_id, workflow_id, workflow_version,
+                    workflow_sha256, generation_mode, status, parameters_json, output_dir,
+                    created_at, updated_at, error)
+                 VALUES ('run-old', 'prompt-old', 'client', 'wf', '1', 'hash', 'generic',
+                    'completed', '{\"seed\":18446744073709551615}', 'runs/old',
+                    '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:01+00:00', 'kept')",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", 14_i64)
+            .unwrap();
+        drop(connection);
+        assert!(database_matches_settings(&path, "w", "b", "e").is_ok());
+        let before = || {
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT id, status, parameters_json, error, created_at FROM runs",
+                    [],
+                    |row| {
+                        (0..5)
+                            .map(|index| row.get::<_, String>(index))
+                            .collect::<std::result::Result<Vec<_>, _>>()
+                    },
+                )
+                .unwrap()
+        };
+        let original = before();
+
+        let repository = RunRepository::open(&path).unwrap();
+        assert_eq!(before(), original);
+        let old = repository.get("run-old").unwrap();
+        assert_eq!(old.character, None);
+        assert_eq!(old.error.as_deref(), Some("kept"));
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 15);
+        assert_eq!(
+            SCHEMA_VERSION, 15,
+            "add an upgrade test for each new migration"
+        );
+
+        // The upgraded database accepts a character and a linked run.
+        let (character, _) = repository.create_character("Keeper", None).unwrap();
+        assert!(repository
+            .create_spec_version(
+                &character.id,
+                None,
+                &crate::characters::CharacterSpec {
+                    summary: "v1".into(),
+                    elements: vec![],
+                    palette: vec![],
+                    views: vec![],
+                    style_notes: None,
+                },
+                None,
+            )
+            .is_ok());
+        let link = CharacterLink {
+            id: character.id.clone(),
+            spec_version: 1,
+        };
+        let run = NewRun {
+            id: "run-new".into(),
+            prompt_id: "prompt-new".into(),
+            client_id: "client".into(),
+            workflow_id: "wf".into(),
+            workflow_version: "1".into(),
+            workflow_sha256: "hash".into(),
+            workflow_manifest_sha256: None,
+            rerun_of: None,
+            generation_mode: GenerationMode::Generic,
+            status: RunStatus::Submitting,
+            parameters: serde_json::json!({}),
+            output_dir: "runs/new".into(),
+        };
+        let linked = repository
+            .insert_owned_submission(&run, Some(&link))
+            .unwrap();
+        assert_eq!(linked.character, Some(link));
+        assert_eq!(repository.get("run-old").unwrap().character, None);
+    }
+
+    #[test]
+    fn the_database_itself_refuses_to_rewrite_character_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let repository = RunRepository::open(&path).unwrap();
+        let (character, _) = repository
+            .create_character(
+                "Keeper",
+                Some((
+                    &crate::characters::CharacterSpec {
+                        summary: "v1".into(),
+                        elements: vec![],
+                        palette: vec![],
+                        views: vec![],
+                        style_notes: None,
+                    },
+                    None,
+                )),
+            )
+            .unwrap();
+        let reference = repository
+            .add_reference(
+                &character.id,
+                "sha256:abc",
+                crate::characters::ReferenceRole::Sketch,
+                None,
+            )
+            .unwrap();
+        let link = CharacterLink {
+            id: character.id.clone(),
+            spec_version: 1,
+        };
+        repository
+            .insert_owned_submission(
+                &NewRun {
+                    id: "run".into(),
+                    prompt_id: "prompt".into(),
+                    client_id: "client".into(),
+                    workflow_id: "wf".into(),
+                    workflow_version: "1".into(),
+                    workflow_sha256: "hash".into(),
+                    workflow_manifest_sha256: None,
+                    rerun_of: None,
+                    generation_mode: GenerationMode::Generic,
+                    status: RunStatus::Completed,
+                    parameters: serde_json::json!({}),
+                    output_dir: "runs/run".into(),
+                },
+                Some(&link),
+            )
+            .unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+        let refused = [
+            "UPDATE characters SET name = 'Other'",
+            "DELETE FROM characters",
+            "UPDATE character_spec_versions SET spec_json = '{}'",
+            "DELETE FROM character_spec_versions",
+            "INSERT INTO character_spec_versions (character_id, version, based_on, spec_json, created_at)
+                SELECT character_id, 3, 2, spec_json, created_at FROM character_spec_versions",
+            "INSERT INTO character_spec_versions (character_id, version, based_on, spec_json, created_at)
+                SELECT character_id, 2, NULL, spec_json, created_at FROM character_spec_versions",
+            "DELETE FROM character_references",
+            "UPDATE character_references SET note = 'edited'",
+            "UPDATE character_references SET removed_at = NULL",
+            "UPDATE runs SET linked_character_id = NULL, linked_character_spec_version = NULL",
+            "UPDATE runs SET linked_character_spec_version = 2",
+            "INSERT INTO character_output_decisions (id, character_id, output_id, spec_version, decision, decided_at)
+                SELECT 'd', character_id, 'run:1', 2, 'approved', created_at FROM character_spec_versions",
+        ];
+        for statement in refused {
+            assert!(
+                connection.execute(statement, []).is_err(),
+                "accepted: {statement}"
+            );
+        }
+        connection
+            .execute(
+                "INSERT INTO character_output_decisions (id, character_id, output_id, spec_version, decision, decided_at)
+                 SELECT 'd', character_id, 'run:1', 1, 'approved', created_at FROM character_spec_versions",
+                [],
+            )
+            .unwrap();
+        for statement in [
+            "UPDATE character_output_decisions SET decision = 'rejected'",
+            "DELETE FROM character_output_decisions",
+        ] {
+            assert!(
+                connection.execute(statement, []).is_err(),
+                "accepted: {statement}"
+            );
+        }
+        // The one permitted change: a reference is removed, once.
+        connection
+            .execute(
+                "UPDATE character_references SET removed_at = '2026-01-01T00:00:00+00:00'",
+                [],
+            )
+            .unwrap();
+        assert!(connection
+            .execute(
+                "UPDATE character_references SET removed_at = '2026-02-02T00:00:00+00:00'",
+                [],
+            )
+            .is_err());
+        assert!(repository
+            .remove_reference(&character.id, &reference.id)
+            .unwrap()
+            .removed_at
+            .is_some());
     }
 
     #[test]
@@ -1825,6 +2177,7 @@ mod submission_tests {
                         parameters: serde_json::json!({}),
                         output_dir: format!("runs/{id}"),
                     },
+                    None,
                     None,
                 )
                 .unwrap()

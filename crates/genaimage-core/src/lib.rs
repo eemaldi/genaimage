@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod assistant;
 pub mod batch;
+pub mod characters;
 pub mod checkpoint_profiles;
 pub mod config;
 pub mod doctor;
@@ -28,6 +29,7 @@ pub mod workflow_import;
 
 pub use assistant::{OutputAnnotation, VisionReviewService};
 pub use async_trait::async_trait;
+pub use characters::{CharacterLink, CharacterService};
 pub use config::{HarnessConfig, ResolvedConfig};
 pub use error::{HarnessError, Result};
 pub use event::{
