@@ -1,0 +1,24 @@
+id = "concept-art"
+title = "Painterly concept art"
+description = "Loose, unfinished character concept art from mandatory and flexible spec elements."
+text = "Painterly, unfinished character concept art of {{subject}}. {{mandatory}} {{flexible}} {{palette}} {{view}}, loose brushwork, visible strokes, sketchy edges, concept study, not a finished render."
+
+[variables.subject]
+description = "Who or what the character is"
+required = true
+
+[variables.mandatory]
+description = "Spec elements that must appear, such as costume, silhouette or prop"
+required = true
+
+[variables.flexible]
+description = "Optional spec elements the model may vary"
+default = ""
+
+[variables.palette]
+description = "Optional palette phrase, for example 'in muted earth tones'"
+default = ""
+
+[variables.view]
+description = "Framing of the figure"
+default = "three-quarter view"

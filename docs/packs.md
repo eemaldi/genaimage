@@ -225,6 +225,57 @@ sends no revision, as it has no review step.
 name, the `{pack, id, revision, label}` of each profile that lists it (an empty list when
 none does) and a `profile_note`.
 
+## Character-art pack
+
+`workflows/packs/character-art` is the bundled guided character-art pack. It
+uses only core ComfyUI nodes, so the doctor and `GET /api/v1/packs/character-art/validate`
+need no custom node. The checkpoint is never chosen for you: each workflow
+requires an exact checkpoint file name, and the pack declares no model file.
+
+| Workflow | Purpose | Image inputs (chosen by the user) |
+| --- | --- | --- |
+| `character-portrait` | Text-to-image character art on a portrait canvas. | None |
+| `character-sketch-to-image` | Paints over your sketch; `denoise` (default 0.6) sets how far the result may move from it. | `sketch` |
+| `character-inpaint` | Repaints the white areas of `mask_image` over `source_image`. Use `denoise` 1.0, which is recommended: this method fills the masked area before sampling, and lower values can leave grey residue. | `source_image`, `mask_image` |
+| `character-turnaround` | Front, side and back views on a wide canvas. | None |
+
+Layout presets (`preset_info` kind `layout`) set the canvas. `character-portrait`
+offers `portrait-2x3` (Portrait 2:3, 832 by 1248), `portrait-3x4` (Portrait 3:4,
+864 by 1152), `square` (Square 1:1, 1024 by 1024), and the Stable Diffusion 1.5
+layouts `portrait-2x3-sd15` (Portrait 2:3 (SD 1.5), 512 by 768) and
+`portrait-3x4-sd15` (Portrait 3:4 (SD 1.5), 576 by 768). `character-turnaround`
+offers `turnaround-3-view` (Turnaround 2:1, 1536 by 768) and `turnaround-3-view-sd15`
+(Turnaround 2:1 (SD 1.5), 1024 by 512). `character-sketch-to-image` and
+`character-inpaint` take their canvas from the image.
+
+Steps, cfg, seed, sampler, scheduler, filename prefix and the canvas size are
+advanced controls. Each workflow's negative prompt discourages photorealism,
+glossy rendering, and text or watermarks, so the default look stays painterly
+and unfinished.
+
+Checkpoint profiles in `checkpoints.toml` apply to exact file names only:
+
+| Profile | Checkpoint | Values |
+| --- | --- | --- |
+| `sdxl-base` | `sd_xl_base_1.0.safetensors` | 30 steps, cfg 7.0, `dpmpp_2m`, `karras` |
+| `sd15` | `v1-5-pruned-emaonly.safetensors` | 25 steps, cfg 7.5, `dpmpp_2m`, `karras` |
+
+Stable Diffusion 1.5 was trained at 512 pixels, so pick a layout labelled
+(SD 1.5) with the `sd15` profile; the SDXL-sized layouts give weaker results with
+it. A profile never selects a layout, so choose one explicitly. Profiles never set
+the seed, an image or the checkpoint.
+
+The pack declares two prompt templates in `templates/`:
+
+- `concept-art` (`pack:character-art:templates/concept-art.toml`) takes `subject`
+  and `mandatory` (both required), and `flexible`, `palette` and `view` (optional)
+  to assemble painterly, unfinished concept-art wording.
+- `turnaround` (`pack:character-art:templates/turnaround.toml`) takes `subject`
+  (required) and `detail` (optional), and adds the turnaround sheet wording.
+
+The optional `palette` variable takes a phrase, such as `in muted earth tones`;
+left empty, it adds nothing to the prompt.
+
 ## API and CLI
 
 | Surface | Result |

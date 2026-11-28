@@ -1,0 +1,157 @@
+{
+  "schema_version": 2,
+  "id": "character-inpaint",
+  "version": "1.0.0",
+  "title": "Localised revision",
+  "workflow": "api-workflow.json",
+  "description": "Repaint only the white areas of a mask drawn over your image. Black areas are kept.",
+  "tags": ["character-art", "inpaint"],
+  "category": "image generation",
+  "parameters": {
+    "checkpoint": {
+      "node": "4",
+      "input": "ckpt_name",
+      "kind": "string",
+      "required": true,
+      "widget": "text",
+      "group": "Model",
+      "description": "Exact checkpoint file name as listed by the server. There is no default: choose a checkpoint, or a checkpoint profile that lists it."
+    },
+    "source_image": {
+      "node": "10",
+      "input": "image",
+      "kind": "image_upload",
+      "required": true,
+      "widget": "file",
+      "group": "Input",
+      "description": "The image to revise. Choose it explicitly; there is no default image."
+    },
+    "mask_image": {
+      "node": "12",
+      "input": "image",
+      "kind": "image_upload",
+      "required": true,
+      "widget": "file",
+      "group": "Input",
+      "description": "Mask the same size as the source: white repaints, black keeps. Choose it explicitly; there is no default mask."
+    },
+    "prompt": {
+      "node": "6",
+      "input": "text",
+      "kind": "string",
+      "required": true,
+      "widget": "textarea",
+      "group": "Prompt",
+      "description": "Approved prompt for the masked area."
+    },
+    "negative_prompt": {
+      "node": "7",
+      "input": "text",
+      "kind": "string",
+      "required": false,
+      "default": "photorealistic, photograph, glossy render, polished finish, plastic skin, text, watermark, signature, logo, frame, border",
+      "widget": "textarea",
+      "group": "Prompt",
+      "description": "Exclusions. The default discourages photorealism, glossy rendering, and text or watermarks."
+    },
+    "denoise": {
+      "node": "3",
+      "input": "denoise",
+      "kind": "number",
+      "required": true,
+      "default": 1.0,
+      "minimum": 0,
+      "maximum": 1,
+      "widget": "slider",
+      "step": 0.05,
+      "group": "Input",
+      "description": "Use 1.0, which is recommended: this inpaint method fills the masked area before sampling, and lower values can leave grey residue."
+    },
+    "grow_mask_by": {
+      "node": "11",
+      "input": "grow_mask_by",
+      "kind": "integer",
+      "required": true,
+      "default": 6,
+      "minimum": 0,
+      "maximum": 64,
+      "widget": "slider",
+      "step": 1,
+      "group": "Mask",
+      "advanced": true,
+      "description": "Pixels by which the mask grows, so the edit blends into its surroundings."
+    },
+    "seed": {
+      "node": "3",
+      "input": "seed",
+      "kind": "seed",
+      "required": true,
+      "default": 42,
+      "widget": "number",
+      "step": 1,
+      "group": "Sampler",
+      "advanced": true,
+      "description": "Deterministic sampler seed."
+    },
+    "steps": {
+      "node": "3",
+      "input": "steps",
+      "kind": "integer",
+      "required": true,
+      "default": 28,
+      "minimum": 1,
+      "maximum": 150,
+      "widget": "slider",
+      "step": 1,
+      "group": "Sampler",
+      "advanced": true
+    },
+    "cfg": {
+      "node": "3",
+      "input": "cfg",
+      "kind": "number",
+      "required": true,
+      "default": 7.0,
+      "minimum": 1,
+      "maximum": 20,
+      "widget": "slider",
+      "step": 0.5,
+      "group": "Sampler",
+      "advanced": true
+    },
+    "sampler_name": {
+      "node": "3",
+      "input": "sampler_name",
+      "kind": "string",
+      "required": true,
+      "default": "dpmpp_2m",
+      "options": ["dpmpp_2m", "euler", "euler_ancestral", "dpmpp_sde"],
+      "widget": "select",
+      "group": "Sampler",
+      "advanced": true
+    },
+    "scheduler": {
+      "node": "3",
+      "input": "scheduler",
+      "kind": "string",
+      "required": true,
+      "default": "karras",
+      "options": ["karras", "normal", "exponential"],
+      "widget": "select",
+      "group": "Sampler",
+      "advanced": true
+    },
+    "filename_prefix": {
+      "node": "9",
+      "input": "filename_prefix",
+      "kind": "string",
+      "required": false,
+      "default": "character-art-inpaint",
+      "group": "Output",
+      "advanced": true
+    }
+  },
+  "outputs": [
+    {"node": "9", "kind": "image"}
+  ]
+}

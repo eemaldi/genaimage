@@ -1,0 +1,154 @@
+{
+  "schema_version": 2,
+  "id": "character-portrait",
+  "version": "1.0.0",
+  "title": "Character portrait",
+  "workflow": "api-workflow.json",
+  "description": "Painterly, unfinished character concept art from a text prompt on a portrait canvas.",
+  "tags": ["character-art", "text-to-image"],
+  "category": "image generation",
+  "parameters": {
+    "checkpoint": {
+      "node": "4",
+      "input": "ckpt_name",
+      "kind": "string",
+      "required": true,
+      "widget": "text",
+      "group": "Model",
+      "description": "Exact checkpoint file name as listed by the server. There is no default: choose a checkpoint, or a checkpoint profile that lists it."
+    },
+    "prompt": {
+      "node": "6",
+      "input": "text",
+      "kind": "string",
+      "required": true,
+      "widget": "textarea",
+      "group": "Prompt",
+      "description": "Approved positive prompt. Build it with the concept-art template or write it directly."
+    },
+    "negative_prompt": {
+      "node": "7",
+      "input": "text",
+      "kind": "string",
+      "required": false,
+      "default": "photorealistic, photograph, glossy render, polished finish, plastic skin, text, watermark, signature, logo, frame, border",
+      "widget": "textarea",
+      "group": "Prompt",
+      "description": "Exclusions. The default discourages photorealism, glossy rendering, and text or watermarks."
+    },
+    "width": {
+      "node": "5",
+      "input": "width",
+      "kind": "integer",
+      "required": true,
+      "default": 832,
+      "minimum": 64,
+      "maximum": 4096,
+      "widget": "number",
+      "step": 8,
+      "group": "Canvas",
+      "advanced": true,
+      "description": "Canvas width in pixels, a multiple of 8. The layout presets set it."
+    },
+    "height": {
+      "node": "5",
+      "input": "height",
+      "kind": "integer",
+      "required": true,
+      "default": 1248,
+      "minimum": 64,
+      "maximum": 4096,
+      "widget": "number",
+      "step": 8,
+      "group": "Canvas",
+      "advanced": true,
+      "description": "Canvas height in pixels, a multiple of 8. The layout presets set it."
+    },
+    "seed": {
+      "node": "3",
+      "input": "seed",
+      "kind": "seed",
+      "required": true,
+      "default": 42,
+      "widget": "number",
+      "step": 1,
+      "group": "Sampler",
+      "advanced": true,
+      "description": "Deterministic sampler seed."
+    },
+    "steps": {
+      "node": "3",
+      "input": "steps",
+      "kind": "integer",
+      "required": true,
+      "default": 28,
+      "minimum": 1,
+      "maximum": 150,
+      "widget": "slider",
+      "step": 1,
+      "group": "Sampler",
+      "advanced": true
+    },
+    "cfg": {
+      "node": "3",
+      "input": "cfg",
+      "kind": "number",
+      "required": true,
+      "default": 7.0,
+      "minimum": 1,
+      "maximum": 20,
+      "widget": "slider",
+      "step": 0.5,
+      "group": "Sampler",
+      "advanced": true
+    },
+    "sampler_name": {
+      "node": "3",
+      "input": "sampler_name",
+      "kind": "string",
+      "required": true,
+      "default": "dpmpp_2m",
+      "options": ["dpmpp_2m", "euler", "euler_ancestral", "dpmpp_sde"],
+      "widget": "select",
+      "group": "Sampler",
+      "advanced": true
+    },
+    "scheduler": {
+      "node": "3",
+      "input": "scheduler",
+      "kind": "string",
+      "required": true,
+      "default": "karras",
+      "options": ["karras", "normal", "exponential"],
+      "widget": "select",
+      "group": "Sampler",
+      "advanced": true
+    },
+    "filename_prefix": {
+      "node": "9",
+      "input": "filename_prefix",
+      "kind": "string",
+      "required": false,
+      "default": "character-art-portrait",
+      "group": "Output",
+      "advanced": true
+    }
+  },
+  "presets": {
+    "portrait-2x3": {"width": 832, "height": 1248},
+    "portrait-3x4": {"width": 864, "height": 1152},
+    "square": {"width": 1024, "height": 1024},
+    "portrait-2x3-sd15": {"width": 512, "height": 768},
+    "portrait-3x4-sd15": {"width": 576, "height": 768}
+  },
+  "preset_info": {
+    "portrait-2x3": {"label": "Portrait 2:3", "description": "Tall canvas for a head and shoulders or a full figure, 832 by 1248 pixels.", "kind": "layout"},
+    "portrait-3x4": {"label": "Portrait 3:4", "description": "Slightly wider portrait canvas, 864 by 1152 pixels.", "kind": "layout"},
+    "square": {"label": "Square 1:1", "description": "Square canvas, 1024 by 1024 pixels.", "kind": "layout"},
+    "portrait-2x3-sd15": {"label": "Portrait 2:3 (SD 1.5)", "description": "Tall canvas sized for Stable Diffusion 1.5, 512 by 768 pixels.", "kind": "layout"},
+    "portrait-3x4-sd15": {"label": "Portrait 3:4 (SD 1.5)", "description": "Portrait canvas sized for Stable Diffusion 1.5, 576 by 768 pixels.", "kind": "layout"}
+  },
+  "outputs": [
+    {"node": "9", "kind": "image"}
+  ]
+}

@@ -1,0 +1,23 @@
+[[profiles]]
+id = "sdxl-base"
+label = "SDXL base 1.0"
+checkpoints = ["sd_xl_base_1.0.safetensors"]
+note = "Settings for Stable Diffusion XL base 1.0. The default layouts in this pack are sized for SDXL."
+
+[profiles.values]
+steps = 30
+cfg = 7.0
+sampler_name = "dpmpp_2m"
+scheduler = "karras"
+
+[[profiles]]
+id = "sd15"
+label = "Stable Diffusion 1.5"
+checkpoints = ["v1-5-pruned-emaonly.safetensors"]
+note = "Settings for Stable Diffusion 1.5, which was trained at 512 pixels. Choose a layout labelled (SD 1.5) with it, such as Portrait 2:3 (SD 1.5); the profile does not pick a layout."
+
+[profiles.values]
+steps = 25
+cfg = 7.5
+sampler_name = "dpmpp_2m"
+scheduler = "karras"

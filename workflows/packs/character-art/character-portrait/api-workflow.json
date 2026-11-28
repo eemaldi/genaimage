@@ -1,0 +1,51 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 42,
+      "steps": 28,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["4", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["5", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": {"title": "Sampler"}
+  },
+  "4": {
+    "inputs": {"ckpt_name": "replace-with-local-model.safetensors"},
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Checkpoint"}
+  },
+  "5": {
+    "inputs": {"width": 832, "height": 1248, "batch_size": 1},
+    "class_type": "EmptyLatentImage",
+    "_meta": {"title": "Canvas"}
+  },
+  "6": {
+    "inputs": {"text": "replace with an approved prompt", "clip": ["4", 1]},
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Prompt"}
+  },
+  "7": {
+    "inputs": {
+      "text": "photorealistic, photograph, glossy render, polished finish, plastic skin, text, watermark, signature, logo, frame, border",
+      "clip": ["4", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"}
+  },
+  "8": {
+    "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+    "class_type": "VAEDecode",
+    "_meta": {"title": "Decode"}
+  },
+  "9": {
+    "inputs": {"filename_prefix": "character-art-portrait", "images": ["8", 0]},
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save image"}
+  }
+}

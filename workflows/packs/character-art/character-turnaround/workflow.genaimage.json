@@ -1,0 +1,148 @@
+{
+  "schema_version": 2,
+  "id": "character-turnaround",
+  "version": "1.0.0",
+  "title": "Character turnaround sheet",
+  "workflow": "api-workflow.json",
+  "description": "Front, side and back views of one character side by side on a wide canvas, from a text prompt.",
+  "tags": ["character-art", "text-to-image", "turnaround"],
+  "category": "image generation",
+  "parameters": {
+    "checkpoint": {
+      "node": "4",
+      "input": "ckpt_name",
+      "kind": "string",
+      "required": true,
+      "widget": "text",
+      "group": "Model",
+      "description": "Exact checkpoint file name as listed by the server. There is no default: choose a checkpoint, or a checkpoint profile that lists it."
+    },
+    "prompt": {
+      "node": "6",
+      "input": "text",
+      "kind": "string",
+      "required": true,
+      "widget": "textarea",
+      "group": "Prompt",
+      "description": "Approved prompt. Build it with the turnaround template or write it directly."
+    },
+    "negative_prompt": {
+      "node": "7",
+      "input": "text",
+      "kind": "string",
+      "required": false,
+      "default": "photorealistic, photograph, glossy render, polished finish, plastic skin, text, watermark, signature, logo, frame, border, overlapping figures, collage",
+      "widget": "textarea",
+      "group": "Prompt",
+      "description": "Exclusions. The default discourages photorealism, glossy rendering, text, and overlapping views."
+    },
+    "width": {
+      "node": "5",
+      "input": "width",
+      "kind": "integer",
+      "required": true,
+      "default": 1536,
+      "minimum": 64,
+      "maximum": 4096,
+      "widget": "number",
+      "step": 8,
+      "group": "Canvas",
+      "advanced": true,
+      "description": "Canvas width in pixels, a multiple of 8. The layout preset sets it."
+    },
+    "height": {
+      "node": "5",
+      "input": "height",
+      "kind": "integer",
+      "required": true,
+      "default": 768,
+      "minimum": 64,
+      "maximum": 4096,
+      "widget": "number",
+      "step": 8,
+      "group": "Canvas",
+      "advanced": true,
+      "description": "Canvas height in pixels, a multiple of 8. The layout preset sets it."
+    },
+    "seed": {
+      "node": "3",
+      "input": "seed",
+      "kind": "seed",
+      "required": true,
+      "default": 42,
+      "widget": "number",
+      "step": 1,
+      "group": "Sampler",
+      "advanced": true,
+      "description": "Deterministic sampler seed."
+    },
+    "steps": {
+      "node": "3",
+      "input": "steps",
+      "kind": "integer",
+      "required": true,
+      "default": 28,
+      "minimum": 1,
+      "maximum": 150,
+      "widget": "slider",
+      "step": 1,
+      "group": "Sampler",
+      "advanced": true
+    },
+    "cfg": {
+      "node": "3",
+      "input": "cfg",
+      "kind": "number",
+      "required": true,
+      "default": 7.0,
+      "minimum": 1,
+      "maximum": 20,
+      "widget": "slider",
+      "step": 0.5,
+      "group": "Sampler",
+      "advanced": true
+    },
+    "sampler_name": {
+      "node": "3",
+      "input": "sampler_name",
+      "kind": "string",
+      "required": true,
+      "default": "dpmpp_2m",
+      "options": ["dpmpp_2m", "euler", "euler_ancestral", "dpmpp_sde"],
+      "widget": "select",
+      "group": "Sampler",
+      "advanced": true
+    },
+    "scheduler": {
+      "node": "3",
+      "input": "scheduler",
+      "kind": "string",
+      "required": true,
+      "default": "karras",
+      "options": ["karras", "normal", "exponential"],
+      "widget": "select",
+      "group": "Sampler",
+      "advanced": true
+    },
+    "filename_prefix": {
+      "node": "9",
+      "input": "filename_prefix",
+      "kind": "string",
+      "required": false,
+      "default": "character-art-turnaround",
+      "group": "Output",
+      "advanced": true
+    }
+  },
+  "presets": {
+    "turnaround-3-view": {"width": 1536, "height": 768},
+    "turnaround-3-view-sd15": {"width": 1024, "height": 512}
+  },
+  "preset_info": {
+    "turnaround-3-view": {"label": "Turnaround 2:1", "description": "Wide canvas for three views side by side, 1536 by 768 pixels.", "kind": "layout"},
+    "turnaround-3-view-sd15": {"label": "Turnaround 2:1 (SD 1.5)", "description": "Wide canvas for three views side by side, sized for Stable Diffusion 1.5, 1024 by 512 pixels.", "kind": "layout"}
+  },
+  "outputs": [
+    {"node": "9", "kind": "image"}
+  ]
+}

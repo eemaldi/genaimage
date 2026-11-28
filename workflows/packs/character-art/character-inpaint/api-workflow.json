@@ -1,0 +1,71 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 42,
+      "steps": 28,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["4", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["11", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": {"title": "Sampler"}
+  },
+  "4": {
+    "inputs": {"ckpt_name": "replace-with-local-model.safetensors"},
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Checkpoint"}
+  },
+  "6": {
+    "inputs": {"text": "replace with an approved prompt", "clip": ["4", 1]},
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Prompt"}
+  },
+  "7": {
+    "inputs": {
+      "text": "photorealistic, photograph, glossy render, polished finish, plastic skin, text, watermark, signature, logo, frame, border",
+      "clip": ["4", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative prompt"}
+  },
+  "8": {
+    "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+    "class_type": "VAEDecode",
+    "_meta": {"title": "Decode"}
+  },
+  "9": {
+    "inputs": {"filename_prefix": "character-art-inpaint", "images": ["8", 0]},
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save image"}
+  },
+  "10": {
+    "inputs": {"image": "replace-with-upload.png"},
+    "class_type": "LoadImage",
+    "_meta": {"title": "Source image"}
+  },
+  "11": {
+    "inputs": {
+      "pixels": ["10", 0],
+      "vae": ["4", 2],
+      "mask": ["13", 0],
+      "grow_mask_by": 6
+    },
+    "class_type": "VAEEncodeForInpaint",
+    "_meta": {"title": "Encode for inpaint"}
+  },
+  "12": {
+    "inputs": {"image": "replace-with-upload.png"},
+    "class_type": "LoadImage",
+    "_meta": {"title": "Mask image"}
+  },
+  "13": {
+    "inputs": {"image": ["12", 0], "channel": "red"},
+    "class_type": "ImageToMask",
+    "_meta": {"title": "Mask from image"}
+  }
+}
