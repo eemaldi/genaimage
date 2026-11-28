@@ -10,6 +10,7 @@ superseding decisions where appropriate.
 | --- | --- | --- |
 | [0001](0001-target-architecture.md) | Accepted | Target architecture |
 | [0002](0002-comfyui-image.md) | Accepted | ComfyUI container image for Docker Compose |
+| [0003](0003-runtime-plugin-model.md) | Proposed | Runtime plugin model: defer; external processes over JSON-RPC preferred over WASM |
 
 ## Template
 

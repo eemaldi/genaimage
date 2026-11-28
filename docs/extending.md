@@ -5,9 +5,10 @@ one of the core traits and is registered in an `ExtensionRegistry` by the
 binary or embedding application. There is no runtime plugin loading, no
 dynamic library loading and no hot-loading of code. The architecture is set out
 in [ADR 0001](adr/0001-target-architecture.md) and
-[architecture](architecture.md#providers-extensions-and-deployment). A runtime
-plugin model is only a planned evaluation ([#74](https://github.com/eemaldi/genaimage/issues/74));
-it is not decided and nothing here depends on it.
+[architecture](architecture.md#providers-extensions-and-deployment). Runtime
+plugins were evaluated in [ADR 0003](adr/0003-runtime-plugin-model.md) (status: Proposed): adoption is
+deferred, and external processes over JSON-RPC are preferred to WASM if a need
+arises. Nothing here depends on it.
 
 Extensions must keep the project's guardrails. Generation stays explicit: never
 substitute a model, node, seed, image, prompt or setting. An ambiguous prompt
