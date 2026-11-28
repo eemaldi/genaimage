@@ -1,0 +1,12 @@
+id = "turnaround"
+title = "Character turnaround sheet"
+description = "One character shown front, side and back on a neutral background."
+text = "{{subject}} {{detail}}, painterly, unfinished concept art, character turnaround sheet, front view, side view, back view, same character, consistent design, neutral pose, plain background"
+
+[variables.subject]
+description = "Who or what the character is"
+required = true
+
+[variables.detail]
+description = "Optional costume or silhouette detail"
+default = ""
