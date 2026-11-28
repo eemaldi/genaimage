@@ -32,6 +32,79 @@ pub struct ApiHarness {
     client: reqwest::Client,
     pub origin: String,
     workspace: TempDir,
+    config_path: std::path::PathBuf,
+    env: Vec<(String, String)>,
+    drain: Duration,
+}
+
+struct Booted {
+    core: Arc<Harness>,
+    state: AppState,
+    server: JoinHandle<()>,
+}
+
+async fn boot(
+    workspace: &Path,
+    config_path: &Path,
+    env: &[(&str, &str)],
+    drain: Duration,
+    assistant_tools: Vec<Arc<dyn genaimage_core::AssistantTool>>,
+    builtin_assistant_tools: bool,
+    listener: tokio::net::TcpListener,
+) -> Booted {
+    let root = workspace.to_str().unwrap().to_owned();
+    let config = HarnessConfig::load_with(workspace, Some(config_path), workspace, |key| {
+        env.iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| (*value).to_owned())
+            .or_else(|| {
+                matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME").then(|| root.clone())
+            })
+    })
+    .unwrap();
+    let adapter = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
+    let llm_provider = (!config.llm.base_url.is_empty()).then(|| {
+        Arc::new(
+            OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
+                base_url: config.llm.base_url.clone(),
+                api_key: config.llm.api_key.clone(),
+                allowed_hosts: config.llm.allowed_hosts.clone(),
+                connect_timeout: Duration::from_secs(config.llm.connect_timeout_secs),
+                first_byte_timeout: Duration::from_secs(config.llm.request_timeout_secs),
+                idle_timeout: Duration::from_secs(config.llm.idle_timeout_secs),
+            })
+            .unwrap(),
+        )
+    });
+    let llm_roles = LlmRoles::new(
+        &config.llm,
+        llm_provider.map(|provider| provider as Arc<dyn genaimage_core::LlmProvider>),
+    );
+    let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
+    let assistant_tools = if builtin_assistant_tools {
+        genaimage_core::assistant::tools::builtin_assistant_tools(
+            Arc::clone(&core),
+            llm_roles.clone(),
+        )
+    } else {
+        assistant_tools
+    };
+    let state = AppState::new(core.clone())
+        .with_llm_roles(llm_roles)
+        .with_assistant_tools(assistant_tools)
+        .unwrap();
+    let shutdown = state.clone();
+    let server_state = state.clone();
+    let server = tokio::spawn(async move {
+        serve_on_listener(server_state, listener, shutdown.wait_for_shutdown(), drain)
+            .await
+            .expect("API server");
+    });
+    Booted {
+        core,
+        state,
+        server,
+    }
 }
 
 impl ApiHarness {
@@ -124,71 +197,61 @@ impl ApiHarness {
             config.push_str(extra);
             std::fs::write(&config_path, config).unwrap();
         }
-        let root = workspace.path().to_str().unwrap().to_owned();
-        let config = HarnessConfig::load_with(
+        let booted = boot(
             workspace.path(),
-            Some(&config_path),
-            workspace.path(),
-            |key| {
-                env.iter()
-                    .find(|(name, _)| *name == key)
-                    .map(|(_, value)| (*value).to_owned())
-                    .or_else(|| {
-                        matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME")
-                            .then(|| root.clone())
-                    })
-            },
+            &config_path,
+            env,
+            drain,
+            assistant_tools,
+            builtin_assistant_tools,
+            listener,
         )
-        .unwrap();
-        let adapter = Arc::new(ComfyUiClient::new(&config.comfyui).unwrap());
-        let llm_provider = (!config.llm.base_url.is_empty()).then(|| {
-            Arc::new(
-                OpenAiCompatibleProvider::new(OpenAiCompatibleProviderOptions {
-                    base_url: config.llm.base_url.clone(),
-                    api_key: config.llm.api_key.clone(),
-                    allowed_hosts: config.llm.allowed_hosts.clone(),
-                    connect_timeout: Duration::from_secs(config.llm.connect_timeout_secs),
-                    first_byte_timeout: Duration::from_secs(config.llm.request_timeout_secs),
-                    idle_timeout: Duration::from_secs(config.llm.idle_timeout_secs),
-                })
-                .unwrap(),
-            )
-        });
-        let llm_roles = LlmRoles::new(
-            &config.llm,
-            llm_provider.map(|provider| provider as Arc<dyn genaimage_core::LlmProvider>),
-        );
-        let core = Arc::new(Harness::new_async(config, adapter).await.unwrap());
-        let assistant_tools = if builtin_assistant_tools {
-            genaimage_core::assistant::tools::builtin_assistant_tools(
-                Arc::clone(&core),
-                llm_roles.clone(),
-            )
-        } else {
-            assistant_tools
-        };
-        let state = AppState::new(core.clone())
-            .with_llm_roles(llm_roles)
-            .with_assistant_tools(assistant_tools)
-            .unwrap();
-        let shutdown = state.clone();
-        let server_state = state.clone();
-        let server = tokio::spawn(async move {
-            serve_on_listener(server_state, listener, shutdown.wait_for_shutdown(), drain)
-                .await
-                .expect("API server");
-        });
+        .await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         Self {
             workspace,
             fake,
             _backend: backend,
-            core,
-            server: Some(server),
-            state,
+            core: booted.core,
+            server: Some(booted.server),
+            state: booted.state,
             client,
             origin,
+            config_path,
+            env: env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+            drain,
         }
+    }
+
+    /// Stop the server and start another over the same workspace, database and port.
+    /// Only plain servers restart: assistant tools are not carried over.
+    pub async fn restart(&mut self) {
+        self.drain().await;
+        let port = self.origin.rsplit(':').next().unwrap();
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+            .await
+            .expect("rebind API");
+        let env: Vec<(&str, &str)> = self
+            .env
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let booted = boot(
+            self.workspace.path(),
+            &self.config_path,
+            &env,
+            self.drain,
+            Vec::new(),
+            false,
+            listener,
+        )
+        .await;
+        self.core = booted.core;
+        self.state = booted.state;
+        self.server = Some(booted.server);
     }
 
     /// Drain without deleting the workspace, so callers can inspect persisted state.

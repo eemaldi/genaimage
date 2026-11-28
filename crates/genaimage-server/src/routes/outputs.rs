@@ -74,7 +74,9 @@ pub(super) async fn list(
     }))
 }
 
-fn output_response(indexed: genaimage_core::media::IndexedOutput) -> api::OutputResponse {
+pub(super) fn output_response(
+    indexed: genaimage_core::media::IndexedOutput,
+) -> api::OutputResponse {
     let output = indexed.output;
     api::OutputResponse {
         id: indexed.id,

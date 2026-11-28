@@ -1,4 +1,5 @@
 mod batches;
+mod characters;
 pub(crate) mod conversations;
 mod doctor;
 mod events;
@@ -42,6 +43,7 @@ struct UploadBody {
 #[derive(OpenApi)]
 #[openapi(components(schemas(
     genaimage_api::AssistantAwaitingConfirmationEvent,
+    genaimage_api::CurrentDecisionState,
     genaimage_api::AssistantDeltaEvent,
     genaimage_api::AssistantMessageStartedEvent,
     genaimage_api::AssistantTerminalEvent,
@@ -134,6 +136,21 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(batches::preview))
         .routes(routes!(batches::get_batch))
         .routes(routes!(batches::resume))
+        .routes(routes!(characters::list, characters::create))
+        .routes(routes!(characters::get))
+        .routes(routes!(characters::list_specs, characters::create_spec))
+        .routes(routes!(characters::get_spec))
+        .routes(routes!(
+            characters::list_references,
+            characters::add_reference
+        ))
+        .routes(routes!(characters::remove_reference))
+        .routes(routes!(
+            characters::list_decisions,
+            characters::record_decision
+        ))
+        .routes(routes!(characters::list_outputs))
+        .routes(routes!(characters::list_runs))
         .routes(routes!(runs::list, runs::submit))
         .routes(routes!(runs::reconcile_all))
         .routes(routes!(runs::get_run))

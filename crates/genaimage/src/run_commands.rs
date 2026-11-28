@@ -8,8 +8,9 @@ use std::{
 use futures_util::StreamExt;
 use genaimage_api::{
     client::{Client, EventsQuery, StreamEvent},
-    BackendEvent, Event, OutputListQuery, OutputResponse, ReconcileOutcome, ReconcileRunResponse,
-    RunEventResponse, RunEventsQuery, RunListQuery, RunResponse, RunStatus, SubmitRunRequest,
+    BackendEvent, CharacterLink, Event, OutputListQuery, OutputResponse, ReconcileOutcome,
+    ReconcileRunResponse, RunEventResponse, RunEventsQuery, RunListQuery, RunResponse, RunStatus,
+    SubmitRunRequest,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -47,6 +48,11 @@ pub(crate) async fn run(
         checkpoint_profile_revision: None,
         parameters,
         version: command.version.clone(),
+        character: command
+            .character
+            .as_deref()
+            .map(parse_character_link)
+            .transpose()?,
     };
     let run = client
         .submit_run(&Uuid::new_v4().to_string(), &request)
@@ -63,6 +69,25 @@ pub(crate) async fn run(
     } else {
         Status::Success
     })
+}
+
+fn parse_character_link(link: &str) -> Result<CharacterLink, Error> {
+    let invalid = || {
+        Error::Input(format!(
+            "'{link}' is not a character link; use ID:VERSION such as char-…:2."
+        ))
+    };
+    let (id, version) = link.rsplit_once(':').ok_or_else(invalid)?;
+    let canonical = !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && (version == "0" || !version.starts_with('0'));
+    match version.parse() {
+        Ok(spec_version) if canonical && !id.is_empty() => Ok(CharacterLink {
+            id: id.to_owned(),
+            spec_version,
+        }),
+        _ => Err(invalid()),
+    }
 }
 
 async fn upload_images(
