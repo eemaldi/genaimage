@@ -202,16 +202,19 @@ impl AssistantTool for InspectWorkflowTool {
                 })
             })
             .collect::<Vec<_>>();
-        Ok(bounded_tool_result(json!({
+        let mut result = json!({
             "workflow_id": workflow.manifest.id,
             "revision": workflow.revision(),
             "parameters": parameters,
             "presets": workflow.manifest.presets,
             "preset_info": workflow.manifest.preset_info,
             "checkpoint_parameter": workflow.checkpoint_parameter(),
-            "checkpoint_profiles": checkpoint_profiles,
-            "profile_note": read::PROFILE_NOTE
-        })))
+            "checkpoint_profiles": checkpoint_profiles
+        });
+        if !checkpoint_profiles.is_empty() {
+            result["profile_note"] = json!(read::PROFILE_NOTE);
+        }
+        Ok(bounded_tool_result(result))
     }
 }
 
