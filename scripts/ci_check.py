@@ -364,6 +364,11 @@ def main():
             ROOT,
         ),
         (
+            "Extension example",
+            ["cargo", "run", "-q", "-p", "genaimage-core", "--example", "extending", "--locked"],
+            ROOT,
+        ),
+        (
             "CI runner tests",
             [sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests"],
             ROOT,

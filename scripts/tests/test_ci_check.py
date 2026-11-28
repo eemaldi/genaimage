@@ -56,6 +56,14 @@ class RunnerTests(unittest.TestCase):
             (['npm', 'run', 'build'], Path('/project/apps/portal')),
         ])
 
+    def test_extension_example_runs_after_rust_tests(self):
+        result, calls, _, _ = self.run_main(False)
+        self.assertEqual(result, 0)
+        commands = [c.args[1] for c in calls]
+        rust_tests = next(command for command in commands if command[:3] == ['cargo', 'test', '--workspace'])
+        example = ['cargo', 'run', '-q', '-p', 'genaimage-core', '--example', 'extending', '--locked']
+        self.assertLess(commands.index(rust_tests), commands.index(example))
+
     def test_portal_accepts_npm_shrinkwrap_without_package_lock(self):
         result, calls, _, _ = self.run_main(True, lockfiles=('npm-shrinkwrap.json',))
         self.assertEqual(result, 0)

@@ -139,6 +139,7 @@ impl AssistantTool for RecordNoteTool {
     }
 
     async fn invoke(&self, context: ToolContext, arguments: Value) -> Result<Value> {
+        // Mirrors submit_run as defence in depth; the runtime enforces confirmation.
         if context.confirmation_id.is_none() {
             return Err(HarnessError::ToolConfirmationConflict(
                 "record_note cannot run without a confirmation".into(),
@@ -175,7 +176,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     registry.register_image_backend(EXAMPLE, Arc::new(OfflineBackend))?;
     registry.register_llm_provider(EXAMPLE, Arc::new(NoModelProvider))?;
     registry.register_assistant_tool(Arc::new(RecordNoteTool))?;
-    registry.register_event_sink("kind-counter", Arc::new(KindCounter::default()))?;
+    let counter = Arc::new(KindCounter::default());
+    registry.register_event_sink("kind-counter", counter.clone())?;
 
     let backend = registry.image_backend(EXAMPLE).expect("registered backend");
     assert!(
@@ -211,6 +213,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     shutdown.cancel();
     tracker.close();
     tracker.wait().await;
+
+    let counts = counter.counts.lock().expect("counter lock");
+    assert_eq!(
+        counts.get("settings_changed").copied(),
+        Some(1),
+        "the forwarded event reaches the sink before shutdown completes"
+    );
+    drop(counts);
 
     println!("extensions registered and checked");
     Ok(())

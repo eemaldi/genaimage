@@ -59,7 +59,12 @@ The trait methods, grouped by purpose:
   run records, so it must be the endpoint actually used.
 - `health`, `object_info` and `queue`: status, node classes and queue state.
 - `submit(workflow, client_id, prompt_id)`: sends the bound API-format workflow.
-  Core persists `prompt_id` before the call, so the backend can reuse it.
+  Core persists `prompt_id` before the call, so the backend can reuse it. Only an
+  acknowledged submission may return a different ID, and that ID must identify
+  the same, unmodified submission.
+- `with_timing` (optional; the default returns `None`): return a copy with new
+  timeouts only if it keeps the backend identity and DNS pin. Otherwise timing
+  changes wait for a restart.
 - `history(prompt_id)`: evidence for that prompt only. Report `HistoryOutcome`
   honestly; `Unresolved` is the safe default when history is incomplete.
 - `delete_queued`, `prepare_interrupt` and `interrupt`: cancellation. Override
@@ -162,22 +167,28 @@ compared exactly, so keep integers as JSON integers and never round seeds.
 validates every call's arguments against the schema before it can run.
 
 **Confirmation.** Set `requires_confirmation` to `true` for anything that changes
-state or submits work. The metadata is not the enforcement. The runtime
-validates the call and pauses it with `confirmation_required`. The turn ends as
-`awaiting_confirmation`, which is not success. The user then:
+state or submits work. The metadata is not the enforcement: the runtime pauses
+the call with `confirmation_required`, and the turn ends as
+`awaiting_confirmation`, which is not success.
 
-1. Calls the preview endpoint. The runtime calls your optional `preview`
-   hook, which should return the effective values, including presets, defaults
-   and inherited inputs, without side effects. The server issues a
-   `preview_token` bound to the confirmation, the arguments and the preview.
-2. Confirms or edits with that `preview_token`. A missing or stale token leaves
-   the confirmation pending. Decisions are single use.
-3. Rejects, which returns a rejection result to the model.
+- The pause carries a `preview_token`, the SHA-256 of
+  `{arguments, confirmation_id, preview}`, where `preview` is the result of your
+  optional `preview(arguments)` hook. The preview endpoint returns the same token.
+- A confirm or edit must present that token. The runtime calls `preview` again
+  (with the edited arguments for an edit) and recomputes the token. On a mismatch
+  it returns `ToolConfirmationPreviewMismatch` with the fresh preview and token,
+  and the confirmation stays pending. Decisions are single use.
+- A reject returns a rejection result to the model.
+
+Because every decision re-runs `preview`, it must be deterministic and free of
+side effects for the same arguments: no timestamps, no randomness and no
+changing state.
 
 A tool with `requires_confirmation` runs its `invoke` only after a confirm or
-edit decision. `ToolContext.confirmation_id` is set then, and it is the
-idempotency key. Pass it to any external submission, as `submit_run` does with
-`Harness::submit_keyed`.
+edit decision. `ToolContext.confirmation_id` is set then and is the idempotency
+key: pass it to the external call, as `submit_run` does with
+`Harness::submit_keyed`. Refusing a missing ID is defence in depth; the runtime
+does the enforcement.
 
 **Interrupted invocations.** If the process stops after an invocation is claimed,
 the confirmation settles as `outcome_unknown`. It is never re-invoked. Your tool
@@ -318,9 +329,10 @@ genaimage packs list
 genaimage packs validate my-pack
 ```
 
-Validation exits `0` only when the status is `ok`. A duplicate workflow ID makes
-that workflow unavailable until the duplicate is removed. The IDs `refresh` and
-`import` are reserved.
+Validation exits `0` only when the status is `ok`, `6` for `missing`, `unknown`
+or `unavailable`, and `4` when the server answers with a problem. A duplicate
+workflow ID makes that workflow unavailable until the duplicate is removed. The
+IDs `refresh` and `import` are reserved.
 
 ## Test guidance
 
@@ -332,9 +344,10 @@ that workflow unavailable until the duplicate is removed. The IDs `refresh` and
   - `cargo test -p genaimage-llm --test contracts`
   - `cargo test -p genaimage-webhook --test webhook`
   - `cargo test -p genaimage-server --test assistant_scenarios --no-default-features`
-- **Examples compile.** `cargo test --workspace --all-targets` (run by CI) builds
-  `crates/genaimage-core/examples/extending.rs`. Clippy runs on it with
-  `-D warnings`, because `ci_check.py` uses `--all-targets`.
+- **Examples compile and run.** `cargo test --workspace --all-targets` builds
+  `crates/genaimage-core/examples/extending.rs`, and CI also runs it with
+  `cargo run -q -p genaimage-core --example extending --locked`. Clippy runs on it
+  with `-D warnings`, because `ci_check.py` uses `--all-targets`.
 - **Full check.** From the repository root, run `python3 scripts/ci_check.py`. It
   checks the documentation links, the skill mirrors, the generated API types, the
   portal, formatting, clippy, the Rust tests and the Python helper tests. Before
