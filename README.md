@@ -94,6 +94,7 @@ The full index is in [docs/README.md](docs/README.md). Start with:
 - [Models](docs/models.md): checkpoints and LLM pulls
 - [Configuration](docs/configuration.md), [CLI](docs/cli.md) and [API](docs/api.md) references
 - [Workflow manifest](docs/workflow-manifest.md)
+- [Extending GenAImage](docs/extending.md): image backends, LLM providers, assistant tools, event sinks and workflow packs
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## What it does and does not do
