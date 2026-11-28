@@ -97,7 +97,10 @@ events = ["run_completed"]
 - A `jsonl` path must be relative, without `..`, below `<data dir>/sinks`, and
   not shared with another sink. The suffix `.dead-letter.jsonl` is reserved.
   Files are created with mode `0600` and grow until you rotate them; the file is
-  reopened for every line, so renaming it is safe.
+  reopened for every line, so renaming it is safe. A symbolic link at or below
+  `<data dir>/sinks` is never followed: writes through it fail and show as
+  failures in the `event_sinks` check, for the JSONL file and the dead-letter
+  file alike.
 - A `webhook` URL follows the outbound endpoint rules above: loopback by
   default, private or Compose hosts only when listed in the sink's
   `allowed_hosts`, never public. Every attempt resolves the host again and
@@ -106,8 +109,18 @@ events = ["run_completed"]
   TOML and never printed, logged, returned or written to a dead-letter record.
   It signs each request (see [delivery semantics](architecture.md#event-sinks)).
 
+Gaps. A full queue (256 notifications per sink) drops the newest event. The
+JSONL file records every gap as a `sink_gap` line, even when the sink then goes
+quiet or the server shuts down. A webhook receiver gets the first event after a
+gap with `X-GenAImage-Gap: <skipped>` (`unknown` if the count is not known) and
+`X-GenAImage-Gap-Reason: <reason>[,<reason>]`. A jump in `id` is not enough to
+spot a gap: `events` filters and server restarts also leave jumps, so only this
+header signals dropped or lagged events.
+
 Delivery status and failures appear in the `event_sinks` check of
-`genaimage doctor` ([troubleshooting](troubleshooting.md#doctor-checks)).
+`genaimage doctor` ([troubleshooting](troubleshooting.md#doctor-checks)). Each
+sink item lists its counters, including `retries`, and the time of its last
+error. A sink whose current event is in a retry loop is `degraded`, not `ok`.
 
 ## Other environment variables
 

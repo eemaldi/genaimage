@@ -908,30 +908,38 @@ event or explicit invalidation. Other processes have separate buses; a CLI
 waiter also publishes a progress snapshot when it observes a terminal state
 written by another process.
 
-Applications start event sinks with `genaimage_core::sinks::spawn_sink`, which
-gives each sink its own bounded queue, forwarding task and worker. The older
-`ExtensionRegistry::forward_event_sinks` is a minimal helper that ends a sink on
-lag and is not used by `serve`.
+`ExtensionRegistry::forward_event_sinks` is the single way to start event
+sinks. Every sink registered with `register_event_sink` (every event, kind
+`extension`) or `register_event_sink_with` (own status and event filter) gets
+its own bounded queue, forwarding task and worker through
+`genaimage_core::sinks::spawn_sink`, so an extension-registered sink behaves
+exactly like a configured one. `EventSink` stays object-safe.
 
 ### Event sinks
 
 `serve` builds the configured `[[sinks]]` ([configuration](configuration.md#event-sinks)),
-registers them in the `ExtensionRegistry` and starts them on a task tracker.
+registers them in the `ExtensionRegistry` and starts them with `forward_event_sinks` on a task tracker.
 `JsonlSink` lives in core; `WebhookSink` lives in `genaimage-webhook`, which
 carries the HTTP client so core stays free of one.
 
 - **The bus is never blocked.** A forwarder moves events into a per-sink queue
   of 256 notifications and nothing on the publish path awaits a sink.
 - **Drops are explicit.** A full queue drops the newest event, counts it and
-  puts a gap marker before the next queued event. A bus lag (`ResyncRequired`)
-  is counted, queued as a gap and the forwarder re-subscribes at the live tail
-  instead of ending. A sink error or panic never stops forwarding; it is
-  counted and the next event is attempted.
+  puts a gap marker before the next queued event, or, when the sink goes idle
+  or shuts down first, as soon as the worker finds the queue empty. A bus lag
+  (`ResyncRequired`) is counted, queued as a gap and the forwarder
+  re-subscribes at the live tail instead of ending. A gap that meets a full
+  queue keeps its own reason (`invalidated`, `cursor_out_of_range`,
+  `bus_changed`) and is written as a separate marker. A sink error or panic
+  never stops forwarding; it is counted and the next event is attempted.
 - **JSONL.** One `EventEnvelope` per line, written with a single append and
   `fsync` per line. Gaps are written as
   `{"type":"sink_gap","reason":"lagged","skipped":N,"at":"..."}`. A line of
   1 MiB or more is replaced by a `sink_oversize` marker and counted as a
   failure. A torn last line from a crash is terminated before the next write.
+  A symbolic link anywhere below `<data dir>/sinks` is refused (the file is
+  also opened with `O_NOFOLLOW` on Unix): the write fails, is counted and shows
+  in the status and doctor, and the link is never followed.
 - **Webhook.** `POST` of the envelope JSON with `Content-Type: application/json`,
   `Idempotency-Key: <bus_id>:<id>`, `X-GenAImage-Event`, `X-GenAImage-Attempt`
   and, with `secret_env`, `X-GenAImage-Timestamp` and
@@ -943,16 +951,23 @@ carries the HTTP client so core stays free of one.
   including a redirect, is permanent and is not retried. An event that fails
   permanently or exhausts its attempts is appended to
   `<data dir>/sinks/<name>.dead-letter.jsonl` with the attempts, the last
-  redacted error and the event. Gap notifications are not posted; receivers
-  see a jump in `id`, and doctor shows the count.
+  redacted error and the event; the dead-letter file is subject to the same
+  symbolic-link refusal. Gap notifications are not posted as events. Instead
+  the first event delivered after a gap carries `X-GenAImage-Gap: <skipped>`
+  (`unknown` when a gap has no count) and `X-GenAImage-Gap-Reason:
+  <reason>[,<reason>]`. Jumps in `id` also come from `events` filters and
+  server restarts, so only these headers signal dropped or lagged events.
 - **Shutdown.** After the server has drained, sinks stop intake, deliver the
-  queue for up to three seconds and count what remains as dropped. Events
+  queue and any pending gap marker for up to three seconds and count what
+  remains as dropped. If the sink still responds after the deadline, a final
+  gap marker for the lost events is written within 250 ms. Events
   still queued at that point are not delivered after restart.
 - **Status.** Each sink has a shared status (delivered, failed, dropped,
   dead-lettered, resyncs, retries, last redacted error, last success). Counters
   are totals since start. The sink is `failing` after three consecutive failed
-  events or an unexpected task stop, `degraded` after any drop, dead letter,
-  failure or resync, and otherwise `ok`. The doctor `event_sinks` check reads
+  events or an unexpected task stop, `degraded` while the current event is in a
+  retry loop and after any drop, dead letter, failure or resync, and otherwise
+  `ok`. Status also keeps the time of the last error. The doctor `event_sinks` check reads
   the same status through the bus.
 
 Slow sinks and subscribers do not block

@@ -80,27 +80,28 @@ fn start_sinks(
     for sink in &config.sinks {
         let status = SinkStatus::new(&sink.name, sink.kind.as_str());
         let implementation: Arc<dyn genaimage_core::EventSink> = match sink.kind {
-            SinkKind::Jsonl => Arc::new(JsonlSink::new(sinks::jsonl_path(
-                config,
-                sink.path.as_deref().unwrap_or_default(),
-            ))?),
+            SinkKind::Jsonl => Arc::new(JsonlSink::new(
+                sinks::sink_dir(config),
+                sinks::jsonl_path(config, sink.path.as_deref().unwrap_or_default()),
+            )?),
             SinkKind::Webhook => Arc::new(WebhookSink::new(
-                WebhookOptions::from_config(sink, sinks::dead_letter_path(config, &sink.name))?,
+                WebhookOptions::from_config(
+                    sink,
+                    sinks::sink_dir(config),
+                    sinks::dead_letter_path(config, &sink.name),
+                )?,
                 Arc::clone(&status),
             )?),
         };
-        registry.register_event_sink(&sink.name, Arc::clone(&implementation))?;
         let selection: SinkConfig = sink.clone();
-        sinks::spawn_sink(
-            bus,
+        registry.register_event_sink_with(
+            &sink.name,
             implementation,
             status,
-            move |event| selection.wants(event),
-            SinkRuntime::default(),
-            &tasks.shutdown,
-            &tasks.tracker,
-        );
+            Arc::new(move |event| selection.wants(event)),
+        )?;
     }
+    registry.forward_event_sinks(bus, SinkRuntime::default(), &tasks.shutdown, &tasks.tracker);
     Ok(tasks)
 }
 

@@ -4,13 +4,21 @@
 //! on the `Idempotency-Key` header. Each attempt resolves the host again and
 //! validates every answer against the endpoint policy before connecting.
 
-use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::Utc;
 use genaimage_core::{
     async_trait,
     config::{validate_endpoint, validate_endpoint_addresses, SinkConfig, SinkSecret},
-    sinks::{append_line, hmac_sha256_hex, redact_and_bound, SinkStatus, MAX_LINE_BYTES},
+    sinks::{
+        append_line, gap_reason_name, gap_skipped, hmac_sha256_hex, redact_and_bound, SinkStatus,
+        MAX_LINE_BYTES,
+    },
     EventEnvelope, EventSink, HarnessError, Result, SinkNotification,
 };
 use reqwest::{redirect, Client, StatusCode};
@@ -21,6 +29,11 @@ pub const SIGNATURE_HEADER: &str = "X-GenAImage-Signature";
 pub const TIMESTAMP_HEADER: &str = "X-GenAImage-Timestamp";
 pub const EVENT_HEADER: &str = "X-GenAImage-Event";
 pub const ATTEMPT_HEADER: &str = "X-GenAImage-Attempt";
+/// Sent on the first event delivered after events were dropped or lagged:
+/// the number skipped, or `unknown` when a gap carried no count.
+pub const GAP_HEADER: &str = "X-GenAImage-Gap";
+/// Comma-separated reasons for the gap, for example `lagged`.
+pub const GAP_REASON_HEADER: &str = "X-GenAImage-Gap-Reason";
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const DEFAULT_BACKOFF_BASE: Duration = Duration::from_millis(250);
 
@@ -31,13 +44,20 @@ pub struct WebhookOptions {
     pub secret: Option<SinkSecret>,
     pub timeout: Duration,
     pub max_attempts: u32,
+    /// The sinks directory; the dead-letter file lies under it and no part of
+    /// the path may be a symbolic link.
+    pub sink_root: PathBuf,
     pub dead_letter_path: PathBuf,
     /// First retry delay; it doubles per attempt up to 30 s, with jitter.
     pub backoff_base: Duration,
 }
 
 impl WebhookOptions {
-    pub fn from_config(config: &SinkConfig, dead_letter_path: PathBuf) -> Result<Self> {
+    pub fn from_config(
+        config: &SinkConfig,
+        sink_root: PathBuf,
+        dead_letter_path: PathBuf,
+    ) -> Result<Self> {
         let url = config.url.clone().ok_or_else(|| {
             HarnessError::Configuration(format!("webhook sink '{}' has no url", config.name))
         })?;
@@ -48,6 +68,7 @@ impl WebhookOptions {
             secret: config.secret.clone(),
             timeout: Duration::from_secs(config.timeout_seconds()),
             max_attempts: config.max_attempts(),
+            sink_root,
             dead_letter_path,
             backoff_base: DEFAULT_BACKOFF_BASE,
         })
@@ -69,6 +90,29 @@ pub struct WebhookSink {
     url: Url,
     options: WebhookOptions,
     status: Arc<SinkStatus>,
+    gap: Mutex<Gap>,
+}
+
+/// Events lost since the last delivery, to tell the receiver.
+#[derive(Clone, Default)]
+struct Gap {
+    skipped: u64,
+    unknown: bool,
+    reasons: Vec<&'static str>,
+}
+
+impl Gap {
+    fn is_empty(&self) -> bool {
+        self.reasons.is_empty()
+    }
+
+    fn count(&self) -> String {
+        if self.unknown {
+            "unknown".to_owned()
+        } else {
+            self.skipped.to_string()
+        }
+    }
 }
 
 impl fmt::Debug for WebhookSink {
@@ -102,6 +146,7 @@ impl WebhookSink {
             url,
             options,
             status,
+            gap: Mutex::default(),
         })
     }
 
@@ -121,6 +166,7 @@ impl WebhookSink {
         envelope: &EventEnvelope,
         body: &[u8],
         attempt: u32,
+        gap: &Gap,
     ) -> std::result::Result<(), Failure> {
         let host = self.url.host_str().expect("validated host");
         let port = self.url.port_or_known_default().expect("validated scheme");
@@ -156,6 +202,11 @@ impl WebhookSink {
             .header(EVENT_HEADER, envelope.event.kind())
             .header(ATTEMPT_HEADER, attempt.to_string())
             .body(body.to_vec());
+        if !gap.is_empty() {
+            request = request
+                .header(GAP_HEADER, gap.count())
+                .header(GAP_REASON_HEADER, gap.reasons.join(","));
+        }
         if let Some(secret) = self.secret() {
             let timestamp = Utc::now().timestamp().to_string();
             let mut signed = format!("{timestamp}.").into_bytes();
@@ -224,16 +275,38 @@ impl WebhookSink {
             });
             line = record.to_string();
         }
-        append_line(&self.options.dead_letter_path, line)
-            .await
-            .map_err(|error| {
-                HarnessError::Configuration(format!(
-                    "cannot write dead-letter log '{}': {error}",
-                    self.options.dead_letter_path.display()
-                ))
-            })?;
+        append_line(
+            &self.options.sink_root,
+            &self.options.dead_letter_path,
+            line,
+        )
+        .await
+        .map_err(|error| {
+            HarnessError::Configuration(format!(
+                "cannot write dead-letter log '{}': {error}",
+                self.options.dead_letter_path.display()
+            ))
+        })?;
         self.status.record_dead_letter();
         Ok(())
+    }
+
+    fn note_gap(&self, reason: &genaimage_core::ResyncReason) {
+        let mut gap = self.gap.lock().unwrap_or_else(|e| e.into_inner());
+        match gap_skipped(reason) {
+            Some(skipped) => gap.skipped = gap.skipped.saturating_add(skipped),
+            None => gap.unknown = true,
+        }
+        let name = gap_reason_name(reason);
+        if !gap.reasons.contains(&name) {
+            gap.reasons.push(name);
+        }
+    }
+
+    /// Deliveries are sequential, so nothing is added while an event is in
+    /// flight; a gap is cleared only once the receiver has accepted it.
+    fn clear_gap(&self) {
+        *self.gap.lock().unwrap_or_else(|e| e.into_inner()) = Gap::default();
     }
 
     fn undelivered(&self, id: u64, attempts: u32, error: &str) -> HarnessError {
@@ -247,11 +320,14 @@ impl WebhookSink {
 #[async_trait]
 impl EventSink for WebhookSink {
     async fn handle(&self, notification: &SinkNotification) -> Result<()> {
-        // A gap is recorded in the status and the doctor check. Receivers can
-        // also see it as a jump in `id` (ids increase for the life of the bus).
-        let SinkNotification::Event(envelope) = notification else {
-            return Ok(());
+        let envelope = match notification {
+            SinkNotification::Event(envelope) => envelope,
+            SinkNotification::ResyncRequired(reason) => {
+                self.note_gap(reason);
+                return Ok(());
+            }
         };
+        let gap = self.gap.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let body = serde_json::to_vec(envelope.as_ref())
             .map_err(|error| HarnessError::Configuration(error.to_string()))?;
         if body.len() >= MAX_LINE_BYTES {
@@ -261,8 +337,11 @@ impl EventSink for WebhookSink {
         }
         let mut attempt = 1;
         loop {
-            let failure = match self.attempt(envelope, &body, attempt).await {
-                Ok(()) => return Ok(()),
+            let failure = match self.attempt(envelope, &body, attempt, &gap).await {
+                Ok(()) => {
+                    self.clear_gap();
+                    return Ok(());
+                }
                 Err(failure) => failure,
             };
             if failure.retryable && attempt < self.options.max_attempts {

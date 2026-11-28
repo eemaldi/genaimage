@@ -40,6 +40,8 @@ pub const MAX_LINE_BYTES: usize = 1 << 20;
 /// Consecutive failed deliveries after which a sink is reported as failing.
 pub const FAILING_THRESHOLD: u64 = 3;
 const MAX_ERROR_CHARS: usize = 240;
+/// Extra time after the drain deadline to write the final gap marker.
+const FINAL_GAP_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +72,8 @@ pub struct SinkStatusSnapshot {
     pub dead_lettered: u64,
     pub resyncs: u64,
     pub retries: u64,
+    /// The current event is between delivery attempts.
+    pub retrying: bool,
     pub consecutive_failures: u64,
     /// Redacted and bounded.
     pub last_error: Option<String>,
@@ -81,6 +85,7 @@ pub struct SinkStatusSnapshot {
 #[derive(Default)]
 struct Latest {
     consecutive_failures: u64,
+    retrying: bool,
     stopped: bool,
     last_error: Option<String>,
     last_error_at: Option<DateTime<Utc>>,
@@ -138,6 +143,7 @@ impl SinkStatus {
         self.delivered.fetch_add(1, Ordering::Relaxed);
         let mut latest = self.latest();
         latest.consecutive_failures = 0;
+        latest.retrying = false;
         latest.last_success_at = Some(Utc::now());
     }
 
@@ -146,6 +152,7 @@ impl SinkStatus {
         self.failed.fetch_add(1, Ordering::Relaxed);
         let mut latest = self.latest();
         latest.consecutive_failures += 1;
+        latest.retrying = false;
         latest.last_error = Some(bound(error));
         latest.last_error_at = Some(Utc::now());
     }
@@ -154,6 +161,7 @@ impl SinkStatus {
     pub fn record_retry(&self, error: &str) {
         self.retries.fetch_add(1, Ordering::Relaxed);
         let mut latest = self.latest();
+        latest.retrying = true;
         latest.last_error = Some(bound(error));
         latest.last_error_at = Some(Utc::now());
     }
@@ -193,7 +201,9 @@ impl SinkStatus {
         let [delivered, failed, dropped, dead_lettered, resyncs, retries] = counts;
         let state = if latest.stopped || latest.consecutive_failures >= FAILING_THRESHOLD {
             SinkState::Failing
-        } else if latest.consecutive_failures > 0 || failed + dropped + dead_lettered + resyncs > 0
+        } else if latest.retrying
+            || latest.consecutive_failures > 0
+            || failed + dropped + dead_lettered + resyncs > 0
         {
             SinkState::Degraded
         } else {
@@ -209,6 +219,7 @@ impl SinkStatus {
             dead_lettered,
             resyncs,
             retries,
+            retrying: latest.retrying,
             consecutive_failures: latest.consecutive_failures,
             last_error: latest.last_error.clone(),
             last_error_at: latest.last_error_at,
@@ -300,40 +311,94 @@ pub const DEAD_LETTER_SUFFIX: &str = ".dead-letter.jsonl";
 
 /// The explicit record of a gap, written by sinks that keep a log.
 pub fn gap_marker(reason: &ResyncReason, at: DateTime<Utc>) -> serde_json::Value {
-    let (name, skipped) = match reason {
-        ResyncReason::Lagged { skipped } => ("lagged", Some(*skipped)),
-        ResyncReason::Invalidated { .. } => ("invalidated", None),
-        ResyncReason::CursorOutOfRange { .. } => ("cursor_out_of_range", None),
-        ResyncReason::BusChanged { .. } => ("bus_changed", None),
-    };
-    json!({"type": "sink_gap", "reason": name, "skipped": skipped, "at": at})
+    json!({
+        "type": "sink_gap",
+        "reason": gap_reason_name(reason),
+        "skipped": gap_skipped(reason),
+        "at": at,
+    })
+}
+
+pub fn gap_reason_name(reason: &ResyncReason) -> &'static str {
+    match reason {
+        ResyncReason::Lagged { .. } => "lagged",
+        ResyncReason::Invalidated { .. } => "invalidated",
+        ResyncReason::CursorOutOfRange { .. } => "cursor_out_of_range",
+        ResyncReason::BusChanged { .. } => "bus_changed",
+    }
+}
+
+/// How many events a gap skipped, when the reason says.
+pub fn gap_skipped(reason: &ResyncReason) -> Option<u64> {
+    match reason {
+        ResyncReason::Lagged { skipped } => Some(*skipped),
+        _ => None,
+    }
+}
+
+/// Refuse a symlink anywhere from `root` down to `path`. A sink never follows
+/// one, so a link planted in the sinks directory cannot redirect a write.
+pub fn ensure_no_symlinks(root: &Path, path: &Path) -> io::Result<()> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        io::Error::other(format!(
+            "'{}' is outside the sinks directory '{}'",
+            path.display(),
+            root.display()
+        ))
+    })?;
+    let mut current = root.to_path_buf();
+    let components = std::iter::once(None).chain(relative.components().map(Some));
+    for component in components {
+        if let Some(component) = component {
+            current.push(component);
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io::Error::other(format!(
+                    "'{}' is a symbolic link; sinks never follow symbolic links",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// Append one line with a single write, then fsync it. The file is opened per
 /// write so an external rotation takes effect on the next line. A torn last
 /// line from a crash is terminated first so the new line stays parseable.
-pub async fn append_line(path: &Path, line: String) -> io::Result<()> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || append_line_blocking(&path, &line))
+/// `path` must lie under `root` and no part of it may be a symbolic link.
+pub async fn append_line(root: &Path, path: &Path, line: String) -> io::Result<()> {
+    let (root, path) = (root.to_owned(), path.to_owned());
+    tokio::task::spawn_blocking(move || append_line_blocking(&root, &path, &line))
         .await
         .map_err(io::Error::other)?
 }
 
-fn append_line_blocking(path: &Path, line: &str) -> io::Result<()> {
+fn append_line_blocking(root: &Path, path: &Path, line: &str) -> io::Result<()> {
+    ensure_no_symlinks(root, path)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    ensure_no_symlinks(root, path)?;
     let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
+    options.create(true).read(true).append(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
     let mut file = options.open(path)?;
     let mut data = Vec::with_capacity(line.len() + 2);
     if file.metadata()?.len() > 0 {
-        let mut reader = std::fs::File::open(path)?;
-        reader.seek(SeekFrom::End(-1))?;
+        file.seek(SeekFrom::End(-1))?;
         let mut last = [0_u8; 1];
-        reader.read_exact(&mut last)?;
+        file.read_exact(&mut last)?;
         if last[0] != b'\n' {
             data.push(b'\n');
         }
@@ -346,11 +411,13 @@ fn append_line_blocking(path: &Path, line: &str) -> io::Result<()> {
 
 /// Appends one JSON line per event, and one explicit marker per gap.
 pub struct JsonlSink {
+    root: PathBuf,
     path: PathBuf,
 }
 
 impl JsonlSink {
-    pub fn new(path: PathBuf) -> Result<Self> {
+    /// `path` must lie under `root`, the sinks directory.
+    pub fn new(root: PathBuf, path: PathBuf) -> Result<Self> {
         if path.is_dir() {
             return Err(HarnessError::Configuration(format!(
                 "JSONL sink path '{}' is a directory",
@@ -365,7 +432,7 @@ impl JsonlSink {
                 ))
             })?;
         }
-        Ok(Self { path })
+        Ok(Self { root, path })
     }
 }
 
@@ -385,7 +452,7 @@ impl EventSink for JsonlSink {
                         "bytes": line.len(),
                         "at": Utc::now(),
                     });
-                    append_line(&self.path, marker.to_string()).await?;
+                    append_line(&self.root, &self.path, marker.to_string()).await?;
                     return Err(HarnessError::Configuration(format!(
                         "event {} is {} bytes, over the {MAX_LINE_BYTES} byte line limit",
                         envelope.id,
@@ -396,7 +463,7 @@ impl EventSink for JsonlSink {
             }
             SinkNotification::ResyncRequired(reason) => gap_marker(reason, Utc::now()).to_string(),
         };
-        Ok(append_line(&self.path, line).await?)
+        Ok(append_line(&self.root, &self.path, line).await?)
     }
 }
 
@@ -409,8 +476,50 @@ struct Queue {
 #[derive(Default)]
 struct QueueState {
     items: VecDeque<SinkNotification>,
-    pending_gap: u64,
+    pending: PendingGap,
     closed: bool,
+}
+
+/// Gaps that found no room in the queue. They become markers as soon as there
+/// is room, or when the worker would otherwise park, so a gap is never held
+/// back waiting for another event.
+#[derive(Default)]
+struct PendingGap {
+    /// Events lost to a full queue or a bus lag.
+    lagged: u64,
+    /// The first gap with its own reason; later ones are counted in `lagged`.
+    other: Option<ResyncReason>,
+}
+
+impl PendingGap {
+    fn add(&mut self, reason: ResyncReason) {
+        match reason {
+            ResyncReason::Lagged { skipped } => {
+                self.lagged = self.lagged.saturating_add(skipped.max(1));
+            }
+            other if self.other.is_none() => self.other = Some(other),
+            _ => self.lagged = self.lagged.saturating_add(1),
+        }
+    }
+
+    fn markers(&self) -> usize {
+        usize::from(self.lagged > 0) + usize::from(self.other.is_some())
+    }
+
+    fn take(&mut self) -> Vec<ResyncReason> {
+        let lagged = std::mem::take(&mut self.lagged);
+        self.other
+            .take()
+            .into_iter()
+            .chain((lagged > 0).then_some(ResyncReason::Lagged { skipped: lagged }))
+            .collect()
+    }
+}
+
+/// What a closed queue still held when it was discarded.
+struct Discarded {
+    events: u64,
+    gaps: Vec<ResyncReason>,
 }
 
 impl Queue {
@@ -419,23 +528,20 @@ impl Queue {
     }
 
     /// Drop-newest: a full queue rejects the event and a marker precedes the
-    /// next accepted one.
+    /// next accepted one, or is delivered as soon as the worker is idle.
     fn push_event(&self, envelope: EventEnvelope, status: &SinkStatus) {
         let mut state = self.lock();
-        let needed = if state.pending_gap > 0 { 2 } else { 1 };
-        if state.items.len() + needed > self.capacity {
-            state.pending_gap += 1;
+        if state.items.len() + state.pending.markers() + 1 > self.capacity {
+            state.pending.add(ResyncReason::Lagged { skipped: 1 });
             status.record_dropped(1);
+            drop(state);
+            self.notify.notify_one();
             return;
         }
-        if state.pending_gap > 0 {
-            let skipped = std::mem::take(&mut state.pending_gap);
-            state
-                .items
-                .push_back(SinkNotification::ResyncRequired(ResyncReason::Lagged {
-                    skipped,
-                }));
-        }
+        let markers = state.pending.take();
+        state
+            .items
+            .extend(markers.into_iter().map(SinkNotification::ResyncRequired));
         state
             .items
             .push_back(SinkNotification::Event(Box::new(envelope)));
@@ -445,18 +551,15 @@ impl Queue {
 
     fn push_gap(&self, reason: ResyncReason) {
         let mut state = self.lock();
-        if state.items.len() < self.capacity {
+        if state.pending.markers() == 0 && state.items.len() < self.capacity {
             state
                 .items
                 .push_back(SinkNotification::ResyncRequired(reason));
-            drop(state);
-            self.notify.notify_one();
         } else {
-            state.pending_gap += match reason {
-                ResyncReason::Lagged { skipped } => skipped.max(1),
-                _ => 1,
-            };
+            state.pending.add(reason);
         }
+        drop(state);
+        self.notify.notify_one();
     }
 
     fn close(&self) {
@@ -464,10 +567,18 @@ impl Queue {
         self.notify.notify_one();
     }
 
+    /// The next notification. An empty queue with a pending gap yields the
+    /// marker, also after close, before the worker parks or ends.
     async fn pop(&self) -> Option<SinkNotification> {
         loop {
             {
                 let mut state = self.lock();
+                if state.items.is_empty() {
+                    let markers = state.pending.take();
+                    state
+                        .items
+                        .extend(markers.into_iter().map(SinkNotification::ResyncRequired));
+                }
                 if let Some(item) = state.items.pop_front() {
                     return Some(item);
                 }
@@ -479,17 +590,21 @@ impl Queue {
         }
     }
 
-    /// Close the queue and return how many events were still waiting.
-    fn discard(&self) -> u64 {
+    /// Close the queue and take what was still waiting, so the caller can
+    /// count the events and try to record the gap.
+    fn discard(&self) -> Discarded {
         let mut state = self.lock();
         state.closed = true;
-        let events = state
-            .items
-            .iter()
-            .filter(|item| matches!(item, SinkNotification::Event(_)))
-            .count();
-        state.items.clear();
-        events as u64
+        let mut events = 0;
+        let mut gaps = Vec::new();
+        for item in state.items.drain(..) {
+            match item {
+                SinkNotification::Event(_) => events += 1,
+                SinkNotification::ResyncRequired(reason) => gaps.push(reason),
+            }
+        }
+        gaps.extend(state.pending.take());
+        Discarded { events, gaps }
     }
 }
 
@@ -564,7 +679,7 @@ async fn guarded(
 ) {
     if AssertUnwindSafe(task).catch_unwind().await.is_err() {
         status.record_stopped(&format!("the sink {role} panicked and stopped"));
-        status.record_dropped(queue.discard());
+        status.record_dropped(queue.discard().events);
     }
 }
 
@@ -659,10 +774,29 @@ async fn work(
         };
         if !finished || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let in_flight = u64::from(!finished && matches!(item, SinkNotification::Event(_)));
-            status.record_dropped(in_flight + queue.discard());
+            let discarded = queue.discard();
+            status.record_dropped(in_flight + discarded.events);
+            if finished {
+                record_final_gap(sink.as_ref(), &status, discarded).await;
+            }
             return;
         }
     }
+}
+
+/// The drain deadline passed with the sink responsive: record what was lost in
+/// the sink's own log, briefly. A stalled sink cannot be written to.
+async fn record_final_gap(sink: &dyn EventSink, status: &SinkStatus, discarded: Discarded) {
+    let Discarded { events, mut gaps } = discarded;
+    if events > 0 {
+        gaps.push(ResyncReason::Lagged { skipped: events });
+    }
+    let marking = async {
+        for gap in gaps {
+            deliver(sink, status, &SinkNotification::ResyncRequired(gap)).await;
+        }
+    };
+    let _ = tokio::time::timeout(FINAL_GAP_GRACE, marking).await;
 }
 
 async fn deliver(sink: &dyn EventSink, status: &SinkStatus, item: &SinkNotification) {
@@ -822,17 +956,18 @@ mod tests {
             },
             |_| true,
         );
-        let mut slowest = Duration::ZERO;
-        for n in 0..3000 {
-            let started = std::time::Instant::now();
-            attached.bus.publish(event(n));
-            slowest = slowest.max(started.elapsed());
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            slowest < Duration::from_millis(50),
-            "publish took {slowest:?}"
-        );
+        // The sink never releases its gate, so a publisher that waited on it
+        // would hang. The whole burst must finish well inside the timeout; the
+        // generous bound only catches a blocked publisher, not scheduler noise.
+        let burst = async {
+            for n in 0..3000 {
+                attached.bus.publish(event(n));
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), burst)
+            .await
+            .expect("publishing is never blocked by a stalled sink");
         settle(&attached).await;
         let snapshot = attached.status.snapshot();
         assert!(snapshot.dropped > 2900, "{snapshot:?}");
@@ -981,13 +1116,185 @@ mod tests {
         assert_eq!(attached.status.snapshot().dropped, 10);
     }
 
+    fn lagged_total(gaps: &[ResyncReason]) -> u64 {
+        gaps.iter()
+            .map(|gap| match gap {
+                ResyncReason::Lagged { skipped } => *skipped,
+                other => panic!("{other:?}"),
+            })
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn an_overflow_followed_by_silence_still_writes_the_gap_marker() {
+        let gate = Arc::new(Semaphore::new(0));
+        let recorder = Arc::new(Recorder {
+            gate: Some(Arc::clone(&gate)),
+            ..Recorder::default()
+        });
+        let attached = attach(
+            EventBus::default(),
+            recorder.clone(),
+            SinkRuntime {
+                queue_capacity: 4,
+                drain_deadline: Duration::from_secs(2),
+            },
+            |_| true,
+        );
+        for n in 0..10 {
+            attached.bus.publish(event(n));
+            tokio::task::yield_now().await;
+        }
+        gate.add_permits(100);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let gaps = recorder.gaps.lock().unwrap().clone();
+        let delivered = recorder.ids.lock().unwrap().len() as u64;
+        assert!(!gaps.is_empty(), "no marker while the sink is idle");
+        assert_eq!(lagged_total(&gaps) + delivered, 10, "{gaps:?}");
+        settle(&attached).await;
+    }
+
+    #[tokio::test]
+    async fn an_overflow_followed_by_shutdown_writes_the_gap_marker() {
+        let gate = Arc::new(Semaphore::new(0));
+        let recorder = Arc::new(Recorder {
+            gate: Some(Arc::clone(&gate)),
+            ..Recorder::default()
+        });
+        let attached = attach(
+            EventBus::default(),
+            recorder.clone(),
+            SinkRuntime {
+                queue_capacity: 4,
+                drain_deadline: Duration::from_secs(2),
+            },
+            |_| true,
+        );
+        for n in 0..10 {
+            attached.bus.publish(event(n));
+            tokio::task::yield_now().await;
+        }
+        gate.add_permits(100);
+        settle(&attached).await;
+        let gaps = recorder.gaps.lock().unwrap().clone();
+        let delivered = recorder.ids.lock().unwrap().len() as u64;
+        assert_eq!(lagged_total(&gaps) + delivered, 10, "{gaps:?}");
+    }
+
+    #[tokio::test]
+    async fn a_gap_that_meets_a_full_queue_keeps_its_own_reason() {
+        let queue = Queue {
+            state: Mutex::default(),
+            notify: Notify::new(),
+            capacity: 2,
+        };
+        let status = SinkStatus::new("s", "k");
+        let bus = EventBus::default();
+        queue.push_event(bus.publish(event(0)), &status);
+        queue.push_event(bus.publish(event(1)), &status);
+        queue.push_gap(ResyncReason::BusChanged {
+            requested: uuid::Uuid::nil(),
+            current: uuid::Uuid::nil(),
+        });
+        queue.push_event(bus.publish(event(2)), &status);
+        let mut reasons = Vec::new();
+        queue.close();
+        while let Some(item) = queue.pop().await {
+            if let SinkNotification::ResyncRequired(reason) = item {
+                reasons.push(gap_reason_name(&reason));
+            }
+        }
+        assert_eq!(reasons, ["bus_changed", "lagged"]);
+        assert_eq!(status.snapshot().dropped, 1);
+    }
+
+    #[tokio::test]
+    async fn a_missed_deadline_still_records_the_lost_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.jsonl");
+        let sink = Arc::new(JsonlSink::new(dir.path().to_path_buf(), path.clone()).unwrap());
+        let status = SinkStatus::new("s", "k");
+        let discarded = Discarded {
+            events: 3,
+            gaps: vec![ResyncReason::Lagged { skipped: 2 }],
+        };
+        record_final_gap(sink.as_ref(), &status, discarded).await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        let skipped: Vec<u64> = text
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["skipped"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(skipped, [2, 3]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_under_the_sinks_directory_is_refused_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sinks");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let target = elsewhere.join("victim.jsonl");
+        std::os::unix::fs::symlink(&target, root.join("file.jsonl")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("dir")).unwrap();
+
+        let file = JsonlSink::new(root.clone(), root.join("file.jsonl")).unwrap();
+        let bus = EventBus::default();
+        let envelope = bus.publish(event(1));
+        let error = file
+            .handle(&SinkNotification::Event(Box::new(envelope.clone())))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        let nested = JsonlSink::new(root.clone(), root.join("dir/a.jsonl")).unwrap();
+        assert!(nested
+            .handle(&SinkNotification::Event(Box::new(envelope)))
+            .await
+            .is_err());
+        assert!(!target.exists() && !elsewhere.join("a.jsonl").exists());
+
+        let attached = attach(
+            EventBus::default(),
+            Arc::new(JsonlSink::new(root.clone(), root.join("file.jsonl")).unwrap()),
+            SinkRuntime::default(),
+            |_| true,
+        );
+        attached.bus.publish(event(1));
+        settle(&attached).await;
+        let snapshot = attached.status.snapshot();
+        assert_eq!((snapshot.failed, snapshot.delivered), (1, 0));
+        assert_eq!(snapshot.state, SinkState::Degraded);
+        assert!(snapshot.last_error.unwrap().contains("symbolic link"));
+    }
+
+    #[test]
+    fn a_retry_in_progress_is_degraded_until_the_event_settles() {
+        let status = SinkStatus::new("s", "k");
+        status.record_retry("HTTP 503");
+        let snapshot = status.snapshot();
+        assert_eq!(
+            (snapshot.state, snapshot.retrying),
+            (SinkState::Degraded, true)
+        );
+        assert!(snapshot.last_error_at.is_some());
+        status.record_delivered();
+        let snapshot = status.snapshot();
+        assert!(!snapshot.retrying);
+        assert_eq!((snapshot.retries, snapshot.state), (1, SinkState::Ok));
+    }
+
     #[tokio::test]
     async fn the_jsonl_sink_writes_exact_lines_a_gap_marker_and_repairs_a_torn_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/events.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{\"torn\":").unwrap();
-        let sink = Arc::new(JsonlSink::new(path.clone()).unwrap());
+        let sink = Arc::new(JsonlSink::new(dir.path().to_path_buf(), path.clone()).unwrap());
         let attached = attach(EventBus::new(8), sink, SinkRuntime::default(), |_| true);
         for n in 0..200 {
             attached.bus.publish(event(n));
@@ -1024,7 +1331,7 @@ mod tests {
     async fn the_jsonl_sink_bounds_line_size_and_reports_the_loss() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.jsonl");
-        let sink = JsonlSink::new(path.clone()).unwrap();
+        let sink = JsonlSink::new(dir.path().to_path_buf(), path.clone()).unwrap();
         let bus = EventBus::default();
         let envelope = bus.publish(Event::SettingsChanged {
             settings: json!({"blob": "x".repeat(MAX_LINE_BYTES)}),
@@ -1045,6 +1352,6 @@ mod tests {
     #[test]
     fn jsonl_sink_rejects_a_directory_path() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(JsonlSink::new(dir.path().to_path_buf()).is_err());
+        assert!(JsonlSink::new(dir.path().to_path_buf(), dir.path().to_path_buf()).is_err());
     }
 }

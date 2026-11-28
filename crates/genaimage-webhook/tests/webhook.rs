@@ -92,6 +92,7 @@ impl Fixture {
             secret: Some(SinkSecret::new(SECRET.into())),
             timeout: Duration::from_secs(2),
             max_attempts: 5,
+            sink_root: self.dir.path().to_path_buf(),
             dead_letter_path: self.dir.path().join("hook.dead-letter.jsonl"),
             backoff_base: Duration::from_millis(5),
         };
@@ -304,6 +305,7 @@ async fn public_endpoints_are_refused() {
             secret: None,
             timeout: Duration::from_secs(1),
             max_attempts: 1,
+            sink_root: fixture.dir.path().to_path_buf(),
             dead_letter_path: fixture.dir.path().join("d.jsonl"),
             backoff_base: Duration::from_millis(1),
         };
@@ -346,6 +348,84 @@ async fn gap_notifications_are_not_posted() {
         .await
         .unwrap();
     assert!(fixture.requests().is_empty());
+}
+
+#[tokio::test]
+async fn the_next_event_after_a_gap_carries_the_gap_headers_once() {
+    let fixture = Fixture::new().await;
+    let sink = fixture.sink("/hook", |_| {});
+    let bus = EventBus::default();
+    let event = || {
+        SinkNotification::Event(Box::new(bus.publish(Event::SettingsChanged {
+            settings: json!({}),
+        })))
+    };
+    sink.handle(&event()).await.unwrap();
+    for gap in [
+        ResyncReason::Lagged { skipped: 3 },
+        ResyncReason::Lagged { skipped: 4 },
+    ] {
+        sink.handle(&SinkNotification::ResyncRequired(gap))
+            .await
+            .unwrap();
+    }
+    sink.handle(&event()).await.unwrap();
+    sink.handle(&event()).await.unwrap();
+    let requests = fixture.requests();
+    let gap = |index: usize| {
+        let headers = &requests[index].0;
+        let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap().to_owned());
+        (text("x-genaimage-gap"), text("x-genaimage-gap-reason"))
+    };
+    assert_eq!(gap(0), (None, None));
+    assert_eq!(gap(1), (Some("7".into()), Some("lagged".into())));
+    assert_eq!(gap(2), (None, None));
+}
+
+#[tokio::test]
+async fn a_gap_without_a_count_is_reported_as_unknown_and_survives_a_failed_delivery() {
+    let fixture = Fixture::new().await;
+    fixture.receiver.script.lock().unwrap().extend([400]);
+    let sink = fixture.sink("/hook", |_| {});
+    let bus = EventBus::default();
+    let event = || {
+        SinkNotification::Event(Box::new(bus.publish(Event::SettingsChanged {
+            settings: json!({}),
+        })))
+    };
+    sink.handle(&SinkNotification::ResyncRequired(
+        ResyncReason::Invalidated { id: 5 },
+    ))
+    .await
+    .unwrap();
+    assert!(sink.handle(&event()).await.is_err());
+    sink.handle(&event()).await.unwrap();
+    let requests = fixture.requests();
+    for (headers, _) in &requests {
+        assert_eq!(headers.get("x-genaimage-gap").unwrap(), "unknown");
+        assert_eq!(
+            headers.get("x-genaimage-gap-reason").unwrap(),
+            "invalidated"
+        );
+    }
+    assert_eq!(requests.len(), 2);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_dead_letter_file_is_an_error_and_is_never_followed() {
+    let fixture = Fixture::new().await;
+    fixture.receiver.script.lock().unwrap().extend([400]);
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("victim.jsonl");
+    std::os::unix::fs::symlink(&target, fixture.dir.path().join("hook.dead-letter.jsonl")).unwrap();
+    let error = fixture
+        .sink("/hook", |_| {})
+        .handle(&notification(&envelope()))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("symbolic link"), "{error}");
+    assert!(!target.exists());
 }
 
 #[tokio::test]

@@ -990,15 +990,27 @@ fn sinks_check(
             let error = status
                 .last_error
                 .as_deref()
-                .map(|error| format!("; last error: {error}"))
+                .map(|error| {
+                    let at = status
+                        .last_error_at
+                        .map(|at| format!(" at {}", at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
+                        .unwrap_or_default();
+                    format!("; last error{at}: {error}")
+                })
                 .unwrap_or_default();
+            let retrying = if status.retrying {
+                "; retrying the current event"
+            } else {
+                ""
+            };
             format!(
-                "{} ({}): {}, delivered {}, failed {}, dropped {}, dead-lettered {}, resyncs {}{error}",
+                "{} ({}): {}, delivered {}, failed {}, retries {}, dropped {}, dead-lettered {}, resyncs {}{retrying}{error}",
                 status.name,
                 status.kind,
                 status.state.as_str(),
                 status.delivered,
                 status.failed,
+                status.retries,
                 status.dropped,
                 status.dead_lettered,
                 status.resyncs,
@@ -1028,7 +1040,7 @@ fn sinks_check(
         return DoctorCheck::warning(
             EVENT_SINKS,
             format!(
-                "{degraded} event sink(s) dropped, dead-lettered, failed or resynchronised events since the server started."
+                "{degraded} event sink(s) are retrying, or dropped, dead-lettered, failed or resynchronised events since the server started."
             ),
             "Inspect the dead-letter logs in <data dir>/sinks and the receiver; restart the server to reset the counters.",
         )
@@ -1264,8 +1276,19 @@ mod tests {
         }
         let error = check(&status);
         assert_eq!(error.status, DoctorStatus::Error);
-        assert!(error.items[0].contains("last error: disk full"));
+        assert!(error.items[0].contains("last error at "));
+        assert!(error.items[0].contains(": disk full"));
         assert!(error.fix.is_some());
+
+        let retrying = SinkStatus::new("audit", "jsonl");
+        retrying.record_retry("HTTP 503");
+        let warning = check(&retrying);
+        assert_eq!(warning.status, DoctorStatus::Warning);
+        assert!(warning.items[0].contains("degraded"));
+        assert!(
+            warning.items[0].contains("retries 1,")
+                && warning.items[0].contains("; retrying the current event")
+        );
     }
 
     #[test]

@@ -572,7 +572,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn slow_registered_sink_cannot_block_publishers_and_is_told_to_resync() {
+    async fn registered_sinks_are_forwarded_with_status_and_cannot_block_publishers() {
+        use crate::sinks::SinkRuntime;
+        use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
         let bus = EventBus::new(2);
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let (reports_tx, mut reports_rx) = mpsc::unbounded_channel();
@@ -583,21 +586,22 @@ mod tests {
         });
         let mut registry = ExtensionRegistry::default();
         registry.register_event_sink("slow", sink.clone()).unwrap();
-        let mut tasks = registry.forward_event_sinks(&bus);
-        let mut live = bus.subscribe();
+        let (shutdown, tracker) = (CancellationToken::new(), TaskTracker::new());
+        registry.forward_event_sinks(&bus, SinkRuntime::default(), &shutdown, &tracker);
+        let statuses = bus.sink_statuses().snapshots();
+        assert_eq!(
+            (
+                statuses.len(),
+                statuses[0].name.as_str(),
+                statuses[0].kind.as_str()
+            ),
+            (1, "slow", "extension")
+        );
         bus.publish(change(0));
         timeout(Duration::from_secs(1), started_rx.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            timeout(Duration::from_secs(1), live.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            1
-        );
         let publisher = {
             let bus = bus.clone();
             tokio::spawn(async move {
@@ -610,21 +614,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        sink.release.add_permits(1);
+        sink.release.add_permits(101);
         assert!(matches!(
             timeout(Duration::from_secs(1), reports_rx.recv())
                 .await
                 .unwrap(),
             Some(SinkNotification::Event(_))
         ));
-        assert!(matches!(
-            timeout(Duration::from_secs(1), reports_rx.recv())
-                .await
-                .unwrap(),
-            Some(SinkNotification::ResyncRequired(
-                ResyncReason::Lagged { .. }
-            ))
-        ));
-        tasks.remove("slow").unwrap().await.unwrap().unwrap();
+        shutdown.cancel();
+        tracker.close();
+        timeout(Duration::from_secs(5), tracker.wait())
+            .await
+            .unwrap();
     }
 }
