@@ -27,7 +27,9 @@ The two targets are:
   endpoint must satisfy the loopback and allow-list policy.
 
 Constraints from `AGENTS.md`: cold start under 150 ms, idle RSS under 40 MB,
-binary under 25 MB (main is about 21.2 MB, so roughly 3.8 MB of headroom),
+binary under 25 MB (main is 21,012,024 bytes, 21.01 MB, in
+[performance](../performance.md); CI measured about 21.2 MB after event sinks,
+so roughly 3.8 to 4.0 MB of headroom),
 workspace `rust-version = "1.80"`, and every guardrail (no silent substitution,
 no blind retry, confirmation before any submission, write-only secrets,
 loopback endpoints).
@@ -150,8 +152,8 @@ the current trait, and it should wait for a concrete need.
 | Confirmation, idempotency, `outcome_unknown` | Fits: core adapter, same mapping; traps map to unknown outcome | Fits: core adapter, same mapping; crash and timeout map to unknown outcome | Native |
 | Silent substitution | Core validates declarations and results | Core validates declarations and results | Native |
 | Performance | Instantiate 15 to 25 us, call 0.2 us (measured, trivial component, AOT); real components compile in tens to hundreds of ms (not measured) | Spawn 0.23 to 0.32 ms, round trip about 2 us (measured, trivial native plugin); interpreters add 20 to 100 ms start-up (estimated, not measured) | None |
-| Binary size vs 25 MB budget | +1.0 MB (no WASI, AOT only, unusable by real plugins) to +4.1 MB (with WASI p2, AOT) to +15.3 MB (WASI, Cranelift); main at 21.2 MB reaches 22.2, 25.3 and 36.5 MB | About 0 MB (existing `tokio` and `serde_json`) | 0 MB |
-| Idle memory | +3 to 10 MB RSS with an engine (measured: 3.2 to 11.4 MB against 2.1 MB for an empty binary) | Per plugin process, only while running | 0 |
+| Binary size vs 25 MB budget | +1.0 MB (no WASI, AOT only, unusable by real plugins) to +4.1 MB (with WASI p2, AOT) to +15.3 MB (WASI, Cranelift); main at 21.0 MB reaches 22.0, 25.1 and 36.3 MB | About 0 MB (existing `tokio` and `serde_json`) | 0 MB |
+| Idle memory | 3.2 to 12.9 MB peak RSS with an engine (measured; 2.1 MB for an empty binary, a delta of about 1.1 to 10.8 MB) | Per plugin process, only while running | 0 |
 | Build time | +20 to 75 s clean, 84 to 199 crates (measured) | Negligible | 0 |
 | MSRV (workspace 1.80) | wasmtime 51 requires 1.97 | None | None |
 | DX for authors | Typed WIT; Rust good, other languages heavier; no native crates | Any language, native tooling | Rust only, recompile |
@@ -169,7 +171,7 @@ hand-written WAT component exporting `add(u32, u32) -> u32` (144 bytes;
 0.34 MB empty-`main` baseline, so the deltas below are within 0.4 MB of
 the added cost.
 
-| Host variant | Wasmtime features | Binary | Delta to main (21.2 MB) | Load or compile | Instantiate | Call | Clean build | Crates |
+| Host variant | Wasmtime features | Binary | Delta to main (21.0 MB) | Load or compile | Instantiate | Call | Clean build | Crates |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | empty `main` | none | 0.34 MB | n/a | n/a | n/a | n/a | n/a | n/a |
 | AOT, no WASI | `runtime`, `component-model` | 1.29 MB | about +1.0 MB | 60 to 120 us | 7 to 13 us | 30 ns | about 22 s | 84 |
@@ -233,10 +235,13 @@ Method and caveats:
    enforcer. Its weakness is isolation: plugins are trusted code, the loopback
    policy cannot be enforced against them and this must be stated in the
    documentation and in the install and enablement flow.
-3. **Do not adopt WASM (A) in the main binary.** It breaches the binary budget
-   in every viable configuration (25.3 MB with WASI and AOT only, 36.5 MB with
-   Cranelift, against a 25 MB limit and 21.2 MB baseline), needs a toolchain
-   17 releases newer than the workspace MSRV, and adds 84 to 199 crates. Its
+3. **Do not adopt WASM (A) in the main binary.** With the current profile it breaches the
+   binary budget in every viable configuration (25.1 MB with WASI and AOT only,
+   36.3 MB with Cranelift, against a 25 MB limit and a 21.0 MB baseline), needs
+   a toolchain 17 releases newer than the workspace MSRV, and adds 84 to 199
+   crates; an `opt-level = "s"` build at 16.46 MB (`docs/performance.md`) would
+   let the AOT with WASI variant fit, but the MSRV gap, crate count and AOT
+   engine-version coupling still stand against adoption. Its
    isolation and structural loopback enforcement are real advantages. If strong
    sandboxing becomes necessary, run wasmtime in a separate optional helper
    executable that speaks the same JSON-RPC protocol, so the main binary stays

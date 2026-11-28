@@ -6,7 +6,8 @@ binary or embedding application. There is no runtime plugin loading, no
 dynamic library loading and no hot-loading of code. The architecture is set out
 in [ADR 0001](adr/0001-target-architecture.md) and
 [architecture](architecture.md#providers-extensions-and-deployment). Runtime
-plugins were evaluated in [ADR 0003](adr/0003-runtime-plugin-model.md) (status: Proposed): adoption is
+plugins were evaluated in [ADR 0003](adr/0003-runtime-plugin-model.md)
+(status: Proposed): adoption is
 deferred, and external processes over JSON-RPC are preferred to WASM if a need
 arises. Nothing here depends on it.
 
