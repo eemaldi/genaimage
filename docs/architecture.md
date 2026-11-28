@@ -777,6 +777,8 @@ drain; dropping the fixture signals shutdown and applies a best-effort deadline.
 
 ## Providers, extensions and deployment
 
+Extension authors should start with [extending GenAImage](extending.md).
+
 `genaimage-llm` provides the OpenAI-compatible provider, with explicitly
 configured endpoint and role models. Ollama, llama.cpp and LM Studio are
 intended local options when their compatible APIs are enabled. The registered
