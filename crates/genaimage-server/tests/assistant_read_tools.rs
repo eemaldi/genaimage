@@ -1011,6 +1011,9 @@ async fn get_character_spec_pages_whole_elements_and_never_trims() {
         json!({"character_id": id, "version": 2, "cursor": cursor_of(&pinned)}),
         json!({"character_id": id, "cursor": "nonsense"}),
         json!({"character_id": id, "cursor": "spec.v1.e999"}),
+        json!({"character_id": id, "cursor": "spec.v1.e50"}),
+        json!({"character_id": id, "cursor": "spec.v1.e0"}),
+        json!({"character_id": id, "cursor": "spec.v+1.e3"}),
         json!({"character_id": "missing"}),
         json!({"character_id": id, "extra": 1}),
     ] {
@@ -1021,6 +1024,15 @@ async fn get_character_spec_pages_whole_elements_and_never_trims() {
             "{bad}"
         );
     }
+    let forged = invoke(
+        &api,
+        "get_character_spec",
+        json!({"character_id": id, "cursor": "spec.v1.e50"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(forged.contains("outside this spec version"), "{forged}");
     let bare = api_json(&api, "/api/v1/characters", &json!({"name": "Bare"})).await;
     let bare = bare["character"]["id"].as_str().unwrap().to_owned();
     let error = invoke(&api, "get_character_spec", json!({"character_id": bare}))
@@ -1151,25 +1163,230 @@ async fn spec_reviews_are_projected_whole_beside_vision_reviews() {
     assert_eq!(result["truncated"], false);
 }
 
+async fn annotation_pages(api: &ApiHarness, id: &Value) -> Vec<Value> {
+    let mut pages: Vec<Value> = Vec::new();
+    let mut arguments = json!({"annotation_id": id});
+    loop {
+        let page = invoke(api, "get_annotation", arguments.clone())
+            .await
+            .unwrap();
+        assert!(page.get("truncated").is_none(), "{page}");
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 32 * 1024);
+        let next = page["next_cursor"].clone();
+        assert_eq!(page["complete"], next.is_null(), "{page}");
+        pages.push(page);
+        if next.is_null() {
+            return pages;
+        }
+        arguments = json!({"annotation_id": id, "cursor": next});
+    }
+}
+
 #[tokio::test]
-async fn an_oversized_spec_review_fails_loudly_or_shortens_the_page() {
+async fn an_oversized_spec_review_is_a_summary_row_and_reads_whole_through_get_annotation() {
     let (api, _llm) = start().await;
     install_workflow(&api);
     let (run, output) = completed_run(&api, 1, None).await;
-    let maximal = spec_review(64, 500);
-    insert_annotation(&api, &run, &output, "spec_review", 1, Some(&maximal));
-    let error = invoke(&api, "list_annotations", json!({"output_id": output}))
+    insert_annotation(
+        &api,
+        &run,
+        &output,
+        "spec_review",
+        1,
+        Some(&spec_review(64, 500)),
+    );
+    insert_annotation(&api, &run, &output, "vision_review", 2, None);
+
+    let listed = invoke(&api, "list_annotations", json!({"output_id": output}))
+        .await
+        .unwrap();
+    let rows = listed["annotations"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{listed}");
+    assert_eq!(listed["truncated"], false);
+    assert_eq!(rows[0]["kind"], "vision_review");
+    assert_eq!(rows[0]["complete"], true);
+    let summary = &rows[1];
+    assert_eq!(summary["kind"], "spec_review");
+    assert_eq!(summary["complete"], false);
+    assert_eq!(
+        summary["label"],
+        "model opinion (spec review), not approval"
+    );
+    assert_eq!(
+        summary["spec_review"],
+        json!({
+            "character_id": "char-1",
+            "spec_version": 3,
+            "checklist_total": 64,
+            "verdict_counts": {"met": 0, "deviation": 64, "unclear": 0},
+            "dropped": 1,
+            "summary": "One deviation",
+            "label": "model opinion"
+        })
+    );
+    assert!(summary["spec_review"].get("checklist").is_none());
+    assert_eq!(summary["read_with"]["tool"], "get_annotation");
+    assert!(summary["note"]
+        .as_str()
+        .unwrap()
+        .contains("complete is true"));
+
+    let pages = annotation_pages(&api, &summary["id"]).await;
+    assert!(pages.len() > 1, "a maximal review needs several pages");
+    let mut seen = Vec::new();
+    for (index, page) in pages.iter().enumerate() {
+        assert_eq!(page["annotation_id"], summary["id"]);
+        assert_eq!(page["checklist_total"], 64);
+        assert_eq!(
+            page.get("spec_review").is_some(),
+            index == 0,
+            "only the first page carries the header"
+        );
+        for item in page["checklist"].as_array().unwrap() {
+            seen.push(item["id"].as_str().unwrap().to_owned());
+            assert_eq!(item["note"].as_str().unwrap().len(), 500);
+        }
+        assert_eq!(page["complete"], index == pages.len() - 1);
+    }
+    assert_eq!(
+        seen,
+        (0..64)
+            .map(|index| format!("element-{index}"))
+            .collect::<Vec<_>>()
+    );
+    let header = &pages[0]["spec_review"];
+    assert_eq!(header["verdict_counts"]["deviation"], 64);
+    assert_eq!(
+        header["dropped"],
+        json!(["element 'x' dropped: unknown id"])
+    );
+    assert_eq!(header["summary"], "One deviation");
+}
+
+#[tokio::test]
+async fn get_annotation_rejects_forged_cursors_and_unknown_ids() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let (run, output) = completed_run(&api, 1, None).await;
+    insert_annotation(
+        &api,
+        &run,
+        &output,
+        "spec_review",
+        1,
+        Some(&spec_review(64, 500)),
+    );
+    insert_annotation(&api, &run, &output, "vision_review", 2, None);
+    let listed = invoke(&api, "list_annotations", json!({"output_id": output}))
+        .await
+        .unwrap();
+    let vision = listed["annotations"][0]["id"].clone();
+    let review = listed["annotations"][1]["id"].clone();
+    let pages = annotation_pages(&api, &review).await;
+    let last = pages.last().unwrap();
+    assert_eq!(last["complete"], true);
+
+    for (cursor, expected) in [
+        (
+            format!("ann.{review}.i64"),
+            "outside this annotation checklist",
+        ),
+        (
+            format!("ann.{review}.i65"),
+            "outside this annotation checklist",
+        ),
+        (
+            format!("ann.{review}.i0"),
+            "outside this annotation checklist",
+        ),
+        (format!("ann.{vision}.i3"), "belongs to another annotation"),
+        (format!("ann.{review}"), "not a get_annotation cursor"),
+        (format!("ann.{review}.i+3"), "not a get_annotation cursor"),
+        ("spec.v1.e3".to_owned(), "not a get_annotation cursor"),
+    ] {
+        let error = invoke(
+            &api,
+            "get_annotation",
+            json!({"annotation_id": review, "cursor": cursor}),
+        )
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("cannot be returned whole"), "{error}");
+        assert!(error.contains(expected), "{cursor}: {error}");
+    }
+    let error = invoke(
+        &api,
+        "get_annotation",
+        json!({"annotation_id": vision, "cursor": format!("ann.{vision}.i1")}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("no checklist to page"), "{error}");
+    let error = invoke(&api, "get_annotation", json!({"annotation_id": 987_654}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no annotation has this id"), "{error}");
 
-    insert_annotation(&api, &run, &output, "vision_review", 2, None);
-    let result = invoke(&api, "list_annotations", json!({"output_id": output}))
+    let whole = invoke(&api, "get_annotation", json!({"annotation_id": vision}))
         .await
         .unwrap();
-    assert_eq!(result["annotations"].as_array().unwrap().len(), 1);
-    assert_eq!(result["truncated"], true);
+    assert_eq!(whole["complete"], true);
+    assert_eq!(whole["caption"], "caption");
+    assert_eq!(whole["label"], "model opinion");
+}
+
+#[tokio::test]
+async fn list_annotations_pages_with_cursors_and_visits_every_annotation_once() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let (run, output) = completed_run(&api, 1, None).await;
+    for second in 1..=5 {
+        insert_annotation(&api, &run, &output, "vision_review", second, None);
+    }
+    let mut ids = Vec::new();
+    let mut arguments = json!({"output_id": output, "limit": 2});
+    let mut sizes = Vec::new();
+    loop {
+        let page = invoke(&api, "list_annotations", arguments.clone())
+            .await
+            .unwrap();
+        let rows = page["annotations"].as_array().unwrap();
+        sizes.push(rows.len());
+        ids.extend(rows.iter().map(|row| row["id"].as_i64().unwrap()));
+        assert_eq!(page["truncated"], !page["next_cursor"].is_null());
+        if page["next_cursor"].is_null() {
+            assert!(page.get("truncation_note").is_none(), "{page}");
+            break;
+        }
+        assert!(page["truncation_note"]
+            .as_str()
+            .unwrap()
+            .contains("next_cursor"));
+        arguments["cursor"] = page["next_cursor"].clone();
+    }
+    assert_eq!(sizes, [2, 2, 1]);
+    assert_eq!(ids.len(), 5);
+    assert!(
+        ids.windows(2).all(|pair| pair[0] > pair[1]),
+        "newest first: {ids:?}"
+    );
+
+    for cursor in ["ann.99999", "ann.", "ann.+3", "page-2", "ann.1.i1"] {
+        let error = invoke(
+            &api,
+            "list_annotations",
+            json!({"output_id": output, "cursor": cursor}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("list_annotations cursor") || error.contains("does not match"),
+            "{cursor}: {error}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1185,6 +1402,7 @@ async fn no_read_tool_writes_anything() {
     .await;
     let id = created["character"]["id"].as_str().unwrap().to_owned();
     let (run, output) = completed_run(&api, 1, Some(json!({"id": id, "spec_version": 1}))).await;
+    insert_annotation(&api, &run, &output, "vision_review", 1, None);
     *api.fake.object_info_override.lock().unwrap() = Some(checkpoints(&["b.safetensors"]));
     let before = row_counts(&api);
 
@@ -1202,6 +1420,7 @@ async fn no_read_tool_writes_anything() {
         ("get_character", json!({"character_id": id})),
         ("get_character_spec", json!({"character_id": id})),
         ("list_annotations", json!({"output_id": output})),
+        ("get_annotation", json!({"annotation_id": 1})),
     ] {
         invoke(&api, name, arguments)
             .await

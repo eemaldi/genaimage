@@ -10,10 +10,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{
-    bounded_tool_result, output_id_schema, output_metadata, MAX_TOOL_RESULT_BYTES,
-    MAX_TOOL_STRING_BYTES,
-};
+use super::{bounded_tool_result, output_metadata, MAX_TOOL_RESULT_BYTES, MAX_TOOL_STRING_BYTES};
 use crate::{
     characters::{CharacterListQuery, Decision},
     characters::{CharacterRunQuery, CurrentStateQuery, ReferenceListQuery},
@@ -49,12 +46,14 @@ pub(super) fn read_tools(harness: &Arc<Harness>) -> Vec<Arc<dyn AssistantTool>> 
         Arc::new(GetCharacterTool(Arc::clone(harness))),
         Arc::new(GetCharacterSpecTool(Arc::clone(harness))),
         Arc::new(ListAnnotationsTool(Arc::clone(harness))),
+        Arc::new(GetAnnotationTool(Arc::clone(harness))),
     ]
 }
 
 fn page_schema(extra: Value) -> Value {
     let mut properties = json!({
-        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT}
+        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
+        "cursor": {"type": "string", "minLength": 1}
     });
     if let (Some(properties), Value::Object(extra)) = (properties.as_object_mut(), extra) {
         properties.extend(extra);
@@ -97,6 +96,35 @@ fn paged(
 
 fn json_size(value: &Value) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// A continuation cursor must point strictly inside the list: never at its
+/// start (a first page has no cursor) and never at or past its end, so a
+/// forged last cursor cannot report `complete` with nothing read.
+fn check_continuation(continued: bool, offset: usize, total: usize, what: &str) -> Result<()> {
+    if continued && (offset == 0 || offset >= total) {
+        return Err(invalid(&format!("cursor is outside this {what}")));
+    }
+    Ok(())
+}
+
+/// The leading `items` that fit whole in the page budget after `used` bytes.
+/// An item is never shortened; one that cannot fit alone is an error.
+fn whole_items(mut used: usize, items: Vec<Value>, what: &str) -> Result<Vec<Value>> {
+    let total = items.len();
+    let included: Vec<Value> = items
+        .into_iter()
+        .take_while(|item| {
+            used += json_size(item) + 1;
+            used <= PAGE_BUDGET_BYTES
+        })
+        .collect();
+    if included.is_empty() && total > 0 {
+        return Err(invalid(&format!(
+            "The next {what} cannot be returned whole within the page budget."
+        )));
+    }
+    Ok(included)
 }
 
 /// Shortens `text` to `max` UTF-8 bytes and says so; never splits a character.
@@ -692,6 +720,7 @@ fn parse_spec_cursor(cursor: &str) -> Result<(u32, usize)> {
         .strip_prefix("spec.v")
         .and_then(|rest| rest.split_once(".e"))
         .and_then(|(version, offset)| Some((version.parse().ok()?, offset.parse().ok()?)))
+        .filter(|(version, offset)| spec_cursor(*version, *offset) == cursor)
         .ok_or_else(|| {
             invalid(
                 "cursor is not a get_character_spec cursor; pass next_cursor exactly as returned",
@@ -764,9 +793,7 @@ fn spec_page(record: &CharacterSpecVersion, offset: usize, continued: bool) -> R
         views,
         style_notes,
     } = &record.spec;
-    if offset > elements.len() || (continued && offset == 0) {
-        return Err(invalid("cursor is outside this spec version"));
-    }
+    check_continuation(continued, offset, elements.len(), "spec version")?;
     let mut page = json!({
         "character_id": record.character_id,
         "version": record.version,
@@ -789,23 +816,12 @@ fn spec_page(record: &CharacterSpecVersion, offset: usize, continued: bool) -> R
             page[name] = value;
         }
     }
-    let mut used = json_size(&page);
-    let mut included = Vec::new();
-    for element in &elements[offset..] {
-        let element = serde_json::to_value(element)?;
-        let size = json_size(&element) + 1;
-        if used + size > PAGE_BUDGET_BYTES {
-            break;
-        }
-        used += size;
-        included.push(element);
-    }
+    let remaining = elements[offset..]
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let included = whole_items(json_size(&page), remaining, "spec element")?;
     let end = offset + included.len();
-    if included.is_empty() && end < elements.len() {
-        return Err(invalid(
-            "The next spec element cannot be returned whole within the page budget.",
-        ));
-    }
     let next_cursor = (end < elements.len()).then(|| spec_cursor(record.version, end));
     page["elements"] = Value::Array(included);
     page["complete"] = json!(next_cursor.is_none());
@@ -825,8 +841,26 @@ struct ListAnnotationsTool(Arc<Harness>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AnnotationArguments {
+struct AnnotationListArguments {
     output_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+fn annotation_cursor(id: i64) -> String {
+    format!("ann.{id}")
+}
+
+fn parse_annotation_cursor(cursor: &str) -> Result<i64> {
+    cursor
+        .strip_prefix("ann.")
+        .and_then(|id| id.parse().ok())
+        .filter(|id| *id > 0 && annotation_cursor(*id) == cursor)
+        .ok_or_else(|| {
+            invalid("cursor is not a list_annotations cursor; pass next_cursor exactly as returned")
+        })
 }
 
 #[async_trait]
@@ -836,11 +870,13 @@ impl AssistantTool for ListAnnotationsTool {
     }
 
     fn description(&self) -> &str {
-        "List recorded annotations for an output, newest first (at most 10; truncated says when more exist). Each carries a label; they are model opinions, not facts or user approval. Long text is shortened with a marker; prompts and raw model responses are omitted."
+        "List recorded annotations for an output, newest first (default 10, at most 50 per page; follow next_cursor for the rest). Each carries a label; they are model opinions, not facts or user approval. Long caption and critique text is shortened with a marker; prompts and raw model responses are omitted. A row with complete false is a summary of an annotation too large for one page (for a spec review: the verdict counts, the dropped count and the summary, without the checklist); read it whole with get_annotation."
     }
 
     fn json_schema(&self) -> Value {
-        output_id_schema()
+        let mut schema = page_schema(json!({"output_id": {"type": "string", "minLength": 1}}));
+        schema["required"] = json!(["output_id"]);
+        schema
     }
 
     fn requires_confirmation(&self) -> bool {
@@ -848,37 +884,126 @@ impl AssistantTool for ListAnnotationsTool {
     }
 
     async fn invoke(&self, _context: ToolContext, arguments: Value) -> Result<Value> {
-        let AnnotationArguments { output_id } = serde_json::from_value(arguments)?;
+        let AnnotationListArguments {
+            output_id,
+            limit,
+            cursor,
+        } = serde_json::from_value(arguments)?;
+        let limit = match limit {
+            Some(limit) => limit_of(Some(limit))?,
+            None => MAX_ANNOTATIONS,
+        };
         let repository = self.0.repository().as_async();
         repository.output(&output_id).await?;
         let annotations = repository.output_annotations(&output_id).await?;
-        let fetched = annotations.len();
-        let mut used = 0;
-        let mut rows: Vec<Value> = Vec::new();
-        for annotation in annotations.into_iter().take(MAX_ANNOTATIONS) {
-            let id = annotation.id;
-            let row = annotation_row(annotation);
-            used += json_size(&row) + 1;
-            if used > PAGE_BUDGET_BYTES {
-                if rows.is_empty() {
-                    return Err(HarnessError::InvalidToolArguments(format!(
-                        "Annotation {id} exceeds the {PAGE_BUDGET_BYTES}-byte page budget and cannot be returned whole."
-                    )));
-                }
-                break;
+        let listed = annotations.len();
+        let start = match cursor.as_deref().map(parse_annotation_cursor).transpose()? {
+            Some(after) => {
+                annotations
+                    .iter()
+                    .position(|annotation| annotation.id == after)
+                    .ok_or_else(|| {
+                        invalid("cursor does not match an annotation of this output; pass next_cursor exactly as returned")
+                    })?
+                    + 1
             }
-            rows.push(row);
+            None => 0,
+        };
+        let remaining = &annotations[start..];
+        let mut result = budgeted_page("annotations", limit, |count| {
+            let page = &remaining[..count.min(remaining.len())];
+            let rows = page.iter().map(annotation_row).collect();
+            let next = (remaining.len() > page.len())
+                .then(|| {
+                    page.last()
+                        .map(|annotation| annotation_cursor(annotation.id))
+                })
+                .flatten();
+            std::future::ready(Ok((rows, next)))
+        })
+        .await?;
+        result["output_id"] = json!(output_id);
+        result["source"] = json!("model_opinion");
+        result["note"] = json!("These are model opinions, not provenance and not user approval.");
+        if listed >= OUTPUT_ANNOTATION_LIMIT && result["next_cursor"].is_null() {
+            result["truncated"] = json!(true);
+            result["truncation_note"] = json!(format!("Only the newest {OUTPUT_ANNOTATION_LIMIT} annotations of an output are listed; older ones exist and are not shown. This is not the complete list."));
         }
-        let truncated = fetched > rows.len() || fetched >= OUTPUT_ANNOTATION_LIMIT;
-        Ok(bounded_tool_result(json!({
-            "output_id": output_id,
-            "source": "model_opinion",
-            "note": "These are model opinions, not provenance and not user approval.",
-            "annotations": rows,
-            "limit": MAX_ANNOTATIONS,
-            "truncated": truncated,
-            "truncation_note": truncated.then_some("Older or further annotations exist and are not shown; this is not the complete list.")
-        })))
+        Ok(result)
+    }
+}
+
+struct GetAnnotationTool(Arc<Harness>);
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetAnnotationArguments {
+    annotation_id: i64,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+fn checklist_cursor(id: i64, offset: usize) -> String {
+    format!("ann.{id}.i{offset}")
+}
+
+fn parse_checklist_cursor(cursor: &str) -> Result<(i64, usize)> {
+    cursor
+        .strip_prefix("ann.")
+        .and_then(|rest| rest.split_once(".i"))
+        .and_then(|(id, offset)| Some((id.parse().ok()?, offset.parse().ok()?)))
+        .filter(|(id, offset)| *id > 0 && checklist_cursor(*id, *offset) == cursor)
+        .ok_or_else(|| {
+            invalid("cursor is not a get_annotation cursor; pass next_cursor exactly as returned")
+        })
+}
+
+#[async_trait]
+impl AssistantTool for GetAnnotationTool {
+    fn name(&self) -> &str {
+        "get_annotation"
+    }
+
+    fn description(&self) -> &str {
+        "Read one annotation by the id list_annotations gave, whole. A spec review is paged in whole checklist items: the first page carries the summary, verdict counts, dropped notes and checklist_total; every page carries checklist, next_cursor and complete. Nothing is shortened. The review is fully read only when complete is true; follow next_cursor (with the same annotation_id) until then, and never describe a review from an incomplete read. It is a model opinion, not approval."
+    }
+
+    fn json_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "annotation_id": {"type": "integer", "minimum": 1},
+                "cursor": {"type": "string", "minLength": 1}
+            },
+            "required": ["annotation_id"],
+            "additionalProperties": false
+        })
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    async fn invoke(&self, _context: ToolContext, arguments: Value) -> Result<Value> {
+        let GetAnnotationArguments {
+            annotation_id,
+            cursor,
+        } = serde_json::from_value(arguments)?;
+        let offset = match cursor.as_deref().map(parse_checklist_cursor).transpose()? {
+            Some((id, _)) if id != annotation_id => return Err(invalid(
+                "cursor belongs to another annotation; pass the annotation_id it was returned for",
+            )),
+            Some((_, offset)) => offset,
+            None => 0,
+        };
+        let annotation = self
+            .0
+            .repository()
+            .as_async()
+            .output_annotation(annotation_id)
+            .await?
+            .ok_or_else(|| invalid("no annotation has this id; use an id from list_annotations"))?;
+        annotation_page(&annotation, offset, cursor.is_some())
     }
 }
 
@@ -890,30 +1015,46 @@ fn annotation_label(kind: &str) -> String {
     }
 }
 
+fn checklist_item(item: &crate::SpecReviewItem) -> Value {
+    json!({
+        "id": item.id,
+        "requirement": item.requirement,
+        "verdict": item.verdict,
+        "note": item.note
+    })
+}
+
+fn verdict_counts(review: &crate::SpecReview) -> Value {
+    let count = |verdict| {
+        review
+            .checklist
+            .iter()
+            .filter(|item| item.verdict == verdict)
+            .count()
+    };
+    json!({
+        "met": count(crate::SpecVerdict::Met),
+        "deviation": count(crate::SpecVerdict::Deviation),
+        "unclear": count(crate::SpecVerdict::Unclear)
+    })
+}
+
 fn spec_review_projection(review: &crate::SpecReview) -> Value {
-    let checklist: Vec<Value> = review
-        .checklist
-        .iter()
-        .map(|item| {
-            json!({
-                "id": item.id,
-                "requirement": item.requirement,
-                "verdict": item.verdict,
-                "note": item.note
-            })
-        })
-        .collect();
     json!({
         "character_id": review.character_id,
         "spec_version": review.spec_version,
-        "checklist": checklist,
+        "checklist": review.checklist.iter().map(checklist_item).collect::<Vec<_>>(),
         "dropped": review.dropped,
         "summary": review.summary,
         "label": review.label
     })
 }
 
-fn annotation_row(annotation: crate::OutputAnnotation) -> Value {
+/// One list row: the annotation whole when it fits a page, otherwise a
+/// summary row that says it is incomplete and where to read the rest.
+fn annotation_row(annotation: &crate::OutputAnnotation) -> Value {
+    let shortened = annotation.caption.len() > ANNOTATION_TEXT_CAP_BYTES
+        || annotation.adherence_critique.len() > ANNOTATION_TEXT_CAP_BYTES;
     let mut row = json!({
         "id": annotation.id,
         "kind": annotation.kind,
@@ -922,12 +1063,117 @@ fn annotation_row(annotation: crate::OutputAnnotation) -> Value {
         "created_at": annotation.created_at,
         "caption": cap_text(&annotation.caption, ANNOTATION_TEXT_CAP_BYTES),
         "adherence_critique": cap_text(&annotation.adherence_critique, ANNOTATION_TEXT_CAP_BYTES),
-        "tags": annotation.tags
+        "tags": annotation.tags,
+        "complete": !shortened
     });
     if let Some(review) = &annotation.spec_review {
         row["spec_review"] = spec_review_projection(review);
     }
-    row
+    if json_size(&row) <= PAGE_BUDGET_BYTES {
+        return row;
+    }
+    let mut summary = json!({
+        "id": annotation.id,
+        "kind": annotation.kind,
+        "label": annotation_label(&annotation.kind),
+        "model": annotation.model,
+        "created_at": annotation.created_at,
+        "complete": false,
+        "read_with": {"tool": "get_annotation", "annotation_id": annotation.id},
+        "note": "Too large for one page, so this row is a summary and not the complete annotation. Call get_annotation with this annotation_id and follow next_cursor until complete is true before describing it."
+    });
+    if let Some(review) = &annotation.spec_review {
+        summary["spec_review"] = json!({
+            "character_id": review.character_id,
+            "spec_version": review.spec_version,
+            "checklist_total": review.checklist.len(),
+            "verdict_counts": verdict_counts(review),
+            "dropped": review.dropped.len(),
+            "summary": cap_text(&review.summary, ANNOTATION_TEXT_CAP_BYTES),
+            "label": review.label
+        });
+    }
+    summary
+}
+
+/// One page of an annotation, whole. A spec review pages its checklist in
+/// whole items; any other annotation is a single page. A field that cannot
+/// fit is an error, never a shortened value.
+fn annotation_page(
+    annotation: &crate::OutputAnnotation,
+    offset: usize,
+    continued: bool,
+) -> Result<Value> {
+    let mut page = json!({
+        "annotation_id": annotation.id,
+        "output_id": annotation.output_id,
+        "kind": annotation.kind,
+        "label": annotation_label(&annotation.kind),
+        "source": "model_opinion"
+    });
+    let Some(review) = &annotation.spec_review else {
+        if continued {
+            return Err(invalid(
+                "this annotation has no checklist to page; omit cursor",
+            ));
+        }
+        page["model"] = json!(annotation.model);
+        page["created_at"] = json!(annotation.created_at);
+        page["caption"] = json!(annotation.caption);
+        page["adherence_critique"] = json!(annotation.adherence_critique);
+        page["tags"] = json!(annotation.tags);
+        return whole_or_error(page, "annotation").map(|mut page| {
+            page["complete"] = json!(true);
+            page["next_cursor"] = Value::Null;
+            page
+        });
+    };
+    let total = review.checklist.len();
+    check_continuation(continued, offset, total, "annotation checklist")?;
+    page["checklist_total"] = json!(total);
+    page["checklist_from"] = json!(offset);
+    if !continued {
+        page["model"] = json!(annotation.model);
+        page["created_at"] = json!(annotation.created_at);
+        page["spec_review"] = json!({
+            "character_id": review.character_id,
+            "spec_version": review.spec_version,
+            "verdict_counts": verdict_counts(review),
+            "dropped": review.dropped,
+            "summary": review.summary,
+            "label": review.label
+        });
+        page = whole_or_error(page, "annotation header")?;
+    }
+    let remaining: Vec<Value> = review.checklist[offset..]
+        .iter()
+        .map(checklist_item)
+        .collect();
+    let included = whole_items(json_size(&page), remaining, "checklist item")?;
+    let end = offset + included.len();
+    let next_cursor = (end < total).then(|| checklist_cursor(annotation.id, end));
+    page["checklist"] = Value::Array(included);
+    page["complete"] = json!(next_cursor.is_none());
+    page["next_cursor"] = json!(next_cursor);
+    page["note"] = json!(if next_cursor.is_some() {
+        "Incomplete: more checklist items follow. Pass next_cursor as cursor, with the same annotation_id, before describing this review. It is a model opinion, not approval."
+    } else {
+        "Complete: this page is the last. It is a model opinion, not approval."
+    });
+    if json_size(&page) > MAX_TOOL_RESULT_BYTES {
+        return Err(invalid("The annotation page exceeds the tool result cap."));
+    }
+    Ok(page)
+}
+
+fn whole_or_error(page: Value, what: &str) -> Result<Value> {
+    if json_size(&page) > PAGE_BUDGET_BYTES {
+        return Err(invalid(&format!(
+            "The {what} is {} bytes and cannot be returned whole within the {PAGE_BUDGET_BYTES}-byte page budget.",
+            json_size(&page)
+        )));
+    }
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -1003,6 +1249,85 @@ mod tests {
         oversized.spec.summary = "x".repeat(PAGE_BUDGET_BYTES);
         let error = spec_page(&oversized, 0, false).unwrap_err().to_string();
         assert!(error.contains("summary"), "{error}");
+    }
+
+    fn spec_record(elements: usize) -> CharacterSpecVersion {
+        use crate::characters::{ElementCategory, Requirement, SpecElement};
+        CharacterSpecVersion {
+            character_id: "c".into(),
+            version: 2,
+            created_at: chrono::Utc::now(),
+            based_on: None,
+            note: None,
+            spec: CharacterSpec {
+                summary: "s".into(),
+                style_notes: None,
+                palette: Vec::new(),
+                views: Vec::new(),
+                elements: (0..elements)
+                    .map(|index| SpecElement {
+                        id: format!("e{index}"),
+                        category: ElementCategory::Other,
+                        description: "d".into(),
+                        requirement: Requirement::Flexible,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_continuation_cursor_must_point_strictly_inside_the_spec() {
+        let record = spec_record(3);
+        assert_eq!(spec_page(&record, 0, false).unwrap()["complete"], true);
+        let last = spec_page(&record, 2, true).unwrap();
+        assert_eq!(
+            (
+                last["complete"].clone(),
+                last["elements"].as_array().unwrap().len()
+            ),
+            (json!(true), 1)
+        );
+        for offset in [0, 3, 4, usize::MAX] {
+            let error = spec_page(&record, offset, true).unwrap_err().to_string();
+            assert!(
+                error.contains("outside this spec version"),
+                "{offset}: {error}"
+            );
+        }
+        let empty = spec_record(0);
+        assert_eq!(spec_page(&empty, 0, false).unwrap()["complete"], true);
+        assert!(spec_page(&empty, 1, true).is_err());
+    }
+
+    #[test]
+    fn page_schemas_accept_the_cursor_they_return() {
+        let schema = page_schema(json!({}));
+        crate::tool_schema::validate_instance(&schema, &json!({"limit": 2, "cursor": "x"}))
+            .unwrap();
+        assert!(crate::tool_schema::validate_instance(&schema, &json!({"cursor": ""})).is_err());
+    }
+
+    #[test]
+    fn annotation_cursors_are_canonical_and_not_interchangeable() {
+        assert_eq!(parse_annotation_cursor(&annotation_cursor(12)).unwrap(), 12);
+        assert_eq!(
+            parse_checklist_cursor(&checklist_cursor(12, 7)).unwrap(),
+            (12, 7)
+        );
+        for bad in [
+            "ann.",
+            "ann.+1",
+            "ann.1.i1",
+            "ann.01",
+            "spec.v1.e1",
+            "ann.-1",
+        ] {
+            assert!(parse_annotation_cursor(bad).is_err(), "{bad}");
+        }
+        for bad in ["ann.1", "ann.1.i+1", "ann.1.i01", "ann..i1"] {
+            assert!(parse_checklist_cursor(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
