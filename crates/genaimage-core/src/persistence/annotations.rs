@@ -1,10 +1,7 @@
 use rusqlite::params;
 
 use super::{AsyncRunRepository, RunRepository};
-use crate::{
-    assistant::{spec_review::SPEC_REVIEW_KIND, OutputAnnotation},
-    HarnessError, Result,
-};
+use crate::{assistant::OutputAnnotation, HarnessError, Result};
 
 pub(crate) const OUTPUT_ANNOTATION_LIMIT: usize = 100;
 

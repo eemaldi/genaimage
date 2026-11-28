@@ -266,7 +266,11 @@ last row they included, so a row is never hollowed while the cursor advances;
 a shortened page says so. `get_character` returns only a spec summary
 (version, `spec_bytes`, `element_count`); `get_character_spec` pages whole spec
 elements and reports `complete` only on the last page, and its content is
-never trimmed. `list_checkpoints` and `inspect_workflow` report
+never trimmed. `list_annotations` projects a `spec_review` annotation whole
+(`character_id`, `spec_version`, every checklist item, `dropped`, `summary`) and
+labels it a model opinion, not approval; a page that cannot hold the next
+annotation whole stops there and says so, and a single annotation too large for
+the page is an error. `list_checkpoints` and `inspect_workflow` report
 `profile_pack_problems` when pack files failed to load, so an empty profile
 list is not read as "no profile". `inspect_workflow` also returns
 `preset_info` (layouts), the checkpoint parameter and the checkpoint

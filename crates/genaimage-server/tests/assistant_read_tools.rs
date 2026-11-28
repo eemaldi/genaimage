@@ -1070,6 +1070,108 @@ async fn annotations_over_the_limit_say_they_are_truncated() {
     assert!(result.get("truncation_notes").is_none(), "{result}");
 }
 
+fn spec_review(items: usize, note_bytes: usize) -> genaimage_core::SpecReview {
+    use genaimage_core::{characters::ElementCategory, characters::Requirement};
+    genaimage_core::SpecReview {
+        character_id: "char-1".into(),
+        spec_version: 3,
+        checklist: (0..items)
+            .map(|index| genaimage_core::SpecReviewItem {
+                id: format!("element-{index}"),
+                category: ElementCategory::Colour,
+                requirement: Requirement::Mandatory,
+                verdict: genaimage_core::SpecVerdict::Deviation,
+                note: "n".repeat(note_bytes),
+            })
+            .collect(),
+        dropped: vec!["element 'x' dropped: unknown id".into()],
+        summary: "One deviation".into(),
+        label: "model opinion".into(),
+    }
+}
+
+fn insert_annotation(
+    api: &ApiHarness,
+    run: &str,
+    output: &str,
+    kind: &str,
+    second: u32,
+    detail: Option<&genaimage_core::SpecReview>,
+) {
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    db.execute(
+        "INSERT INTO output_annotations (output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response, detail_json)
+         VALUES (?1, ?2, ?3, 'm', ?4, 'caption', 'critique', '[]', 'p', 'r', ?5)",
+        rusqlite::params![
+            output,
+            run,
+            kind,
+            format!("2031-01-01T00:00:{second:02}+00:00"),
+            detail.map(|review| serde_json::to_string(review).unwrap())
+        ],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn spec_reviews_are_projected_whole_beside_vision_reviews() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let (run, output) = completed_run(&api, 1, None).await;
+    let review = spec_review(2, 20);
+    insert_annotation(&api, &run, &output, "vision_review", 1, None);
+    insert_annotation(&api, &run, &output, "spec_review", 2, Some(&review));
+    let result = invoke(&api, "list_annotations", json!({"output_id": output}))
+        .await
+        .unwrap();
+    let rows = result["annotations"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{result}");
+    assert_eq!(rows[0]["kind"], "spec_review");
+    assert_eq!(
+        rows[0]["label"],
+        "model opinion (spec review), not approval"
+    );
+    assert_eq!(
+        rows[0]["spec_review"],
+        json!({
+            "character_id": "char-1",
+            "spec_version": 3,
+            "checklist": [
+                {"id": "element-0", "requirement": "mandatory", "verdict": "deviation", "note": "n".repeat(20)},
+                {"id": "element-1", "requirement": "mandatory", "verdict": "deviation", "note": "n".repeat(20)}
+            ],
+            "dropped": ["element 'x' dropped: unknown id"],
+            "summary": "One deviation",
+            "label": "model opinion"
+        })
+    );
+    assert_eq!(rows[1]["kind"], "vision_review");
+    assert_eq!(rows[1]["label"], "model opinion");
+    assert!(rows[1].get("spec_review").is_none());
+    assert_eq!(result["truncated"], false);
+}
+
+#[tokio::test]
+async fn an_oversized_spec_review_fails_loudly_or_shortens_the_page() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let (run, output) = completed_run(&api, 1, None).await;
+    let maximal = spec_review(64, 500);
+    insert_annotation(&api, &run, &output, "spec_review", 1, Some(&maximal));
+    let error = invoke(&api, "list_annotations", json!({"output_id": output}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot be returned whole"), "{error}");
+
+    insert_annotation(&api, &run, &output, "vision_review", 2, None);
+    let result = invoke(&api, "list_annotations", json!({"output_id": output}))
+        .await
+        .unwrap();
+    assert_eq!(result["annotations"].as_array().unwrap().len(), 1);
+    assert_eq!(result["truncated"], true);
+}
+
 #[tokio::test]
 async fn no_read_tool_writes_anything() {
     let (api, _llm) = start().await;

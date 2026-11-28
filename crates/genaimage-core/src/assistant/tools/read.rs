@@ -854,15 +854,21 @@ impl AssistantTool for ListAnnotationsTool {
         let annotations = repository.output_annotations(&output_id).await?;
         let fetched = annotations.len();
         let mut used = 0;
-        let rows: Vec<Value> = annotations
-            .into_iter()
-            .take(MAX_ANNOTATIONS)
-            .map(annotation_row)
-            .take_while(|row| {
-                used += json_size(row) + 1;
-                used <= PAGE_BUDGET_BYTES
-            })
-            .collect();
+        let mut rows: Vec<Value> = Vec::new();
+        for annotation in annotations.into_iter().take(MAX_ANNOTATIONS) {
+            let id = annotation.id;
+            let row = annotation_row(annotation);
+            used += json_size(&row) + 1;
+            if used > PAGE_BUDGET_BYTES {
+                if rows.is_empty() {
+                    return Err(HarnessError::InvalidToolArguments(format!(
+                        "Annotation {id} exceeds the {PAGE_BUDGET_BYTES}-byte page budget and cannot be returned whole."
+                    )));
+                }
+                break;
+            }
+            rows.push(row);
+        }
         let truncated = fetched > rows.len() || fetched >= OUTPUT_ANNOTATION_LIMIT;
         Ok(bounded_tool_result(json!({
             "output_id": output_id,
@@ -879,12 +885,36 @@ impl AssistantTool for ListAnnotationsTool {
 fn annotation_label(kind: &str) -> String {
     match kind {
         "vision_review" => "model opinion".to_owned(),
+        "spec_review" => "model opinion (spec review), not approval".to_owned(),
         other => format!("model opinion (kind {})", cap_text(other, 64)),
     }
 }
 
-fn annotation_row(annotation: crate::OutputAnnotation) -> Value {
+fn spec_review_projection(review: &crate::SpecReview) -> Value {
+    let checklist: Vec<Value> = review
+        .checklist
+        .iter()
+        .map(|item| {
+            json!({
+                "id": item.id,
+                "requirement": item.requirement,
+                "verdict": item.verdict,
+                "note": item.note
+            })
+        })
+        .collect();
     json!({
+        "character_id": review.character_id,
+        "spec_version": review.spec_version,
+        "checklist": checklist,
+        "dropped": review.dropped,
+        "summary": review.summary,
+        "label": review.label
+    })
+}
+
+fn annotation_row(annotation: crate::OutputAnnotation) -> Value {
+    let mut row = json!({
         "id": annotation.id,
         "kind": annotation.kind,
         "label": annotation_label(&annotation.kind),
@@ -893,7 +923,11 @@ fn annotation_row(annotation: crate::OutputAnnotation) -> Value {
         "caption": cap_text(&annotation.caption, ANNOTATION_TEXT_CAP_BYTES),
         "adherence_critique": cap_text(&annotation.adherence_critique, ANNOTATION_TEXT_CAP_BYTES),
         "tags": annotation.tags
-    })
+    });
+    if let Some(review) = &annotation.spec_review {
+        row["spec_review"] = spec_review_projection(review);
+    }
+    row
 }
 
 #[cfg(test)]
@@ -903,6 +937,10 @@ mod tests {
     #[test]
     fn annotation_labels_never_name_a_role_and_unknown_kinds_pass_through() {
         assert_eq!(annotation_label("vision_review"), "model opinion");
+        assert_eq!(
+            annotation_label("spec_review"),
+            "model opinion (spec review), not approval"
+        );
         assert_eq!(
             annotation_label("future_kind"),
             "model opinion (kind future_kind)"
