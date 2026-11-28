@@ -66,6 +66,7 @@ Unknown fields are rejected at every level. `id` and `version` are required.
 | `description` | Optional text of at most 2000 bytes. |
 | `workflows` | Manifest paths relative to the pack, each ending in `.genaimage.json`. At most 64. Only declared manifests are loaded. |
 | `templates` | Relative paths to [prompt template](templates.md) files, at most 64. They are read-only and are parsed strictly when `GET /api/v1/templates` lists them; a missing or escaping file is a pack diagnostic, an invalid one is reported in the template diagnostics and also as a pack problem, so the pack is never `ok` (a declared `.md` file that is not a TOML template counts as invalid). |
+| `checkpoint_profiles` | Optional relative path to a TOML file of [checkpoint profiles](#checkpoint-profiles), ending in `.toml`. Confined to the pack like every other declared file. |
 | `requires.node_classes` | ComfyUI node classes the pack needs. At most 256. |
 | `requires.models` | A table from model folder to file names. At most 32 folders and 512 names in total. |
 
@@ -152,6 +153,78 @@ pack, so it can never be looser than the endpoint. Pack diagnostics are
 reported as a warning even when `/object_info` is unknown; only the node and
 model part is skipped then. See [troubleshooting](troubleshooting.md#doctor-checks).
 
+## Checkpoint profiles
+
+A pack may declare parameter values for exact checkpoint names in a file named
+by `checkpoint_profiles` in `pack.toml`, conventionally `checkpoints.toml`:
+
+```toml
+[[profiles]]
+id = "sdxl-base"
+label = "SDXL base"
+checkpoints = ["sd_xl_base_1.0.safetensors"]
+note = "Recommended settings for this checkpoint."
+
+[profiles.values]
+steps = 30
+cfg = 7.0
+sampler = "dpmpp_2m"
+```
+
+- `id`: as a pack ID, unique in the file. `label`: one line of at most 256 bytes.
+  `checkpoints`: 1 to 64 exact names, each listed once. `note`: optional text.
+  `values`: parameter name to a string, number or boolean, at most 64.
+  At most 64 profiles; the file is at most 64 KiB; unknown fields are rejected.
+- Matching is string equality on the checkpoint name. Nothing infers a model
+  family from a file name, so a checkpoint that no profile lists has no profile.
+- A profile is never applied implicitly. A run request or validation names it
+  with `checkpoint_profile`. The server then requires that the pack declares the
+  profile, that the workflow has a single `CheckpointLoaderSimple` `ckpt_name`
+  parameter and that its effective value (user, then preset, then default) is
+  one of the profile's names; otherwise it answers `422`. A profile cannot set
+  that checkpoint parameter itself, a `seed` parameter or an `image_upload`
+  parameter: seeds and images are always the user's choice for each request.
+  A pack that does so has a pack problem, and a request naming the profile is
+  refused.
+- The values apply to the workflows of the pack that define the parameter; each
+  value is validated by that parameter exactly as a preset value is (numbers are
+  compared exactly, never through `f64`). TOML integers are 64-bit signed and
+  floats keep their literal form, so `2.0` stays `2.0` and `-0.0` stays `-0.0`.
+- Precedence: default, then profile, then preset, then user value. The run's
+  `preflight.json` and run manifest record `checkpoint_profile` (the ID) and
+  `checkpoint_profile_revision` only when one was named. The resolved values are in the run parameters, so a rerun
+  replays them without reading the profile file again.
+- A malformed file loads no profile at all and is a pack problem. A value that a
+  workflow's parameter would refuse, or a parameter that no workflow of the pack
+  defines, is also a pack problem. A value naming a parameter that only some
+  workflows of the pack define is not applied to the others; it is reported as
+  ignored (see below). `validate`, `doctor` and the listings all
+  report it through the same `pack_problems` function.
+
+`GET /api/v1/workflows/{id}` lists the pack's profiles as `checkpoint_profiles`
+(`id`, `revision`, `label`, `checkpoints`, `note`, `values` for the parameters
+that workflow defines, and `ignored`: the names of profile values this workflow
+does not define, which are not applied) and the matched parameter as
+`checkpoint_parameter`. The validate response repeats these as
+`ignored_profile_values` and adds `checkpoint_profile_revision` when a profile
+is named.
+
+Each profile has a `revision`, `sha256:<hex>` over a canonical serialisation of
+its whole entry (ID, label, checkpoints, note and values, with number text kept
+exactly). Clients should always send it back as `checkpoint_profile_revision`
+next to `checkpoint_profile` when validating or submitting, using the value they
+showed the user. If the profile was edited in between, the server answers `409`
+(`urn:genaimage:problem:checkpoint-profile-changed`, "The checkpoint profile
+changed since it was reviewed.") and writes nothing; review the new values and
+submit again. The revision without a profile is a `400`. Omitting it applies
+whatever the profile holds at submission time. The revision is resolved from
+the same loaded profile that supplies the values, and a rerun replays the
+recorded values without comparing revisions. The one-shot CLI `--checkpoint-profile`
+sends no revision, as it has no review step.
+`GET /api/v1/models/checkpoints` adds `profiles`: for every installed checkpoint
+name, the `{pack, id, revision, label}` of each profile that lists it (an empty list when
+none does) and a `profile_note`.
+
 ## API and CLI
 
 | Surface | Result |
@@ -161,6 +234,7 @@ model part is skipped then. See [troubleshooting](troubleshooting.md#doctor-chec
 | `POST /api/v1/workflows/refresh` | The `GET /api/v1/workflows` listing after a forced rebuild. |
 | `genaimage packs list` | The packs listing. |
 | `genaimage packs validate <ID>` | The validation. Exit `0` only for `ok`; exit `6` for `missing`, `unknown` and `unavailable`; exit `4` when the server answers with a problem, such as `404` for an unknown pack ID. |
+| `genaimage run <ID> --checkpoint-profile <PROFILE>` and `genaimage workflow validate <ID> --checkpoint-profile <PROFILE>` | Name a [checkpoint profile](#checkpoint-profiles); never implied. |
 | `genaimage workflow refresh` | The refreshed workflow listing. |
 
 Pack templates are consumed by the template library; see [templates](templates.md#scopes).

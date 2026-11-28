@@ -34,8 +34,58 @@ pub struct WorkflowManifest {
     pub parameters: BTreeMap<String, ParameterDefinition>,
     #[serde(default)]
     pub presets: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Optional presentation of presets; never changes their values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preset_info: BTreeMap<String, PresetInfo>,
     #[serde(default)]
     pub outputs: Vec<OutputDefinition>,
+}
+
+pub const MAX_PRESET_LABEL_BYTES: usize = 80;
+pub const MAX_PRESET_DESCRIPTION_BYTES: usize = 500;
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<PresetKind>,
+}
+
+/// `layout` presets set the canvas size or arrangement.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PresetKind {
+    Layout,
+    Style,
+    Quality,
+}
+
+impl PresetInfo {
+    fn problem(&self) -> Option<String> {
+        let text = |name: &str, value: &Option<String>, max: usize| {
+            let value = value.as_deref()?;
+            (value.trim().is_empty() || value.len() > max || value.contains('\0'))
+                .then(|| format!("{name} must be 1 to {max} bytes and not blank"))
+        };
+        text("label", &self.label, MAX_PRESET_LABEL_BYTES)
+            .or_else(|| {
+                text(
+                    "description",
+                    &self.description,
+                    MAX_PRESET_DESCRIPTION_BYTES,
+                )
+            })
+            .or_else(|| {
+                self.label
+                    .as_deref()
+                    .filter(|label| label.contains('\n'))
+                    .map(|_| "label must be on one line".to_owned())
+            })
+    }
 }
 
 // Retained for reading and writing historical run records, not workflow manifests.
@@ -352,6 +402,50 @@ impl LoadedWorkflow {
         }
     }
 
+    /// The one parameter bound to a `CheckpointLoaderSimple` `ckpt_name` input.
+    /// `None` when there is none or several; the workflow is then not eligible
+    /// for checkpoint profiles, and nothing is guessed.
+    pub fn checkpoint_parameter(&self) -> Option<&str> {
+        let mut found = self.manifest.parameters.iter().filter(|(_, definition)| {
+            definition.input == "ckpt_name"
+                && self.workflow[&definition.node]["class_type"] == crate::models::CHECKPOINT_LOADER
+        });
+        let (name, _) = found.next()?;
+        found.next().is_none().then_some(name.as_str())
+    }
+
+    /// Every parameter with a value and where that value comes from, by the
+    /// precedence default < checkpoint profile < preset < user value.
+    pub fn effective_values(
+        &self,
+        preset: Option<&str>,
+        profile: &BTreeMap<String, Value>,
+        user: &BTreeMap<String, Value>,
+    ) -> Result<Vec<EffectiveValue>> {
+        let preset = self.preset_values(preset)?;
+        Ok(self
+            .manifest
+            .parameters
+            .iter()
+            .filter_map(|(name, definition)| {
+                let (value, source) = if let Some(value) = user.get(name) {
+                    (value, ValueSource::User)
+                } else if let Some(value) = preset.get(name) {
+                    (value, ValueSource::Preset)
+                } else if let Some(value) = profile.get(name) {
+                    (value, ValueSource::CheckpointProfile)
+                } else {
+                    (definition.default.as_ref()?, ValueSource::Default)
+                };
+                Some(EffectiveValue {
+                    parameter: name.clone(),
+                    value: value.clone(),
+                    source,
+                })
+            })
+            .collect())
+    }
+
     /// Collects all parameter errors using the same preset and default rules as binding.
     pub fn validate_bindings(
         &self,
@@ -585,6 +679,19 @@ impl LoadedWorkflow {
                 issue(format!("presets.{name}"), workflow_message(error));
             }
         }
+        for (name, info) in &self.manifest.preset_info {
+            let field = format!("preset_info.{name}");
+            if !self.manifest.presets.contains_key(name) {
+                issue(
+                    field,
+                    format!(
+                        "preset_info describes '{name}', which is not a preset of this workflow"
+                    ),
+                );
+            } else if let Some(problem) = info.problem() {
+                issue(field, format!("preset '{name}' {problem}"));
+            }
+        }
         let mut bindings = BTreeSet::new();
         for (name, parameter) in &self.manifest.parameters {
             let binding = (parameter.node.clone(), parameter.input.clone());
@@ -751,6 +858,22 @@ pub struct BoundWorkflow {
     pub workflow: Value,
     pub parameters: BTreeMap<String, Value>,
     pub image_uploads: BTreeMap<String, PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValueSource {
+    Default,
+    CheckpointProfile,
+    Preset,
+    User,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EffectiveValue {
+    pub parameter: String,
+    pub value: Value,
+    pub source: ValueSource,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -27,7 +27,7 @@ use crate::{AppState, Problem};
         (status = 400, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 409, description = "Workflow revision mismatch, workflow ID declared by several manifests or idempotency key conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow or checkpoint profile revision mismatch, workflow ID declared by several manifests or idempotency key conflict", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -59,6 +59,8 @@ pub(super) async fn submit(
                 .submit_keyed_until(
                     key,
                     RunRequest {
+                        checkpoint_profile: body.checkpoint_profile,
+                        checkpoint_profile_revision: body.checkpoint_profile_revision,
                         workflow: body.workflow,
                         preset: body.preset,
                         parameters: body.parameters,
@@ -475,6 +477,7 @@ pub(super) fn problem(error: HarnessError) -> Problem {
             "Use a batch ID returned by the batches API.",
         ),
         HarnessError::WorkflowChanged => return Problem::workflow_changed(),
+        HarnessError::CheckpointProfileChanged => return Problem::checkpoint_profile_changed(),
         HarnessError::WorkflowAmbiguous(detail) => {
             return Problem::workflow_ambiguous(detail.clone())
         }

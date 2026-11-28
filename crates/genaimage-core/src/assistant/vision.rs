@@ -435,6 +435,8 @@ mod tests {
             schema_version: 1,
             run_id: run_id.to_owned(),
             rerun_of: None,
+            checkpoint_profile: None,
+            checkpoint_profile_revision: None,
             prompt_id: run.prompt_id,
             client_id: run.client_id,
             workflow: WorkflowManifestRecord {

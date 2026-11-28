@@ -23,6 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn run_request() -> RunRequest {
     RunRequest {
+        checkpoint_profile: None,
+        checkpoint_profile_revision: None,
         workflow_revision: None,
         workflow: "contract-workflow".into(),
         preset: Some("fast".into()),

@@ -158,6 +158,9 @@ enum WorkflowCommand {
         id: String,
         #[arg(long)]
         preset: Option<String>,
+        /// Layer a pack checkpoint profile beneath the preset; never implied.
+        #[arg(long)]
+        checkpoint_profile: Option<String>,
         #[arg(long = "set", value_name = "NAME=JSON")]
         parameters: Vec<String>,
     },
@@ -178,6 +181,9 @@ struct RunCommand {
     workflow: String,
     #[arg(long)]
     preset: Option<String>,
+    /// Layer a pack checkpoint profile beneath the preset; never implied.
+    #[arg(long)]
+    checkpoint_profile: Option<String>,
     #[arg(long = "set", value_name = "NAME=JSON")]
     parameters: Vec<String>,
     /// Upload an explicitly selected local reference image.

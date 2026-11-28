@@ -214,7 +214,7 @@ JSON field definitions follow the [OpenAPI contract](api/openapi.json).
   presets, outputs}`. `parameters` maps each name to its binding, constraints
   and UI hints; `outputs` is an array of `{node, kind}` objects. This is not a
   resolved-run preview. Use `--json` to see the full constraints and metadata.
-- **`workflow validate <ID> [--preset <NAME>] [--set NAME=JSON]…`** checks
+- **`workflow validate <ID> [--preset <NAME>] [--checkpoint-profile <ID>] [--set NAME=JSON]…`** checks
   bindings and the availability of required ComfyUI node classes without
   submitting a run. Explicit `--set` values override preset values; parameters not supplied
   by either fall back to manifest defaults where declared. Values must be valid
@@ -276,7 +276,7 @@ contains the effective values; timestamps are RFC 3339 and `error` and
 `unknown_submission`, `queued`, `running`, `completed`, `failed`, `cancelling`,
 and `cancelled`.
 
-- **`run <ID> [--preset <NAME>] [--set NAME=JSON]… [--image NAME=PATH]… [--version <VERSION>] [--wait [--timeout <SECONDS>]]`**
+- **`run <ID> [--preset <NAME>] [--checkpoint-profile <ID>] [--set NAME=JSON]… [--image NAME=PATH]… [--version <VERSION>] [--wait [--timeout <SECONDS>]]`**
   submits the server catalogue workflow once and prints its run record. Explicit
   bindings override the selected preset; the server applies declared defaults.
   The CLI does not pin the workflow revision: it uses the snapshot current at

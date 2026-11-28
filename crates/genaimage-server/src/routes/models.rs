@@ -14,9 +14,9 @@ use axum::{
 };
 use futures_util::{stream, StreamExt};
 use genaimage_api::{
-    CheckpointEnvironment, CheckpointLocation, CheckpointsResponse, InstalledLlmModel,
-    LlmModelRole, LlmModelSource, LlmModelsResponse, LlmRoleModel, LlmRoleModelState, ModelPull,
-    ModelPullListResponse, ModelPullState, StartModelPullRequest,
+    CheckpointEnvironment, CheckpointLocation, CheckpointProfileRef, CheckpointsResponse,
+    InstalledLlmModel, LlmModelRole, LlmModelSource, LlmModelsResponse, LlmRoleModel,
+    LlmRoleModelState, ModelPull, ModelPullListResponse, ModelPullState, StartModelPullRequest,
 };
 use genaimage_core::{
     models::{
@@ -426,7 +426,34 @@ pub(super) async fn checkpoints(
     .await
     .map_err(|_| unavailable(format!("ComfyUI did not list {CHECKPOINT_LOADER} in time.")))?
     .map_err(|error| unavailable(error.to_string()))?;
+    let harness = state.harness();
+    let packs = tokio::task::spawn_blocking(move || harness.discover_packs())
+        .await
+        .map_err(|error| unavailable(error.to_string()))?;
+    let profiles = checkpoints
+        .iter()
+        .map(|name| {
+            let matched = packs
+                .packs
+                .iter()
+                .flat_map(|pack| {
+                    pack.checkpoint_profiles
+                        .iter()
+                        .filter(|profile| profile.matches(name))
+                        .map(|profile| CheckpointProfileRef {
+                            pack: pack.manifest.id.clone(),
+                            id: profile.id.clone(),
+                            revision: profile.revision(),
+                            label: profile.label.clone(),
+                        })
+                })
+                .collect();
+            (name.clone(), matched)
+        })
+        .collect();
     Ok(Json(CheckpointsResponse {
+        profiles,
+        profile_note: "Profiles match a checkpoint only by its exact name. A checkpoint with an empty list has no profile; no model family is inferred from file names, and a profile is applied only when a request names it.".into(),
         checkpoints,
         locations: locations(),
         refresh_note:

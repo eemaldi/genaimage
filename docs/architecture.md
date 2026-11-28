@@ -362,8 +362,11 @@ import endpoints, whose confirmation writes one new user workflow:
   uniqueness, detail, validation, submission and rerun refuse the ID with a hint
   to repair the path or its permissions.
 - `POST /api/v1/workflows/{id}/validate` accepts a JSON object with optional
-  `preset`, `parameters` (an object of overrides) and `workflow_revision`. Preset
-  values are overridden by parameters and manifest defaults fill remaining values.
+  `preset`, `checkpoint_profile`, `parameters` (an object of overrides) and
+  `workflow_revision`. Preset values are overridden by parameters; a named
+  [checkpoint profile](packs.md#checkpoint-profiles) sits beneath the preset, and
+  manifest defaults fill remaining values. The response lists `effective_values`
+  with their `source` (`default`, `checkpoint_profile`, `preset` or `user`).
   HTTP 200 returns the `revision` of the snapshot checked, `valid`,
   `parameter_errors` (each with `parameter` and `reason`), and `node_check`.
   The node status is `available`, `missing` (with `missing_classes`) or
@@ -440,7 +443,8 @@ Ollama adapter in `genaimage-llm`, and the core `PullRegistry` keeps pulls in
 memory, one per model name and at most two at a time. Pull state is not
 persisted; see [models](models.md) for the re-attach and restart semantics.
 `GET /api/v1/models/checkpoints` reads ComfyUI `object_info` and fails when it
-cannot, rather than returning an empty list.
+cannot, rather than returning an empty list. It also maps each checkpoint name
+to the exact-match pack checkpoint profiles (`profiles`).
 
 ### Runs API
 
@@ -457,7 +461,9 @@ cannot, rather than returning an empty list.
 
 A submission body is `application/json`, for example
 `{"workflow":"text-to-image","parameters":{"seed":42}}`. `workflow` is a
-configured manifest ID, not a local path. `preset`, `parameters` (default `{}`)
+configured manifest ID, not a local path. `preset`, `checkpoint_profile` (a
+pack [checkpoint profile](packs.md#checkpoint-profiles), applied only when
+named), `parameters` (default `{}`)
 and `version` (an optional new output directory name) are optional. Pass the
 reviewed workflow’s opaque `revision` as `workflow_revision` to pin the
 submission to its exact API graph and sidecar bytes. A stale revision returns

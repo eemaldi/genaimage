@@ -73,6 +73,15 @@ impl Problem {
         .with_type("urn:genaimage:problem:workflow-changed")
     }
 
+    pub(crate) fn checkpoint_profile_changed() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            genaimage_core::HarnessError::CheckpointProfileChanged.to_string(),
+            "Reload the workflow, review the checkpoint profile values again and submit with the new profile revision.",
+        )
+        .with_type("urn:genaimage:problem:checkpoint-profile-changed")
+    }
+
     /// Several manifests claim one workflow ID; the detail names every claimant.
     pub(crate) fn workflow_ambiguous(detail: impl Into<String>) -> Self {
         Self::new(

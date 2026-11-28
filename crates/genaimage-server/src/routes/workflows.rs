@@ -15,10 +15,11 @@ use axum::{
     Json,
 };
 use genaimage_api::{
-    SettingError, WorkflowDetails, WorkflowDiagnostic, WorkflowImportConfirmRequest,
-    WorkflowImportProposal, WorkflowImportRequest, WorkflowImportResponse, WorkflowInheritedInput,
-    WorkflowInheritedSource, WorkflowListResponse, WorkflowNodeCheck, WorkflowNodeCheckStatus,
-    WorkflowParameterError, WorkflowSummary, WorkflowValidationRequest, WorkflowValidationResponse,
+    CheckpointProfileSummary, SettingError, WorkflowDetails, WorkflowDiagnostic,
+    WorkflowEffectiveValue, WorkflowImportConfirmRequest, WorkflowImportProposal,
+    WorkflowImportRequest, WorkflowImportResponse, WorkflowInheritedInput, WorkflowInheritedSource,
+    WorkflowListResponse, WorkflowNodeCheck, WorkflowNodeCheckStatus, WorkflowParameterError,
+    WorkflowSummary, WorkflowValidationRequest, WorkflowValidationResponse, WorkflowValueSource,
 };
 use genaimage_core::{
     workflow_import::{ImportError, ImportIssue},
@@ -380,6 +381,23 @@ pub(super) async fn details(
     })
     .map_err(internal_error)?;
     let mut details: WorkflowDetails = serde_json::from_value(value).map_err(internal_error)?;
+    details.checkpoint_parameter = workflow.checkpoint_parameter().map(str::to_owned);
+    let (harness, profiled) = (state.harness(), workflow.clone());
+    details.checkpoint_profiles =
+        tokio::task::spawn_blocking(move || harness.checkpoint_profiles_of(&profiled))
+            .await
+            .map_err(internal_error)?
+            .into_iter()
+            .map(|profile| CheckpointProfileSummary {
+                values: profile.values_for(&workflow.manifest),
+                ignored: profile.ignored_for(&workflow.manifest),
+                revision: profile.revision(),
+                id: profile.id,
+                label: profile.label,
+                checkpoints: profile.checkpoints,
+                note: profile.note,
+            })
+            .collect();
     for (name, parameter) in &mut details.parameters {
         parameter.declared_required =
             Some(workflow.manifest_source["parameters"][name]["required"].as_bool());
@@ -434,7 +452,7 @@ pub(super) fn inherited_input(
         (status = 403, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 404, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 408, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
-        (status = 409, description = "Workflow revision mismatch or workflow ID declared by several manifests", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "Workflow or checkpoint profile revision mismatch, or workflow ID declared by several manifests", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 413, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 415, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
         (status = 421, description = "Problem details", body = genaimage_api::ProblemDetails, content_type = "application/problem+json"),
@@ -458,8 +476,41 @@ pub(super) async fn validate(
         )
     })?;
     let workflow = load(harness.clone(), id, request.workflow_revision).await?;
+    let layered = {
+        let (harness, workflow) = (harness.clone(), workflow.clone());
+        let (preset, profile, revision, parameters) = (
+            request.preset.clone(),
+            request.checkpoint_profile.clone(),
+            request.checkpoint_profile_revision.clone(),
+            request.parameters.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            harness.layer_bindings(
+                &workflow,
+                preset.as_deref(),
+                profile.as_deref(),
+                revision.as_deref(),
+                &parameters,
+            )
+        })
+        .await
+        .map_err(internal_error)?
+        .map_err(|error| match error {
+            HarnessError::CheckpointProfileChanged => Problem::checkpoint_profile_changed(),
+            HarnessError::InvalidRunRequest(detail) => Problem::new(
+                StatusCode::BAD_REQUEST,
+                detail,
+                "Send checkpoint_profile_revision only together with checkpoint_profile.",
+            ),
+            error => Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                error.to_string(),
+                "Name a checkpoint profile of this workflow's pack and a checkpoint that it lists exactly.",
+            ),
+        })?
+    };
     let errors = harness
-        .validate_api_bindings(&workflow, request.preset.as_deref(), &request.parameters)
+        .validate_api_bindings(&workflow, request.preset.as_deref(), &layered.overrides)
         .await
         .map_err(|error| {
             if matches!(error, HarnessError::UploadStorage(_)) {
@@ -484,7 +535,7 @@ pub(super) async fn validate(
         })
         .collect();
     let inherited_inputs = workflow
-        .inherited_inputs(request.preset.as_deref(), &request.parameters)
+        .inherited_inputs(request.preset.as_deref(), &layered.overrides)
         .map_err(|error| {
             Problem::new(
                 StatusCode::BAD_REQUEST,
@@ -499,6 +550,44 @@ pub(super) async fn validate(
                 definition.input.clone(),
                 value,
             )
+        })
+        .collect();
+    let profile_id = layered.profile.as_ref().map(|profile| profile.id.clone());
+    let no_profile_values = std::collections::BTreeMap::new();
+    let effective_values = workflow
+        .effective_values(
+            request.preset.as_deref(),
+            layered
+                .profile
+                .as_ref()
+                .map_or(&no_profile_values, |profile| &profile.values),
+            &request.parameters,
+        )
+        .map_err(|error| {
+            Problem::new(
+                StatusCode::BAD_REQUEST,
+                error.to_string(),
+                "Select a preset declared by this workflow.",
+            )
+        })?
+        .into_iter()
+        .map(|value| {
+            let source = match value.source {
+                genaimage_core::workflow::ValueSource::Default => WorkflowValueSource::Default,
+                genaimage_core::workflow::ValueSource::CheckpointProfile => {
+                    WorkflowValueSource::CheckpointProfile
+                }
+                genaimage_core::workflow::ValueSource::Preset => WorkflowValueSource::Preset,
+                genaimage_core::workflow::ValueSource::User => WorkflowValueSource::User,
+            };
+            WorkflowEffectiveValue {
+                checkpoint_profile: (source == WorkflowValueSource::CheckpointProfile)
+                    .then(|| profile_id.clone())
+                    .flatten(),
+                parameter: value.parameter,
+                value: value.value,
+                source,
+            }
         })
         .collect();
     let node_check = match tokio::time::timeout(
@@ -533,6 +622,13 @@ pub(super) async fn validate(
             && node_check.status == WorkflowNodeCheckStatus::Available,
         parameter_errors,
         inherited_inputs,
+        effective_values,
+        checkpoint_profile_revision: layered.profile.as_ref().map(|p| p.revision.clone()),
+        ignored_profile_values: layered
+            .profile
+            .as_ref()
+            .map(|p| p.ignored.clone())
+            .unwrap_or_default(),
         node_check,
     }))
 }

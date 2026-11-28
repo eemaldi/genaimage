@@ -298,6 +298,10 @@ async fn workflows_are_discovered_inspected_and_validated_by_id() {
         json!({
             "revision": details["revision"],
             "valid": true, "parameter_errors": [],
+            "effective_values": [
+                {"parameter": "seed", "value": 99, "source": "user"},
+                {"parameter": "steps", "value": 10, "source": "preset"}
+            ],
             "node_check": {"status": "available", "missing_classes": [], "reason": null}
         })
     );

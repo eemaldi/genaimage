@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{self, InputFileRecord},
     assistant::{ConversationService, ConversationStore, PromptTemplates},
+    checkpoint_profiles::LayeredBindings,
     config::{ResolvedConfig, SettingsUpdate},
     event::RunLockKind,
     image_backend::{BackendHealth, HistoryOutcome, ImageBackend, PromptResponse, UploadResponse},
@@ -48,6 +49,12 @@ pub struct RunRequest {
     // Omitting the field preserves idempotency fingerprints for unpinned requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_revision: Option<String>,
+    // Omitting the field preserves idempotency fingerprints; a profile is never implied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile: Option<String>,
+    // Only valid with `checkpoint_profile`; a mismatch refuses the run before anything is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_profile_revision: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -87,6 +94,10 @@ enum SubmissionRequest {
 #[derive(Deserialize)]
 struct RecordedInputs {
     preset: Option<String>,
+    #[serde(default)]
+    checkpoint_profile: Option<String>,
+    #[serde(default)]
+    checkpoint_profile_revision: Option<String>,
     parameters: Value,
     source_inputs: Vec<InputFileRecord>,
 }
@@ -231,6 +242,10 @@ impl WorkflowDiscovery {
                 .then(|| format!("{}: {reason}", workflow.manifest_path.display()))
         }));
         problems.extend(crate::templates::pack_template_problems(pack));
+        problems.extend(crate::checkpoint_profiles::value_problems(
+            pack,
+            &self.workflows,
+        ));
         problems
     }
 }
@@ -1236,6 +1251,7 @@ impl Harness {
         deadline: &CancellationToken,
     ) -> Result<KeyedSubmission> {
         let repository = self.repository.as_async();
+        let mut recorded_profile: Option<(String, Option<String>)> = None;
         let (request, source) = match submission {
             SubmissionRequest::New(request) => (request, None),
             SubmissionRequest::Rerun(id) => {
@@ -1244,6 +1260,10 @@ impl Harness {
                 if provenance.parameters != run.parameters {
                     return Err(MISSING_PROVENANCE);
                 }
+                // The recorded, resolved parameters are replayed; the profile file is never re-read.
+                recorded_profile = provenance
+                    .checkpoint_profile
+                    .map(|id| (id, provenance.checkpoint_profile_revision));
                 let request = RunRequest {
                     workflow: run.workflow_id.clone(),
                     preset: provenance.preset,
@@ -1251,6 +1271,8 @@ impl Harness {
                         .map_err(|_| MISSING_PROVENANCE)?,
                     version: None,
                     workflow_revision: None,
+                    checkpoint_profile: None,
+                    checkpoint_profile_revision: None,
                 };
                 (
                     request,
@@ -1299,9 +1321,33 @@ impl Harness {
             loaded.verify_revision(request.workflow_revision.as_deref())?;
             loaded
         };
+        let layered = if source.is_some() {
+            LayeredBindings {
+                overrides: request.parameters.clone(),
+                profile: None,
+            }
+        } else {
+            let (harness, loaded, request) = (self.clone(), loaded.clone(), request.clone());
+            tokio::task::spawn_blocking(move || {
+                harness.layer_bindings(
+                    &loaded,
+                    request.preset.as_deref(),
+                    request.checkpoint_profile.as_deref(),
+                    request.checkpoint_profile_revision.as_deref(),
+                    &request.parameters,
+                )
+            })
+            .await
+            .map_err(|error| {
+                HarnessError::Workflow(format!("checkpoint profile lookup failed: {error}"))
+            })??
+        };
+        if let Some(profile) = &layered.profile {
+            recorded_profile = Some((profile.id.clone(), Some(profile.revision.clone())));
+        }
         let stored = if keyed.is_some() && source.is_none() {
             let (errors, uploads) = self
-                .check_api_bindings(&loaded, request.preset.as_deref(), &request.parameters)
+                .check_api_bindings(&loaded, request.preset.as_deref(), &layered.overrides)
                 .await?;
             if !errors.is_empty() {
                 return Err(HarnessError::Workflow(
@@ -1317,7 +1363,7 @@ impl Harness {
             None
         };
         let mut bound = loaded
-            .bind(request.preset.as_deref(), &request.parameters)
+            .bind(request.preset.as_deref(), &layered.overrides)
             .map_err(|error| {
                 if source.is_some() {
                     WORKFLOW_MISMATCH
@@ -1381,6 +1427,9 @@ impl Harness {
                 &bound,
                 &loaded,
                 request.preset.as_deref(),
+                recorded_profile
+                    .as_ref()
+                    .map(|(id, revision)| (id.as_str(), revision.as_deref())),
                 &parameters,
                 &source_inputs,
             )

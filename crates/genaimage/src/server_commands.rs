@@ -119,11 +119,14 @@ impl<'a> Command<'a> {
             Self::Workflow(WorkflowCommand::Validate {
                 id,
                 preset,
+                checkpoint_profile,
                 parameters,
             }) => {
                 let request = WorkflowValidationRequest {
                     workflow_revision: None,
                     preset: preset.clone(),
+                    checkpoint_profile: checkpoint_profile.clone(),
+                    checkpoint_profile_revision: None,
                     parameters: crate::parse_parameters(parameters).map_err(Error::Input)?,
                 };
                 let result = client.validate_workflow(id, &request).await?;

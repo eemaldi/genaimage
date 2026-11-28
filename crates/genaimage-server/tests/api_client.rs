@@ -18,6 +18,8 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 fn submission() -> SubmitRunRequest {
     SubmitRunRequest {
+        checkpoint_profile: None,
+        checkpoint_profile_revision: None,
         workflow_revision: None,
         workflow: WORKFLOW.into(),
         preset: Some("fast".into()),

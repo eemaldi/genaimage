@@ -461,6 +461,12 @@ fn cross_field_rules_require_workflow_validation() {
     let mut wrong_preset_type = valid_manifest("workflow.api.json");
     wrong_preset_type["presets"]["fast"]["steps"] = json!("12");
     cases.push((wrong_preset_type, "expects Integer"));
+    let mut info_for_unknown_preset = valid_manifest("workflow.api.json");
+    info_for_unknown_preset["preset_info"] = json!({"ghost": {"label": "Ghost"}});
+    cases.push((info_for_unknown_preset, "not a preset"));
+    let mut blank_label = valid_manifest("workflow.api.json");
+    blank_label["preset_info"] = json!({"fast": {"label": "   "}});
+    cases.push((blank_label, "not blank"));
     let mut default_not_in_options = valid_manifest("workflow.api.json");
     default_not_in_options["parameters"]["steps"]["default"] = json!(5);
     default_not_in_options["parameters"]["steps"]["options"] = json!([10, 20]);
@@ -871,4 +877,45 @@ fn manifest_rejects_unrepresentable_exact_numeric_bounds_without_panicking() {
     assert!(message.contains("parameter 'seed'"), "{message}");
     assert!(message.contains("maximum"), "{message}");
     assert!(message.contains("unrepresentable"), "{message}");
+}
+
+#[test]
+fn preset_info_is_presentation_only_and_an_unknown_kind_is_rejected() {
+    use genaimage_core::workflow::PresetKind;
+
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../docs/schemas/workflow-manifest.v2.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let temp = TempDir::new().unwrap();
+    let plain_path = create_workflow(&temp, valid_manifest("workflow.api.json"), valid_workflow());
+    let plain = LoadedWorkflow::load(&plain_path).unwrap();
+    assert!(serde_json::to_value(&plain.manifest)
+        .unwrap()
+        .get("preset_info")
+        .is_none());
+
+    let mut described = valid_manifest("workflow.api.json");
+    described["preset_info"] = json!({"fast": {
+        "label": "Quick", "description": "Ten steps.", "kind": "layout"
+    }});
+    assert!(validator.is_valid(&described));
+    let described_path = create_workflow(&temp, described.clone(), valid_workflow());
+    let described = LoadedWorkflow::load(&described_path).unwrap();
+    assert_eq!(
+        described.manifest.preset_info["fast"].kind,
+        Some(PresetKind::Layout)
+    );
+    assert_eq!(
+        described.preset_values(Some("fast")).unwrap(),
+        plain.preset_values(Some("fast")).unwrap()
+    );
+    assert_ne!(described.revision(), plain.revision());
+
+    let mut unknown_kind = valid_manifest("workflow.api.json");
+    unknown_kind["preset_info"] = json!({"fast": {"kind": "genre"}});
+    assert!(!validator.is_valid(&unknown_kind));
+    let path = create_workflow(&temp, unknown_kind, valid_workflow());
+    assert!(LoadedWorkflow::load(&path).is_err());
 }
