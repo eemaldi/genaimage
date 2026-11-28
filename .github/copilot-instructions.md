@@ -23,9 +23,10 @@ model, node, seed, image, prompt or setting. LLM output is a proposal the user
 can edit and must explicitly confirm; the assistant never submits a run without
 that confirmation. An assistant tool that needs confirmation runs only after a
 decision bound to the reviewed `preview_token`; an interrupted invocation is
-`outcome_unknown` and never re-invoked. Reconcile ambiguous prompt submissions against ComfyUI
+`outcome_unknown` and never re-invoked; a tool's `preview` must be deterministic. Reconcile ambiguous prompt submissions against ComfyUI
 queue/history, never blindly retry them. Preserve run records by creating new
-versions instead of overwriting. A technical success is not creative approval.
+versions instead of overwriting, and when an operation fails after writing, say
+what was written. A technical success is not creative approval.
 Operator surfaces must:
 - pin each submission to the reviewed `workflow_revision`
 - use the server's verified re-run endpoint rather than rebuilding a request
@@ -41,11 +42,12 @@ with `GENAIMAGE_CONTAINER=1` it may bind `0.0.0.0`; publish ports on `127.0.0.1`
 only). Outbound services default to loopback, with explicitly allow-listed
 private or Compose hosts as the only exceptions. Keep documentation and
 user-facing text in English (UK), and respect the performance budgets in ADR 0001; measure the
-binary-size impact of any new runtime dependency.
+binary-size impact of any new runtime dependency. The CI performance job never
+fails, so read its binary-size row after each merge.
 
 Regenerate the API contract with `cargo run -p genaimage-server --no-default-features --example openapi`;
 CI checks generated portal types. Build `apps/portal` before default Cargo builds
-or use `--no-default-features` for API-only builds. Run `python3 scripts/ci_check.py`
+or use `--no-default-features` for API-only builds. Run `TMPDIR=/tmp python3 scripts/ci_check.py`
 locally; [testing](../docs/testing.md) covers the assistant scenarios and the
 opt-in live LLM tests. Project-local skills under `.agents/skills/` are mirrored identically
 under `.claude/skills/`; keep both

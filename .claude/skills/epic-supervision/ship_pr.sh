@@ -12,6 +12,18 @@ fi
 branch=$1 issue=$2 title=$3 body=$4
 repo=${GENAIMAGE_REPO:-eemaldi/genaimage}
 
+# Prints the performance job's "Release binary size" table row for a commit.
+binary_size_row() {
+  local id row
+  for id in $(gh run list --repo "$repo" --commit "$1" --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+    row=$(gh run view "$id" --repo "$repo" --log 2>/dev/null | grep -o -m 1 '| Release binary size.*' | tr -d '\r') || true
+    if [ -n "$row" ]; then
+      echo "$row"
+      return 0
+    fi
+  done
+}
+
 git fetch -q origin
 if ! git merge-base --is-ancestor origin/main "origin/$branch"; then
   echo "origin/$branch is behind origin/main; start a fresh developer to rebase." >&2
@@ -43,3 +55,14 @@ if [ "$state" != "CLOSED" ]; then
 fi
 git fetch -q origin
 echo "origin/main is now $(git log --oneline -1 origin/main)"
+
+head_sha=$(gh pr view "$url" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)
+row=$(binary_size_row "$head_sha" || true)
+if [ -z "$row" ]; then
+  echo "Binary size: not found (check the performance job)"
+else
+  echo "Binary size: $row"
+  case $row in
+    *"OVER BUDGET"*) echo "WARNING: the release binary is over its size budget." >&2 ;;
+  esac
+fi

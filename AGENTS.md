@@ -52,7 +52,9 @@ ComfyUI image generation, assisted by local LLMs. Read
   - An assistant tool that requires confirmation runs only after a confirm or
     edit decision bound to the `preview_token` of the preview the user saw.
     The confirmation ID is the run's idempotency key. An interrupted
-    invocation settles as `outcome_unknown` and is never re-invoked.
+    invocation settles as `outcome_unknown` and is never re-invoked. Each
+    decision re-runs the tool's `preview`, so it must be deterministic and
+    free of side effects.
   - Validate assistant proposals against the exact workflow revision the model
     was shown. Drop invalid items with a note; never coerce them. The
     assistant never chooses image inputs.
@@ -60,7 +62,9 @@ ComfyUI image generation, assisted by local LLMs. Read
 - Reconcile an ambiguous prompt submission against ComfyUI queue/history;
   never blindly retry it.
 - Preserve source workflows and previously written run/production records.
-  Create new versions instead of overwriting them.
+  Create new versions instead of overwriting them. When an operation fails
+  after it has written something, say what was written, so that a client does
+  not retry into a duplicate.
 - Operator surfaces, including the portal and the CLI, follow these rules:
   - Never rebuild a submission from current workflow data. Pin it to the
     reviewed `workflow_revision`, and use the server's verified
@@ -78,7 +82,8 @@ ComfyUI image generation, assisted by local LLMs. Read
 - Keep the harness thin and fast. The target budgets are cold start < 150 ms,
   idle RSS < 40 MB, binary < 25 MB, portal initial JS < 150 KB gzip and p95
   non-ComfyUI API latency < 20 ms. Measure the binary-size impact of a new
-  runtime dependency before building on it.
+  runtime dependency before building on it. The CI performance job is
+  informational and never fails; read its binary-size row after each merge.
 
 ## Project-local agent skills
 
@@ -104,13 +109,18 @@ dependency.
   The example needs no portal build; CI checks the generated portal types.
 - Before default Cargo builds, run `npm ci && npm run build` in `apps/portal`.
   Use `--no-default-features` for API-only builds.
-- Run the repository CI checks locally with `python3 scripts/ci_check.py`.
+- Run the repository CI checks locally with `TMPDIR=/tmp python3 scripts/ci_check.py`;
+  a long `TMPDIR` breaks a unix-socket test. `scripts/generate_portal_types.py`
+  needs `npm ci` in `apps/portal` first.
 - Pin container base images by multi-arch index digest, never a
   single-platform manifest. Check Compose changes against the resolved
-  configuration (`scripts/check_compose_config.py`), because Compose merges
-  `ports` across files.
+  configuration (`docker compose -f compose.yaml config --format json |
+  python3 scripts/check_compose_config.py`), because Compose merges `ports`
+  across files.
 - Diagnostics and setup checks call the runtime's own domain functions; a
-  looser copy hides failures as `ok`.
+  looser copy hides failures as `ok`. A feature that adds files to an existing
+  concept (for example pack templates) extends the shared validator, such as
+  `pack_problems`, so validate, doctor and listings agree.
 - When rebasing, regenerate `docs/api/openapi.json` and
   `apps/portal/src/lib/api/schema.d.ts`; never merge them by hand.
 - To supervise an epic through subagents, use the `epic-supervision` skill.
