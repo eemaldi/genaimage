@@ -147,7 +147,17 @@ Every developer prompt contains the following:
   - Push the branch, but do not open a PR or merge.
 - **Environment:** subagent shells lack `~/.cargo/bin` on `PATH` and have no
   `$TMPDIR`. Give the `export PATH` line and the scratchpad path for logs and
-  temporary files, and forbid writing into `$HOME` or the repository.
+  temporary files, and forbid writing into `$HOME` or the repository. Also:
+  - Run CI as `TMPDIR=/tmp python3 scripts/ci_check.py`; a long `TMPDIR`
+    breaks a unix-socket test.
+  - Bash calls longer than about 180 s are moved to the background. Start
+    long commands writing to a log that ends with a `CI EXIT $?` line, then
+    poll it in short foreground loops.
+  - Never end the turn with work running in the background. Commit and push
+    before replying. In epic 9, Haiku developers twice stopped with CI still
+    running and never committed.
+  - Stop servers by PID, never `pkill -f` (it killed a reviewer's own shell).
+    `$!` inside `( … &)` is the wrapper shell; check the listening PID.
 - **Final reply:** SHAs, a summary, any public helpers or contracts that later
   issues will use, the exact validation results, the JS size, any caveats, and
   learnings about tools and processes, plus opinions, for the session memory.
@@ -198,8 +208,15 @@ stopped requiring tool support, so tool callers must call `check_request`.
    preview tokens before any client depended on the old form.
 8. Look at visible output yourself before shipping: screenshots, generated
    images, rendered pages. In epic 8 this caught a portal spacing bug and an
-   unhelpful screenshot that review had passed.
-9. Overrule a High finding only when the path fails closed. Write down why,
+   unhelpful screenshot that review had passed. In epic 9, screenshots caught
+   stretched inputs and run-together hint text, and a real-browser check
+   (headless Playwright against a scratch server) found two dialog and focus
+   bugs that the jsdom tests passed.
+9. To save a round, have the reviewer of the next component also verify the
+   previous fix delta under the High-only rule. For a fix of a few lines (copy,
+   CSS, numbers in a document), read the diff yourself and ship; say so in the
+   PR.
+10. Overrule a High finding only when the path fails closed. Write down why,
    and record the issue as a follow-up in the PR. Example: a race between a
    preview check and the claim, where `submit_run` re-validates the pinned
    revision and nothing can be submitted wrongly.
@@ -224,6 +241,11 @@ stopped requiring tool support, so tool callers must call `check_request`.
 3. Record in the session memory that `main` has moved and what the merge changed
    (migration numbers, shared modules, generated files). Send a heads-up to
    running developers. The next subagent on each open branch rebases first.
+4. Read the merged PR's "Release binary size" row from the performance job
+   (`gh run view <id> --log | grep "Release binary size"`). The job is
+   informational and never fails. In epic 9 the binary grew from 22.7 MB to
+   25.4 MB over five merges before anyone noticed. `perf_check.py` now emits a
+   `::warning` annotation when a budget is over.
 
 ## 6. Rebase rules for developers
 
@@ -250,7 +272,13 @@ subagent that has not reported and can no longer be found as lost.
 3. For a lost review, start a fresh reviewer with the earlier decisions.
 
 Usage limits also end background subagents mid-task; their uncommitted work
-survives in the worktree. If the permission classifier refuses a subagent's
+survives in the worktree.
+
+When a report arrives but the notification says the subagent still has
+background work, check that its worktree is committed and stop it before you
+send anyone else there. If a developer ends without committing but its CI log
+shows `CI EXIT 0`, start a cheap delivery-only developer to check the diff,
+commit and push. If the permission classifier refuses a subagent's
 force-push, do not push on its behalf: tell the user, and let a fresh developer
 rebuild the branch (`git reset` plus rebase, then `--force-with-lease`).
 
@@ -360,3 +388,28 @@ abandoned. If a session ended without it, do it at the start of the next one.
   bugs that appeared only after a reload.
 - Tell the user when review rounds are what is slowing progress, and offer the
   High-only rule. Do not wait to be asked why it is slow.
+- Epic 9 (packs, import, batches, templates, event sinks) added these:
+  - **Path confinement:** confine the manifest or config file itself, not
+    only the files it declares, and read after discovery with
+    `open_regular_beneath`.
+  - **Validator sweep:** a new file-backed concept must extend the shared
+    validator that validate, the doctor and listings use.
+  - **Every consumer:** when an API list gains an unavailable state, check
+    every consumer (the Generate picker, the assistant tools).
+  - **Writes:**
+    - an error after a successful write must say what was written;
+    - an "adopt the leftover" path beside a create path turns rollbacks into
+      deletion hazards, so `AlreadyExists` on the final publish means "lost
+      the race";
+    - roll back only what no other call can have adopted.
+  - **Silent omissions:**
+    - caps applied before sorting or without a diagnostic;
+    - echoed caller keys without a length cap.
+  - **Weak tests:**
+    - threads in one process cannot prove a `flock`, so use a second file
+      descriptor or process and a barrier;
+    - UI tests that mock `api` miss headers and number spelling.
+  - **Drivers:** start drivers and monitors inside the tracked `run_mutation`
+    task, as `submit_and_monitor` does.
+  - **Assistant tools:** `preview` must be deterministic, because each
+    decision re-runs it.
