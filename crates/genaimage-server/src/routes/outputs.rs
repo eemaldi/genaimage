@@ -2,7 +2,7 @@ use super::BinaryData;
 use axum::{
     body::Body,
     extract::{
-        rejection::{PathRejection, QueryRejection},
+        rejection::{JsonRejection, PathRejection, QueryRejection},
         Path, Query, State,
     },
     http::{header, HeaderMap, Method, StatusCode},
@@ -11,6 +11,7 @@ use axum::{
 };
 use genaimage_api as api;
 use genaimage_core::{
+    characters::CharacterService,
     media::{MediaFile, OutputListQuery, ThumbnailSize},
     HarnessError, OutputAnnotation, VisionReviewService,
 };
@@ -168,6 +169,66 @@ pub(super) async fn review(
 }
 
 #[utoipa::path(
+    post, path = "/outputs/{id}/spec-review",
+    operation_id = "outputs_spec_review",
+    tag = "outputs",
+    description = "Review an indexed output against one exact character spec version with the configured vision model; the text role is never used. The stored `spec_review` annotation is model opinion, not an approval or rejection, and nothing is stored when the model's answer is invalid.",
+    params(("id" = String, Path, description = "Output ID")),
+    request_body = api::SpecReviewRequest,
+    responses(
+        (status = 200, body = api::OutputAnnotationResponse),
+        (status = 400, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 403, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 404, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 408, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 413, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 415, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 421, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 422, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 500, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 502, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Problem details", body = api::ProblemDetails, content_type = "application/problem+json")
+    )
+)]
+pub(super) async fn spec_review(
+    State(state): State<AppState>,
+    path: Result<Path<String>, PathRejection>,
+    body: Result<Json<api::SpecReviewRequest>, JsonRejection>,
+) -> Result<Json<api::OutputAnnotationResponse>, Problem> {
+    let id = parse_id(path)?;
+    let Json(request) = body.map_err(|error| {
+        Problem::new(
+            error.status(),
+            error.body_text(),
+            "Send application/json with a character_id and a whole-number spec_version. Nothing was written.",
+        )
+    })?;
+    let harness = state.harness();
+    let service = VisionReviewService::new(harness.as_ref().clone());
+    harness
+        .repository()
+        .as_async()
+        .output(&id)
+        .await
+        .map_err(review_problem)?;
+    CharacterService::new(harness.as_ref().clone())
+        .get_spec_version(&request.character_id, request.spec_version)
+        .await
+        .map_err(review_problem)?;
+    let binding = state
+        .llm_roles()
+        .vision()
+        .await
+        .map_err(Problem::assistant_unavailable)?;
+    service
+        .review_against_spec(&binding, &id, &request.character_id, request.spec_version)
+        .await
+        .map(annotation_response)
+        .map(Json)
+        .map_err(review_problem)
+}
+
+#[utoipa::path(
     get, path = "/outputs/{id}/annotations",
     operation_id = "outputs_annotations",
     tag = "outputs",
@@ -211,6 +272,11 @@ fn annotation_response(annotation: OutputAnnotation) -> api::OutputAnnotationRes
         tags: annotation.tags,
         prompt: annotation.prompt,
         raw_response: annotation.raw_response,
+        spec_review: annotation.spec_review.map(|review| {
+            serde_json::to_value(review)
+                .and_then(serde_json::from_value)
+                .expect("the API and core spec review types share one JSON shape")
+        }),
     }
 }
 
@@ -615,6 +681,14 @@ fn review_problem(error: HarnessError) -> Problem {
         HarnessError::RunNotFound { .. } | HarnessError::ManifestNotFound => (
             StatusCode::NOT_FOUND,
             "Use an output from a run with a recorded completion manifest.",
+        ),
+        HarnessError::CharacterNotFound { .. } => (
+            StatusCode::NOT_FOUND,
+            "Use a character ID returned by the characters API. Nothing was written.",
+        ),
+        HarnessError::CharacterSpecVersionNotFound { .. } => (
+            StatusCode::NOT_FOUND,
+            "Use a version number listed by the character's specs. Nothing was written.",
         ),
         HarnessError::VisionReviewUnavailable { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,

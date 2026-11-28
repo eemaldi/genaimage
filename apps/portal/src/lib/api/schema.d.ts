@@ -649,6 +649,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/outputs/{id}/spec-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Review an indexed output against one exact character spec version with the configured vision model; the text role is never used. The stored `spec_review` annotation is model opinion, not an approval or rejection, and nothing is stored when the model's answer is invalid. */
+        post: operations["outputs_spec_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/outputs/{id}/thumbnail": {
         parameters: {
             query?: never;
@@ -1905,6 +1922,7 @@ export interface components {
             /** @description The exact concatenated model response used to parse this annotation. */
             raw_response: string;
             run_id: string;
+            spec_review?: null | components["schemas"]["SpecReviewResponse"];
             tags: string[];
         };
         OutputListResponse: {
@@ -2344,6 +2362,39 @@ export interface components {
          * @enum {string}
          */
         SpecRequirement: "mandatory" | "flexible" | "unspecified";
+        SpecReviewItemResponse: {
+            category: components["schemas"]["SpecElementCategory"];
+            /** @description An element id of the reviewed spec version. */
+            id: string;
+            /** @description At most 500 bytes. `not assessed by the model` marks a mandatory element the model left out. */
+            note: string;
+            requirement: components["schemas"]["SpecRequirement"];
+            verdict: components["schemas"]["SpecVerdict"];
+        };
+        /** @description Reviews one output against one exact character spec version. */
+        SpecReviewRequest: {
+            character_id: string;
+            /**
+             * Format: int32
+             * @description A whole number naming an existing spec version; the review never uses a newer one.
+             */
+            spec_version: number;
+        };
+        /** @description A model-opinion checklist. It is not an approval or a rejection. */
+        SpecReviewResponse: {
+            character_id: string;
+            /** @description Every mandatory element exactly once, then the flexible elements the model assessed. */
+            checklist: components["schemas"]["SpecReviewItemResponse"][];
+            /** @description What validation dropped from the model's answer, such as unknown ids or invalid verdicts. */
+            dropped: string[];
+            label: string;
+            /** Format: int32 */
+            spec_version: number;
+            /** @description At most 1,000 bytes. */
+            summary: string;
+        };
+        /** @enum {string} */
+        SpecVerdict: "met" | "deviation" | "unclear";
         /** @description Newest version first. */
         SpecVersionListResponse: {
             next_cursor?: string | null;
@@ -8755,6 +8806,131 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutputAnnotationResponse"];
+                };
+            };
+            /** @description Problem details */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Problem details */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    outputs_spec_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Output ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpecReviewRequest"];
+            };
+        };
         responses: {
             200: {
                 headers: {

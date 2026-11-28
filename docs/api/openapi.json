@@ -2599,6 +2599,17 @@
           "run_id": {
             "type": "string"
           },
+          "spec_review": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SpecReviewResponse",
+                "description": "The validated checklist when `kind` is `spec_review`; absent for a `vision_review`."
+              }
+            ]
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -4080,6 +4091,106 @@
           "mandatory",
           "flexible",
           "unspecified"
+        ],
+        "type": "string"
+      },
+      "SpecReviewItemResponse": {
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/SpecElementCategory"
+          },
+          "id": {
+            "description": "An element id of the reviewed spec version.",
+            "type": "string"
+          },
+          "note": {
+            "description": "At most 500 bytes. `not assessed by the model` marks a mandatory element the model left out.",
+            "type": "string"
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/SpecRequirement"
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/SpecVerdict"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "requirement",
+          "verdict",
+          "note"
+        ],
+        "type": "object"
+      },
+      "SpecReviewRequest": {
+        "additionalProperties": false,
+        "description": "Reviews one output against one exact character spec version.",
+        "properties": {
+          "character_id": {
+            "type": "string"
+          },
+          "spec_version": {
+            "description": "A whole number naming an existing spec version; the review never uses a newer one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character_id",
+          "spec_version"
+        ],
+        "type": "object"
+      },
+      "SpecReviewResponse": {
+        "description": "A model-opinion checklist. It is not an approval or a rejection.",
+        "properties": {
+          "character_id": {
+            "type": "string"
+          },
+          "checklist": {
+            "description": "Every mandatory element exactly once, then the flexible elements the model assessed.",
+            "items": {
+              "$ref": "#/components/schemas/SpecReviewItemResponse"
+            },
+            "type": "array"
+          },
+          "dropped": {
+            "description": "What validation dropped from the model's answer, such as unknown ids or invalid verdicts.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "spec_version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "summary": {
+            "description": "At most 1,000 bytes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "character_id",
+          "spec_version",
+          "checklist",
+          "dropped",
+          "summary",
+          "label"
+        ],
+        "type": "object"
+      },
+      "SpecVerdict": {
+        "enum": [
+          "met",
+          "deviation",
+          "unclear"
         ],
         "type": "string"
       },
@@ -12528,6 +12639,158 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputAnnotationResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "408": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "415": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "421": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Problem details"
+          }
+        },
+        "tags": [
+          "outputs"
+        ]
+      }
+    },
+    "/api/v1/outputs/{id}/spec-review": {
+      "post": {
+        "description": "Review an indexed output against one exact character spec version with the configured vision model; the text role is never used. The stored `spec_review` annotation is model opinion, not an approval or rejection, and nothing is stored when the model's answer is invalid.",
+        "operationId": "outputs_spec_review",
+        "parameters": [
+          {
+            "description": "Output ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

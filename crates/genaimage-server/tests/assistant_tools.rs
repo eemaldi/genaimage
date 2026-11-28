@@ -656,6 +656,52 @@ async fn inspect_get_output_and_review_use_the_vision_role_only() {
         .iter()
         .filter(|request| request["model"] == TEXT_MODEL)
         .all(|request| !request.to_string().contains("image_url")));
+    let character = genaimage_core::characters::CharacterService::new(api.core.as_ref().clone())
+        .create_character(
+            genaimage_core::characters::NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(
+                    serde_json::from_value(json!({
+                        "summary": "A keeper",
+                        "elements": [{"id": "cloak", "category": "clothing", "description": "Crimson cloak", "requirement": "mandatory"}]
+                    }))
+                    .unwrap(),
+                ),
+                note: None,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .character
+        .id;
+    let spec_answer = r#"{"elements":[{"id":"cloak","verdict":"deviation","note":"Green"}],"summary":"Wrong colour"}"#;
+    let recorded_before = llm.recorded_requests().len();
+    llm.set_scripts([
+        tool_script(
+            "spec",
+            "review_against_spec",
+            json!({"output_id": output_id, "character_id": character, "spec_version": 1}),
+        ),
+        text_script(spec_answer),
+        text_script("spec reviewed"),
+    ]);
+    let mut stream = client
+        .send_assistant_message(&conversation.id, &message("check it against the spec"))
+        .await
+        .unwrap();
+    let reviewed = finish(&mut stream).await;
+    assert_eq!(reviewed["kind"], "spec_review");
+    assert_eq!(reviewed["model"], VISION_MODEL);
+    assert_eq!(
+        reviewed["spec_review"]["checklist"][0]["verdict"],
+        "deviation"
+    );
+    assert_eq!(reviewed["spec_review"]["checklist"][0]["note"], "Green");
+    assert!(llm.recorded_requests()[recorded_before..]
+        .iter()
+        .filter(|request| request.to_string().contains("image_url"))
+        .all(|request| request["model"] == VISION_MODEL));
     assert!(api
         .core
         .get_run(&run.id)

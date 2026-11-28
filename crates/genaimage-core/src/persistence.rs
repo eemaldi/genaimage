@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::{characters::CharacterLink, workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1226,6 +1226,48 @@ const MIGRATION_15: &str = r#"
             OR NEW.linked_character_spec_version IS NOT OLD.linked_character_spec_version
         BEGIN SELECT RAISE(ABORT, 'a run''s character link is fixed when the run is created'); END;
 "#;
+const MIGRATION_16: &str = r#"
+    CREATE TABLE output_annotations_v16 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        output_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'vision_review' CHECK (kind IN ('vision_review', 'spec_review')),
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        caption TEXT NOT NULL,
+        critique TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        raw_response TEXT NOT NULL,
+        detail_json TEXT CHECK ((kind = 'spec_review') = (detail_json IS NOT NULL))
+    );
+    INSERT INTO output_annotations_v16 (
+        id, output_id, run_id, kind, model, created_at,
+        caption, critique, tags_json, prompt, raw_response
+    ) SELECT id, output_id, run_id, kind, model, created_at,
+        caption, critique, tags_json, prompt, raw_response
+      FROM output_annotations;
+    DROP TABLE output_annotations;
+    ALTER TABLE output_annotations_v16 RENAME TO output_annotations;
+    CREATE INDEX output_annotations_output_created_idx
+        ON output_annotations(output_id, created_at DESC, id DESC);
+    CREATE TRIGGER output_annotations_no_replace
+        BEFORE INSERT ON output_annotations
+        WHEN EXISTS (SELECT 1 FROM output_annotations WHERE id = NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
+    CREATE TRIGGER output_annotations_no_update
+        BEFORE UPDATE ON output_annotations
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
+    CREATE TRIGGER output_annotations_no_delete
+        BEFORE DELETE ON output_annotations
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only');
+        END;
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -1242,6 +1284,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_13,
     MIGRATION_14,
     MIGRATION_15,
+    MIGRATION_16,
 ];
 
 // The first version that must already contain each table before migration.
@@ -2039,9 +2082,9 @@ mod submission_tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         assert_eq!(
-            SCHEMA_VERSION, 15,
+            SCHEMA_VERSION, 16,
             "add an upgrade test for each new migration"
         );
 
@@ -2462,5 +2505,56 @@ mod submission_tests {
             Err(HarnessError::IdempotencyConflict)
         ));
         assert_eq!(reopened.list(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrates_annotations_to_version_sixteen_keeping_rows_append_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        for migration in &MIGRATIONS[..15] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", 15_i64)
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO output_annotations (output_id, run_id, kind, model, created_at,
+                    caption, critique, tags_json, prompt, raw_response)
+                 VALUES ('r:1', 'r', 'vision_review', 'm', '2026-01-01T00:00:00+00:00',
+                    'cap', 'crit', '[\"a\"]', 'p', 'raw')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repository = RunRepository::open(&path).unwrap();
+        let annotations = repository.output_annotations("r:1").unwrap();
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(
+            (
+                annotations[0].id,
+                annotations[0].caption.as_str(),
+                annotations[0].tags.clone()
+            ),
+            (1, "cap", vec!["a".to_owned()])
+        );
+        assert_eq!(annotations[0].spec_review, None);
+        let connection = Connection::open(&path).unwrap();
+        assert!(connection
+            .execute("UPDATE output_annotations SET caption = 'x'", [])
+            .is_err());
+        assert!(connection
+            .execute("DELETE FROM output_annotations", [])
+            .is_err());
+        assert!(connection
+            .execute(
+                "INSERT INTO output_annotations (output_id, run_id, kind, model, created_at,
+                    caption, critique, tags_json, prompt, raw_response)
+                 VALUES ('r:1', 'r', 'spec_review', 'm', 't', '', '', '[]', 'p', 'raw')",
+                [],
+            )
+            .is_err());
     }
 }

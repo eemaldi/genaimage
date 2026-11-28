@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifacts::RunManifest,
-    assistant::PromptTemplates,
+    assistant::{
+        spec_review::{spec_review_prompt, validate_spec_review, SPEC_REVIEW_KIND},
+        PromptTemplates, SpecReview,
+    },
+    characters::CharacterService,
     extensions::{ChatContent, ChatDelta, ChatMessage, ChatRequest},
     llm_roles::LlmRoleBinding,
     media::blocking,
@@ -48,6 +52,16 @@ pub struct OutputAnnotation {
     pub prompt: String,
     /// The exact concatenated text received from the model.
     pub raw_response: String,
+    /// The validated checklist of a `spec_review`; `None` for a `vision_review`.
+    #[serde(default)]
+    pub spec_review: Option<SpecReview>,
+}
+
+struct ReviewImage {
+    run_id: String,
+    bytes: Vec<u8>,
+    media_type: &'static str,
+    recorded_request: String,
 }
 
 #[derive(Deserialize)]
@@ -80,7 +94,79 @@ impl VisionReviewService {
         output_id: &str,
     ) -> Result<OutputAnnotation> {
         let model = binding.model().to_owned();
+        let image = self.load_image(output_id).await?;
+        let prompt =
+            review_prompt(&self.harness.config().data_dir, &image.recorded_request).await?;
+        let raw_response = self.ask(binding, &prompt, &image).await?;
+        let parsed: VisionResponse = serde_json::from_str(&raw_response)
+            .map_err(|error| HarnessError::VisionReviewResponse(error.to_string()))?;
+        let annotation = OutputAnnotation {
+            id: 0,
+            output_id: output_id.to_owned(),
+            run_id: image.run_id,
+            kind: "vision_review".to_owned(),
+            model,
+            created_at: Utc::now(),
+            caption: parsed.caption,
+            adherence_critique: parsed.adherence_critique,
+            tags: parsed.tags,
+            prompt,
+            raw_response,
+            spec_review: None,
+        };
+        self.harness
+            .repository()
+            .as_async()
+            .insert_output_annotation(annotation)
+            .await
+    }
 
+    /// Review an indexed output against one exact character spec version with
+    /// the vision role binding selected by the caller. The spec is read once and
+    /// the response is validated against that snapshot. A failed or malformed
+    /// response stores nothing; the result is model opinion, never a decision.
+    pub async fn review_against_spec(
+        &self,
+        binding: &LlmRoleBinding,
+        output_id: &str,
+        character_id: &str,
+        spec_version: u32,
+    ) -> Result<OutputAnnotation> {
+        let model = binding.model().to_owned();
+        self.harness
+            .repository()
+            .as_async()
+            .output(output_id)
+            .await?;
+        let version = CharacterService::new(self.harness.clone())
+            .get_spec_version(character_id, spec_version)
+            .await?;
+        let image = self.load_image(output_id).await?;
+        let prompt = spec_review_prompt(&self.harness.config().data_dir, &version.spec).await?;
+        let raw_response = self.ask(binding, &prompt, &image).await?;
+        let review = validate_spec_review(&raw_response, &version)?;
+        let annotation = OutputAnnotation {
+            id: 0,
+            output_id: output_id.to_owned(),
+            run_id: image.run_id,
+            kind: SPEC_REVIEW_KIND.to_owned(),
+            model,
+            created_at: Utc::now(),
+            caption: review.summary.clone(),
+            adherence_critique: String::new(),
+            tags: Vec::new(),
+            prompt,
+            raw_response,
+            spec_review: Some(review),
+        };
+        self.harness
+            .repository()
+            .as_async()
+            .insert_output_annotation(annotation)
+            .await
+    }
+
+    async fn load_image(&self, output_id: &str) -> Result<ReviewImage> {
         let repository = self.harness.repository().as_async();
         let indexed = repository.output(output_id).await?;
         if indexed.output.byte_size > MAX_VISION_IMAGE_BYTES {
@@ -95,7 +181,6 @@ impl VisionReviewService {
             return Err(HarnessError::MediaIntegrity);
         }
         let manifest = self.harness.open_run_manifest(&run_id).await?;
-        let data_dir = self.harness.config().data_dir.clone();
         let manifest_run_id = run_id.clone();
         let (bytes, recorded_request, media_type) = blocking(move || {
             let mut bytes = Vec::new();
@@ -120,15 +205,27 @@ impl VisionReviewService {
             Ok((bytes, recorded_request, media_type))
         })
         .await?;
-        let prompt = review_prompt(&data_dir, &recorded_request).await?;
+        Ok(ReviewImage {
+            run_id,
+            bytes,
+            media_type,
+            recorded_request,
+        })
+    }
 
+    async fn ask(
+        &self,
+        binding: &LlmRoleBinding,
+        prompt: &str,
+        image: &ReviewImage,
+    ) -> Result<String> {
         let request = ChatRequest {
-            model: model.clone(),
+            model: binding.model().to_owned(),
             messages: vec![ChatMessage::User(vec![
-                ChatContent::Text(prompt.clone()),
+                ChatContent::Text(prompt.to_owned()),
                 ChatContent::Image {
-                    media_type: media_type.to_owned(),
-                    bytes,
+                    media_type: image.media_type.to_owned(),
+                    bytes: image.bytes.clone(),
                 },
             ])],
             tools: Vec::new(),
@@ -156,22 +253,7 @@ impl VisionReviewService {
                 }
             }
         }
-        let parsed: VisionResponse = serde_json::from_str(&raw_response)
-            .map_err(|error| HarnessError::VisionReviewResponse(error.to_string()))?;
-        let annotation = OutputAnnotation {
-            id: 0,
-            output_id: output_id.to_owned(),
-            run_id,
-            kind: "vision_review".to_owned(),
-            model,
-            created_at: Utc::now(),
-            caption: parsed.caption,
-            adherence_critique: parsed.adherence_critique,
-            tags: parsed.tags,
-            prompt,
-            raw_response,
-        };
-        repository.insert_output_annotation(annotation).await
+        Ok(raw_response)
     }
 
     /// List at most the newest 100 append-only annotations for an output.
@@ -632,5 +714,254 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "custom: {{run_prompt}}");
         assert_eq!(second, "custom: edited");
         assert!(default.contains("strict JSON object"));
+    }
+
+    use crate::characters::{
+        CharacterService, CharacterSpec, ElementCategory, NewCharacter, PaletteEntry, Requirement,
+        SpecElement,
+    };
+    use crate::SpecVerdict;
+
+    fn element(id: &str, requirement: Requirement) -> SpecElement {
+        SpecElement {
+            id: id.to_owned(),
+            category: ElementCategory::Clothing,
+            description: format!("{id} description"),
+            requirement,
+        }
+    }
+
+    async fn character(fixture: &Fixture) -> String {
+        let created = CharacterService::new(fixture.harness.clone())
+            .create_character(
+                NewCharacter {
+                    name: "Keeper".into(),
+                    spec: Some(CharacterSpec {
+                        summary: "A lighthouse keeper".into(),
+                        elements: vec![
+                            element("hat", Requirement::Mandatory),
+                            element("cloak", Requirement::Mandatory),
+                            element("lantern", Requirement::Flexible),
+                            element("mood", Requirement::Unspecified),
+                        ],
+                        palette: vec![PaletteEntry {
+                            name: "Sea blue".into(),
+                            hex: Some("#1f4e79".into()),
+                            role: None,
+                        }],
+                        views: vec![],
+                        style_notes: None,
+                    }),
+                    note: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        created.character.id
+    }
+
+    async fn spec_review(
+        fixture: &Fixture,
+        character_id: &str,
+        response: &str,
+    ) -> (Result<OutputAnnotation>, FakeLlm) {
+        let provider = FakeLlm::new(response);
+        let binding = vision_binding(Arc::new(provider.clone())).await;
+        let result = VisionReviewService::new(fixture.harness.clone())
+            .review_against_spec(&binding, &fixture.output_id, character_id, 1)
+            .await;
+        (result, provider)
+    }
+
+    async fn stored(fixture: &Fixture) -> Vec<OutputAnnotation> {
+        VisionReviewService::new(fixture.harness.clone())
+            .annotations_for_output(&fixture.output_id)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn valid_spec_review_is_stored_with_the_exact_checklist() {
+        let fixture = fixture().await;
+        let id = character(&fixture).await;
+        let response = r#"{"elements":[{"id":"lantern","verdict":"deviation","note":"It is a torch"},{"id":"cloak","verdict":"unclear","note":"Cropped"},{"id":"hat","verdict":"met","note":"Blue cap"}],"summary":"Mostly matches"}"#;
+
+        let (result, provider) = spec_review(&fixture, &id, response).await;
+        let annotation = result.unwrap();
+
+        let review = annotation.spec_review.clone().unwrap();
+        assert_eq!(annotation.kind, "spec_review");
+        assert_eq!(annotation.model, "vision-test");
+        assert_eq!(annotation.caption, "Mostly matches");
+        assert_eq!(annotation.raw_response, response);
+        assert_eq!(review.character_id, id);
+        assert_eq!(review.spec_version, 1);
+        assert_eq!(review.dropped, Vec::<String>::new());
+        assert_eq!(review.summary, "Mostly matches");
+        let rows: Vec<_> = review
+            .checklist
+            .iter()
+            .map(|item| (item.id.as_str(), item.verdict, item.note.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("hat", SpecVerdict::Met, "Blue cap"),
+                ("cloak", SpecVerdict::Unclear, "Cropped"),
+                ("lantern", SpecVerdict::Deviation, "It is a torch"),
+            ]
+        );
+        assert!(review.label.starts_with("Model opinion, not approval"));
+        assert_eq!(stored(&fixture).await, vec![annotation]);
+        let requests = provider.requests.lock().unwrap();
+        let ChatMessage::User(contents) = &requests[0].messages[0] else {
+            panic!("expected a user message")
+        };
+        let ChatContent::Text(prompt) = &contents[0] else {
+            panic!("expected the prompt first")
+        };
+        assert!(prompt.contains("\"id\": \"hat\"") && prompt.contains("lantern"));
+        assert!(prompt.contains("#1f4e79"));
+        assert!(
+            !prompt.contains("mood"),
+            "unspecified elements are not shown"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_ids_invalid_verdicts_and_gaps_are_reported_not_coerced() {
+        let fixture = fixture().await;
+        let id = character(&fixture).await;
+        let response = r#"{"elements":[{"id":"hat","verdict":"perfect","note":"x"},{"id":"mood","verdict":"met","note":"x"},{"id":"boots","verdict":"met","note":"x"},{"id":"lantern","verdict":"met","note":"Lit"}],"summary":"Partial"}"#;
+
+        let (result, _) = spec_review(&fixture, &id, response).await;
+        let review = result.unwrap().spec_review.unwrap();
+
+        assert_eq!(
+            review.dropped,
+            [
+                "element 'hat' dropped: invalid verdict 'perfect'",
+                "unknown element ids dropped: mood, boots",
+            ]
+        );
+        let rows: Vec<_> = review
+            .checklist
+            .iter()
+            .map(|item| (item.id.as_str(), item.verdict, item.note.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("hat", SpecVerdict::Unclear, "not assessed by the model"),
+                ("cloak", SpecVerdict::Unclear, "not assessed by the model"),
+                ("lantern", SpecVerdict::Met, "Lit"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_and_oversized_items_are_dropped() {
+        let fixture = fixture().await;
+        let id = character(&fixture).await;
+        let long = "n".repeat(501);
+        let response = format!(
+            r#"{{"elements":[{{"id":"hat","verdict":"met","note":"a"}},{{"id":"hat","verdict":"deviation","note":"b"}},{{"id":"cloak","verdict":"met","note":"{long}"}},{{"id":"lantern","verdict":"met","note":"ok"}}],"summary":"s"}}"#
+        );
+
+        let (result, _) = spec_review(&fixture, &id, &response).await;
+        let review = result.unwrap().spec_review.unwrap();
+
+        assert_eq!(
+            review.dropped,
+            [
+                "element 'cloak' dropped: note is 501 bytes; the limit is 500 bytes",
+                "element 'hat' dropped: listed 2 times",
+            ]
+        );
+        assert_eq!(review.checklist[0].verdict, SpecVerdict::Unclear);
+        assert_eq!(review.checklist[1].verdict, SpecVerdict::Unclear);
+        assert_eq!(review.checklist[2].id, "lantern");
+    }
+
+    #[tokio::test]
+    async fn malformed_truncated_or_empty_checklists_store_nothing() {
+        let fixture = fixture().await;
+        let id = character(&fixture).await;
+        let long_summary = format!(
+            r#"{{"elements":[{{"id":"hat","verdict":"met","note":"a"}}],"summary":"{}"}}"#,
+            "s".repeat(1001)
+        );
+        let responses = [
+            r#"{"elements":[{"id":"hat","verdict":"met","note":"a"}],"summa"#.to_owned(),
+            r#"{"elements":[{"id":"hat","verdict":"met","note":"a"}],"summary":"s","extra":1}"#
+                .to_owned(),
+            r#"{"elements":"hat","summary":"s"}"#.to_owned(),
+            r#"{"elements":[],"summary":"s"}"#.to_owned(),
+            r#"{"elements":[{"id":"boots","verdict":"met","note":"a"}],"summary":"s"}"#.to_owned(),
+            long_summary,
+        ];
+        for response in responses {
+            let (result, _) = spec_review(&fixture, &id, &response).await;
+            assert!(
+                matches!(result, Err(HarnessError::VisionReviewResponse(_))),
+                "{response}"
+            );
+        }
+        assert!(stored(&fixture).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_character_or_version_is_not_found_without_a_model_call() {
+        let fixture = fixture().await;
+        let id = character(&fixture).await;
+        let provider = FakeLlm::new("{}");
+        let binding = vision_binding(Arc::new(provider.clone())).await;
+        let service = VisionReviewService::new(fixture.harness.clone());
+
+        let missing_character = service
+            .review_against_spec(&binding, &fixture.output_id, "nobody", 1)
+            .await;
+        let missing_version = service
+            .review_against_spec(&binding, &fixture.output_id, &id, 2)
+            .await;
+        let missing_output = service
+            .review_against_spec(&binding, "review-run:9", &id, 1)
+            .await;
+
+        assert!(matches!(
+            missing_character,
+            Err(HarnessError::CharacterNotFound { .. })
+        ));
+        assert!(matches!(
+            missing_version,
+            Err(HarnessError::CharacterSpecVersionNotFound { version: 2, .. })
+        ));
+        assert!(matches!(missing_output, Err(HarnessError::OutputNotFound)));
+        assert!(provider.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn spec_reviews_are_listed_with_vision_reviews_newest_first() {
+        let fixture = fixture().await;
+        let id = character(&fixture).await;
+        let binding = vision_binding(Arc::new(FakeLlm::new(REVIEW_RESPONSE))).await;
+        let service = VisionReviewService::new(fixture.harness.clone());
+        let first = service
+            .review_output(&binding, &fixture.output_id)
+            .await
+            .unwrap();
+        let (second, _) = spec_review(
+            &fixture,
+            &id,
+            r#"{"elements":[{"id":"hat","verdict":"met","note":"a"},{"id":"cloak","verdict":"met","note":"b"}],"summary":"s"}"#,
+        )
+        .await;
+        let second = second.unwrap();
+
+        let listed = stored(&fixture).await;
+
+        assert_eq!(listed, vec![second, first]);
+        assert_eq!(listed[1].spec_review, None);
     }
 }

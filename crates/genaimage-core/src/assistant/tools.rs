@@ -71,6 +71,10 @@ pub fn builtin_assistant_tools(
         Arc::new(GetOutputTool {
             harness: Arc::clone(&harness),
         }),
+        Arc::new(ReviewAgainstSpecTool {
+            harness: Arc::clone(&harness),
+            llm_roles: llm_roles.clone(),
+        }),
         Arc::new(ReviewImageTool { harness, llm_roles }),
     ]
 }
@@ -401,6 +405,65 @@ impl AssistantTool for ReviewImageTool {
         })?;
         let annotation = VisionReviewService::new(self.harness.as_ref().clone())
             .review_output(&binding, &arguments.output_id)
+            .await?;
+        Ok(bounded_tool_result(serde_json::to_value(annotation)?))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecReviewArguments {
+    output_id: String,
+    character_id: String,
+    spec_version: u32,
+}
+
+struct ReviewAgainstSpecTool {
+    harness: Arc<Harness>,
+    llm_roles: LlmRoles,
+}
+
+#[async_trait]
+impl AssistantTool for ReviewAgainstSpecTool {
+    fn name(&self) -> &str {
+        "review_against_spec"
+    }
+
+    fn description(&self) -> &str {
+        "Review an output against one exact character spec version with the configured vision model and append a model-opinion spec_review annotation. It is not an approval or rejection and does not submit a generation run."
+    }
+
+    fn json_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "output_id": {"type": "string", "minLength": 1},
+                "character_id": {"type": "string", "minLength": 1},
+                "spec_version": {"type": "integer", "minimum": 1}
+            },
+            "required": ["output_id", "character_id", "spec_version"],
+            "additionalProperties": false
+        })
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    async fn invoke(&self, _context: ToolContext, arguments: Value) -> Result<Value> {
+        let arguments: SpecReviewArguments = serde_json::from_value(arguments)?;
+        let binding = self.llm_roles.vision().await.map_err(|error| {
+            HarnessError::VisionReviewUnavailable {
+                reason: error.to_string(),
+            }
+        })?;
+        let annotation = VisionReviewService::new(self.harness.as_ref().clone())
+            .review_against_spec(
+                &binding,
+                &arguments.output_id,
+                &arguments.character_id,
+                arguments.spec_version,
+            )
             .await?;
         Ok(bounded_tool_result(serde_json::to_value(annotation)?))
     }

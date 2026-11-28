@@ -27,7 +27,9 @@ pub mod uploads;
 pub mod workflow;
 pub mod workflow_import;
 
-pub use assistant::{OutputAnnotation, VisionReviewService};
+pub use assistant::{
+    OutputAnnotation, SpecReview, SpecReviewItem, SpecVerdict, VisionReviewService,
+};
 pub use async_trait::async_trait;
 pub use characters::{CharacterLink, CharacterService};
 pub use config::{HarnessConfig, ResolvedConfig};
