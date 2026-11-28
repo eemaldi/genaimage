@@ -257,8 +257,9 @@ catalogue; `propose_run` validates a pinned proposal and resolves preset,
 default and inherited inputs; `submit_run` requires confirmation and reuses its
 single confirmation ID as the submission idempotency key; `run_status` only
 exposes outputs for completed runs; `get_output` returns metadata without bytes;
-and `review_image` calls the exact configured vision role and appends a
-model-opinion annotation. Review is automatic because it is an append-only
+`review_image` calls the exact configured vision role and appends a
+model-opinion annotation; and `review_against_spec` does the same against one
+character spec version (`output_id`, `character_id`, `spec_version`). Review is automatic because it is an append-only
 operator assessment rather than a generation submission, does not alter run
 provenance and uses no text-model fallback. A `submit_run` pause can include an
 optional read-only `preview` in `confirmation_required`; it contains every
@@ -802,6 +803,20 @@ The loopback HTTP response deliberately includes the complete sent `prompt` and
 `raw_response` for inspection, editing and debugging. They are audit material for
 a model opinion, not provenance, and callers must not present them as verified
 facts about the output.
+
+Spec review (`review_against_spec`, `POST /api/v1/outputs/{id}/spec-review`,
+see [API](api.md#spec-review)) uses the same vision role, again without any
+text-role fallback. The server reads the named character spec version once and
+shows the model its mandatory and flexible elements and palette; the checklist
+is validated against that exact snapshot, never a newer version. Unknown ids,
+invalid verdicts, duplicates and oversized notes are dropped with a note in
+`dropped`, a mandatory element the model did not assess is stored as `unclear`
+(`not assessed by the model`), and a malformed, truncated or wholly unusable
+answer is a 502 that stores nothing. The result is an append-only annotation of
+kind `spec_review` (schema version 16 widens the annotation table and adds a
+`detail_json` column) labelled as model opinion. It never records an approval
+or rejection; those stay explicit decisions on the character. The editable
+prompt is `assistant/prompts/spec_review.md`.
 
 PNG, JPEG and WebP inputs are accepted up to 20 MiB and are never silently
 downscaled or re-encoded. The editable prompt is written once, and only when

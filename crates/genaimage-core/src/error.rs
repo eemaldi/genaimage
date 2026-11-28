@@ -137,6 +137,8 @@ pub enum HarnessError {
     VisionReviewUnavailable { reason: String },
     #[error("vision review input is invalid: {0}")]
     VisionReviewInput(String),
+    #[error("spec review has nothing to review: the spec has no mandatory or flexible elements")]
+    SpecReviewNothingToReview,
     #[error("vision review image is {byte_size} bytes; the limit is {limit} bytes")]
     VisionReviewImageTooLarge { byte_size: u64, limit: u64 },
     #[error("vision review unsupported image: {0}")]

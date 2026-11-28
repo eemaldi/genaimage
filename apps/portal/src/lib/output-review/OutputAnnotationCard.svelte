@@ -17,20 +17,50 @@
     <strong>Model opinion</strong> · {annotation.model} ·
     <time datetime={annotation.created_at}>{time(annotation.created_at)}</time>
   </p>
-  <dl>
-    <div>
-      <dt>Caption</dt>
-      <dd>{annotation.caption}</dd>
-    </div>
-    <div>
-      <dt>Adherence critique</dt>
-      <dd>{annotation.adherence_critique}</dd>
-    </div>
-    <div>
-      <dt>Tags</dt>
-      <dd>{annotation.tags.length ? annotation.tags.join(', ') : 'None'}</dd>
-    </div>
-  </dl>
+  {#if annotation.spec_review}
+    {@const review = annotation.spec_review}
+    <p class="label">
+      Spec review against {review.character_id}, version {review.spec_version}.
+      {review.label}
+    </p>
+    <ul class="checklist" aria-label="Spec checklist">
+      {#each review.checklist as item (item.id)}
+        <li>
+          <strong>{item.id}</strong>
+          ({item.requirement}, {item.category}) ·
+          <span class={`verdict ${item.verdict}`}>{item.verdict}</span>
+          {#if item.note}· {item.note}{/if}
+        </li>
+      {/each}
+    </ul>
+    {#if review.dropped.length}
+      <p class="label">Dropped from the model answer:</p>
+      <ul>
+        {#each review.dropped as note, index (index)}<li>{note}</li>{/each}
+      </ul>
+    {/if}
+    <dl>
+      <div>
+        <dt>Summary</dt>
+        <dd>{review.summary}</dd>
+      </div>
+    </dl>
+  {:else}
+    <dl>
+      <div>
+        <dt>Caption</dt>
+        <dd>{annotation.caption}</dd>
+      </div>
+      <div>
+        <dt>Adherence critique</dt>
+        <dd>{annotation.adherence_critique}</dd>
+      </div>
+      <div>
+        <dt>Tags</dt>
+        <dd>{annotation.tags.length ? annotation.tags.join(', ') : 'None'}</dd>
+      </div>
+    </dl>
+  {/if}
   <details>
     <summary>Details</summary>
     <dl>
@@ -69,6 +99,12 @@
     margin: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+  .checklist {
+    padding-left: var(--space-4);
+  }
+  .verdict {
+    font-weight: var(--weight-strong);
   }
   details {
     margin-top: var(--space-3);

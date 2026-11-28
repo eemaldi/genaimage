@@ -28,10 +28,10 @@ use crate::{
     ReconcileRunsWithOutcomesResponse, RecordDecisionRequest, ReferenceListQuery,
     ReferenceListResponse, ReferenceResponse, RunEventsQuery, RunEventsResponse, RunListQuery,
     RunListResponse, RunResponse, RunStatus, SettingsPatch, SettingsResponse, SettingsTestResponse,
-    SetupDetectResponse, SetupStatus, SpecVersionListResponse, SpecVersionResponse,
-    SubmitRunRequest, Template, TemplateCreateRequest, TemplateListResponse, TemplateRenderRequest,
-    TemplateRenderResponse, TemplateReplaceRequest, UploadResponse, WorkflowDetails,
-    WorkflowImportConfirmRequest, WorkflowImportProposal, WorkflowImportRequest,
+    SetupDetectResponse, SetupStatus, SpecReviewRequest, SpecVersionListResponse,
+    SpecVersionResponse, SubmitRunRequest, Template, TemplateCreateRequest, TemplateListResponse,
+    TemplateRenderRequest, TemplateRenderResponse, TemplateReplaceRequest, UploadResponse,
+    WorkflowDetails, WorkflowImportConfirmRequest, WorkflowImportProposal, WorkflowImportRequest,
     WorkflowImportResponse, WorkflowListResponse, WorkflowValidationRequest,
     WorkflowValidationResponse,
 };
@@ -499,6 +499,19 @@ impl Client {
     pub async fn review_output(&self, id: &str) -> Result<OutputAnnotationResponse, Error> {
         self.json(self.request(Method::POST, &["outputs", id, "review"])?)
             .await
+    }
+
+    /// Reviews one output against one exact spec version with the vision role and stores a `spec_review` annotation.
+    pub async fn review_against_spec(
+        &self,
+        id: &str,
+        request: &SpecReviewRequest,
+    ) -> Result<OutputAnnotationResponse, Error> {
+        self.json(
+            self.request(Method::POST, &["outputs", id, "spec-review"])?
+                .json(request),
+        )
+        .await
     }
 
     /// Lists the newest 100 model-opinion annotations for an output.

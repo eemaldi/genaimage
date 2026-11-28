@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::{characters::CharacterLink, workflow::GenerationMode, HarnessError, Result};
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1226,6 +1226,48 @@ const MIGRATION_15: &str = r#"
             OR NEW.linked_character_spec_version IS NOT OLD.linked_character_spec_version
         BEGIN SELECT RAISE(ABORT, 'a run''s character link is fixed when the run is created'); END;
 "#;
+const MIGRATION_16: &str = r#"
+    CREATE TABLE output_annotations_v16 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        output_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'vision_review' CHECK (kind IN ('vision_review', 'spec_review')),
+        model TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        caption TEXT NOT NULL,
+        critique TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        raw_response TEXT NOT NULL,
+        detail_json TEXT CHECK ((kind = 'spec_review') = (detail_json IS NOT NULL))
+    );
+    INSERT INTO output_annotations_v16 (
+        id, output_id, run_id, kind, model, created_at,
+        caption, critique, tags_json, prompt, raw_response
+    ) SELECT id, output_id, run_id, kind, model, created_at,
+        caption, critique, tags_json, prompt, raw_response
+      FROM output_annotations;
+    DROP TABLE output_annotations;
+    ALTER TABLE output_annotations_v16 RENAME TO output_annotations;
+    CREATE INDEX output_annotations_output_created_idx
+        ON output_annotations(output_id, created_at DESC, id DESC);
+    CREATE TRIGGER output_annotations_no_replace
+        BEFORE INSERT ON output_annotations
+        WHEN EXISTS (SELECT 1 FROM output_annotations WHERE id = NEW.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only; replace refused (output_annotations_no_replace)');
+        END;
+    CREATE TRIGGER output_annotations_no_update
+        BEFORE UPDATE ON output_annotations
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only; update refused (output_annotations_no_update)');
+        END;
+    CREATE TRIGGER output_annotations_no_delete
+        BEFORE DELETE ON output_annotations
+        BEGIN
+            SELECT RAISE(ABORT, 'output annotations are append-only; delete refused (output_annotations_no_delete)');
+        END;
+"#;
 const MIGRATIONS: &[&str] = &[
     MIGRATION_1,
     MIGRATION_1,
@@ -1242,6 +1284,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_13,
     MIGRATION_14,
     MIGRATION_15,
+    MIGRATION_16,
 ];
 
 // The first version that must already contain each table before migration.
@@ -2039,9 +2082,9 @@ mod submission_tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 16);
         assert_eq!(
-            SCHEMA_VERSION, 15,
+            SCHEMA_VERSION, 16,
             "add an upgrade test for each new migration"
         );
 
@@ -2462,5 +2505,153 @@ mod submission_tests {
             Err(HarnessError::IdempotencyConflict)
         ));
         assert_eq!(reopened.list(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrates_annotations_to_version_sixteen_keeping_rows_append_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        for migration in &MIGRATIONS[..15] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", 15_i64)
+            .unwrap();
+        let insert_legacy =
+            "INSERT INTO output_annotations (output_id, run_id, kind, model, created_at,
+                caption, critique, tags_json, prompt, raw_response)
+             VALUES (?1, ?2, 'vision_review', ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+        connection
+            .execute(
+                insert_legacy,
+                rusqlite::params![
+                    "r:1",
+                    "r",
+                    "m1",
+                    "2026-01-01T00:00:00+00:00",
+                    "cap1",
+                    "crit1",
+                    "[\"a\"]",
+                    "p1",
+                    "raw1"
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                insert_legacy,
+                rusqlite::params![
+                    "r:2",
+                    "r",
+                    "m2",
+                    "2026-01-02T00:00:00+00:00",
+                    "cap2",
+                    "crit2",
+                    "[\"b\",\"c\"]",
+                    "p2",
+                    "raw2"
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repository = RunRepository::open(&path).unwrap();
+        let first = repository.output_annotations("r:1").unwrap();
+        let second = repository.output_annotations("r:2").unwrap();
+        let summary = |a: &crate::OutputAnnotation| {
+            (
+                a.id,
+                a.output_id.clone(),
+                a.run_id.clone(),
+                a.kind.clone(),
+                a.model.clone(),
+                a.created_at.to_rfc3339(),
+                a.prompt.clone(),
+                a.raw_response.clone(),
+                a.caption.clone(),
+                a.adherence_critique.clone(),
+                a.tags.clone(),
+                a.spec_review.is_none(),
+            )
+        };
+        assert_eq!(
+            summary(&first[0]),
+            (
+                1,
+                "r:1".to_owned(),
+                "r".to_owned(),
+                "vision_review".to_owned(),
+                "m1".to_owned(),
+                "2026-01-01T00:00:00+00:00".to_owned(),
+                "p1".to_owned(),
+                "raw1".to_owned(),
+                "cap1".to_owned(),
+                "crit1".to_owned(),
+                vec!["a".to_owned()],
+                true,
+            )
+        );
+        assert_eq!(
+            summary(&second[0]),
+            (
+                2,
+                "r:2".to_owned(),
+                "r".to_owned(),
+                "vision_review".to_owned(),
+                "m2".to_owned(),
+                "2026-01-02T00:00:00+00:00".to_owned(),
+                "p2".to_owned(),
+                "raw2".to_owned(),
+                "cap2".to_owned(),
+                "crit2".to_owned(),
+                vec!["b".to_owned(), "c".to_owned()],
+                true,
+            )
+        );
+
+        let connection = Connection::open(&path).unwrap();
+        let indexes: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'output_annotations_output_created_idx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 1);
+        let refused = |sql: &str| connection.execute(sql, []).unwrap_err().to_string();
+        let insert = |kind: &str, detail: &str, id: &str| {
+            format!(
+                "INSERT {id} INTO output_annotations (output_id, run_id, kind, model, created_at,
+                    caption, critique, tags_json, prompt, raw_response, detail_json)
+                 VALUES ('r:3', 'r', '{kind}', 'm', 't', '', '', '[]', 'p', 'raw', {detail})"
+            )
+        };
+        assert!(refused("UPDATE output_annotations SET caption = 'x'")
+            .contains("output_annotations_no_update"));
+        assert!(refused("DELETE FROM output_annotations").contains("output_annotations_no_delete"));
+        assert!(refused(
+            "INSERT OR REPLACE INTO output_annotations (id, output_id, run_id, kind, model, created_at,
+                caption, critique, tags_json, prompt, raw_response)
+             VALUES (1, 'r:1', 'r', 'vision_review', 'm', 't', '', '', '[]', 'p', 'raw')"
+        )
+        .contains("output_annotations_no_replace"));
+        assert!(refused(
+            "INSERT INTO output_annotations (id, output_id, run_id, kind, model, created_at,
+                caption, critique, tags_json, prompt, raw_response)
+             VALUES (2, 'r:1', 'r', 'vision_review', 'm', 't', '', '', '[]', 'p', 'raw')"
+        )
+        .contains("output_annotations_no_replace"));
+        assert!(refused(&insert("vision_review", "'{}'", "")).contains("CHECK"));
+        assert!(refused(&insert("spec_review", "NULL", "")).contains("CHECK"));
+        connection
+            .execute(&insert("spec_review", "'{}'", ""), [])
+            .unwrap();
+        let next_id: i64 = connection
+            .query_row("SELECT max(id) FROM output_annotations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(next_id, 3);
     }
 }

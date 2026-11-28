@@ -1,6 +1,7 @@
 pub mod prompt_assist;
 mod prompts;
 mod service;
+pub mod spec_review;
 mod store;
 pub mod suggest;
 pub mod tools;
@@ -11,6 +12,7 @@ pub use service::{
     AssistantConfirmationDecision, AssistantConfirmationPreview, AssistantStream,
     ConversationService,
 };
+pub use spec_review::{SpecReview, SpecReviewItem, SpecVerdict};
 pub use store::{
     AssistantConversation, AssistantConversationDetail, AssistantConversationListQuery,
     AssistantConversationPage, AssistantMessage, AssistantMessageRole, AssistantMessageStatus,

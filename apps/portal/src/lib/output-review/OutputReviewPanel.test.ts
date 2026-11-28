@@ -68,6 +68,80 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('output review panel', () => {
+  it('lists a spec review as a model-opinion checklist', async () => {
+    fake.api.getOutputAnnotations.mockResolvedValue({
+      annotations: [
+        {
+          ...annotation('run-1:1', 7, 'Close match'),
+          kind: 'spec_review',
+          adherence_critique: '',
+          tags: [],
+          spec_review: {
+            character_id: 'char-1',
+            spec_version: 2,
+            checklist: [
+              {
+                id: 'cloak',
+                category: 'clothing',
+                requirement: 'mandatory',
+                verdict: 'deviation',
+                note: 'Green',
+              },
+              {
+                id: 'hat',
+                category: 'clothing',
+                requirement: 'mandatory',
+                verdict: 'unclear',
+                note: 'not assessed by the model',
+              },
+            ],
+            dropped: ['unknown element ids dropped: boots'],
+            summary: 'Close match',
+            label: 'Model opinion, not approval.',
+          },
+        },
+      ],
+    });
+    render(OutputReviewPanel, { outputId: 'run-1:1', ...media });
+
+    const list = await screen.findByRole('list', { name: 'Spec checklist' });
+
+    const rows = within(list).getAllByRole('listitem');
+    expect(
+      rows.map((row) => row.textContent?.replace(/\s+/g, ' ').trim()),
+    ).toEqual([
+      'cloak (mandatory, clothing) · deviation · Green',
+      'hat (mandatory, clothing) · unclear · not assessed by the model',
+    ]);
+    expect(screen.getByText('unknown element ids dropped: boots')).toBeTruthy();
+    expect(screen.getByText(/Model opinion, not approval\./)).toBeTruthy();
+    expect(screen.queryByText('Adherence critique')).toBeNull();
+  });
+
+  it('renders duplicate dropped notes without crashing', async () => {
+    fake.api.getOutputAnnotations.mockResolvedValue({
+      annotations: [
+        {
+          ...annotation('run-1:1', 7, 'Close match'),
+          kind: 'spec_review',
+          adherence_critique: '',
+          tags: [],
+          spec_review: {
+            character_id: 'char-1',
+            spec_version: 1,
+            checklist: [],
+            dropped: ['same note', 'same note', 'same note'],
+            summary: 'Close match',
+            label: 'Model opinion, not approval.',
+          },
+        },
+      ],
+    });
+    render(OutputReviewPanel, { outputId: 'run-1:1', ...media });
+
+    expect(await screen.findAllByText('same note')).toHaveLength(3);
+  });
+
   it('renders a successful review as a labelled model opinion', async () => {
     const user = userEvent.setup();
     render(OutputReviewPanel, { outputId: 'run-1:1', ...media });

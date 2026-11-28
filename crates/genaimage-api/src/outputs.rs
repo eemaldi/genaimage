@@ -58,6 +58,51 @@ pub struct OutputAnnotationResponse {
     pub prompt: String,
     /// The exact concatenated model response used to parse this annotation.
     pub raw_response: String,
+    /// The validated checklist when `kind` is `spec_review`; absent for a `vision_review`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_review: Option<SpecReviewResponse>,
+}
+
+/// Reviews one output against one exact character spec version.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpecReviewRequest {
+    pub character_id: String,
+    /// A whole number naming an existing spec version; the review never uses a newer one.
+    pub spec_version: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecVerdict {
+    Met,
+    Deviation,
+    Unclear,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct SpecReviewItemResponse {
+    /// An element id of the reviewed spec version.
+    pub id: String,
+    pub category: crate::SpecElementCategory,
+    pub requirement: crate::SpecRequirement,
+    pub verdict: SpecVerdict,
+    /// At most 500 bytes. `not assessed by the model` marks a mandatory element the model left out.
+    pub note: String,
+}
+
+/// A model-opinion checklist. It is not an approval or a rejection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct SpecReviewResponse {
+    pub character_id: String,
+    pub spec_version: u32,
+    /// Every mandatory element exactly once, then the flexible elements the model assessed.
+    pub checklist: Vec<SpecReviewItemResponse>,
+    /// What validation dropped from the model's answer, such as unknown ids or invalid verdicts.
+    pub dropped: Vec<String>,
+    /// At most 1,000 bytes.
+    pub summary: String,
+    pub label: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]

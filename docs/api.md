@@ -19,7 +19,7 @@ contract is the OpenAPI 3.1 document, checked in at
 | Runs | `GET`/`POST /runs` (a run may carry `character: {id, spec_version}`), `GET /runs/{id}`, `cancel`, `rerun`, `reconcile`, `events`, `manifest`, `resolved-workflow`; `POST /runs/reconcile` |
 | Characters | `GET`/`POST /characters`, `GET /characters/{id}`, `GET`/`POST /characters/{id}/specs`, `GET /characters/{id}/specs/{version}`, `GET`/`POST /characters/{id}/references`, `POST /characters/{id}/references/{reference_id}/remove`, `GET`/`POST /characters/{id}/decisions`, `GET /characters/{id}/outputs`, `GET /characters/{id}/runs` (see [characters](#characters)) |
 | Batches | `POST /batches/preview`, `GET`/`POST /batches`, `GET /batches/{id}`, `POST /batches/{id}/resume`; runs gain `batch_id`/`batch_index` and `GET /runs?batch=` (see [batches](architecture.md#batches-api)) |
-| Outputs | `GET /outputs`, `GET /outputs/{id}`, `metadata`, `thumbnail`, `annotations`, `POST /outputs/{id}/review` |
+| Outputs | `GET /outputs`, `GET /outputs/{id}`, `metadata`, `thumbnail`, `annotations`, `POST /outputs/{id}/review`, `POST /outputs/{id}/spec-review` (see [spec review](#spec-review)) |
 | Live events | `GET /events` (server-sent events) |
 | Assistant | Conversations, messages, tool calls and confirmations under `/assistant`, plus `/assistant/prompt` and `/assistant/suggest` |
 
@@ -113,3 +113,49 @@ Regenerate the contract and portal types after an API change:
 cargo run -p genaimage-server --no-default-features --example openapi
 python3 scripts/generate_portal_types.py
 ```
+
+## Spec review
+
+`POST /api/v1/outputs/{id}/spec-review` with `{"character_id": "...", "spec_version": 1}`
+asks the configured **vision** model to check an output against one exact spec
+version (`spec_version` is a whole number; `1.0`, `"1"` and unknown fields are
+rejected with 4xx). The text role is never used: an unconfigured vision role
+returns 503 (`urn:genaimage:problem:assistant-unavailable`) before any model
+request. An unknown output, character or spec version returns 404. A spec
+with no mandatory or flexible elements returns 422 before any model request;
+add some in a new spec version. A model answer that is not the required JSON,
+is truncated, assesses none of the reviewed elements, has an oversized summary
+or lists more than 4 x the reviewed elements + 16 entries returns 502 and stores
+nothing.
+
+The 200 response is the stored annotation (`kind` is `spec_review`). `caption`
+mirrors the summary and `adherence_critique` is empty, both for compatibility
+with `vision_review` clients, and `tags` is empty. Clients should read
+`spec_review`:
+
+```json
+{
+  "character_id": "...",
+  "spec_version": 1,
+  "checklist": [
+    {"id": "cloak", "category": "clothing", "requirement": "mandatory",
+     "verdict": "met", "note": "Crimson hood"}
+  ],
+  "dropped": ["unknown element ids dropped: boots"],
+  "summary": "Close match",
+  "label": "Model opinion, not approval. Record an approval or rejection separately."
+}
+```
+
+`verdict` is `met`, `deviation` or `unclear`. Every mandatory element appears
+exactly once; one the model left out (or listed twice, or gave an invalid
+verdict or an oversized note) is reported as `unclear` with the note
+`not assessed by the model`, or `conflicting duplicate entries; not recorded`
+when it was listed more than once (all copies are dropped, never picked
+between), and `dropped` says why. `dropped` holds at most 50 notes followed by
+one `N further items dropped` note; the unknown-ids note lists the first 20 ids
+then `and N more`. Flexible elements appear
+only when assessed. Notes are at most 500 bytes and the summary 1,000 bytes;
+nothing is truncated. A review never records an approval or rejection; use
+the decisions endpoint for that. `GET /outputs/{id}/annotations` lists both
+`vision_review` and `spec_review` annotations, newest first.

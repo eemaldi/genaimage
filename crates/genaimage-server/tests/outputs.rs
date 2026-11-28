@@ -15,7 +15,7 @@ use genaimage_api::{
     OutputResponse,
 };
 use genaimage_core::{RunRecord, RunRequest, RunStatus};
-use genaimage_test_support::{FakeLlmScript, FakeLlmServer};
+use genaimage_test_support::{FakeLlmEvent, FakeLlmScript, FakeLlmServer, FakeToolCallDelta};
 use reqwest::{header, Method, StatusCode};
 use serde_json::{json, Value};
 
@@ -24,14 +24,18 @@ const OUTPUTS: &str = "/api/v1/outputs";
 const VISION_MODEL: &str = "vision-model";
 const REVIEW_RESPONSE: &str = r#"{"caption":"A lighthouse above the sea","adherence_critique":"The image follows the lighthouse brief.","tags":["coast","lighthouse"]}"#;
 
-fn review_script(response: &str) -> FakeLlmScript {
-    FakeLlmScript::text_chunks([response]).with_models_response(json!({
+fn models_listing() -> Value {
+    json!({
         "object": "list",
         "data": [
             { "id": "text-model", "supports_tools": true, "supports_vision": false },
             { "id": VISION_MODEL, "supports_tools": false, "supports_vision": true }
         ]
-    }))
+    })
+}
+
+fn review_script(response: &str) -> FakeLlmScript {
+    FakeLlmScript::text_chunks([response]).with_models_response(models_listing())
 }
 
 fn file_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -662,5 +666,321 @@ async fn legacy_manifest_must_match_schema_and_is_explicitly_unverified() {
         .await
         .unwrap();
     ApiHarness::assert_problem(response, StatusCode::CONFLICT).await;
+    api.shutdown().await;
+}
+
+const SPEC_RESPONSE: &str = r#"{"elements":[{"id":"cloak","verdict":"met","note":"Crimson hood"},{"id":"boots","verdict":"met","note":"Invented"},{"id":"lantern","verdict":"deviation","note":"Blue flame"}],"summary":"Close match"}"#;
+
+fn spec_request(character_id: &str, version: u32) -> Value {
+    json!({"character_id": character_id, "spec_version": version})
+}
+
+async fn keeper(api: &ApiHarness) -> String {
+    use genaimage_core::characters::{CharacterService, CharacterSpec, NewCharacter};
+    let spec: CharacterSpec = serde_json::from_value(json!({
+        "summary": "A keeper",
+        "elements": [
+            {"id": "cloak", "category": "clothing", "description": "Crimson cloak", "requirement": "mandatory"},
+            {"id": "hat", "category": "clothing", "description": "Peaked cap", "requirement": "mandatory"},
+            {"id": "lantern", "category": "equipment", "description": "Warm lantern", "requirement": "flexible"}
+        ]
+    }))
+    .unwrap();
+    CharacterService::new(api.core.as_ref().clone())
+        .create_character(
+            NewCharacter {
+                name: "Keeper".into(),
+                spec: Some(spec),
+                note: None,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .character
+        .id
+}
+
+async fn vision_api(llm: &FakeLlmServer) -> ApiHarness {
+    let llm_url = llm.base_url();
+    ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+            ("GENAIMAGE_LLM_VISION_MODEL", VISION_MODEL),
+        ],
+    )
+    .await
+}
+
+async fn annotation_count(api: &ApiHarness, output_id: &str) -> usize {
+    let listed: OutputAnnotationListResponse = api
+        .get_json(&format!("{OUTPUTS}/{output_id}/annotations"))
+        .await;
+    listed.annotations.len()
+}
+
+#[tokio::test]
+async fn spec_review_is_stored_listed_beside_vision_reviews_and_uses_only_the_vision_model() {
+    let llm = FakeLlmServer::start(review_script(SPEC_RESPONSE)).await;
+    let api = vision_api(&llm).await;
+    let (_, output, png) = completed_review_output(&api).await;
+    let character = keeper(&api).await;
+    let path = format!("{OUTPUTS}/{}/spec-review", output.id);
+
+    let response = api
+        .request(Method::POST, &path)
+        .json(&spec_request(&character, 1))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let review: Value = response.json().await.unwrap();
+    assert_eq!(review["kind"], "spec_review");
+    assert_eq!(review["model"], VISION_MODEL);
+    assert_eq!(review["raw_response"], SPEC_RESPONSE);
+    let detail = &review["spec_review"];
+    assert_eq!(detail["character_id"], character.as_str());
+    assert_eq!(detail["spec_version"], 1);
+    assert_eq!(
+        detail["dropped"],
+        json!(["unknown element ids dropped: boots"])
+    );
+    assert_eq!(detail["summary"], "Close match");
+    assert!(detail["label"]
+        .as_str()
+        .unwrap()
+        .starts_with("Model opinion, not approval"));
+    assert_eq!(
+        detail["checklist"],
+        json!([
+            {"id": "cloak", "category": "clothing", "requirement": "mandatory", "verdict": "met", "note": "Crimson hood"},
+            {"id": "hat", "category": "clothing", "requirement": "mandatory", "verdict": "unclear", "note": "not assessed by the model"},
+            {"id": "lantern", "category": "equipment", "requirement": "flexible", "verdict": "deviation", "note": "Blue flame"}
+        ])
+    );
+
+    let requests = llm.recorded_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], VISION_MODEL);
+    let contents = requests[0]["messages"][0]["content"].as_array().unwrap();
+    let text = contents[0]["text"].as_str().unwrap();
+    assert!(text.contains("Crimson cloak") && text.contains("Warm lantern"));
+    assert_eq!(
+        contents[1]["image_url"]["url"],
+        format!("data:image/png;base64,{}", STANDARD.encode(&png))
+    );
+
+    let client = Client::with_base_url(&api.origin).unwrap();
+    llm.set_scripts([review_script(REVIEW_RESPONSE)]);
+    let vision = client.review_output(&output.id).await.unwrap();
+    let listed = client.output_annotations(&output.id).await.unwrap();
+    assert_eq!(listed.annotations.len(), 2);
+    assert_eq!(listed.annotations[0].id, vision.id);
+    assert_eq!(listed.annotations[0].kind, "vision_review");
+    assert_eq!(listed.annotations[0].spec_review, None);
+    assert_eq!(listed.annotations[1].kind, "spec_review");
+    assert_eq!(
+        serde_json::to_value(&listed.annotations[1].spec_review).unwrap(),
+        *detail
+    );
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_spec_review_answers_are_502_and_store_nothing() {
+    let oversized_note = format!(
+        r#"{{"elements":[{{"id":"cloak","verdict":"met","note":"{}"}}],"summary":"s"}}"#,
+        "n".repeat(501)
+    );
+    let tool_call_script = || {
+        FakeLlmScript::default()
+            .with_events([
+                FakeLlmEvent::tool_calls([FakeToolCallDelta::new(0)
+                    .id("call")
+                    .name("anything")
+                    .arguments("{}")]),
+                FakeLlmEvent::finish("tool_calls"),
+                FakeLlmEvent::Done,
+            ])
+            .with_models_response(models_listing())
+    };
+    let mut scripts: Vec<(String, FakeLlmScript)> = [
+        r#"{"elements":[{"id":"cloak","verdict":"met","note":"x"}],"summa"#.to_owned(),
+        "not JSON".to_owned(),
+        r#"{"elements":[{"id":"nothing","verdict":"met","note":"x"}],"summary":"s"}"#.to_owned(),
+        oversized_note,
+    ]
+    .into_iter()
+    .map(|response| (response.clone(), review_script(&response)))
+    .collect();
+    scripts.push(("tool-call delta".to_owned(), tool_call_script()));
+    for (response, script) in scripts {
+        let llm = FakeLlmServer::start(script).await;
+        let api = vision_api(&llm).await;
+        let (_, output, _) = completed_review_output(&api).await;
+        let character = keeper(&api).await;
+
+        let reply = api
+            .request(
+                Method::POST,
+                &format!("{OUTPUTS}/{}/spec-review", output.id),
+            )
+            .json(&spec_request(&character, 1))
+            .send()
+            .await
+            .unwrap();
+
+        ApiHarness::assert_problem(reply, StatusCode::BAD_GATEWAY).await;
+        assert_eq!(annotation_count(&api, &output.id).await, 0, "{response}");
+        assert_eq!(llm.chat_request_count(), 1);
+        api.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn spec_review_of_a_spec_without_reviewable_elements_is_422_with_an_accurate_hint() {
+    use genaimage_core::characters::{CharacterService, CharacterSpec, NewCharacter};
+    let llm = FakeLlmServer::start(review_script(SPEC_RESPONSE)).await;
+    let api = vision_api(&llm).await;
+    let (_, output, _) = completed_review_output(&api).await;
+    for elements in [
+        json!([]),
+        json!([{"id": "mood", "category": "other", "description": "Moody", "requirement": "unspecified"}]),
+    ] {
+        let spec: CharacterSpec =
+            serde_json::from_value(json!({"summary": "Blank", "elements": elements})).unwrap();
+        let character = CharacterService::new(api.core.as_ref().clone())
+            .create_character(
+                NewCharacter {
+                    name: "Blank".into(),
+                    spec: Some(spec),
+                    note: None,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .character
+            .id;
+
+        let response = api
+            .request(
+                Method::POST,
+                &format!("{OUTPUTS}/{}/spec-review", output.id),
+            )
+            .json(&spec_request(&character, 1))
+            .send()
+            .await
+            .unwrap();
+
+        let problem = ApiHarness::assert_problem(response, StatusCode::UNPROCESSABLE_ENTITY).await;
+        assert!(problem.detail.contains("no mandatory or flexible elements"));
+        assert_eq!(
+            problem.recovery,
+            "The spec has no mandatory or flexible elements to review. Add some in a new spec version, then review against that version."
+        );
+    }
+    assert!(llm.recorded_requests().is_empty());
+    assert_eq!(annotation_count(&api, &output.id).await, 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn spec_review_without_a_vision_model_never_calls_the_text_model() {
+    let llm = FakeLlmServer::start(review_script(SPEC_RESPONSE)).await;
+    let llm_url = llm.base_url();
+    let api = ApiHarness::start_with_config(
+        5,
+        &[
+            ("GENAIMAGE_LLM_URL", llm_url.as_str()),
+            ("GENAIMAGE_LLM_TEXT_MODEL", "text-model"),
+        ],
+    )
+    .await;
+    let (_, output, _) = completed_review_output(&api).await;
+    let character = keeper(&api).await;
+
+    let response = api
+        .request(
+            Method::POST,
+            &format!("{OUTPUTS}/{}/spec-review", output.id),
+        )
+        .json(&spec_request(&character, 1))
+        .send()
+        .await
+        .unwrap();
+
+    let problem = ApiHarness::assert_typed_problem(
+        response,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "urn:genaimage:problem:assistant-unavailable",
+    )
+    .await;
+    assert!(problem.detail.contains("llm.vision_model is empty"));
+    assert!(llm.recorded_requests().is_empty());
+    assert_eq!(llm.chat_request_count(), 0);
+    assert_eq!(annotation_count(&api, &output.id).await, 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn spec_review_of_unknown_output_character_or_version_is_404_without_a_model_call() {
+    let llm = FakeLlmServer::start(review_script(SPEC_RESPONSE)).await;
+    let api = vision_api(&llm).await;
+    let (_, output, _) = completed_review_output(&api).await;
+    let character = keeper(&api).await;
+    let cases = [
+        (
+            format!("{OUTPUTS}/missing:1/spec-review"),
+            spec_request(&character, 1),
+        ),
+        (
+            format!("{OUTPUTS}/{}/spec-review", output.id),
+            spec_request("nobody", 1),
+        ),
+        (
+            format!("{OUTPUTS}/{}/spec-review", output.id),
+            spec_request(&character, 2),
+        ),
+    ];
+    for (path, body) in cases {
+        let response = api
+            .request(Method::POST, &path)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        ApiHarness::assert_problem(response, StatusCode::NOT_FOUND).await;
+    }
+    assert_eq!(llm.chat_request_count(), 0);
+    assert_eq!(llm.models_request_count(), 0);
+    api.shutdown().await;
+}
+
+#[tokio::test]
+async fn spec_review_rejects_a_non_integer_version_and_unknown_fields() {
+    let llm = FakeLlmServer::start(review_script(SPEC_RESPONSE)).await;
+    let api = vision_api(&llm).await;
+    let (_, output, _) = completed_review_output(&api).await;
+    let character = keeper(&api).await;
+    let path = format!("{OUTPUTS}/{}/spec-review", output.id);
+    for body in [
+        json!({"character_id": character, "spec_version": 1.0}),
+        json!({"character_id": character, "spec_version": "1"}),
+        json!({"character_id": character, "spec_version": 1, "decision": "approved"}),
+    ] {
+        let response = api
+            .request(Method::POST, &path)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error(), "{body}");
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+    assert_eq!(llm.chat_request_count(), 0);
     api.shutdown().await;
 }
