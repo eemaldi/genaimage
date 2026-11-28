@@ -488,11 +488,12 @@ async fn get_character_reports_spec_references_and_decisions() {
         .await
         .unwrap();
     assert_eq!(result["character"]["name"], "Mara");
-    assert_eq!(result["latest_spec_version"]["version"], 1);
-    assert_eq!(
-        result["latest_spec_version"]["spec"]["summary"],
-        "A lighthouse keeper"
-    );
+    assert_eq!(result["latest_spec"]["version"], 1);
+    assert_eq!(result["latest_spec"]["element_count"], 0);
+    assert_eq!(result["latest_spec"]["content_included"], false);
+    assert!(result["latest_spec"]["spec_bytes"].as_u64().unwrap() > 0);
+    assert!(result["latest_spec"].get("spec").is_none());
+    assert!(!result.to_string().contains("lighthouse keeper"));
     assert_eq!(result["references"]["items"][0]["role"], "sketch");
     assert_eq!(
         result["references"]["items"][0]["upload_id"],
@@ -566,6 +567,7 @@ async fn list_annotations_labels_vision_reviews_as_model_opinion() {
     let annotation = &result["annotations"][0];
     assert_eq!(annotation["kind"], "vision_review");
     assert_eq!(annotation["model"], VISION_MODEL);
+    assert_eq!(annotation["label"], "model opinion");
     assert_eq!(annotation["caption"], "A generated image");
     assert!(annotation.get("raw_response").is_none() && annotation.get("prompt").is_none());
     assert!(result["note"]
@@ -633,4 +635,475 @@ async fn a_chat_only_conversation_reads_checkpoints_workflow_and_character() {
             _ => assert_eq!(result["character"]["id"], id),
         }
     }
+}
+
+const ROW_TABLES: [&str; 8] = [
+    "runs",
+    "outputs",
+    "output_annotations",
+    "characters",
+    "character_spec_versions",
+    "character_output_decisions",
+    "character_references",
+    "assistant_tool_confirmations",
+];
+
+fn row_counts(api: &ApiHarness) -> Vec<(String, i64)> {
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    let mut counts: Vec<_> = ROW_TABLES
+        .iter()
+        .map(|table| {
+            let count = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            (table.to_string(), count)
+        })
+        .collect();
+    let uploads = fs::read_dir(&api.core.config().uploads)
+        .map(|entries| entries.count() as i64)
+        .unwrap_or(0);
+    counts.push(("uploads".into(), uploads));
+    counts
+}
+
+fn clone_runs(api: &ApiHarness, template: &str, count: usize, error: &str) {
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    let columns: Vec<String> = db
+        .prepare("SELECT name FROM pragma_table_info('runs')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let selected: Vec<String> = columns
+        .iter()
+        .map(|column| match column.as_str() {
+            "id" => "?1".into(),
+            "prompt_id" => "?2".into(),
+            "created_at" => "?3".into(),
+            "status" => "'failed'".into(),
+            "error" => "?4".into(),
+            other => other.to_owned(),
+        })
+        .collect();
+    let sql = format!(
+        "INSERT INTO runs ({}) SELECT {} FROM runs WHERE id = ?5",
+        columns.join(", "),
+        selected.join(", ")
+    );
+    for index in 0..count {
+        db.execute(
+            &sql,
+            rusqlite::params![
+                format!("clone-run-{index:03}"),
+                format!("clone-prompt-{index:03}"),
+                format!("2031-01-01T00:{:02}:{:02}+00:00", index / 60, index % 60),
+                error,
+                template
+            ],
+        )
+        .unwrap();
+    }
+}
+
+async fn walk(api: &ApiHarness, tool: &str, key: &str, id_key: &str, base: Value) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut cursor = Value::Null;
+    loop {
+        let mut arguments = base.clone();
+        if !cursor.is_null() {
+            arguments["cursor"] = cursor.clone();
+        }
+        let page = invoke(api, tool, arguments).await.unwrap();
+        assert!(
+            page.get("truncation_notes").is_none(),
+            "{tool}: generic trimming applied: {page}"
+        );
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 32 * 1024);
+        let rows = page[key].as_array().unwrap();
+        assert!(!rows.is_empty(), "{tool}: an empty page must be the last");
+        seen.extend(
+            rows.iter()
+                .map(|row| row[id_key].as_str().unwrap().to_owned()),
+        );
+        if page["next_cursor"].is_null() {
+            assert_eq!(page["truncated"], false);
+            return seen;
+        }
+        assert_eq!(page["truncated"], true);
+        assert!(page["truncation_note"].is_string());
+        cursor = page["next_cursor"].clone();
+    }
+}
+
+fn assert_each_once(seen: &[String], expected: usize) {
+    let mut unique = seen.to_vec();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), seen.len(), "a row appeared twice");
+    assert_eq!(seen.len(), expected, "a row was skipped");
+}
+
+#[tokio::test]
+async fn long_run_pages_are_shortened_whole_and_cursors_visit_every_row_once() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let character = api_json(
+        &api,
+        "/api/v1/characters",
+        &json!({"name": "Mara", "spec": spec()}),
+    )
+    .await;
+    let id = character["character"]["id"].as_str().unwrap().to_owned();
+    let (template, _) = completed_run(&api, 1, Some(json!({"id": id, "spec_version": 1}))).await;
+    clone_runs(&api, &template, 60, &"é".repeat(3_000));
+
+    let first = invoke(&api, "list_runs", json!({"limit": 50}))
+        .await
+        .unwrap();
+    let returned = first["runs"].as_array().unwrap().len();
+    assert!(returned < 50, "the maximal page must be shortened");
+    assert_eq!(first["truncated"], true);
+    assert!(first["truncation_note"]
+        .as_str()
+        .unwrap()
+        .contains("shortened to fit"));
+    assert_eq!(first["runs"][0]["id"], "clone-run-059");
+    let error = first["runs"][0]["error"].as_str().unwrap();
+    assert!(
+        error.ends_with("…(truncated)") && error.len() < 330,
+        "{error}"
+    );
+    assert!(first["next_cursor"].is_string());
+
+    let all = walk(&api, "list_runs", "runs", "id", json!({"limit": 50})).await;
+    assert_each_once(&all, 61);
+    let small = walk(&api, "list_runs", "runs", "id", json!({"limit": 7})).await;
+    assert_eq!(small, all);
+    let by_character = walk(
+        &api,
+        "list_runs",
+        "runs",
+        "id",
+        json!({"character_id": id, "spec_version": 1, "limit": 50}),
+    )
+    .await;
+    assert_each_once(&by_character, 61);
+    let by_workflow = walk(
+        &api,
+        "list_runs",
+        "runs",
+        "id",
+        json!({"workflow": "contract-workflow", "status": "failed"}),
+    )
+    .await;
+    assert_each_once(&by_workflow, 60);
+}
+
+#[tokio::test]
+async fn output_and_character_pages_follow_cursors_exactly_once() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let character = api_json(
+        &api,
+        "/api/v1/characters",
+        &json!({"name": "Mara", "spec": spec()}),
+    )
+    .await;
+    let id = character["character"]["id"].as_str().unwrap().to_owned();
+    for number in 1..=3 {
+        completed_run(&api, number, Some(json!({"id": id, "spec_version": 1}))).await;
+    }
+    let by_character = walk(
+        &api,
+        "list_outputs",
+        "outputs",
+        "output_id",
+        json!({"character_id": id, "spec_version": 1, "limit": 1}),
+    )
+    .await;
+    assert_each_once(&by_character, 3);
+    let everything = walk(
+        &api,
+        "list_outputs",
+        "outputs",
+        "output_id",
+        json!({"limit": 2}),
+    )
+    .await;
+    assert_eq!(everything.len(), 3);
+    assert_each_once(&everything, 3);
+
+    for name in ["Two", "Three", "Four", "Five"] {
+        api_json(&api, "/api/v1/characters", &json!({"name": name})).await;
+    }
+    let characters = walk(
+        &api,
+        "list_characters",
+        "characters",
+        "id",
+        json!({"limit": 2}),
+    )
+    .await;
+    assert_each_once(&characters, 5);
+}
+
+#[tokio::test]
+async fn long_checkpoint_pages_keep_names_whole_and_follow_cursors() {
+    let (api, _llm) = start().await;
+    install_pack(&api);
+    let names: Vec<String> = (0..50)
+        .map(|index| format!("{index:02}-{}.safetensors", "n".repeat(1_500)))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    *api.fake.object_info_override.lock().unwrap() = Some(checkpoints(&refs));
+    let first = invoke(&api, "list_checkpoints", json!({"limit": 50}))
+        .await
+        .unwrap();
+    assert!(first["checkpoints"].as_array().unwrap().len() < 50);
+    assert!(first["truncation_note"]
+        .as_str()
+        .unwrap()
+        .contains("shortened to fit"));
+    assert_eq!(first["checkpoints"][0]["name"], names[0]);
+    let seen = walk(
+        &api,
+        "list_checkpoints",
+        "checkpoints",
+        "name",
+        json!({"limit": 50}),
+    )
+    .await;
+    assert_each_once(&seen, 50);
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(seen, sorted, "names are returned whole and in order");
+
+    let too_long = format!("{}.safetensors", "x".repeat(3_000));
+    *api.fake.object_info_override.lock().unwrap() = Some(checkpoints(&[too_long.as_str()]));
+    let error = invoke(&api, "list_checkpoints", json!({}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("never shortened"), "{error}");
+}
+
+#[tokio::test]
+async fn a_malformed_profile_file_is_reported_not_shown_as_no_profile() {
+    let (api, _llm) = start().await;
+    install_pack(&api);
+    *api.fake.object_info_override.lock().unwrap() = Some(checkpoints(&["b.safetensors"]));
+    let healthy = invoke(&api, "list_checkpoints", json!({})).await.unwrap();
+    assert!(healthy.get("profile_pack_problems").is_none());
+    let dir = api.core.config().packs[0].join("chars");
+    fs::write(dir.join("checkpoints.toml"), "[[profiles]\nid = ").unwrap();
+
+    let listed = invoke(&api, "list_checkpoints", json!({})).await.unwrap();
+    assert_eq!(listed["checkpoints"][0]["profiles"], json!([]));
+    let problems = &listed["profile_pack_problems"];
+    assert!(problems["count"].as_u64().unwrap() >= 1, "{listed}");
+    assert!(problems["messages"][0]
+        .as_str()
+        .unwrap()
+        .contains("checkpoints.toml"));
+    assert!(listed["profile_note"]
+        .as_str()
+        .unwrap()
+        .contains("profile_pack_problems"));
+    let inspected = invoke(
+        &api,
+        "inspect_workflow",
+        json!({"workflow_id": "chars-flow"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(inspected["checkpoint_profiles"], json!([]));
+    assert!(
+        inspected["profile_pack_problems"]["count"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(inspected["profile_note"].is_string());
+}
+
+fn big_spec(elements: usize) -> Value {
+    json!({
+        "summary": "s".repeat(2_000),
+        "style_notes": "n".repeat(4_000),
+        "palette": [{"name": "Teal", "hex": "#008080", "role": "primary"}],
+        "views": ["front", "side"],
+        "elements": (0..elements).map(|index| json!({
+            "id": format!("el-{index:02}"),
+            "category": "clothing",
+            "description": format!("{index:02}{}", "d".repeat(998)),
+            "requirement": "mandatory"
+        })).collect::<Vec<_>>()
+    })
+}
+
+#[tokio::test]
+async fn get_character_spec_pages_whole_elements_and_never_trims() {
+    let (api, _llm) = start().await;
+    let spec = big_spec(50);
+    let created = api_json(
+        &api,
+        "/api/v1/characters",
+        &json!({"name": "Mara", "spec": spec}),
+    )
+    .await;
+    let id = created["character"]["id"].as_str().unwrap().to_owned();
+
+    let summary = invoke(&api, "get_character", json!({"character_id": id}))
+        .await
+        .unwrap();
+    assert!(summary.get("truncation_notes").is_none(), "{summary}");
+    assert_eq!(summary["latest_spec"]["element_count"], 50);
+    assert!(summary["latest_spec"]["spec_bytes"].as_u64().unwrap() > 50_000);
+    assert!(!summary.to_string().contains("dddd"));
+
+    let mut elements = Vec::new();
+    let mut cursor = Value::Null;
+    let mut pages = 0;
+    loop {
+        let mut arguments = json!({"character_id": id});
+        if !cursor.is_null() {
+            arguments["cursor"] = cursor.clone();
+        }
+        let page = invoke(&api, "get_character_spec", arguments).await.unwrap();
+        pages += 1;
+        for key in ["truncated", "truncation_notes", "truncation_note"] {
+            assert!(page.get(key).is_none(), "{key}: {page}");
+        }
+        assert!(serde_json::to_vec(&page).unwrap().len() <= 26 * 1024);
+        assert_eq!(page["version"], 1);
+        assert_eq!(page["elements_total"], 50);
+        if pages == 1 {
+            assert_eq!(page["summary"], spec["summary"]);
+            assert_eq!(page["style_notes"], spec["style_notes"]);
+            assert_eq!(page["palette"], spec["palette"]);
+            assert_eq!(page["views"], spec["views"]);
+        } else {
+            assert!(page.get("summary").is_none() && page.get("style_notes").is_none());
+        }
+        elements.extend(page["elements"].as_array().unwrap().clone());
+        if page["next_cursor"].is_null() {
+            assert_eq!(page["complete"], true);
+            break;
+        }
+        assert_eq!(page["complete"], false);
+        cursor = page["next_cursor"].clone();
+    }
+    assert!(pages >= 3);
+    assert_eq!(Value::Array(elements), spec["elements"]);
+
+    let pinned = invoke(
+        &api,
+        "get_character_spec",
+        json!({"character_id": id, "version": 1}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pinned["version"], 1);
+    for bad in [
+        json!({"character_id": id, "version": 2}),
+        json!({"character_id": id, "version": 2, "cursor": cursor_of(&pinned)}),
+        json!({"character_id": id, "cursor": "nonsense"}),
+        json!({"character_id": id, "cursor": "spec.v1.e999"}),
+        json!({"character_id": "missing"}),
+        json!({"character_id": id, "extra": 1}),
+    ] {
+        assert!(
+            invoke(&api, "get_character_spec", bad.clone())
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+    let bare = api_json(&api, "/api/v1/characters", &json!({"name": "Bare"})).await;
+    let bare = bare["character"]["id"].as_str().unwrap().to_owned();
+    let error = invoke(&api, "get_character_spec", json!({"character_id": bare}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no spec version"), "{error}");
+}
+
+fn cursor_of(page: &Value) -> Value {
+    page["next_cursor"].clone()
+}
+
+#[tokio::test]
+async fn annotations_over_the_limit_say_they_are_truncated() {
+    let (api, _llm) = start().await;
+    install_workflow(&api);
+    let (run, output) = completed_run(&api, 1, None).await;
+    let db = rusqlite::Connection::open(&api.core.config().state_database).unwrap();
+    for index in 0..12 {
+        db.execute(
+            "INSERT INTO output_annotations (output_id, run_id, kind, model, created_at, caption, critique, tags_json, prompt, raw_response)
+             VALUES (?1, ?2, 'vision_review', 'm', ?3, ?4, 'critique', '[]', 'p', 'r')",
+            rusqlite::params![
+                output,
+                run,
+                format!("2031-01-01T00:00:{index:02}+00:00"),
+                "c".repeat(3_000)
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let result = invoke(&api, "list_annotations", json!({"output_id": output}))
+        .await
+        .unwrap();
+    assert_eq!(result["truncated"], true);
+    assert!(result["truncation_note"]
+        .as_str()
+        .unwrap()
+        .contains("not the complete list"));
+    let rows = result["annotations"].as_array().unwrap();
+    assert!(!rows.is_empty() && rows.len() <= 10);
+    assert!(rows[0]["caption"]
+        .as_str()
+        .unwrap()
+        .ends_with("…(truncated)"));
+    assert!(result.get("truncation_notes").is_none(), "{result}");
+}
+
+#[tokio::test]
+async fn no_read_tool_writes_anything() {
+    let (api, _llm) = start().await;
+    install_pack(&api);
+    install_workflow(&api);
+    let created = api_json(
+        &api,
+        "/api/v1/characters",
+        &json!({"name": "Mara", "spec": big_spec(3)}),
+    )
+    .await;
+    let id = created["character"]["id"].as_str().unwrap().to_owned();
+    let (run, output) = completed_run(&api, 1, Some(json!({"id": id, "spec_version": 1}))).await;
+    *api.fake.object_info_override.lock().unwrap() = Some(checkpoints(&["b.safetensors"]));
+    let before = row_counts(&api);
+
+    for (name, arguments) in [
+        ("list_workflows", json!({})),
+        ("inspect_workflow", json!({"workflow_id": "chars-flow"})),
+        ("list_checkpoints", json!({})),
+        ("list_runs", json!({})),
+        ("list_runs", json!({"character_id": id})),
+        ("run_status", json!({"run_id": run})),
+        ("list_outputs", json!({})),
+        ("list_outputs", json!({"character_id": id})),
+        ("get_output", json!({"output_id": output})),
+        ("list_characters", json!({})),
+        ("get_character", json!({"character_id": id})),
+        ("get_character_spec", json!({"character_id": id})),
+        ("list_annotations", json!({"output_id": output})),
+    ] {
+        invoke(&api, name, arguments)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
+    assert_eq!(row_counts(&api), before);
 }

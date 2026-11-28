@@ -240,6 +240,13 @@ pub(crate) fn value_problems(
     problems
 }
 
+/// A pack lookup and the problems pack discovery reported along the way.
+#[derive(Clone, Debug)]
+pub struct PackLookup {
+    pub pack: Option<LoadedPack>,
+    pub problems: Vec<String>,
+}
+
 /// A profile chosen for one request, with the values that apply to its workflow.
 #[derive(Clone, Debug)]
 pub struct AppliedProfile {
@@ -262,12 +269,27 @@ pub struct LayeredBindings {
 impl Harness {
     /// The pack that declares `workflow`, if any. Scans the file system.
     pub fn pack_of(&self, workflow: &LoadedWorkflow) -> Option<LoadedPack> {
-        let path = std::fs::canonicalize(&workflow.manifest_path).ok()?;
-        self.discover_packs().packs.into_iter().find(|pack| {
-            pack.workflow_paths
-                .iter()
-                .any(|declared| *declared == path || *declared == workflow.manifest_path)
-        })
+        self.pack_lookup_of(workflow).pack
+    }
+
+    /// The pack that declares `workflow`, with every problem found while
+    /// discovering packs, so that "no pack" never hides "packs failed to load".
+    pub fn pack_lookup_of(&self, workflow: &LoadedWorkflow) -> PackLookup {
+        let discovery = self.discover_packs();
+        let problems = discovery
+            .all_diagnostics()
+            .iter()
+            .map(|diagnostic| format!("{}: {}", diagnostic.path.display(), diagnostic.message))
+            .collect();
+        let path = std::fs::canonicalize(&workflow.manifest_path).ok();
+        let pack = path.and_then(|path| {
+            discovery.packs.into_iter().find(|pack| {
+                pack.workflow_paths
+                    .iter()
+                    .any(|declared| *declared == path || *declared == workflow.manifest_path)
+            })
+        });
+        PackLookup { pack, problems }
     }
 
     /// The profiles of the workflow's pack; empty for a user workflow.

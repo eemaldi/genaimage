@@ -144,7 +144,7 @@ impl AssistantTool for InspectWorkflowTool {
     }
 
     fn description(&self) -> &str {
-        "Inspect one workflow's parameter types, hints, presets (with preset_info labels, descriptions and kinds such as layout, style or quality), exact revision, checkpoint parameter and checkpoint profiles (id, label, checkpoints, revision, ignored). Presets and profiles apply only when a run names them; a profile must be named with its revision. Image inputs are explicitly user-supplied."
+        "Inspect one workflow's parameter types, hints, presets (with preset_info labels, descriptions and kinds such as layout, style or quality), exact revision, checkpoint parameter and checkpoint profiles (id, label, checkpoints, revision, ignored). When profile_pack_problems is present, pack files failed to load and an empty profile list does not mean there is no profile. Presets and profiles apply only when a run names them; a profile must be named with its revision. Image inputs are explicitly user-supplied."
     }
 
     fn json_schema(&self) -> Value {
@@ -184,11 +184,13 @@ impl AssistantTool for InspectWorkflowTool {
             .collect::<BTreeMap<_, _>>();
         let profiled = workflow.clone();
         let harness = Arc::clone(&self.harness);
-        let profiles =
-            tokio::task::spawn_blocking(move || harness.checkpoint_profiles_of(&profiled))
-                .await
-                .map_err(|error| HarnessError::Workflow(error.to_string()))?;
-        let checkpoint_profiles = profiles
+        let lookup = tokio::task::spawn_blocking(move || harness.pack_lookup_of(&profiled))
+            .await
+            .map_err(|error| HarnessError::Workflow(error.to_string()))?;
+        let checkpoint_profiles = lookup
+            .pack
+            .map(|pack| pack.checkpoint_profiles)
+            .unwrap_or_default()
             .into_iter()
             .map(|profile| {
                 json!({
@@ -211,8 +213,12 @@ impl AssistantTool for InspectWorkflowTool {
             "checkpoint_parameter": workflow.checkpoint_parameter(),
             "checkpoint_profiles": checkpoint_profiles
         });
-        if !checkpoint_profiles.is_empty() {
+        let problems = read::pack_problems(&lookup.problems);
+        if !checkpoint_profiles.is_empty() || problems.is_some() {
             result["profile_note"] = json!(read::PROFILE_NOTE);
+        }
+        if let Some(problems) = problems {
+            result["profile_pack_problems"] = problems;
         }
         Ok(bounded_tool_result(result))
     }

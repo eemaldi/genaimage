@@ -62,9 +62,6 @@ impl RunRepository {
             let annotations = statement
                 .query_map(params![output_id, OUTPUT_ANNOTATION_LIMIT as i64], |row| {
                     let kind: String = row.get(3)?;
-                    if kind != "vision_review" && kind != SPEC_REVIEW_KIND {
-                        return Err(rusqlite::Error::InvalidQuery);
-                    }
                     let detail: Option<String> = row.get(11)?;
                     let spec_review = detail
                         .map(|detail| serde_json::from_str(&detail))

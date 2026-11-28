@@ -62,7 +62,9 @@ The current scripted scenarios cover:
   inspects a workflow for its layouts and profiles, and reads a character, plus
   direct tool tests for bounds, cursors, filters, exact numbers
   (`2.0`, `-0.0`, large seeds), an error rather than an empty list when ComfyUI
-  is unreachable, and model-opinion annotations.
+  is unreachable, paging that visits every row exactly once, whole-element
+  spec paging, pack problems for a malformed `checkpoints.toml`, a proof that
+  no tool writes, and model-opinion annotations.
 
 The suite protects these safety invariants: model output never submits a run;
 submission requires a valid confirm or edit decision; preview tokens are bound
